@@ -26,7 +26,7 @@ credential service, distributed coordinator, or second durable ledger.
 | F5 Session writer policy | Session append coordination | `test/session-manager/session-write-coordination.test.ts` |
 | F6 remote-neutral operation contract | `core/remote-operation.ts` and fake provider | `test/remote-operation-contract.test.ts` |
 | Kernel quality | Agent Loop and operation boundaries | `packages/agent/test/agent-loop-convergence.test.ts`, `packages/agent/test/agent-loop-errors.test.ts`, `test/core-quality-boundaries.test.ts` |
-| Audit safety | Audit adapter/query and external mapping | `test/execution-audit-adapter.test.ts`, `test/execution-audit-query.test.ts`, `test/external-session-mapping.test.ts` |
+| Audit safety | Audit adapter/query and replay | `test/execution-audit-adapter.test.ts`, `test/execution-audit-query.test.ts`, `test/execution-audit-contract.test.ts` |
 
 Audit query and replay remain read-only folds over existing Session facts. The
 remote-operation receipt is an optional safe projection and never replaces the

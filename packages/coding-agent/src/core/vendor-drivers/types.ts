@@ -18,8 +18,8 @@ import {
 	type SideEffectState,
 } from "@aos-agent/agent-core";
 import {
-	isCanonicalExternalMappingTimestamp,
-	isExternalMappingIdentifier,
+	isCanonicalExternalConnectorMappingTimestamp,
+	isExternalConnectorMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
 } from "../external-session-mapping.ts";
 import type { CanonicalExternalAgentInput } from "../external-agent-input.ts";
@@ -140,10 +140,10 @@ export function isExternalConnectorDriverHandle(value: unknown): value is Extern
 		Reflect.ownKeys(value).every(
 			(key) => typeof key === "string" && EXTERNAL_CONNECTOR_DRIVER_HANDLE_KEYS.has(key),
 		) &&
-		isExternalMappingIdentifier(value.externalSessionId) &&
-		(value.externalTurnId === undefined || isExternalMappingIdentifier(value.externalTurnId)) &&
-		isExternalMappingIdentifier(value.supervisorRef) &&
-		isExternalMappingIdentifier(value.operationNonce)
+		isExternalConnectorMappingIdentifier(value.externalSessionId) &&
+		(value.externalTurnId === undefined || isExternalConnectorMappingIdentifier(value.externalTurnId)) &&
+		isExternalConnectorMappingIdentifier(value.supervisorRef) &&
+		isExternalConnectorMappingIdentifier(value.operationNonce)
 	);
 }
 
@@ -153,9 +153,9 @@ export function isExternalConnectorDriverEvent(value: unknown): value is Externa
 		!isTerminalEvidenceRecord(value) ||
 		value.schemaVersion !== 1 ||
 		typeof value.type !== "string" ||
-		!isExternalMappingIdentifier(value.externalSessionId) ||
-		(value.externalTurnId !== undefined && !isExternalMappingIdentifier(value.externalTurnId)) ||
-		!isCanonicalExternalMappingTimestamp(value.producedAt)
+		!isExternalConnectorMappingIdentifier(value.externalSessionId) ||
+		(value.externalTurnId !== undefined && !isExternalConnectorMappingIdentifier(value.externalTurnId)) ||
+		!isCanonicalExternalConnectorMappingTimestamp(value.producedAt)
 	) {
 		return false;
 	}
@@ -188,14 +188,14 @@ export function isExternalConnectorTerminalEvidence(value: unknown): value is Ex
 		Reflect.ownKeys(value).some(
 			(key) => typeof key !== "string" || !EXTERNAL_CONNECTOR_TERMINAL_EVIDENCE_KEYS.has(key),
 		) ||
-		!isExternalMappingIdentifier(value.externalSessionId) ||
-		(value.externalTurnId !== undefined && !isExternalMappingIdentifier(value.externalTurnId)) ||
-		!isExternalMappingIdentifier(value.operationNonce) ||
+		!isExternalConnectorMappingIdentifier(value.externalSessionId) ||
+		(value.externalTurnId !== undefined && !isExternalConnectorMappingIdentifier(value.externalTurnId)) ||
+		!isExternalConnectorMappingIdentifier(value.operationNonce) ||
 		typeof value.status !== "string" ||
 		!EXTERNAL_CONNECTOR_TERMINAL_STATUSES.has(value.status) ||
 		typeof value.sideEffectState !== "string" ||
 		!EXTERNAL_CONNECTOR_SIDE_EFFECT_STATES.has(value.sideEffectState) ||
-		!isCanonicalExternalMappingTimestamp(value.producedAt)
+		!isCanonicalExternalConnectorMappingTimestamp(value.producedAt)
 	) {
 		return false;
 	}

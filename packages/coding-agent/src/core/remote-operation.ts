@@ -21,11 +21,6 @@
  * Erasable TypeScript only (no enums, namespaces, or parameter properties).
  */
 
-import {
-	isExternalAdapterIdentity,
-	serializeExternalAdapterIdentity,
-	type ExternalAdapterIdentity,
-} from "./external-session-mapping.ts";
 import type { RunId, RunStatus, RunTerminalStatus, SessionId } from "./run-lifecycle.ts";
 
 export const REMOTE_OPERATION_SCHEMA_VERSION = 1 as const;
@@ -151,8 +146,6 @@ export interface RemoteOperationRequest extends RemoteOperationBindingRefs {
 	readonly taskLease?: TaskLeaseReference;
 	/** Input artifacts are references only; bytes are exchanged by a provider-specific mechanism. */
 	readonly artifactRefs?: ReadonlyArray<RemoteArtifactReference>;
-	/** Optional adapter identity that produced this operation; validated exactly. */
-	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export interface RemoteOperationResult {
@@ -190,8 +183,6 @@ export interface RemoteOperationReceipt extends RemoteOperationBindingRefs {
 	 * quarantined (`revocation_unknown`) leases never appear here.
 	 */
 	readonly taskLeaseVerified?: TaskLeaseVerificationResult;
-	/** Optional adapter identity that produced this operation; validated exactly. */
-	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export interface RemoteOperationLedgerSession {
@@ -523,7 +514,6 @@ export function isRemoteOperationRequest(value: unknown): value is RemoteOperati
 	if (value.lease !== undefined && !validateLease(value.lease)) return false;
 	if (value.taskLease !== undefined && !isTaskLeaseReference(value.taskLease)) return false;
 	if (value.artifactRefs !== undefined && !isSafeArtifactReferenceList(value.artifactRefs)) return false;
-	if (value.adapter !== undefined && !isExternalAdapterIdentity(value.adapter)) return false;
 	return Object.keys(value).every(
 		(key) =>
 			key === "operationId" ||
@@ -535,8 +525,7 @@ export function isRemoteOperationRequest(value: unknown): value is RemoteOperati
 			key === "deadlineAt" ||
 			key === "lease" ||
 			key === "taskLease" ||
-			key === "artifactRefs" ||
-			key === "adapter",
+			key === "artifactRefs",
 	);
 }
 
@@ -552,9 +541,6 @@ function cloneRequest(request: RemoteOperationRequest): RemoteOperationRequest {
 		...(request.lease === undefined ? {} : { lease: cloneLease(request.lease) }),
 		...(request.taskLease === undefined ? {} : { taskLease: cloneTaskLeaseReference(request.taskLease) }),
 		...(request.artifactRefs === undefined ? {} : { artifactRefs: request.artifactRefs.map(cloneArtifactReference) }),
-		...(request.adapter === undefined
-			? {}
-			: { adapter: serializeExternalAdapterIdentity(request.adapter) as ExternalAdapterIdentity }),
 	};
 }
 
@@ -586,7 +572,6 @@ export function isRemoteOperationReceipt(value: unknown): value is RemoteOperati
 	if (value.capabilityBindingId !== undefined && !isSafeIdentifier(value.capabilityBindingId)) return false;
 	if (value.modelBindingId !== undefined && !isSafeIdentifier(value.modelBindingId)) return false;
 	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
-	if (value.adapter !== undefined && !isExternalAdapterIdentity(value.adapter)) return false;
 	return Object.keys(value).every(
 		(key) =>
 			key === "schemaVersion" ||
@@ -605,8 +590,7 @@ export function isRemoteOperationReceipt(value: unknown): value is RemoteOperati
 			key === "lease" ||
 			key === "heartbeatSequence" ||
 			key === "taskLease" ||
-			key === "taskLeaseVerified" ||
-			key === "adapter",
+			key === "taskLeaseVerified",
 	);
 }
 
@@ -727,9 +711,6 @@ export function startRemoteOperation(
 			operationId,
 			status: finalStatus,
 			...safeBindingRefs(request),
-			...(isRecord(request) && isExternalAdapterIdentity(request.adapter)
-				? { adapter: serializeExternalAdapterIdentity(request.adapter) as ExternalAdapterIdentity }
-				: {}),
 			...(startedAt === undefined ? {} : { startedAt }),
 			endedAt: safeNow(options.now),
 			artifactRefs: [...artifacts.values()],
@@ -896,9 +877,6 @@ export function createSessionRemoteOperationLedger(session: RemoteOperationLedge
 				...receipt,
 				sessionId,
 				artifactRefs: receipt.artifactRefs.map(cloneArtifactReference),
-				...(receipt.adapter === undefined
-					? {}
-					: { adapter: serializeExternalAdapterIdentity(receipt.adapter) as ExternalAdapterIdentity }),
 				...(receipt.taskLease === undefined ? {} : { taskLease: cloneTaskLeaseReference(receipt.taskLease) }),
 				...(receipt.taskLeaseVerified === undefined
 					? {}
@@ -924,8 +902,8 @@ export function toRemoteOperationErrorInfo(
  * Bounded external terminal facts that may be mapped into the safe Remote
  * Operation receipt contract. Only the terminal status, canonical endedAt,
  * safe artifact references, the Remote Operation side-effect vocabulary, a
- * bounded stable error code, safe binding refs, and an optional adapter
- * identity are accepted. Prompts, transcripts, credentials, paths, URLs,
+ * bounded stable error code, and safe binding refs are accepted. Prompts,
+ * transcripts, credentials, paths, URLs,
  * headers, and raw protocol objects are rejected by the exact-shape guard.
  */
 export interface RemoteOperationReceiptInput {
@@ -944,7 +922,6 @@ export interface RemoteOperationReceiptInput {
 	readonly capabilityBindingId?: string;
 	readonly modelBindingId?: string;
 	readonly policyBindingId?: string;
-	readonly adapter?: ExternalAdapterIdentity;
 }
 
 const REMOTE_OPERATION_RECEIPT_INPUT_KEYS = new Set([
@@ -959,7 +936,6 @@ const REMOTE_OPERATION_RECEIPT_INPUT_KEYS = new Set([
 	"capabilityBindingId",
 	"modelBindingId",
 	"policyBindingId",
-	"adapter",
 ]);
 const REMOTE_OPERATION_RECEIPT_INPUT_ERROR_KEYS = new Set(["code", "retryable", "sideEffects"]);
 
@@ -989,7 +965,6 @@ export function isRemoteOperationReceiptInput(value: unknown): value is RemoteOp
 	if (value.capabilityBindingId !== undefined && !isSafeIdentifier(value.capabilityBindingId)) return false;
 	if (value.modelBindingId !== undefined && !isSafeIdentifier(value.modelBindingId)) return false;
 	if (value.policyBindingId !== undefined && !isSafeIdentifier(value.policyBindingId)) return false;
-	if (value.adapter !== undefined && !isExternalAdapterIdentity(value.adapter)) return false;
 	return true;
 }
 
@@ -1021,9 +996,6 @@ export function toRemoteOperationReceipt(value: unknown): RemoteOperationReceipt
 			: value.status === "failed"
 				? { error: { category: "invalid", code: "invalid", retryable: false, sideEffects } }
 				: {}),
-		...(value.adapter === undefined
-			? {}
-			: { adapter: serializeExternalAdapterIdentity(value.adapter) as ExternalAdapterIdentity }),
 	};
 	return isRemoteOperationReceipt(receipt) ? receipt : undefined;
 }

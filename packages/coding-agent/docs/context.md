@@ -137,4 +137,4 @@ Call-before-model failures do not start the Agent loop. If a run was already acc
 
 ## Current out of scope
 
-Vector RAG, automatic long-term memory, cross-project memory, external agent adapters, MCP lifecycle changes, model routing, and OS sandbox changes.
+Vector RAG, automatic long-term memory, cross-project memory, additional External Agent Connector protocols, MCP lifecycle changes, model routing, and OS sandbox changes.

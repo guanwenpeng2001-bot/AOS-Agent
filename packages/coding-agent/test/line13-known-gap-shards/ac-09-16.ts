@@ -19,6 +19,7 @@ import {
 	SessionLedger,
 	createAttempt,
 	createBindingEpoch,
+	createConnectorCapabilitySnapshot,
 	createExecutionCorrelation,
 	createModelProfileRevision,
 	createRoleRevision,
@@ -28,7 +29,9 @@ import {
 	type AttemptReceipt,
 	type Attempt,
 	type BudgetUsage,
+	type ConnectorCapabilitySnapshot,
 	type Dispatch,
+	type ExternalAgentConnector,
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
 	type ModelProfile,
@@ -55,12 +58,7 @@ import {
 	SettingsManager,
 	type CreateAgentSessionResult,
 } from "../../src/index.ts";
-import {
-	externalAgentCapabilityError,
-	type ExternalAgentAdapter,
-	type ExternalAgentCapabilitySnapshot,
-} from "../../src/core/external-agent-adapter.ts";
-import { createExternalAgentAdapterRegistry } from "../../src/core/external-agent-registry.ts";
+import { createExternalConnectorRegistry } from "../../src/core/external-agent-registry.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { getAgentCanonicalSession } from "../../src/core/agent-session-facade.ts";
 import {
@@ -703,51 +701,62 @@ function currentVersionedPublicExports(): readonly string[] {
 }
 
 interface ExternalReadinessFixture {
-	readonly registry: ReturnType<typeof createExternalAgentAdapterRegistry>;
-	readonly calls: { probe: number; prepare: number; start: number };
+	readonly registry: ReturnType<typeof createExternalConnectorRegistry>;
+	readonly descriptor: {
+		readonly providerId: string;
+		readonly revision: number;
+		readonly capabilitySnapshotDigest: ConnectorCapabilitySnapshot["digest"];
+	};
+	readonly calls: { probe: number; createAttempt: number; runAttempt: number };
 }
 
 function externalReadinessFixture(): ExternalReadinessFixture {
-	const calls = { probe: 0, prepare: 0, start: 0 };
-	const adapter: ExternalAgentAdapter = {
-		id: "line13-readiness-adapter",
-		probe: async (target): Promise<ExternalAgentCapabilitySnapshot> => {
-			calls.probe += 1;
-			return {
-				schemaVersion: 1,
-				adapterId: "line13-readiness-adapter",
-				targetId: target.targetId,
-				protocol: { name: "line13-protocol", version: "1" },
-				status: "unavailable",
-				capabilities: {
-					start: false,
-					events: "none",
-					cancel: "none",
-					receipt: "none",
-					resume: false,
-					artifacts: false,
-					toolGateway: false,
-				},
-				reasonCode: "driver_not_ready",
-				observedAt: NOW,
-			};
-		},
-		prepare: async () => {
-			calls.prepare += 1;
-			throw new Error("prepare must not run during readiness probing");
-		},
-		start: async () => {
-			calls.start += 1;
-			throw new Error("start must not run during readiness probing");
-		},
-	};
-	const registry = createExternalAgentAdapterRegistry();
-	registry.register(adapter, {
-		displayName: "Line 13 readiness adapter",
-		version: "1",
-		targets: ["line13-target"],
+	const providerId = "line13.readiness-connector";
+	const calls = { probe: 0, createAttempt: 0, runAttempt: 0 };
+	const snapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId,
+		revision: 1,
+		protocol: { name: "line13-protocol", version: "1" },
+		modelAccess: "none",
+		resume: false,
+		toolGateway: false,
+		artifacts: false,
+		images: false,
 	});
-	return { registry, calls };
+	const connector: ExternalAgentConnector = {
+		schemaVersion: 1,
+		providerId,
+		providerClass: "external_connector",
+		capabilities: async () => [],
+		probeCapabilities: async () => {
+			calls.probe += 1;
+			return Result.err(new FoundationError("task_executor_invalid_provider_class", "Connector target is not ready."));
+		},
+		createAttempt: async () => {
+			calls.createAttempt += 1;
+			return Result.err(new FoundationError("task_executor_invalid_provider_class", "createAttempt must not run during readiness probing"));
+		},
+		runAttempt: async () => {
+			calls.runAttempt += 1;
+			return Result.err(new FoundationError("task_executor_invalid_provider_class", "runAttempt must not run during readiness probing"));
+		},
+		resumeAttempt: async () => Result.err(new FoundationError("unsupported_feature", "resume unavailable")),
+		reconcileAttempt: async () => Result.err(new FoundationError("task_executor_invalid_provider_class", "reconcile unavailable")),
+		cancelAttempt: async () => Result.ok(undefined),
+		dispose: async () => {},
+	};
+	const descriptor = {
+		schemaVersion: 1 as const,
+		providerId,
+		providerClass: "external_connector" as const,
+		revision: snapshot.revision,
+		capabilitySnapshotDigest: snapshot.digest,
+	};
+	const registry = createExternalConnectorRegistry();
+	const registered = registry.registerPrepared({ descriptor, connector, trusted: true }, snapshot);
+	if (!registered.ok) throw registered.error;
+	return { registry, descriptor, calls };
 }
 
 interface AtomicControlStateFixture {
@@ -1013,27 +1022,26 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 			},
 			scenario: {
 				fixture: externalReadinessFixture,
-				assertion: async ({ registry, calls }) => {
+				assertion: async ({ registry, descriptor, calls }) => {
 					assert.deepEqual(registry.list(), [
 						{
-							adapterId: "line13-readiness-adapter",
-							displayName: "Line 13 readiness adapter",
-							version: "1",
+							schemaVersion: 1,
+							providerId: descriptor.providerId,
+							providerClass: "external_connector",
+							revision: descriptor.revision,
+							capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
 						},
 					]);
-					const resolved = registry.resolve({
-						adapterId: "line13-readiness-adapter",
-						targetId: "line13-target",
+					assert.deepEqual(calls, { probe: 0, createAttempt: 0, runAttempt: 0 });
+					const selected = await registry.select({
+						providerId: descriptor.providerId,
+						revision: descriptor.revision,
+						capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
 					});
-					assert.deepEqual(calls, { probe: 0, prepare: 0, start: 0 });
-					const snapshot = await resolved.adapter.probe(resolved.target, {
-						signal: new AbortController().signal,
-						deadlineAt: LATER,
-					});
-					assert.equal(externalAgentCapabilityError(snapshot), "external_agent_probe_failed");
-					assert.deepEqual(calls, { probe: 1, prepare: 0, start: 0 });
+					assert.equal(selected.ok, false);
+					assert.deepEqual(calls, { probe: 1, createAttempt: 0, runAttempt: 0 });
 					assert.equal(
-						"probe" in registry,
+						"probeReadiness" in registry,
 						true,
 						"expected the trusted External registry to expose bounded readiness diagnostics",
 					);

@@ -7,7 +7,10 @@ import type {
 	AutomationRunProjection,
 	CanonicalAutomationRunProjection,
 } from "../automation-run-projection.ts";
-import { isExternalExecutionRef, type ExternalExecutionRef } from "../external-session-mapping.ts";
+import {
+	isLegacyExternalExecutionRefV1 as isExternalExecutionRef,
+	type LegacyExternalExecutionRefV1 as ExternalExecutionRef,
+} from "./external-agent-ledger.ts";
 import { POLICY_RESOURCE_CATEGORIES, type PublicPolicySummary } from "../execution-policy.ts";
 import {
 	createPrivateMigrationPlanV1,

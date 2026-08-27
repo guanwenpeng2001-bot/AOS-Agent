@@ -25,11 +25,6 @@ import type {
 	ExternalConnectorDescriptor,
 	ExternalConnectorSelection,
 } from "../../core/external-agent-registry.ts";
-import type {
-	ExternalExecutionRef,
-	ExternalMappingPersistenceResult,
-	ExternalMappingRequest,
-} from "../../core/external-session-mapping.ts";
 import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
 import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/mcp-content.ts";
@@ -79,9 +74,6 @@ export type RpcAuditQueryCommand = { id?: string; type: "audit.query" } & AuditQ
 
 /** Flattened Automation Host request for a single-run audit replay. */
 export type RpcAuditReplayCommand = { id?: string; type: "audit.replay" } & AuditReplayQuery;
-
-/** Flattened Automation Host request for an append-only external mapping. */
-export type RpcExternalMapCommand = { id?: string; type: "external.map" } & ExternalMappingRequest;
 
 export type RpcCommand =
 	// Prompting
@@ -200,7 +192,6 @@ export type RpcCommand =
 			/** Optional inclusive canonical UTC deadline for the Run. */
 			deadlineAt?: string;
 			images?: ImageContent[];
-			external?: ExternalExecutionRef;
 			/** Explicit trusted External Connector selection for this Run. */
 			externalConnector?: ExternalConnectorSelection;
 			capabilityProfile?: string;
@@ -221,7 +212,6 @@ export type RpcCommand =
 			/** Optional inclusive canonical UTC deadline for the resumed Run. */
 			deadlineAt?: string;
 			images?: ImageContent[];
-			external?: ExternalExecutionRef;
 			/** Explicit trusted External Connector selection for the resumed Run. */
 			externalConnector?: ExternalConnectorSelection;
 			capabilityProfile?: string;
@@ -231,7 +221,6 @@ export type RpcCommand =
 	  }
 	| RpcAuditQueryCommand
 	| RpcAuditReplayCommand
-	| RpcExternalMapCommand
 	// Task Gate control-plane commands (write commands require clientRequestId)
 	| {
 			id?: string;
@@ -947,8 +936,8 @@ export type RpcCommandType = RpcCommand["type"];
 /** Commands introduced by the Automation Host RPC protocol. */
 export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.resume";
 
-/** Automation Host audit and external mapping commands. */
-export type RpcAuditCommandType = "audit.query" | "audit.replay" | "external.map";
+/** Automation Host audit commands. */
+export type RpcAuditCommandType = "audit.query" | "audit.replay";
 
 /** Task Gate control-plane commands. Write commands require `clientRequestId`. */
 export type RpcTaskGateCommandType =
@@ -1000,7 +989,7 @@ export interface InitializeData {
 	protocolVersion: 1;
 	sessionId: string;
 	runCommands: RpcRunCommandType[];
-	/** Additive audit and external mapping command list. */
+	/** Additive audit command list. */
 	auditCommands?: RpcAuditCommandType[];
 	/** Additive Task Gate control-plane command list. */
 	taskGateCommands?: RpcTaskGateCommandType[];
@@ -1032,7 +1021,6 @@ export interface RunAcceptedData {
 	idempotent?: boolean;
 	receipt?: PublicRunReceipt;
 	recovery?: RunRecoveryState;
-	external?: ExternalExecutionRef;
 	modelBindingId?: string;
 	previousModelBindingId?: string;
 	policyBindingId?: string;
@@ -1062,9 +1050,6 @@ export type AuditQueryData = AuditQueryResult;
 
 /** Data returned by a successful `audit.replay`. */
 export type AuditReplayData = AuditReplayResult;
-
-/** Data returned by a successful `external.map`. */
-export type ExternalMapData = ExternalMappingPersistenceResult;
 
 /** Data returned by a successful `task.gate.request` / approve / reject / cancel. */
 export interface TaskGateMutationData {
@@ -1275,7 +1260,6 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "run.cancel"; success: true; data: RunCancelData }
 	| { id?: string; type: "response"; command: "audit.query"; success: true; data: AuditQueryData }
 	| { id?: string; type: "response"; command: "audit.replay"; success: true; data: AuditReplayData }
-	| { id?: string; type: "response"; command: "external.map"; success: true; data: ExternalMapData }
 	| { id?: string; type: "response"; command: "task.gate.request"; success: true; data: TaskGateMutationData }
 	| { id?: string; type: "response"; command: "task.gate.get"; success: true; data: TaskGateGetData }
 	| { id?: string; type: "response"; command: "task.gate.list"; success: true; data: TaskGateListData }
@@ -1326,14 +1310,6 @@ export type {
 	AuditReplayResult,
 	AuditWarning,
 } from "../../core/execution-audit-query.ts";
-// Re-export public external mapping types.
-export type {
-	ExternalExecutionMapping,
-	ExternalExecutionRef,
-	ExternalMappingSummary,
-	ExternalMappingPersistenceResult,
-	ExternalMappingRequest,
-} from "../../core/external-session-mapping.ts";
 // Re-export the only current External Connector selection surface.
 export type {
 	ExternalConnectorDescriptor,

@@ -4,9 +4,7 @@
  * The adapter deliberately consumes the structural Session custom-entry
  * contract instead of RPC response types. It folds the existing append-only
  * ledgers into a small, allowlisted audit view and never writes to the
- * Session, invokes a provider, or performs an execution operation. Source
- * entries that carry an adapter identity (external.mapping, remote.operation)
- * project it onto events as a safe, exactly-validated association.
+ * Session, invokes a provider, or performs an execution operation.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -96,12 +94,6 @@ import {
 	type LegacyAutomationRunRecordV1,
 } from "./migrations/automation-run-ledger.ts";
 import {
-	isExternalAdapterIdentity,
-	sameExternalAdapterIdentity,
-	serializeExternalAdapterIdentity,
-	type ExternalAdapterIdentity,
-} from "./external-session-mapping.ts";
-import {
 	isLegalTaskCredentialTransition,
 	TASK_CREDENTIAL_SCHEMA_VERSION,
 	type TaskCredentialGrant,
@@ -177,7 +169,6 @@ export const AUDIT_SOURCE_CUSTOM_TYPES = [
 	"policy.approval",
 	"sandbox.lifecycle",
 	"policy.violation",
-	"external.mapping",
 	"remote.operation",
 	"task.gate",
 	"task.graph",
@@ -214,7 +205,6 @@ export const AUDIT_EVENT_TYPES = [
 	"policy.approval",
 	"sandbox.lifecycle",
 	"policy.violation",
-	"external.mapping",
 	"remote.operation",
 	"task.gate",
 	"task.graph",
@@ -237,7 +227,6 @@ export const AUDIT_WARNING_CODES = [
 	"duplicate_source",
 	"source_unavailable",
 	"ambiguous_run_association",
-	"mapping_conflict",
 ] as const;
 export type AuditWarningCode = (typeof AUDIT_WARNING_CODES)[number];
 
@@ -247,9 +236,6 @@ export const AUDIT_ERROR_CODES = [
 	"audit_scope_unavailable",
 	"audit_run_not_found",
 	"audit_replay_incomplete",
-	"external_mapping_invalid",
-	"external_mapping_conflict",
-	"audit_persistence_failed",
 ] as const;
 export type AuditErrorCode = (typeof AUDIT_ERROR_CODES)[number];
 
@@ -285,21 +271,6 @@ export const TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEYS = Object.freeze([
 	"providerError",
 	"oauthCode",
 ] as const);
-
-export interface ExternalExecutionRef {
-	readonly namespace: string;
-	readonly externalSessionId: string;
-	readonly externalRunId?: string;
-}
-
-export interface ExternalExecutionMapping extends ExternalExecutionRef {
-	readonly aosSessionId: string;
-	readonly aosRunId?: string;
-	readonly createdAt: string;
-	readonly source?: string;
-	readonly correlationId?: string;
-	readonly adapter?: ExternalAdapterIdentity;
-}
 
 export interface AuditRunModelReference {
 	readonly provider: string;
@@ -659,9 +630,6 @@ export interface AuditEventBase {
 	readonly recordedAt: string;
 	readonly sessionId: string;
 	readonly sourceEntryId: string;
-	readonly external?: ExternalExecutionRef;
-	/** Adapter identity attached when the source entry carries one (mapping or operation receipt). */
-	readonly adapter?: ExternalAdapterIdentity;
 }
 
 export type AuditEvent =
@@ -717,11 +685,6 @@ export type AuditEvent =
 			readonly summary: AuditPolicyViolationSummary;
 	  })
 	| (AuditEventBase & {
-			readonly type: "external.mapping";
-			readonly runId?: string;
-			readonly summary: ExternalExecutionMapping;
-	  })
-	| (AuditEventBase & {
 			readonly type: "remote.operation";
 			readonly runId?: string;
 			readonly summary: AuditRemoteOperationSummary;
@@ -774,8 +737,6 @@ export interface AuditQuery {
 	readonly scope: AuditQueryScope;
 	readonly sessionId?: string;
 	readonly runId?: string;
-	readonly external?: ExternalExecutionRef;
-	readonly adapter?: ExternalAdapterIdentity;
 	readonly types?: ReadonlyArray<AuditEventType>;
 	readonly from?: string;
 	readonly to?: string;
@@ -786,8 +747,6 @@ export interface AuditQuery {
 export interface AuditReplayQuery {
 	readonly runId: string;
 	readonly sessionId?: string;
-	readonly external?: ExternalExecutionRef;
-	readonly adapter?: ExternalAdapterIdentity;
 	readonly types?: ReadonlyArray<AuditEventType>;
 	readonly from?: string;
 	readonly to?: string;
@@ -945,18 +904,6 @@ const CONTEXT_REASONS = new Set([
 	"revoked",
 	"snapshot_only",
 ]);
-const EXTERNAL_REF_KEYS = new Set(["namespace", "externalSessionId", "externalRunId"]);
-const EXTERNAL_MAPPING_KEYS = new Set([
-	"namespace",
-	"externalSessionId",
-	"externalRunId",
-	"aosSessionId",
-	"aosRunId",
-	"createdAt",
-	"source",
-	"correlationId",
-	"adapter",
-]);
 const WORKER_LIFECYCLE_CUSTOM_TYPE = "worker.lifecycle_transitioned";
 const WORKER_OPERATION_CUSTOM_TYPE = "worker.operation_recorded";
 const WORKER_RECEIPT_CUSTOM_TYPE = "worker_receipt.written";
@@ -981,19 +928,63 @@ const WORKER_AUDIT_FORBIDDEN_KEYS = new Set<string>([
 	"details",
 ]);
 export const SUBAGENT_AUDIT_FORBIDDEN_KEYS = Object.freeze([
-	"pid", "executable", "argv", "cwd", "env", "environment", "transcript", "prompt", "token", "secret",
-	"header", "headers", "providerStack", "provider_stack", "rawFrame", "raw_frame", "body", "message", "content", "output", "stack",
+	"pid",
+	"executable",
+	"argv",
+	"cwd",
+	"env",
+	"environment",
+	"transcript",
+	"prompt",
+	"token",
+	"secret",
+	"header",
+	"headers",
+	"providerStack",
+	"provider_stack",
+	"rawFrame",
+	"raw_frame",
+	"body",
+	"message",
+	"content",
+	"output",
+	"stack",
 ]);
 const SUBAGENT_AUDIT_KEYS = new Set([
-	"schemaVersion", "source", "sessionId", "runId", "childAgentInstanceId", "parentAgentInstanceId", "taskId",
-	"status", "providerKind", "safeSummary", "correlation", "digest",
+	"schemaVersion",
+	"source",
+	"sessionId",
+	"runId",
+	"childAgentInstanceId",
+	"parentAgentInstanceId",
+	"taskId",
+	"status",
+	"providerKind",
+	"safeSummary",
+	"correlation",
+	"digest",
 ]);
 const SUBAGENT_AUDIT_CORRELATION_KEYS = new Set(["attemptId", "spawnId"]);
 const SUBAGENT_AUDIT_DIGEST_KEYS = new Set(["algorithm", "value"]);
 export const SCHEDULER_AUDIT_FORBIDDEN_KEYS = Object.freeze([
 	...SCHEDULER_FORBIDDEN_PAYLOAD_KEYS,
-	"environment", "executable", "argv", "cwd", "secret", "token", "authorization", "header", "headers",
-	"prompt", "message", "content", "output", "raw", "stack", "error", "details",
+	"environment",
+	"executable",
+	"argv",
+	"cwd",
+	"secret",
+	"token",
+	"authorization",
+	"header",
+	"headers",
+	"prompt",
+	"message",
+	"content",
+	"output",
+	"raw",
+	"stack",
+	"error",
+	"details",
 ]);
 const SCHEDULER_AUDIT_FORBIDDEN_KEY_SET = new Set<string>(SCHEDULER_AUDIT_FORBIDDEN_KEYS);
 const WORKER_ENVELOPE_KEYS = new Set([
@@ -1008,21 +999,54 @@ const WORKER_ENVELOPE_KEYS = new Set([
 	"payload",
 ]);
 const WORKER_LIFECYCLE_PAYLOAD_KEYS = new Set([
-	"schemaVersion", "workerId", "providerId", "sessionId", "laneId", "status", "revision", "runId",
-	"bindingId", "bindingEpochId", "attemptId", "profileId", "createdAt", "readyAt", "endedAt",
-	"lastHeartbeatAt", "activeOperationId", "operationId", "receiptId",
+	"schemaVersion",
+	"workerId",
+	"providerId",
+	"sessionId",
+	"laneId",
+	"status",
+	"revision",
+	"runId",
+	"bindingId",
+	"bindingEpochId",
+	"attemptId",
+	"profileId",
+	"createdAt",
+	"readyAt",
+	"endedAt",
+	"lastHeartbeatAt",
+	"activeOperationId",
+	"operationId",
+	"receiptId",
 ]);
 const WORKER_OPERATION_PAYLOAD_KEYS = new Set([
-	"schemaVersion", "workerId", "providerId", "sessionId", "laneId", "operationId", "phase", "revision",
-	"sideEffectState", "receiptId", "recordedAt",
+	"schemaVersion",
+	"workerId",
+	"providerId",
+	"sessionId",
+	"laneId",
+	"operationId",
+	"phase",
+	"revision",
+	"sideEffectState",
+	"receiptId",
+	"recordedAt",
 ]);
 const WORKER_RECEIPT_PAYLOAD_KEYS = new Set(["schemaVersion", "workerReceiptId", "operationId", "taskId"]);
 const WORKER_LIFECYCLE_CORRELATION_KEYS = new Set([
-	"sessionId", "laneId", "workerId", "runId", "bindingId", "bindingEpochId", "attemptId", "operationId", "receiptId",
+	"sessionId",
+	"laneId",
+	"workerId",
+	"runId",
+	"bindingId",
+	"bindingEpochId",
+	"attemptId",
+	"operationId",
+	"receiptId",
 ]);
 const WORKER_OPERATION_CORRELATION_KEYS = new Set(["sessionId", "laneId", "workerId", "operationId", "receiptId"]);
 const WORKER_RECEIPT_CORRELATION_KEYS = new Set(["sessionId", "operationId", "workerReceiptId", "taskId"]);
-const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "external", "types", "from", "to", "cursor", "limit", "adapter"]);
+const AUDIT_QUERY_KEYS = new Set(["scope", "sessionId", "runId", "types", "from", "to", "cursor", "limit"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1044,7 +1068,12 @@ function hasForbiddenWorkerValue(value: unknown, seen = new WeakSet<object>()): 
 }
 
 export function projectSubagentAuditSourceV1(value: unknown): SafeSubagentLifecycleProjectionV1 | undefined {
-	if (!isRecord(value) || !hasOnlyKeys(value, SUBAGENT_AUDIT_KEYS) || Object.keys(value).length !== SUBAGENT_AUDIT_KEYS.size) return undefined;
+	if (
+		!isRecord(value) ||
+		!hasOnlyKeys(value, SUBAGENT_AUDIT_KEYS) ||
+		Object.keys(value).length !== SUBAGENT_AUDIT_KEYS.size
+	)
+		return undefined;
 	const forbidden = new Set<string>(SUBAGENT_AUDIT_FORBIDDEN_KEYS);
 	const containsForbidden = (candidate: unknown): boolean => {
 		if (candidate === null || typeof candidate !== "object") return false;
@@ -1052,16 +1081,30 @@ export function projectSubagentAuditSourceV1(value: unknown): SafeSubagentLifecy
 		return Object.entries(candidate).some(([key, child]) => forbidden.has(key) || containsForbidden(child));
 	};
 	if (
-		containsForbidden(value) || value.schemaVersion !== 1 || value.source !== "subagent.lifecycle" ||
-		!isSafeIdentifier(value.sessionId) || !isSafeIdentifier(value.runId) || !isSafeIdentifier(value.childAgentInstanceId) ||
-		!isSafeIdentifier(value.parentAgentInstanceId) || !isSafeIdentifier(value.taskId) || !isSafeText(value.safeSummary) ||
+		containsForbidden(value) ||
+		value.schemaVersion !== 1 ||
+		value.source !== "subagent.lifecycle" ||
+		!isSafeIdentifier(value.sessionId) ||
+		!isSafeIdentifier(value.runId) ||
+		!isSafeIdentifier(value.childAgentInstanceId) ||
+		!isSafeIdentifier(value.parentAgentInstanceId) ||
+		!isSafeIdentifier(value.taskId) ||
+		!isSafeText(value.safeSummary) ||
 		!CHILD_LIFECYCLE_STATUSES.includes(value.status as ChildLifecycleStatusV1) ||
 		!SUBAGENT_PROVIDER_KINDS.includes(value.providerKind as SubagentProviderKindV1) ||
-		!isRecord(value.correlation) || !hasOnlyKeys(value.correlation, SUBAGENT_AUDIT_CORRELATION_KEYS) || Object.keys(value.correlation).length !== SUBAGENT_AUDIT_CORRELATION_KEYS.size ||
-		!isSafeIdentifier(value.correlation.attemptId) || !isSafeIdentifier(value.correlation.spawnId) ||
-		!isRecord(value.digest) || !hasOnlyKeys(value.digest, SUBAGENT_AUDIT_DIGEST_KEYS) || Object.keys(value.digest).length !== SUBAGENT_AUDIT_DIGEST_KEYS.size ||
-		value.digest.algorithm !== "sha256" || typeof value.digest.value !== "string" || !/^[0-9a-f]{64}$/.test(value.digest.value)
-	) return undefined;
+		!isRecord(value.correlation) ||
+		!hasOnlyKeys(value.correlation, SUBAGENT_AUDIT_CORRELATION_KEYS) ||
+		Object.keys(value.correlation).length !== SUBAGENT_AUDIT_CORRELATION_KEYS.size ||
+		!isSafeIdentifier(value.correlation.attemptId) ||
+		!isSafeIdentifier(value.correlation.spawnId) ||
+		!isRecord(value.digest) ||
+		!hasOnlyKeys(value.digest, SUBAGENT_AUDIT_DIGEST_KEYS) ||
+		Object.keys(value.digest).length !== SUBAGENT_AUDIT_DIGEST_KEYS.size ||
+		value.digest.algorithm !== "sha256" ||
+		typeof value.digest.value !== "string" ||
+		!/^[0-9a-f]{64}$/.test(value.digest.value)
+	)
+		return undefined;
 	const { digest, ...base } = value;
 	const expected = fingerprintFoundationValue(base);
 	if (digest.algorithm !== expected.algorithm || digest.value !== expected.value) return undefined;
@@ -1078,8 +1121,9 @@ export function hasForbiddenSchedulerAuditValue(value: unknown, seen = new WeakS
 	if (seen.has(value)) return true;
 	seen.add(value);
 	if (Array.isArray(value)) return value.some((item) => hasForbiddenSchedulerAuditValue(item, seen));
-	return Object.entries(value).some(([key, item]) =>
-		SCHEDULER_AUDIT_FORBIDDEN_KEY_SET.has(key) || hasForbiddenSchedulerAuditValue(item, seen));
+	return Object.entries(value).some(
+		([key, item]) => SCHEDULER_AUDIT_FORBIDDEN_KEY_SET.has(key) || hasForbiddenSchedulerAuditValue(item, seen),
+	);
 }
 
 function workerString(value: unknown): value is string {
@@ -1220,7 +1264,11 @@ function isModelBindingRecord(value: unknown): value is ModelBindingLedgerRecord
 	if (value.mode !== "manual" && value.mode !== "route" && value.mode !== "direct") return false;
 	if (value.routeId !== undefined && !isSafeIdentifier(value.routeId)) return false;
 	if (value.role !== undefined && !isSafeIdentifier(value.role)) return false;
-	if (!Array.isArray(value.candidates) || value.candidates.length === 0 || value.candidates.some((candidate) => !isModelCandidate(candidate))) {
+	if (
+		!Array.isArray(value.candidates) ||
+		value.candidates.length === 0 ||
+		value.candidates.some((candidate) => !isModelCandidate(candidate))
+	) {
 		return false;
 	}
 	const orders = new Set<number>();
@@ -1229,21 +1277,33 @@ function isModelBindingRecord(value: unknown): value is ModelBindingLedgerRecord
 		orders.add(candidate.order as number);
 	}
 	if (value.mode !== "route" && value.candidates.length !== 1) return false;
-	if (!isRecord(value.fallback) || !isCount(value.fallback.maxAttempts) || value.fallback.maxAttempts < 1) return false;
+	if (!isRecord(value.fallback) || !isCount(value.fallback.maxAttempts) || value.fallback.maxAttempts < 1)
+		return false;
 	if (
 		!Array.isArray(value.fallback.on) ||
 		value.fallback.on.some((item) => item !== "provider_unavailable" && item !== "transient_provider_error")
 	) {
 		return false;
 	}
-	if (!isModelBudgetLimit(value.budget) || !isSafeIdentifier(value.configRevision) || !isCanonicalTimestamp(value.createdAt)) return false;
+	if (
+		!isModelBudgetLimit(value.budget) ||
+		!isSafeIdentifier(value.configRevision) ||
+		!isCanonicalTimestamp(value.createdAt)
+	)
+		return false;
 	return value.previousModelBindingId === undefined || isSafeIdentifier(value.previousModelBindingId);
 }
 
 function isModelAttemptRecord(value: unknown): value is ModelAttemptLedgerRecord {
 	if (!isRecord(value)) return false;
 	if (!isSafeIdentifier(value.attemptId) || !isSafeIdentifier(value.bindingId) || !isCount(value.order)) return false;
-	if (value.status !== "started" && value.status !== "completed" && value.status !== "failed" && value.status !== "cancelled") return false;
+	if (
+		value.status !== "started" &&
+		value.status !== "completed" &&
+		value.status !== "failed" &&
+		value.status !== "cancelled"
+	)
+		return false;
 	if (!isModelReference(value.candidate) || !isCanonicalTimestamp(value.startedAt)) return false;
 	if (value.endedAt !== undefined && !isCanonicalTimestamp(value.endedAt)) return false;
 	if (value.failureCategory !== undefined && !isSafeIdentifier(value.failureCategory)) return false;
@@ -1264,11 +1324,18 @@ function isContextSourceReceipt(value: unknown): value is ContextSourceReceipt {
 		!CONTEXT_SCOPES.has(value.scope) ||
 		!CONTEXT_TRUSTS.has(value.trust) ||
 		!CONTEXT_DISPOSITIONS.has(value.disposition as string)
-	) return false;
+	)
+		return false;
 	if (value.label !== undefined && !isSafeText(value.label)) return false;
-	if (value.visibility !== undefined && value.visibility !== "snapshot_only" && value.visibility !== "model_and_snapshot") return false;
+	if (
+		value.visibility !== undefined &&
+		value.visibility !== "snapshot_only" &&
+		value.visibility !== "model_and_snapshot"
+	)
+		return false;
 	if (!isSafeText(value.contentDigest) || !isCount(value.estimatedTokens)) return false;
-	if (value.reason !== undefined && (typeof value.reason !== "string" || !CONTEXT_REASONS.has(value.reason))) return false;
+	if (value.reason !== undefined && (typeof value.reason !== "string" || !CONTEXT_REASONS.has(value.reason)))
+		return false;
 	if (value.byteCount !== undefined && !isCount(value.byteCount)) return false;
 	if (value.blockCount !== undefined && !isCount(value.blockCount)) return false;
 	if (value.mimeTypes !== undefined) {
@@ -1280,7 +1347,14 @@ function isContextSourceReceipt(value: unknown): value is ContextSourceReceipt {
 
 function isContextSnapshot(value: unknown): value is ContextSnapshot {
 	if (!isRecord(value) || value.schemaVersion !== AUDIT_SCHEMA_VERSION) return false;
-	if (!isSafeIdentifier(value.id) || typeof value.purpose !== "string" || !CONTEXT_PURPOSES.has(value.purpose) || !isSafeIdentifier(value.sessionId) || !isCanonicalTimestamp(value.createdAt)) return false;
+	if (
+		!isSafeIdentifier(value.id) ||
+		typeof value.purpose !== "string" ||
+		!CONTEXT_PURPOSES.has(value.purpose) ||
+		!isSafeIdentifier(value.sessionId) ||
+		!isCanonicalTimestamp(value.createdAt)
+	)
+		return false;
 	if (value.runId !== undefined && !isSafeIdentifier(value.runId)) return false;
 	if (value.parentSnapshotId !== undefined && !isSafeIdentifier(value.parentSnapshotId)) return false;
 	if (!Array.isArray(value.sources) || value.sources.some((source) => !isContextSourceReceipt(source))) return false;
@@ -1294,14 +1368,26 @@ function isContextSnapshot(value: unknown): value is ContextSnapshot {
 }
 
 function isCapabilityBindingRecord(value: unknown): value is CapabilityBindingLedgerRecord {
-	if (!isRecord(value) || !isSafeText(value.id) || !isSafeIdentifier(value.profile) || !isCanonicalTimestamp(value.createdAt)) return false;
+	if (
+		!isRecord(value) ||
+		!isSafeText(value.id) ||
+		!isSafeIdentifier(value.profile) ||
+		!isCanonicalTimestamp(value.createdAt)
+	)
+		return false;
 	if (!Array.isArray(value.descriptors)) return false;
 	for (const descriptor of value.descriptors) {
-		if (!isRecord(descriptor) || typeof descriptor.id !== "string" || typeof descriptor.revision !== "string") return false;
+		if (!isRecord(descriptor) || typeof descriptor.id !== "string" || typeof descriptor.revision !== "string")
+			return false;
 		if (descriptor.exposedToolName !== undefined && !isSafeIdentifier(descriptor.exposedToolName)) return false;
 	}
 	if (!isRecord(value.decisionSummary)) return false;
-	if (!isCount(value.decisionSummary.allowed) || !isCount(value.decisionSummary.awaitingApproval) || !isCount(value.decisionSummary.denied)) return false;
+	if (
+		!isCount(value.decisionSummary.allowed) ||
+		!isCount(value.decisionSummary.awaitingApproval) ||
+		!isCount(value.decisionSummary.denied)
+	)
+		return false;
 	return Array.isArray(value.toolAllowlist) && value.toolAllowlist.every((tool) => isSafeIdentifier(tool));
 }
 
@@ -1327,14 +1413,36 @@ function isPolicyBindingRecord(value: unknown): value is PolicyBindingLedgerReco
 	if (value.sandboxProviderId !== undefined && !isSafeIdentifier(value.sandboxProviderId)) return false;
 	if (value.previousPolicyBindingId !== undefined && !isSafeIdentifier(value.previousPolicyBindingId)) return false;
 	const constraints = value.constraints;
-	if (!isRecord(constraints.workspace) || !isRecord(constraints.process) || !isRecord(constraints.network) || !isRecord(constraints.credentials)) return false;
+	if (
+		!isRecord(constraints.workspace) ||
+		!isRecord(constraints.process) ||
+		!isRecord(constraints.network) ||
+		!isRecord(constraints.credentials)
+	)
+		return false;
 	for (const key of ["read", "write", "deny"] as const) {
-		if (!Array.isArray(constraints.workspace[key]) || constraints.workspace[key].some((scope) => !isWorkspaceScope(scope))) return false;
+		if (
+			!Array.isArray(constraints.workspace[key]) ||
+			constraints.workspace[key].some((scope) => !isWorkspaceScope(scope))
+		)
+			return false;
 	}
-	if (!isPolicyAction(constraints.process.action) || typeof constraints.process.inheritEnvironment !== "boolean" || !isCount(constraints.process.allowedEnvironmentCount)) return false;
-	if (constraints.process.cwdScopes !== undefined && (!Array.isArray(constraints.process.cwdScopes) || constraints.process.cwdScopes.some((scope) => !isWorkspaceScope(scope)))) return false;
-	if (!isPolicyAction(constraints.network.action) || !isCount(constraints.network.allowedDestinationCount)) return false;
-	if (!isPolicyAction(constraints.credentials.action) || !isCount(constraints.credentials.allowedNameCount)) return false;
+	if (
+		!isPolicyAction(constraints.process.action) ||
+		typeof constraints.process.inheritEnvironment !== "boolean" ||
+		!isCount(constraints.process.allowedEnvironmentCount)
+	)
+		return false;
+	if (
+		constraints.process.cwdScopes !== undefined &&
+		(!Array.isArray(constraints.process.cwdScopes) ||
+			constraints.process.cwdScopes.some((scope) => !isWorkspaceScope(scope)))
+	)
+		return false;
+	if (!isPolicyAction(constraints.network.action) || !isCount(constraints.network.allowedDestinationCount))
+		return false;
+	if (!isPolicyAction(constraints.credentials.action) || !isCount(constraints.credentials.allowedNameCount))
+		return false;
 	return true;
 }
 
@@ -1356,13 +1464,31 @@ function isPolicyDecisionRecord(value: unknown): value is PolicyDecisionLedgerRe
 }
 
 function isPolicyApprovalRecord(value: unknown): value is PolicyApprovalLedgerRecord {
-	if (!isRecord(value) || !isSafeIdentifier(value.id) || !isSafeIdentifier(value.bindingId) || !isPolicyResource(value.resource)) return false;
+	if (
+		!isRecord(value) ||
+		!isSafeIdentifier(value.id) ||
+		!isSafeIdentifier(value.bindingId) ||
+		!isPolicyResource(value.resource)
+	)
+		return false;
 	if (value.requestId !== undefined && !isSafeIdentifier(value.requestId)) return false;
 	if (value.reasonCode !== "policy_approval_required" || !isCanonicalTimestamp(value.createdAt)) return false;
 	if (value.outcome !== undefined && value.outcome !== "approved" && value.outcome !== "rejected") return false;
-	if (value.source !== undefined && value.source !== "interactive" && value.source !== "rpc" && value.source !== "sdk" && value.source !== "system") return false;
+	if (
+		value.source !== undefined &&
+		value.source !== "interactive" &&
+		value.source !== "rpc" &&
+		value.source !== "sdk" &&
+		value.source !== "system"
+	)
+		return false;
 	if (!isRecord(value.scope) || !isPolicyResource(value.scope.resource)) return false;
-	if (value.scope.workspaceScopes !== undefined && (!Array.isArray(value.scope.workspaceScopes) || value.scope.workspaceScopes.some((scope) => !isWorkspaceScope(scope)))) return false;
+	if (
+		value.scope.workspaceScopes !== undefined &&
+		(!Array.isArray(value.scope.workspaceScopes) ||
+			value.scope.workspaceScopes.some((scope) => !isWorkspaceScope(scope)))
+	)
+		return false;
 	for (const key of ["environmentCount", "destinationCount", "credentialCount"] as const) {
 		if (value.scope[key] !== undefined && !isCount(value.scope[key])) return false;
 	}
@@ -1370,34 +1496,28 @@ function isPolicyApprovalRecord(value: unknown): value is PolicyApprovalLedgerRe
 }
 
 function isSandboxLifecycleRecord(value: unknown): value is SandboxLifecycleLedgerRecord {
-	if (!isRecord(value) || !isSafeIdentifier(value.bindingId) || !isSandboxStatus(value.status) || !isCanonicalTimestamp(value.timestamp)) return false;
+	if (
+		!isRecord(value) ||
+		!isSafeIdentifier(value.bindingId) ||
+		!isSandboxStatus(value.status) ||
+		!isCanonicalTimestamp(value.timestamp)
+	)
+		return false;
 	if (value.providerId !== undefined && !isSafeIdentifier(value.providerId)) return false;
 	if (value.capabilities !== undefined && !isSandboxCapabilities(value.capabilities)) return false;
 	return value.reasonCode === undefined || isPolicyErrorCode(value.reasonCode);
 }
 
 function isPolicyViolationRecord(value: unknown): value is PolicyViolationLedgerRecord {
-	if (!isRecord(value) || !isSafeIdentifier(value.bindingId) || !isCanonicalTimestamp(value.timestamp) || !isPolicyErrorCode(value.reasonCode)) return false;
+	if (
+		!isRecord(value) ||
+		!isSafeIdentifier(value.bindingId) ||
+		!isCanonicalTimestamp(value.timestamp) ||
+		!isPolicyErrorCode(value.reasonCode)
+	)
+		return false;
 	if (value.resource !== undefined && !isPolicyResource(value.resource)) return false;
 	return value.requestId === undefined || isSafeIdentifier(value.requestId);
-}
-
-function isExternalExecutionRef(value: unknown): value is ExternalExecutionRef {
-	if (!isRecord(value) || !hasOnlyKeys(value, EXTERNAL_REF_KEYS) || !isSafeIdentifier(value.namespace) || !isSafeIdentifier(value.externalSessionId)) return false;
-	return value.externalRunId === undefined || isSafeIdentifier(value.externalRunId);
-}
-
-function isExternalMapping(value: unknown): value is ExternalExecutionMapping {
-	if (!isRecord(value) || !hasOnlyKeys(value, EXTERNAL_MAPPING_KEYS) || !isExternalExecutionRef({
-		namespace: value.namespace,
-		externalSessionId: value.externalSessionId,
-		...(value.externalRunId === undefined ? {} : { externalRunId: value.externalRunId }),
-	})) return false;
-	if (!isSafeIdentifier(value.aosSessionId) || !isCanonicalTimestamp(value.createdAt)) return false;
-	if (value.aosRunId !== undefined && !isSafeIdentifier(value.aosRunId)) return false;
-	if (value.source !== undefined && !isSafeIdentifier(value.source)) return false;
-	if (value.correlationId !== undefined && !isSafeIdentifier(value.correlationId)) return false;
-	return value.adapter === undefined || isExternalAdapterIdentity(value.adapter);
 }
 
 /** Explicit guard for a `model.binding` source record. */
@@ -1439,11 +1559,6 @@ export function isSandboxLifecycleAuditRecord(value: unknown): value is SandboxL
 
 export function isPolicyViolationAuditRecord(value: unknown): value is PolicyViolationLedgerRecord {
 	return isPolicyViolationRecord(value);
-}
-
-/** Explicit guard for the `external.mapping` mapping object. */
-export function isExternalMappingAuditRecord(value: unknown): value is ExternalExecutionMapping {
-	return isExternalMapping(value);
 }
 
 function schemaVersion(value: unknown): number | undefined {
@@ -1498,9 +1613,10 @@ function safeAttempt(
 	value: ModelAttemptLedgerRecord | LegacyAutomationRunModelAttemptSummaryV1,
 ): AuditModelAttemptSummary | undefined {
 	const candidate = value.candidate;
-	const model: AuditModelReference = "modelId" in candidate
-		? safeModelReference(candidate as ModelReference)
-		: { provider: candidate.provider, modelId: candidate.id ?? candidate.modelId ?? "" };
+	const model: AuditModelReference =
+		"modelId" in candidate
+			? safeModelReference(candidate as ModelReference)
+			: { provider: candidate.provider, modelId: candidate.id ?? candidate.modelId ?? "" };
 	if (model.modelId === "") return undefined;
 	const attempt = {
 		attemptId: value.attemptId,
@@ -1563,10 +1679,13 @@ function safePolicySummary(
 		enforcement: value.enforcement,
 		sandboxStatus: "sandboxStatus" in value ? value.sandboxStatus : "not_required",
 		sandboxCapabilities: safePolicyCapabilities(
-		"sandboxCapabilities" in value ? value.sandboxCapabilities : { filesystem: false, process: false, network: false, credentialIsolation: false },
+			"sandboxCapabilities" in value
+				? value.sandboxCapabilities
+				: { filesystem: false, process: false, network: false, credentialIsolation: false },
 		),
 	} as DeepMutable<AuditPolicySummary>;
-	if ("sandboxProviderId" in value && value.sandboxProviderId !== undefined) summary.sandboxProviderId = value.sandboxProviderId;
+	if ("sandboxProviderId" in value && value.sandboxProviderId !== undefined)
+		summary.sandboxProviderId = value.sandboxProviderId;
 	if ("resource" in value && value.resource !== undefined) summary.resource = value.resource;
 	if ("action" in value && value.action !== undefined) summary.action = value.action;
 	if ("outcome" in value && value.outcome !== undefined) summary.outcome = value.outcome;
@@ -1751,23 +1870,6 @@ function safePolicyViolation(value: PolicyViolationLedgerRecord): AuditPolicyVio
 	return violation;
 }
 
-function safeExternalMapping(value: ExternalExecutionMapping): ExternalExecutionMapping {
-	const mapping = {
-		namespace: value.namespace,
-		externalSessionId: value.externalSessionId,
-		aosSessionId: value.aosSessionId,
-		createdAt: value.createdAt,
-	} as DeepMutable<ExternalExecutionMapping>;
-	if (value.externalRunId !== undefined) mapping.externalRunId = value.externalRunId;
-	if (value.aosRunId !== undefined) mapping.aosRunId = value.aosRunId;
-	if (value.source !== undefined) mapping.source = value.source;
-	if (value.correlationId !== undefined) mapping.correlationId = value.correlationId;
-	if (value.adapter !== undefined) {
-		mapping.adapter = serializeExternalAdapterIdentity(value.adapter) as ExternalAdapterIdentity;
-	}
-	return mapping;
-}
-
 function safeTaskGateSummary(value: TaskGateTransition): AuditTaskGateSummary {
 	const gate = value.gate;
 	const summary = {
@@ -1847,7 +1949,17 @@ function safeWorkerLifecycleSummary(value: WorkerLifecycleAuditRecord): AuditWor
 		revision: record.revision,
 		createdAt: record.createdAt,
 	} as DeepMutable<AuditWorkerLifecycleSummary>;
-	for (const key of ["runId", "bindingId", "bindingEpochId", "attemptId", "readyAt", "endedAt", "lastHeartbeatAt", "activeOperationId", "receiptId"] as const) {
+	for (const key of [
+		"runId",
+		"bindingId",
+		"bindingEpochId",
+		"attemptId",
+		"readyAt",
+		"endedAt",
+		"lastHeartbeatAt",
+		"activeOperationId",
+		"receiptId",
+	] as const) {
 		const item = record[key];
 		if (item !== undefined) summary[key] = item;
 	}
@@ -1896,23 +2008,6 @@ function safeSchedulerSummary(value: SchedulerAuditRecord): AuditSchedulerSummar
 		payloadDigest: fingerprintFoundationValue(event.payload),
 		correlation,
 	};
-}
-
-function externalFromMapping(value: ExternalExecutionMapping): ExternalExecutionRef {
-	const external = {
-		namespace: value.namespace,
-		externalSessionId: value.externalSessionId,
-	} as DeepMutable<ExternalExecutionRef>;
-	if (value.externalRunId !== undefined) external.externalRunId = value.externalRunId;
-	return external;
-}
-
-function sameExternalRef(left: ExternalExecutionRef, right: ExternalExecutionRef): boolean {
-	return (
-		left.namespace === right.namespace &&
-		left.externalSessionId === right.externalSessionId &&
-		(left.externalRunId ?? undefined) === (right.externalRunId ?? undefined)
-	);
 }
 
 function isCustomEntry(value: SessionEntry): value is Extract<SessionEntry, { type: "custom" }> {
@@ -1987,9 +2082,7 @@ function failRunProjection(): never {
 	throw new ExecutionAuditError("audit_replay_incomplete");
 }
 
-function parseFoundationRecordEntry(
-	entry: Extract<SessionEntry, { type: "custom" }>,
-): FoundationRecord {
+function parseFoundationRecordEntry(entry: Extract<SessionEntry, { type: "custom" }>): FoundationRecord {
 	const data = entry.data;
 	if (
 		!isRecord(data) ||
@@ -2093,11 +2186,7 @@ function sourceMatchesProvenance(
 	return true;
 }
 
-function sourceBelongsToRunLane(
-	source: FoundationFactSource<unknown>,
-	sessionId: string,
-	laneId: string,
-): boolean {
+function sourceBelongsToRunLane(source: FoundationFactSource<unknown>, sessionId: string, laneId: string): boolean {
 	return (
 		source.record.lane === laneId &&
 		source.record.correlation.sessionId === sessionId &&
@@ -2157,7 +2246,9 @@ function canonicalRunSources(
 		});
 		if (attemptReceipts.length === 0) return failRunProjection();
 		const attempts = attemptReceipts.map(({ value: attemptReceipt }) => {
-			const source = requireFoundationFact(facts, "attempt", attemptReceipt.attemptId, (value) => validateAttempt(value));
+			const source = requireFoundationFact(facts, "attempt", attemptReceipt.attemptId, (value) =>
+				validateAttempt(value),
+			);
 			if (
 				source.value.attemptId !== attemptReceipt.attemptId ||
 				source.value.taskId !== attemptReceipt.taskId ||
@@ -2191,14 +2282,14 @@ function canonicalRunSources(
 		) {
 			return failRunProjection();
 		}
-		const taskResult = receipt.taskResultId === undefined
-			? undefined
-			: requireFoundationFact(facts, "task_result", receipt.taskResultId, (value) => validateTaskResult(value));
+		const taskResult =
+			receipt.taskResultId === undefined
+				? undefined
+				: requireFoundationFact(facts, "task_result", receipt.taskResultId, (value) => validateTaskResult(value));
 		const taskResultCorrelation = taskResult?.value.provenance.correlation;
 		if (
 			taskResult !== undefined &&
-			(
-				taskResult.value.taskResultId !== receipt.taskResultId ||
+			(taskResult.value.taskResultId !== receipt.taskResultId ||
 				taskResult.value.taskId !== taskId ||
 				taskResult.value.provenance.producerKind !== "host" ||
 				!sourceBelongsToRunLane(taskResult, sessionId, sourceLaneId) ||
@@ -2208,8 +2299,7 @@ function canonicalRunSources(
 				taskResultCorrelation.taskResultId !== receipt.taskResultId ||
 				(taskResultCorrelation.runId !== undefined && taskResultCorrelation.runId !== receipt.runId) ||
 				taskResult.value.sourceAttemptReceiptIds.length === 0 ||
-				taskResult.value.sourceAttemptReceiptIds.some((id) => !receipt.attemptReceiptIds.includes(id))
-			)
+				taskResult.value.sourceAttemptReceiptIds.some((id) => !receipt.attemptReceiptIds.includes(id)))
 		) {
 			return failRunProjection();
 		}
@@ -2247,27 +2337,31 @@ function canonicalRunSources(
 			payload: { schemaVersion: 1, runReceiptId: receipt.runReceiptId, runId: receipt.runId },
 		});
 		for (const attempt of attempts) {
-			events.push(createDurableEvent({
-				category: "attempt.started",
-				eventId: `${attempt.record.id}:run:${receipt.runId}`,
-				streamId: sessionId,
-				sequence: attempt.record.seq,
-				timestamp: attempt.value.startedAt,
-				correlation: {
-					sessionId,
-					...(attempt.record.correlation.laneId === undefined ? {} : { laneId: attempt.record.correlation.laneId }),
-					runId: receipt.runId,
-					taskId: attempt.value.taskId,
-					dispatchId: attempt.value.dispatchId,
-					attemptId: attempt.value.attemptId,
-				},
-				payload: {
-					schemaVersion: 1,
-					taskId: attempt.value.taskId,
-					dispatchId: attempt.value.dispatchId,
-					attemptId: attempt.value.attemptId,
-				},
-			}));
+			events.push(
+				createDurableEvent({
+					category: "attempt.started",
+					eventId: `${attempt.record.id}:run:${receipt.runId}`,
+					streamId: sessionId,
+					sequence: attempt.record.seq,
+					timestamp: attempt.value.startedAt,
+					correlation: {
+						sessionId,
+						...(attempt.record.correlation.laneId === undefined
+							? {}
+							: { laneId: attempt.record.correlation.laneId }),
+						runId: receipt.runId,
+						taskId: attempt.value.taskId,
+						dispatchId: attempt.value.dispatchId,
+						attemptId: attempt.value.attemptId,
+					},
+					payload: {
+						schemaVersion: 1,
+						taskId: attempt.value.taskId,
+						dispatchId: attempt.value.dispatchId,
+						attemptId: attempt.value.attemptId,
+					},
+				}),
+			);
 		}
 		results.push({
 			schemaVersion: 1,
@@ -2285,7 +2379,9 @@ function canonicalRunSources(
 	return { results, events, sourcesByRunId };
 }
 
-function legacyRunEntries(entries: ReadonlyArray<SessionEntry>): ReadonlyArray<Extract<SessionEntry, { type: "custom" }>> {
+function legacyRunEntries(
+	entries: ReadonlyArray<SessionEntry>,
+): ReadonlyArray<Extract<SessionEntry, { type: "custom" }>> {
 	const byId = new Map<string, Extract<SessionEntry, { type: "custom" }>>();
 	for (const entry of entries) {
 		if (!isCustomEntry(entry) || entry.customType !== "automation.run") continue;
@@ -2305,7 +2401,8 @@ function legacyRunEntries(entries: ReadonlyArray<SessionEntry>): ReadonlyArray<E
 			const leftKind = isRecord(left.data) ? left.data.kind : undefined;
 			const rightKind = isRecord(right.data) ? right.data.kind : undefined;
 			const leftOrder = leftKind === "accepted" ? 0 : leftKind === "started" ? 1 : leftKind === "terminal" ? 2 : 3;
-			const rightOrder = rightKind === "accepted" ? 0 : rightKind === "started" ? 1 : rightKind === "terminal" ? 2 : 3;
+			const rightOrder =
+				rightKind === "accepted" ? 0 : rightKind === "started" ? 1 : rightKind === "terminal" ? 2 : 3;
 			if (leftOrder !== rightOrder) return leftOrder - rightOrder;
 			return left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id);
 		}
@@ -2331,9 +2428,7 @@ function legacyMigrationSource(
 		entry,
 		fact: decodeLegacyAutomationRunLedgerEntryV1(entry.data),
 	}));
-	const startedRunIds = new Set(
-		decoded.flatMap(({ fact }) => fact.kind === "started" ? [fact.runId] : []),
-	);
+	const startedRunIds = new Set(decoded.flatMap(({ fact }) => (fact.kind === "started" ? [fact.runId] : [])));
 	return decoded
 		.filter(({ fact }) => fact.kind !== "terminal" || startedRunIds.has(fact.receipt.runId))
 		.map(({ entry, fact }, index) => ({ sequence: index + 1, entryId: entry.id, data: fact }));
@@ -2348,7 +2443,11 @@ function projectRunSources(sessionId: string, entries: ReadonlyArray<SessionEntr
 			events: canonicalSources.events,
 		});
 		const legacyEntries = legacyRunEntries(entries);
-		const reconciled = reconcileLegacyAutomationRunLedgerV1(sessionId, legacyMigrationSource(legacyEntries), canonical);
+		const reconciled = reconcileLegacyAutomationRunLedgerV1(
+			sessionId,
+			legacyMigrationSource(legacyEntries),
+			canonical,
+		);
 		const canonicalByRunId = new Map<string, CanonicalAuditRunSource>();
 		for (const projection of canonical) {
 			const source = canonicalSources.sourcesByRunId.get(projection.id);
@@ -2380,8 +2479,6 @@ interface SourceCandidateBase {
 	>;
 	readonly entry: Extract<SessionEntry, { type: "custom" }>;
 	readonly recordedAt: string;
-	readonly external?: ExternalExecutionRef;
-	readonly adapter?: ExternalAdapterIdentity;
 	readonly relation?: Relation;
 }
 
@@ -2424,7 +2521,6 @@ type SourceCandidate =
 	| (SourceCandidateBase & { readonly eventType: "policy.approval"; readonly value: PolicyApprovalLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "sandbox.lifecycle"; readonly value: SandboxLifecycleLedgerRecord })
 	| (SourceCandidateBase & { readonly eventType: "policy.violation"; readonly value: PolicyViolationLedgerRecord })
-	| (SourceCandidateBase & { readonly eventType: "external.mapping"; readonly value: ExternalExecutionMapping })
 	| (SourceCandidateBase & { readonly eventType: "remote.operation"; readonly value: RemoteOperationReceipt })
 	| (SourceCandidateBase & { readonly eventType: "task.gate"; readonly value: TaskGateTransition })
 	| (SourceCandidateBase & { readonly eventType: "task.graph"; readonly value: TaskGraphTransition })
@@ -2441,7 +2537,6 @@ type Relation =
 	| { readonly kind: "policy-binding"; readonly bindingId: string; readonly runId: string }
 	| { readonly kind: "policy"; readonly bindingId: string }
 	| { readonly kind: "context"; readonly runId?: string }
-	| { readonly kind: "external"; readonly runId?: string; readonly sessionId: string }
 	| { readonly kind: "remote-operation"; readonly runId?: string }
 	| { readonly kind: "task-gate"; readonly runId?: string }
 	| { readonly kind: "task-graph"; readonly runId?: string }
@@ -2508,7 +2603,6 @@ function sourceEventType(customType: string): AuditEventType | undefined {
 	if (customType === "policy.approval") return "policy.approval";
 	if (customType === "sandbox.lifecycle") return "sandbox.lifecycle";
 	if (customType === "policy.violation") return "policy.violation";
-	if (customType === "external.mapping") return "external.mapping";
 	if (customType === "remote.operation") return "remote.operation";
 	if (customType === "task.gate") return "task.gate";
 	if (customType === "task.graph") return "task.graph";
@@ -2531,7 +2625,6 @@ function relationRunIds(relation: Relation | undefined, maps: AssociationMaps): 
 	if (relation.kind === "policy-binding") return new Set([relation.runId]);
 	if (
 		relation.kind === "context" ||
-		relation.kind === "external" ||
 		relation.kind === "remote-operation" ||
 		relation.kind === "task-gate" ||
 		relation.kind === "task-graph" ||
@@ -2564,7 +2657,12 @@ function buildAssociationMaps(
 	states: Map<string, RunState>,
 	candidates: ReadonlyArray<SourceCandidate>,
 ): AssociationMaps {
-	const maps: AssociationMaps = { modelBindings: new Map(), capabilities: new Map(), policies: new Map(), workers: new Map() };
+	const maps: AssociationMaps = {
+		modelBindings: new Map(),
+		capabilities: new Map(),
+		policies: new Map(),
+		workers: new Map(),
+	};
 	for (const state of states.values()) {
 		if (state.canonicalSource !== undefined) continue;
 		const record = state.accepted?.record;
@@ -2600,20 +2698,15 @@ function buildAssociationMaps(
 function createBase(
 	sessionId: string,
 	entry: Extract<SessionEntry, { type: "custom" }>,
-	external?: ExternalExecutionRef,
-	adapter?: ExternalAdapterIdentity,
 	recordedAt = entry.timestamp,
 ): AuditEventBase {
-	const base = {
+	return {
 		schemaVersion: 1,
 		eventId: entry.id,
 		recordedAt,
 		sessionId,
 		sourceEntryId: entry.id,
-	} as DeepMutable<AuditEventBase>;
-	if (external !== undefined) base.external = external;
-	if (adapter !== undefined) base.adapter = adapter;
-	return base;
+	};
 }
 
 function runSummaryAt(state: RunState, status: AuditRunEventStatus): AuditRunSummary | undefined {
@@ -2621,9 +2714,17 @@ function runSummaryAt(state: RunState, status: AuditRunEventStatus): AuditRunSum
 		const projection = state.projection;
 		const usage = projection.terminal.usage;
 		if (usage === undefined) return failRunProjection();
-		const summary = projection.migration !== undefined && state.accepted !== undefined
-			? { ...safeRunSummary(state.accepted.record, projection.status, state.terminal?.receipt, projection.endedAt) }
-			: { status: projection.status };
+		const summary =
+			projection.migration !== undefined && state.accepted !== undefined
+				? {
+						...safeRunSummary(
+							state.accepted.record,
+							projection.status,
+							state.terminal?.receipt,
+							projection.endedAt,
+						),
+					}
+				: { status: projection.status };
 		const mutable = summary as DeepMutable<AuditRunSummary>;
 		mutable.status = projection.status;
 		if (projection.startedAt !== undefined) mutable.startedAt = projection.startedAt;
@@ -2633,7 +2734,9 @@ function runSummaryAt(state: RunState, status: AuditRunEventStatus): AuditRunSum
 			mutable.terminalError = {
 				code: projection.terminalError.code,
 				...(projection.terminalError.category === undefined ? {} : { category: projection.terminalError.category }),
-				...(projection.terminalError.retryable === undefined ? {} : { retryable: projection.terminalError.retryable }),
+				...(projection.terminalError.retryable === undefined
+					? {}
+					: { retryable: projection.terminalError.retryable }),
 			};
 		}
 		return mutable;
@@ -2663,10 +2766,7 @@ interface WorkerAuditFold {
 	readonly operations: Map<string, WorkerAuditOperationState>;
 }
 
-function workerCorrelationIsSafe(
-	correlation: Record<string, unknown>,
-	allowed: ReadonlySet<string>,
-	): boolean {
+function workerCorrelationIsSafe(correlation: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
 	if (!hasOnlyKeys(correlation, allowed)) return false;
 	return Object.values(correlation).every((item) => workerString(item));
 }
@@ -2676,7 +2776,16 @@ function workerEnvelope(
 	customType: string,
 	allowedPayload: ReadonlySet<string>,
 	allowedCorrelation: ReadonlySet<string>,
-): { readonly eventId: string; readonly streamId: string; readonly payload: Record<string, unknown>; readonly correlation: Record<string, unknown>; readonly sequence: number; readonly timestamp: string } | undefined {
+):
+	| {
+			readonly eventId: string;
+			readonly streamId: string;
+			readonly payload: Record<string, unknown>;
+			readonly correlation: Record<string, unknown>;
+			readonly sequence: number;
+			readonly timestamp: string;
+	  }
+	| undefined {
 	const data = entry.data;
 	if (
 		!isRecord(data) ||
@@ -2694,7 +2803,8 @@ function workerEnvelope(
 		!workerCorrelationIsSafe(data.correlation, allowedCorrelation) ||
 		!hasOnlyKeys(data.payload, allowedPayload) ||
 		data.payload.schemaVersion !== AUDIT_SCHEMA_VERSION
-	) return undefined;
+	)
+		return undefined;
 	if (data.correlation.sessionId === "") return undefined;
 	return {
 		eventId: data.eventId,
@@ -2720,11 +2830,12 @@ function parseWorkerFact(
 	candidates: SourceCandidate[],
 ): void {
 	const customType = entry.customType;
-	const eventType = customType === WORKER_LIFECYCLE_CUSTOM_TYPE
-		? "worker.lifecycle"
-		: customType === WORKER_OPERATION_CUSTOM_TYPE
-			? "worker.operation"
-			: "worker.receipt";
+	const eventType =
+		customType === WORKER_LIFECYCLE_CUSTOM_TYPE
+			? "worker.lifecycle"
+			: customType === WORKER_OPERATION_CUSTOM_TYPE
+				? "worker.operation"
+				: "worker.receipt";
 	const version = schemaVersion(entry.data);
 	if (version === undefined) {
 		internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, undefined, undefined, true));
@@ -2762,47 +2873,55 @@ function parseWorkerFact(
 		const operationId = payload.operationId;
 		const previousLifecycle = fold.lastLifecycleEnvelopeByWorker.get(record?.workerId ?? "");
 		const isExecutionTerminal = ["completed", "failed", "cancelled", "lost"].includes(record?.status ?? "");
-		const lifecycleTimeValid = record === undefined
-			? false
-			: record.status === "starting"
-				? timestamp >= record.createdAt
-				: record.status === "ready"
-					? record.readyAt !== undefined && timestamp === record.readyAt
-					: isExecutionTerminal
-						? record.endedAt !== undefined && timestamp === record.endedAt
-						: true;
+		const lifecycleTimeValid =
+			record === undefined
+				? false
+				: record.status === "starting"
+					? timestamp >= record.createdAt
+					: record.status === "ready"
+						? record.readyAt !== undefined && timestamp === record.readyAt
+						: isExecutionTerminal
+							? record.endedAt !== undefined && timestamp === record.endedAt
+							: true;
 		const previous = record === undefined ? undefined : fold.currentByWorker.get(record.workerId);
 		const expectedReadyAt = previous?.readyAt ?? (record?.status === "ready" ? timestamp : undefined);
 		const expectedEndedAt = previous?.endedAt ?? (isExecutionTerminal ? timestamp : undefined);
 		const transitionReceiptId = workerString(correlation.receiptId) ? correlation.receiptId : undefined;
 		const expectedReceiptId = transitionReceiptId ?? previous?.receiptId;
-		const expectedActiveOperationId = record?.status === "running"
-			? operationId
-			: record?.status === "cancelling"
-				? previous?.activeOperationId
-				: undefined;
-		const transitionOperationValid = record?.status === "running"
-			? operationId !== undefined && operationId === record.activeOperationId
-			: record?.status === "cancelling" || isExecutionTerminal
-				? operationId === previous?.activeOperationId
-				: operationId === undefined;
-		const transitionReceiptValid = record?.status === "completed" || record?.status === "cancelled"
-			? transitionReceiptId !== undefined
-			: record?.status === "lost" || !isExecutionTerminal
-				? transitionReceiptId === undefined
-				: true;
-		const heartbeatValid = record === undefined
-			? false
-			: previous === undefined
-				? record.lastHeartbeatAt === undefined ||
-					(previousLifecycle === undefined || record.lastHeartbeatAt >= previousLifecycle.timestamp)
-				: previous.lastHeartbeatAt === undefined
+		const expectedActiveOperationId =
+			record?.status === "running"
+				? operationId
+				: record?.status === "cancelling"
+					? previous?.activeOperationId
+					: undefined;
+		const transitionOperationValid =
+			record?.status === "running"
+				? operationId !== undefined && operationId === record.activeOperationId
+				: record?.status === "cancelling" || isExecutionTerminal
+					? operationId === previous?.activeOperationId
+					: operationId === undefined;
+		const transitionReceiptValid =
+			record?.status === "completed" || record?.status === "cancelled"
+				? transitionReceiptId !== undefined
+				: record?.status === "lost" || !isExecutionTerminal
+					? transitionReceiptId === undefined
+					: true;
+		const heartbeatValid =
+			record === undefined
+				? false
+				: previous === undefined
 					? record.lastHeartbeatAt === undefined ||
-						(previousLifecycle === undefined || record.lastHeartbeatAt >= previousLifecycle.timestamp)
-					: record.lastHeartbeatAt !== undefined &&
-						record.lastHeartbeatAt >= previous.lastHeartbeatAt &&
-						(record.lastHeartbeatAt === previous.lastHeartbeatAt ||
-							previousLifecycle === undefined || record.lastHeartbeatAt >= previousLifecycle.timestamp);
+						previousLifecycle === undefined ||
+						record.lastHeartbeatAt >= previousLifecycle.timestamp
+					: previous.lastHeartbeatAt === undefined
+						? record.lastHeartbeatAt === undefined ||
+							previousLifecycle === undefined ||
+							record.lastHeartbeatAt >= previousLifecycle.timestamp
+						: record.lastHeartbeatAt !== undefined &&
+							record.lastHeartbeatAt >= previous.lastHeartbeatAt &&
+							(record.lastHeartbeatAt === previous.lastHeartbeatAt ||
+								previousLifecycle === undefined ||
+								record.lastHeartbeatAt >= previousLifecycle.timestamp);
 		if (
 			record === undefined ||
 			(operationId !== undefined && !workerString(operationId)) ||
@@ -2885,40 +3004,69 @@ function parseWorkerFact(
 			operationId: String(payload.operationId),
 			phase: phase as WorkerOperationAuditRecord["phase"],
 			revision: sequence,
-			...(sideEffectState === undefined ? {} : { sideEffectState: sideEffectState as WorkerOperationAuditRecord["sideEffectState"] }),
+			...(sideEffectState === undefined
+				? {}
+				: { sideEffectState: sideEffectState as WorkerOperationAuditRecord["sideEffectState"] }),
 			...(receiptId === undefined ? {} : { receiptId: String(receiptId) }),
 		};
 		const lifecycle = fold.lifecycleByRevision.get(`${value.workerId}:${value.revision}`);
 		const record = lifecycle?.record;
 		const operationState = fold.operations.get(`${value.workerId}:${value.operationId}`);
 		const validPhase = phase === "claimed" || phase === "started" || phase === "terminal";
-		const phaseValid = phase === "claimed"
-			? record?.status === "ready" && lifecycle?.operationId === undefined && operationState === undefined
-			: phase === "started"
-				? record?.status === "running" && lifecycle?.operationId === value.operationId &&
-					record.activeOperationId === value.operationId && operationState?.startedRevision === undefined &&
-					operationState?.terminalRevision === undefined
-				: record !== undefined && ["completed", "failed", "cancelled", "lost"].includes(record.status) &&
-					lifecycle?.operationId === value.operationId && record.activeOperationId === undefined &&
-					operationState?.startedRevision !== undefined && operationState.terminalRevision === undefined;
-		const sideEffectStateValid = sideEffectState === undefined || sideEffectState === "none" ||
-			sideEffectState === "unknown" || sideEffectState === "side_effect_unknown";
-		const operationFactsValid = phase === "claimed" || phase === "started"
-			? sideEffectState === undefined && receiptId === undefined && correlation.receiptId === undefined
-			: record?.status === "completed" || record?.status === "cancelled"
-				? sideEffectState === "none" && receiptId === record.receiptId && correlation.receiptId === record.receiptId
-				: record?.status === "lost"
-					? sideEffectState === "side_effect_unknown" && receiptId === undefined && correlation.receiptId === undefined
-					: record?.status === "failed" && sideEffectState !== undefined &&
-						receiptId === record.receiptId && correlation.receiptId === record.receiptId;
+		const phaseValid =
+			phase === "claimed"
+				? record?.status === "ready" && lifecycle?.operationId === undefined && operationState === undefined
+				: phase === "started"
+					? record?.status === "running" &&
+						lifecycle?.operationId === value.operationId &&
+						record.activeOperationId === value.operationId &&
+						operationState?.startedRevision === undefined &&
+						operationState?.terminalRevision === undefined
+					: record !== undefined &&
+						["completed", "failed", "cancelled", "lost"].includes(record.status) &&
+						lifecycle?.operationId === value.operationId &&
+						record.activeOperationId === undefined &&
+						operationState?.startedRevision !== undefined &&
+						operationState.terminalRevision === undefined;
+		const sideEffectStateValid =
+			sideEffectState === undefined ||
+			sideEffectState === "none" ||
+			sideEffectState === "unknown" ||
+			sideEffectState === "side_effect_unknown";
+		const operationFactsValid =
+			phase === "claimed" || phase === "started"
+				? sideEffectState === undefined && receiptId === undefined && correlation.receiptId === undefined
+				: record?.status === "completed" || record?.status === "cancelled"
+					? sideEffectState === "none" &&
+						receiptId === record.receiptId &&
+						correlation.receiptId === record.receiptId
+					: record?.status === "lost"
+						? sideEffectState === "side_effect_unknown" &&
+							receiptId === undefined &&
+							correlation.receiptId === undefined
+						: record?.status === "failed" &&
+							sideEffectState !== undefined &&
+							receiptId === record.receiptId &&
+							correlation.receiptId === record.receiptId;
 		if (
-			!validPhase || !phaseValid || !workerString(value.workerId) || !workerString(value.providerId) ||
-			!workerString(value.sessionId) || value.sessionId !== sessionId || !workerString(value.laneId) ||
-			!workerString(value.operationId) || !isCount(value.revision) ||
-			!sideEffectStateValid || !operationFactsValid ||
+			!validPhase ||
+			!phaseValid ||
+			!workerString(value.workerId) ||
+			!workerString(value.providerId) ||
+			!workerString(value.sessionId) ||
+			value.sessionId !== sessionId ||
+			!workerString(value.laneId) ||
+			!workerString(value.operationId) ||
+			!isCount(value.revision) ||
+			!sideEffectStateValid ||
+			!operationFactsValid ||
 			(payload.receiptId !== undefined && !workerString(payload.receiptId)) ||
-			value.providerId !== record?.providerId || value.sessionId !== record?.sessionId || value.laneId !== record?.laneId ||
-			correlation.sessionId !== value.sessionId || correlation.laneId !== value.laneId || correlation.workerId !== value.workerId ||
+			value.providerId !== record?.providerId ||
+			value.sessionId !== record?.sessionId ||
+			value.laneId !== record?.laneId ||
+			correlation.sessionId !== value.sessionId ||
+			correlation.laneId !== value.laneId ||
+			correlation.workerId !== value.workerId ||
 			correlation.operationId !== value.operationId ||
 			envelope.eventId !== `worker-operation:${value.workerId}:${value.revision}` ||
 			envelope.streamId !== `worker-operation:${value.workerId}:${value.operationId}` ||
@@ -2929,16 +3077,25 @@ function parseWorkerFact(
 			return;
 		}
 		const key = `${value.workerId}:${value.operationId}`;
-		fold.operations.set(key, phase === "claimed"
-			? { workerId: value.workerId, operationId: value.operationId, claimedRevision: value.revision }
-			: phase === "started"
-				? { ...operationState!, startedRevision: value.revision }
-				: {
-					...operationState!,
-					terminalRevision: value.revision,
-					...(value.receiptId === undefined ? {} : { terminalReceiptId: value.receiptId }),
-				});
-		candidates.push({ eventType, entry, recordedAt: timestamp, value, relation: { kind: "worker", workerId: value.workerId } });
+		fold.operations.set(
+			key,
+			phase === "claimed"
+				? { workerId: value.workerId, operationId: value.operationId, claimedRevision: value.revision }
+				: phase === "started"
+					? { ...operationState!, startedRevision: value.revision }
+					: {
+							...operationState!,
+							terminalRevision: value.revision,
+							...(value.receiptId === undefined ? {} : { terminalReceiptId: value.receiptId }),
+						},
+		);
+		candidates.push({
+			eventType,
+			entry,
+			recordedAt: timestamp,
+			value,
+			relation: { kind: "worker", workerId: value.workerId },
+		});
 		return;
 	}
 	const streamId = isRecord(entry.data) && typeof entry.data.streamId === "string" ? entry.data.streamId : "";
@@ -2952,13 +3109,18 @@ function parseWorkerFact(
 	};
 	const operationState = fold.operations.get(`${workerId}:${value.operationId}`);
 	if (
-		!workerString(workerId) || !workerString(value.workerReceiptId) || !workerString(value.operationId) ||
-		(value.taskId !== undefined && !workerString(value.taskId)) || operationState?.terminalRevision !== value.terminalRecordRevision ||
+		!workerString(workerId) ||
+		!workerString(value.workerReceiptId) ||
+		!workerString(value.operationId) ||
+		(value.taskId !== undefined && !workerString(value.taskId)) ||
+		operationState?.terminalRevision !== value.terminalRecordRevision ||
 		operationState?.terminalReceiptId !== value.workerReceiptId ||
 		envelope.eventId !== `worker-receipt:${value.workerReceiptId}` ||
 		envelope.streamId !== `worker-receipts:${workerId}` ||
-		correlation.sessionId !== sessionId || correlation.operationId !== value.operationId ||
-		correlation.workerReceiptId !== value.workerReceiptId || correlation.taskId !== value.taskId
+		correlation.sessionId !== sessionId ||
+		correlation.operationId !== value.operationId ||
+		correlation.workerReceiptId !== value.workerReceiptId ||
+		correlation.taskId !== value.taskId
 	) {
 		internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
 		return;
@@ -2987,7 +3149,12 @@ function parseSchedulerFact(
 		return;
 	}
 	const parsed = validateDurableEvent(entry.data);
-	if (!parsed.ok || parsed.value.class !== "durable" || parsed.value.category !== entry.customType || !(SCHEDULER_DURABLE_EVENT_CATEGORIES as readonly string[]).includes(parsed.value.category)) {
+	if (
+		!parsed.ok ||
+		parsed.value.class !== "durable" ||
+		parsed.value.category !== entry.customType ||
+		!(SCHEDULER_DURABLE_EVENT_CATEGORIES as readonly string[]).includes(parsed.value.category)
+	) {
 		malformed();
 		return;
 	}
@@ -3153,23 +3320,6 @@ function parseSourceCandidate(
 				value,
 				relation: { kind: "policy", bindingId: value.bindingId },
 			};
-	} else if (eventType === "external.mapping") {
-		const value = data.mapping ?? data.record;
-		if (isExternalMappingAuditRecord(value)) {
-			if (value.aosSessionId !== sessionId) {
-				internalWarnings.push(warning(sessionId, "orphan_source", entry, eventType, version, undefined, false));
-				return;
-			}
-			candidate = {
-				eventType,
-				entry,
-				recordedAt: entry.timestamp,
-				value,
-				external: externalFromMapping(value),
-				...(value.adapter === undefined ? {} : { adapter: value.adapter }),
-				relation: { kind: "external", runId: value.aosRunId, sessionId: value.aosSessionId },
-			};
-		}
 	} else if (eventType === "remote.operation") {
 		const value = data.receipt ?? data.operation ?? data;
 		if (isRemoteOperationReceipt(value)) {
@@ -3193,7 +3343,6 @@ function parseSourceCandidate(
 				entry,
 				recordedAt: entry.timestamp,
 				value,
-				...(value.adapter === undefined ? {} : { adapter: value.adapter }),
 				relation: { kind: "remote-operation", runId: relationRunId },
 			};
 		}
@@ -3259,7 +3408,15 @@ function parseTaskGateFact(
 ): void {
 	if (!isCanonicalTimestamp(entry.timestamp) || !isSafeIdentifier(entry.id)) {
 		internalWarnings.push(
-			warning(sessionId, "malformed_source", entry, "task.gate", taskGateSchemaVersion(entry.data), undefined, false),
+			warning(
+				sessionId,
+				"malformed_source",
+				entry,
+				"task.gate",
+				taskGateSchemaVersion(entry.data),
+				undefined,
+				false,
+			),
 		);
 		return;
 	}
@@ -3394,9 +3551,7 @@ function sameTaskGraphNodeDefinition(left: TaskGraphNodeRecord, right: TaskGraph
 		if (left.dependsOn[index] !== right.dependsOn[index]) return false;
 	}
 	if (left.gateRef === undefined || right.gateRef === undefined) return left.gateRef === right.gateRef;
-	return (
-		left.gateRef.stageId === right.gateRef.stageId && left.gateRef.stageRevision === right.gateRef.stageRevision
-	);
+	return left.gateRef.stageId === right.gateRef.stageId && left.gateRef.stageRevision === right.gateRef.stageRevision;
 }
 
 /**
@@ -3417,7 +3572,15 @@ function parseTaskGraphFact(
 ): void {
 	if (!isCanonicalTimestamp(entry.timestamp) || !isSafeIdentifier(entry.id)) {
 		internalWarnings.push(
-			warning(sessionId, "malformed_source", entry, "task.graph", taskGraphSchemaVersion(entry.data), undefined, false),
+			warning(
+				sessionId,
+				"malformed_source",
+				entry,
+				"task.graph",
+				taskGraphSchemaVersion(entry.data),
+				undefined,
+				false,
+			),
 		);
 		return;
 	}
@@ -3506,7 +3669,9 @@ function parseTaskGraphFact(
 		}
 		for (const other of nodes.values()) {
 			if (other.runRef?.runId === node.runRef.runId) {
-				internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.graph", version, undefined, false));
+				internalWarnings.push(
+					warning(sessionId, "duplicate_source", entry, "task.graph", version, undefined, false),
+				);
 				return;
 			}
 		}
@@ -3564,10 +3729,7 @@ interface TaskCredentialAuditFold {
 }
 
 /** Idempotency operation per persisted action; mirrors the store fold's key derivation. */
-function taskCredentialIdempotencyKey(
-	action: TaskCredentialPersistedAction,
-	clientRequestId: string,
-): string {
+function taskCredentialIdempotencyKey(action: TaskCredentialPersistedAction, clientRequestId: string): string {
 	const operation =
 		action === "issued"
 			? "issue"
@@ -3690,23 +3852,31 @@ function parseTaskCredentialFact(
 	}
 	const version = schemaVersion(entry.data);
 	if (version === undefined) {
-		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", undefined, undefined, false));
+		internalWarnings.push(
+			warning(sessionId, "malformed_source", entry, "task.credential", undefined, undefined, false),
+		);
 		return;
 	}
 	if (version !== TASK_CREDENTIAL_SCHEMA_VERSION) {
-		internalWarnings.push(warning(sessionId, "unsupported_schema", entry, "task.credential", version, undefined, false));
+		internalWarnings.push(
+			warning(sessionId, "unsupported_schema", entry, "task.credential", version, undefined, false),
+		);
 		return;
 	}
 	// Explicit forbidden-key guard: material / environment / path / provider
 	// keys are rejected before the exact-shape serializer guard runs, so they
 	// can never surface in an event or warning either way.
 	if (isRecord(entry.data) && hasForbiddenTaskCredentialKey(entry.data)) {
-		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+		internalWarnings.push(
+			warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false),
+		);
 		return;
 	}
 	const transition = parseTaskCredentialTransition(entry.data);
 	if (transition === undefined) {
-		internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+		internalWarnings.push(
+			warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false),
+		);
 		return;
 	}
 	const grant = transition.grant;
@@ -3719,60 +3889,79 @@ function parseTaskCredentialFact(
 	const existing = fold.byIdempotency.get(key);
 	if (existing !== undefined) {
 		if (existing !== canonical) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			internalWarnings.push(
+				warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false),
+			);
 		}
 		return;
 	}
 	const current = fold.byLeaseId.get(transition.leaseId);
 	if (transition.action === "issued") {
 		if (current !== undefined) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			internalWarnings.push(
+				warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false),
+			);
 			return;
 		}
 		const bindingOwner = fold.byBindingId.get(transition.bindingId);
 		if (bindingOwner !== undefined && bindingOwner !== transition.leaseId) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			internalWarnings.push(
+				warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false),
+			);
 			return;
 		}
 		const grantOwner = fold.byGrantId.get(transition.grantId);
 		if (grantOwner !== undefined && grantOwner !== transition.leaseId) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			internalWarnings.push(
+				warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false),
+			);
 			return;
 		}
 	} else {
 		if (current === undefined) {
-			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+			internalWarnings.push(
+				warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false),
+			);
 			return;
 		}
-		if (
-			transition.previousRevision !== current.revision ||
-			transition.grant.revision !== current.revision + 1
-		) {
-			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+		if (transition.previousRevision !== current.revision || transition.grant.revision !== current.revision + 1) {
+			internalWarnings.push(
+				warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false),
+			);
 			return;
 		}
 		if (!sameTaskCredentialLeaseIdentity(current, transition.grant)) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			internalWarnings.push(
+				warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false),
+			);
 			return;
 		}
 		if (transition.action === "renewed") {
 			if (transition.grant.heartbeatSequence !== current.heartbeatSequence + 1) {
-				internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+				internalWarnings.push(
+					warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false),
+				);
 				return;
 			}
 		} else if (transition.grant.heartbeatSequence !== current.heartbeatSequence) {
-			internalWarnings.push(warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false));
+			internalWarnings.push(
+				warning(sessionId, "malformed_source", entry, "task.credential", version, undefined, false),
+			);
 			return;
 		}
 		// A persisted `revoked` entry after `revocation_unknown` is trusted as
 		// provider-confirmed: the store only writes it after a confirmed
 		// provider revoke, and it converges to the safer status.
 		if (!isLegalTaskCredentialTransition(current.status, transition.action)) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			internalWarnings.push(
+				warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false),
+			);
 			return;
 		}
 		if (transition.grant.status !== EXPECTED_TASK_CREDENTIAL_STATUS[transition.action]) {
-			internalWarnings.push(warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false));
+			internalWarnings.push(
+				warning(sessionId, "duplicate_source", entry, "task.credential", version, undefined, false),
+			);
 			return;
 		}
 	}
@@ -3788,7 +3977,6 @@ function parseTaskCredentialFact(
 		relation: { kind: "task-credential", runId: grant.runId },
 	});
 }
-
 
 function parseRunFact(
 	sessionId: string,
@@ -3889,16 +4077,11 @@ function parseRunFact(
 	facts.push(fact);
 }
 
-function runEventForFact(
-	sessionId: string,
-	fact: RunFact,
-	state: RunState,
-	external?: ExternalExecutionRef,
-): AuditEvent | undefined {
+function runEventForFact(sessionId: string, fact: RunFact, state: RunState): AuditEvent | undefined {
 	if (state.canonicalSource !== undefined) return undefined;
 	if (fact.kind === "accepted") {
 		const summary = safeRunSummary(fact.record, "accepted");
-		return { ...createBase(sessionId, fact.entry, external), type: "run.accepted", runId: fact.record.id, summary };
+		return { ...createBase(sessionId, fact.entry), type: "run.accepted", runId: fact.record.id, summary };
 	}
 	if (state.accepted === undefined) return undefined;
 	if (fact.kind === "started") {
@@ -3906,7 +4089,7 @@ function runEventForFact(
 			...safeRunSummary(state.accepted.record, "running", undefined, undefined),
 		} as DeepMutable<AuditRunSummary>;
 		if (summary.startedAt === undefined) summary.startedAt = fact.startedAt;
-		return { ...createBase(sessionId, fact.entry, external), type: "run.started", runId: fact.runId, summary };
+		return { ...createBase(sessionId, fact.entry), type: "run.started", runId: fact.runId, summary };
 	}
 	const status = fact.receipt.status;
 	const summary = {
@@ -3914,16 +4097,16 @@ function runEventForFact(
 	} as DeepMutable<AuditRunSummary>;
 	if (summary.startedAt === undefined && state.started !== undefined) summary.startedAt = state.started.startedAt;
 	const type = status === "completed" ? "run.completed" : status === "failed" ? "run.failed" : "run.cancelled";
-	return { ...createBase(sessionId, fact.entry, external), type, runId: fact.receipt.runId, summary };
+	return { ...createBase(sessionId, fact.entry), type, runId: fact.receipt.runId, summary };
 }
 
-function interruptedEvent(sessionId: string, state: RunState, external?: ExternalExecutionRef): AuditEvent | undefined {
+function interruptedEvent(sessionId: string, state: RunState): AuditEvent | undefined {
 	if (state.accepted === undefined || state.terminal !== undefined || state.projection !== undefined) return undefined;
 	const source = state.started ?? state.accepted;
 	const summary = runSummaryAt(state, "interrupted");
 	if (summary === undefined) return undefined;
 	return {
-		...createBase(sessionId, source.entry, external),
+		...createBase(sessionId, source.entry),
 		eventId: `${source.entry.id}:interrupted`,
 		type: "run.interrupted",
 		runId: state.runId,
@@ -3931,41 +4114,40 @@ function interruptedEvent(sessionId: string, state: RunState, external?: Externa
 	};
 }
 
-function canonicalRunEvents(
-	sessionId: string,
-	state: RunState,
-	external?: ExternalExecutionRef,
-): ReadonlyArray<AuditEvent> {
+function canonicalRunEvents(sessionId: string, state: RunState): ReadonlyArray<AuditEvent> {
 	const source = state.canonicalSource;
 	if (source === undefined) return [];
 	const accepted: AuditEvent = {
-		...createBase(sessionId, source.task.entry, external, undefined, foundationTimestamp(source.task.record)),
+		...createBase(sessionId, source.task.entry, foundationTimestamp(source.task.record)),
 		eventId: `${source.task.record.id}:run:${state.runId}`,
 		sourceEntryId: source.task.record.id,
 		type: "run.accepted",
 		runId: state.runId,
 		summary: { status: "accepted" },
 	};
-	const started = source.attempts.map((attempt): AuditEvent => ({
-		...createBase(sessionId, attempt.entry, external, undefined, attempt.value.startedAt),
-		eventId: `${attempt.record.id}:run:${state.runId}`,
-		sourceEntryId: attempt.record.id,
-		type: "run.started",
-		runId: state.runId,
-		summary: {
-			status: "running",
-			startedAt: source.projection.startedAt ?? attempt.value.startedAt,
-		},
-	}));
+	const started = source.attempts.map(
+		(attempt): AuditEvent => ({
+			...createBase(sessionId, attempt.entry, attempt.value.startedAt),
+			eventId: `${attempt.record.id}:run:${state.runId}`,
+			sourceEntryId: attempt.record.id,
+			type: "run.started",
+			runId: state.runId,
+			summary: {
+				status: "running",
+				startedAt: source.projection.startedAt ?? attempt.value.startedAt,
+			},
+		}),
+	);
 	const summary = runSummaryAt(state, source.projection.status);
 	if (summary === undefined) return failRunProjection();
-	const terminalType = source.projection.status === "completed"
-		? "run.completed"
-		: source.projection.status === "failed"
-			? "run.failed"
-			: "run.cancelled";
+	const terminalType =
+		source.projection.status === "completed"
+			? "run.completed"
+			: source.projection.status === "failed"
+				? "run.failed"
+				: "run.cancelled";
 	const terminal: AuditEvent = {
-		...createBase(sessionId, source.terminal.entry, external, undefined, foundationTimestamp(source.terminal.record)),
+		...createBase(sessionId, source.terminal.entry, foundationTimestamp(source.terminal.record)),
 		eventId: source.terminal.record.id,
 		sourceEntryId: source.terminal.record.id,
 		type: terminalType,
@@ -3979,16 +4161,19 @@ function sourceEventForCandidate(
 	sessionId: string,
 	candidate: SourceCandidate,
 	runId: string | undefined,
-	external?: ExternalExecutionRef,
 ): AuditEvent | undefined {
-	const base = createBase(sessionId, candidate.entry, candidate.external ?? external, candidate.adapter, candidate.recordedAt);
+	const base = createBase(sessionId, candidate.entry, candidate.recordedAt);
 	if (candidate.eventType === "model.binding") {
 		const summary = safeModelBinding(candidate.value);
-		return summary === undefined ? undefined : { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
+		return summary === undefined
+			? undefined
+			: { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
 	}
 	if (candidate.eventType === "model.attempt") {
 		const summary = safeAttempt(candidate.value);
-		return summary === undefined ? undefined : { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
+		return summary === undefined
+			? undefined
+			: { ...base, type: candidate.eventType, ...(runId === undefined ? {} : { runId }), summary };
 	}
 	if (candidate.eventType === "context.snapshot") {
 		const summary = safeContextSnapshot(candidate.value);
@@ -4104,12 +4289,7 @@ function sourceEventForCandidate(
 			summary: safeSchedulerSummary(candidate.value),
 		};
 	}
-	return {
-		...base,
-		type: candidate.eventType,
-		...(runId === undefined ? {} : { runId }),
-		summary: safeExternalMapping(candidate.value),
-	};
+	return undefined;
 }
 
 function safeModelBinding(value: ModelBindingLedgerRecord): AuditModelBindingSummary {
@@ -4218,124 +4398,19 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 		else parseSourceCandidate(sessionId, entry, internalWarnings, candidates);
 	}
 	const maps = buildAssociationMaps(states, candidates);
-	const externalByRun = new Map<string, ExternalExecutionRef>();
-	const conflictedRunIds = new Set<string>();
-	for (const state of states.values()) {
-		if (state.canonicalSource !== undefined) continue;
-		const refs = [state.accepted?.record.external, state.terminal?.receipt.external].filter(
-			(ref): ref is ExternalExecutionRef => ref !== undefined,
-		);
-		for (const external of refs) {
-			const previous = externalByRun.get(state.runId);
-			if (previous !== undefined && !sameExternalRef(previous, external)) conflictedRunIds.add(state.runId);
-			else if (previous === undefined) externalByRun.set(state.runId, external);
-		}
-	}
-	const externalTargets = new Map<string, string>();
-	const aosTargets = new Map<string, string>();
-	const mappingsByExternalKey = new Map<string, ExternalExecutionMapping>();
-	const mappingsByAosKey = new Map<string, ExternalExecutionMapping>();
-	const conflictedExternalKeys = new Set<string>();
-	const conflictedAosKeys = new Set<string>();
-	const markMappingRun = (mapping: ExternalExecutionMapping): void => {
-		if (mapping.aosRunId !== undefined && mapping.aosSessionId === sessionId) conflictedRunIds.add(mapping.aosRunId);
-	};
-	for (const candidate of candidates) {
-		if (candidate.eventType === "external.mapping") {
-			const mapping = candidate.value;
-			const externalKey = `${mapping.namespace}\u0000${mapping.externalSessionId}\u0000${mapping.externalRunId ?? "<absent>"}`;
-			const targetKey = `${mapping.namespace}\u0000${mapping.aosSessionId}\u0000${mapping.aosRunId ?? "<absent>"}`;
-			const previousTarget = externalTargets.get(externalKey);
-			const previousExternal = aosTargets.get(targetKey);
-			const previousMapping = mappingsByExternalKey.get(externalKey);
-			const previousAosMapping = mappingsByAosKey.get(targetKey);
-			const adapterDrift =
-				previousMapping !== undefined &&
-				previousMapping.adapter !== undefined &&
-				mapping.adapter !== undefined &&
-				!sameExternalAdapterIdentity(previousMapping.adapter, mapping.adapter);
-			const hasConflict =
-				(previousTarget !== undefined && previousTarget !== targetKey) ||
-				(previousExternal !== undefined && previousExternal !== externalKey) ||
-				adapterDrift ||
-				conflictedExternalKeys.has(externalKey) ||
-				conflictedAosKeys.has(targetKey);
-			if (hasConflict) {
-				const relatedRunIds = new Set<string>();
-				if (mapping.aosRunId !== undefined) relatedRunIds.add(mapping.aosRunId);
-				if (previousMapping?.aosRunId !== undefined) relatedRunIds.add(previousMapping.aosRunId);
-				if (previousAosMapping?.aosRunId !== undefined) relatedRunIds.add(previousAosMapping.aosRunId);
-				conflictedExternalKeys.add(externalKey);
-				conflictedAosKeys.add(targetKey);
-				if (previousMapping !== undefined) {
-					conflictedAosKeys.add(
-						`${previousMapping.namespace}\u0000${previousMapping.aosSessionId}\u0000${previousMapping.aosRunId ?? "<absent>"}`,
-					);
-					markMappingRun(previousMapping);
-				}
-				if (previousAosMapping !== undefined) {
-					conflictedExternalKeys.add(
-						`${previousAosMapping.namespace}\u0000${previousAosMapping.externalSessionId}\u0000${previousAosMapping.externalRunId ?? "<absent>"}`,
-					);
-					markMappingRun(previousAosMapping);
-				}
-				markMappingRun(mapping);
-				internalWarnings.push(
-					warning(
-						sessionId,
-						"mapping_conflict",
-						candidate.entry,
-						candidate.eventType,
-						schemaVersion(candidate.entry.data),
-						relatedRunIds.size === 0 ? undefined : relatedRunIds,
-						false,
-					),
-				);
-			}
-			if (previousTarget === undefined) {
-				externalTargets.set(externalKey, targetKey);
-				mappingsByExternalKey.set(externalKey, mapping);
-			}
-			if (previousExternal === undefined) {
-				aosTargets.set(targetKey, externalKey);
-				mappingsByAosKey.set(targetKey, mapping);
-			}
-			if (!hasConflict && mapping.aosRunId !== undefined) {
-				const external = externalFromMapping(mapping);
-				const previous = externalByRun.get(mapping.aosRunId);
-				if (previous !== undefined && !sameExternalRef(previous, external)) {
-					conflictedRunIds.add(mapping.aosRunId);
-					internalWarnings.push(
-						warning(
-							sessionId,
-							"mapping_conflict",
-							candidate.entry,
-							candidate.eventType,
-							schemaVersion(candidate.entry.data),
-							new Set([mapping.aosRunId]),
-							false,
-						),
-					);
-				} else if (previous === undefined) {
-					externalByRun.set(mapping.aosRunId, external);
-				}
-			}
-		}
-	}
 	const events: AuditEvent[] = [];
 	for (const fact of facts) {
-		const runId = fact.kind === "accepted" ? fact.record.id : fact.kind === "started" ? fact.runId : fact.receipt.runId;
+		const runId =
+			fact.kind === "accepted" ? fact.record.id : fact.kind === "started" ? fact.runId : fact.receipt.runId;
 		const state = states.get(runId);
 		if (state === undefined) continue;
-		const external = conflictedRunIds.has(runId) ? undefined : externalByRun.get(runId);
-		const event = runEventForFact(sessionId, fact, state, external);
+		const event = runEventForFact(sessionId, fact, state);
 		if (event !== undefined) events.push(event);
 	}
 	for (const state of states.values()) {
-		const external = conflictedRunIds.has(state.runId) ? undefined : externalByRun.get(state.runId);
-		const event = interruptedEvent(sessionId, state, external);
+		const event = interruptedEvent(sessionId, state);
 		if (event !== undefined) events.push(event);
-		events.push(...canonicalRunEvents(sessionId, state, external));
+		events.push(...canonicalRunEvents(sessionId, state));
 	}
 	for (const candidate of candidates) {
 		const runIds = relationRunIds(candidate.relation, maps);
@@ -4372,10 +4447,9 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 		const directRunId =
 			candidate.relation?.kind === "policy-binding" ||
 			candidate.relation?.kind === "context" ||
-			candidate.relation?.kind === "external" ||
-				candidate.relation?.kind === "remote-operation" ||
-				candidate.relation?.kind === "worker" ||
-				candidate.relation?.kind === "scheduler"
+			candidate.relation?.kind === "remote-operation" ||
+			candidate.relation?.kind === "worker" ||
+			candidate.relation?.kind === "scheduler"
 				? candidate.relation.runId
 				: undefined;
 		if (directRunId !== undefined && !states.has(directRunId)) {
@@ -4391,24 +4465,10 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 				),
 			);
 		}
-		if (candidate.relation?.kind === "external" && candidate.relation.sessionId !== sessionId) {
-			internalWarnings.push(
-				warning(
-					sessionId,
-					"orphan_source",
-					candidate.entry,
-					candidate.eventType,
-					schemaVersion(candidate.entry.data),
-					ids,
-					false,
-				),
-			);
-		}
 		const runId =
 			ids !== undefined && ids.size === 1
 				? [...ids][0]
 				: candidate.relation?.kind === "context" ||
-						candidate.relation?.kind === "external" ||
 						candidate.relation?.kind === "remote-operation" ||
 						candidate.relation?.kind === "worker" ||
 						candidate.relation?.kind === "task-gate" ||
@@ -4417,8 +4477,7 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 						candidate.relation?.kind === "scheduler"
 					? candidate.relation.runId
 					: undefined;
-		const external = runId === undefined || conflictedRunIds.has(runId) ? undefined : externalByRun.get(runId);
-		const event = sourceEventForCandidate(sessionId, candidate, runId, external);
+		const event = sourceEventForCandidate(sessionId, candidate, runId);
 		if (event === undefined) {
 			internalWarnings.push(
 				warning(
@@ -4451,7 +4510,10 @@ function foldInternal(input: AuditSessionInput): InternalFoldResult {
 	const runSummaries = new Map<string, AuditRunSummary>();
 	const runIds = new Set<string>();
 	for (const state of states.values()) {
-		const status: AuditRunEventStatus = state.projection?.status ?? state.terminal?.receipt.status ?? (state.started === undefined ? "accepted" : "running");
+		const status: AuditRunEventStatus =
+			state.projection?.status ??
+			state.terminal?.receipt.status ??
+			(state.started === undefined ? "accepted" : "running");
 		const summary = runSummaryAt(state, status);
 		if (summary !== undefined) {
 			runSummaries.set(state.runId, summary);
@@ -4484,23 +4546,6 @@ export function foldSessionAudit(
 	return foldInternal(sessionAndEntries(input, typeof sessionOrEntries === "string" ? sessionOrEntries : undefined));
 }
 
-function canonicalExternal(value: ExternalExecutionRef): ExternalExecutionRef {
-	const result = {
-		namespace: value.namespace,
-		externalSessionId: value.externalSessionId,
-	} as DeepMutable<ExternalExecutionRef>;
-	if (value.externalRunId !== undefined) result.externalRunId = value.externalRunId;
-	return result;
-}
-
-function canonicalAdapter(value: ExternalAdapterIdentity): ExternalAdapterIdentity {
-	return {
-		adapterId: value.adapterId,
-		targetId: value.targetId,
-		protocol: { name: value.protocol.name, version: value.protocol.version },
-	};
-}
-
 function canonicalTypes(types: ReadonlyArray<AuditEventType> | undefined): ReadonlyArray<AuditEventType> | undefined {
 	if (types === undefined) return undefined;
 	const unique = new Set<AuditEventType>(types);
@@ -4525,10 +4570,6 @@ function normalizeQuery(query: AuditQuery, sessionId: string): AuditQuery {
 		throw new ExecutionAuditError("audit_query_invalid");
 	if (query.runId !== undefined && !isSafeIdentifier(query.runId))
 		throw new ExecutionAuditError("audit_query_invalid");
-	if (query.external !== undefined && !isExternalExecutionRef(query.external))
-		throw new ExecutionAuditError("audit_query_invalid");
-	if (query.adapter !== undefined && !isExternalAdapterIdentity(query.adapter))
-		throw new ExecutionAuditError("audit_query_invalid");
 	if (
 		query.types !== undefined &&
 		(!Array.isArray(query.types) || query.types.some((type) => !isAuditEventType(type)))
@@ -4550,8 +4591,6 @@ function normalizeQuery(query: AuditQuery, sessionId: string): AuditQuery {
 	} as DeepMutable<AuditQuery>;
 	if (query.sessionId !== undefined) normalized.sessionId = query.sessionId;
 	if (query.runId !== undefined) normalized.runId = query.runId;
-	if (query.external !== undefined) normalized.external = canonicalExternal(query.external);
-	if (query.adapter !== undefined) normalized.adapter = canonicalAdapter(query.adapter);
 	const types = canonicalTypes(query.types);
 	if (types !== undefined) normalized.types = [...types];
 	if (query.from !== undefined) normalized.from = query.from;
@@ -4570,8 +4609,6 @@ function queryFingerprint(query: AuditQuery): string {
 		scope: query.scope,
 		sessionId: query.sessionId,
 		runId: query.runId,
-		external: query.external,
-		adapter: query.adapter,
 		types: query.types,
 		from: query.from,
 		to: query.to,
@@ -4583,7 +4620,9 @@ function queryFingerprint(query: AuditQuery): string {
 export const createAuditQueryFingerprint = queryFingerprint;
 
 function cursorSecret(secret: AuditCursorSecret | undefined): Buffer {
-	return typeof secret === "string" || secret === undefined ? Buffer.from(secret ?? DEFAULT_CURSOR_SECRET) : Buffer.from(secret);
+	return typeof secret === "string" || secret === undefined
+		? Buffer.from(secret ?? DEFAULT_CURSOR_SECRET)
+		: Buffer.from(secret);
 }
 
 function encodeBase64(value: string): string {
@@ -4653,31 +4692,22 @@ export function decodeAuditCursor(token: string, secret?: AuditCursorSecret): Au
 	if (decoded === undefined) return undefined;
 	try {
 		const value: unknown = JSON.parse(decoded);
-		if (!isRecord(value) || value.version !== AUDIT_SCHEMA_VERSION || typeof value.fingerprint !== "string" || !isAuditSortKey(value.last)) return undefined;
+		if (
+			!isRecord(value) ||
+			value.version !== AUDIT_SCHEMA_VERSION ||
+			typeof value.fingerprint !== "string" ||
+			!isAuditSortKey(value.last)
+		)
+			return undefined;
 		return { queryFingerprint: value.fingerprint, last: value.last };
 	} catch {
 		return undefined;
 	}
 }
 
-function matchesExternal(event: AuditEvent, external: ExternalExecutionRef): boolean {
-	if (event.external === undefined) return false;
-	return (
-		event.external.namespace === external.namespace &&
-		event.external.externalSessionId === external.externalSessionId &&
-		(event.external.externalRunId ?? undefined) === (external.externalRunId ?? undefined)
-	);
-}
-
-function matchesAdapter(event: AuditEvent, adapter: ExternalAdapterIdentity): boolean {
-	return event.adapter !== undefined && sameExternalAdapterIdentity(event.adapter, adapter);
-}
-
 function filterEvents(events: ReadonlyArray<AuditEvent>, query: AuditQuery): AuditEvent[] {
 	return events.filter((event) => {
 		if (query.runId !== undefined && event.runId !== query.runId) return false;
-		if (query.external !== undefined && !matchesExternal(event, query.external)) return false;
-		if (query.adapter !== undefined && !matchesAdapter(event, query.adapter)) return false;
 		if (query.types !== undefined && !query.types.includes(event.type)) return false;
 		if (query.from !== undefined && event.recordedAt < query.from) return false;
 		if (query.to !== undefined && event.recordedAt >= query.to) return false;
@@ -4773,12 +4803,15 @@ export class ExecutionAuditAdapter {
 		if (run === undefined) throw new ExecutionAuditError("audit_run_not_found");
 		const relevantEvents = filterEvents(folded.events, query).filter((event) => event.runId === runId);
 		const page = paginate(relevantEvents, query, this.secret);
-		const relevantWarnings = folded.internalWarnings.filter((item) => warningAffectsRun(item, runId)).map((item) => item.warning);
-		const status: AuditReplayStatus = relevantWarnings.length > 0
-			? "incomplete"
-			: run.status === "completed" || run.status === "failed" || run.status === "cancelled"
-				? "complete"
-				: "interrupted";
+		const relevantWarnings = folded.internalWarnings
+			.filter((item) => warningAffectsRun(item, runId))
+			.map((item) => item.warning);
+		const status: AuditReplayStatus =
+			relevantWarnings.length > 0
+				? "incomplete"
+				: run.status === "completed" || run.status === "failed" || run.status === "cancelled"
+					? "complete"
+					: "interrupted";
 		return {
 			schemaVersion: 1,
 			run,
@@ -4798,6 +4831,3 @@ export const createExecutionAuditAdapter = (
 	session: AuditSession,
 	options?: ExecutionAuditAdapterOptions,
 ): ExecutionAuditAdapter => new ExecutionAuditAdapter(session, options);
-
-/** Adapter identity type re-export for query consumers that filter by adapter. */
-export type { ExternalAdapterIdentity } from "./external-session-mapping.ts";

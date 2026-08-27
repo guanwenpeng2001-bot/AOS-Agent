@@ -1,0 +1,58 @@
+# External Agent Connector
+
+`ExternalAgentConnector` is the only public execution contract for an external
+agent. It implements the shared `TaskExecutorProvider` boundary and therefore
+enters the same executor pool as every other provider. An external run uses the
+canonical Task, Dispatch, AgentBinding/BindingEpoch, Attempt, AttemptReceipt,
+TaskResult, and RunReceipt facts; it never creates an `AgentInstance`.
+
+## Trusted composition
+
+The Host constructs connectors and registers them in one
+`ExternalConnectorRegistry`. Registration accepts an exact descriptor and one
+trusted connector instance. It never accepts a module path, command, endpoint,
+environment, credential, vendor name, or product fallback.
+
+```ts
+import {
+  createAgentRuntimeCompositionFactory,
+  createExternalConnectorRegistry,
+} from "aos-agent";
+
+const registry = createExternalConnectorRegistry();
+await registry.register({ descriptor, connector, trusted: true });
+
+const runtimeComposition = createAgentRuntimeCompositionFactory({
+  externalConnectorRegistry: () => registry,
+});
+```
+
+The descriptor pins `providerId`, `providerClass: "external_connector"`,
+`revision`, and the capability snapshot digest. A selection must repeat those
+mutable identity fields exactly. Registry selection revalidates the pinned
+capability snapshot before execution.
+
+## Execution and persistence
+
+The connector receives the shared Foundation execution input. Canonical text
+and trusted artifact or image references are gated before Run acceptance.
+Execution persists one canonical connector mapping and the standard Foundation
+receipt chain. Connector capability, model-access, observation, cancellation,
+deadline, and disposal behavior fail closed when evidence is absent or drifts.
+
+The Host owns Run acceptance and terminal settlement. Connector output is
+evidence for the canonical `AttemptReceipt`; it is not a second receipt or an
+independent terminal authority. Current external traces contain no
+`AgentInstance` records.
+
+## Private vendor boundary
+
+Vendor protocol drivers, process handles, probing, startup, cancellation, and
+supervision types are implementation details under `src/core/vendor-drivers`.
+They are not package-root exports and their package subpaths are not importable.
+A vendor driver can translate a protocol, but it cannot introduce a second
+registry, mapping, receipt, provider taxonomy, or execution contract.
+
+Historical automation-ledger external references are decoded only by the
+private migration parser. Migration never generates current `AgentInstance` or
+external execution records.

@@ -277,6 +277,9 @@ describe("External Connector product integration", () => {
 		expect(instances).toEqual([]);
 
 		const records = await current.session.findFoundationRecords({ order: "oldestFirst" });
+		const trace = JSON.stringify(records);
+		expect(trace).not.toContain("agent_instance");
+		expect(trace).not.toContain("agentInstanceId");
 		const types = records.flatMap((record) => "objectType" in record ? [record.objectType] : []);
 		expect(types.indexOf("attempt")).toBeLessThan(types.indexOf("external_connector_operation"));
 		expect(types).toContain("attempt_receipt");

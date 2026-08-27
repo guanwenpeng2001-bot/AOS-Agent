@@ -946,7 +946,7 @@ describe("AgentRuntimeComposition", () => {
 			if (initialized === undefined || initialized.command !== "initialize" || !initialized.success) {
 				throw new Error("Expected initialize response");
 			}
-			expect(initialized.data).not.toHaveProperty("externalAgentAdapters");
+			expect(initialized.data).not.toHaveProperty("externalConnectors");
 			expect(initialized.data).not.toHaveProperty("workerCommands");
 			expect(initialized.data).not.toHaveProperty("subagentCommands");
 			expect(initialized.data).not.toHaveProperty("schedulerCommands");

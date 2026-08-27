@@ -54,7 +54,6 @@ import {
 	prepareExternalConnectorProductRun,
 	type ExternalConnectorProductAdmission,
 } from "../../core/external-connector-product.ts";
-import { isExternalExecutionRef } from "../../core/external-session-mapping.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS, MCPAuthError } from "../../core/mcp-auth.ts";
 import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/mcp-auth-storage.ts";
@@ -146,9 +145,6 @@ import type {
 	AuditQueryData,
 	AuditReplayData,
 	AuditReplayQuery,
-	ExternalExecutionRef,
-	ExternalMapData,
-	ExternalMappingRequest,
 	GetCapabilitiesData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
@@ -322,11 +318,6 @@ export type {
 	AutomationError,
 	AutomationErrorCode,
 	CapabilityBindingView,
-	ExternalExecutionMapping,
-	ExternalExecutionRef,
-	ExternalMappingPersistenceResult,
-	ExternalMappingRequest,
-	ExternalMappingSummary,
 	GetCapabilitiesData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
@@ -339,7 +330,6 @@ export type {
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
-	RpcExternalMapCommand,
 	RpcMcpAttachmentReceipt,
 	RpcMcpAuthCommandType,
 	RpcMcpAuthError,
@@ -678,23 +668,27 @@ function loadReadOnlyRunCoordinator(sessionPath: string):
 					!("entry" in entry.data) ||
 					typeof entry.data.entry !== "object" ||
 					entry.data.entry === null
-				) continue;
+				)
+					continue;
 				const projected = entry.data.entry as Record<string, unknown>;
 				if (
 					projected.type !== "custom" ||
 					projected.customType !== RUN_LEDGER_CUSTOM_TYPE ||
 					typeof projected.data !== "object" ||
 					projected.data === null
-				) continue;
+				)
+					continue;
 				const envelope = projected.data as Record<string, unknown>;
-				if (envelope.kind !== "accepted" || typeof envelope.record !== "object" || envelope.record === null) continue;
+				if (envelope.kind !== "accepted" || typeof envelope.record !== "object" || envelope.record === null)
+					continue;
 				const record = envelope.record as Record<string, unknown>;
 				if (
 					record.clientRequestId !== clientRequestId ||
 					record.requestScope !== scope ||
 					typeof record.requestFingerprint !== "string" ||
 					typeof record.id !== "string"
-				) continue;
+				)
+					continue;
 				const result = coordinator.getRun(record.id);
 				if (result === undefined) continue;
 				return {
@@ -712,7 +706,6 @@ function loadReadOnlyRunCoordinator(sessionPath: string):
 function hashResumeTargetPath(sessionPath: string): string {
 	return `path:${crypto.createHash("sha256").update(sessionPath, "utf8").digest("hex")}`;
 }
-
 
 /**
  * Owns the RPC and Automation Host command/lifecycle state independently of
@@ -1182,20 +1175,38 @@ export class RpcHostController {
 			| "audit_cursor_invalid"
 			| "audit_scope_unavailable"
 			| "audit_run_not_found"
-			| "audit_replay_incomplete"
-			| "external_mapping_invalid"
-			| "external_mapping_conflict"
-			| "audit_persistence_failed";
+			| "audit_replay_incomplete";
 
 		const isAuditAutomationCode = (value: unknown): value is AuditAutomationCode =>
 			value === "audit_query_invalid" ||
 			value === "audit_cursor_invalid" ||
 			value === "audit_scope_unavailable" ||
 			value === "audit_run_not_found" ||
-			value === "audit_replay_incomplete" ||
-			value === "external_mapping_invalid" ||
-			value === "external_mapping_conflict" ||
-			value === "audit_persistence_failed";
+			value === "audit_replay_incomplete";
+		const AUDIT_QUERY_COMMAND_KEYS = new Set([
+			"id",
+			"type",
+			"scope",
+			"sessionId",
+			"runId",
+			"types",
+			"from",
+			"to",
+			"cursor",
+			"limit",
+		]);
+		const AUDIT_REPLAY_COMMAND_KEYS = new Set([
+			"id",
+			"type",
+			"runId",
+			"scope",
+			"sessionId",
+			"types",
+			"from",
+			"to",
+			"cursor",
+			"limit",
+		]);
 
 		const auditErrorMessage = (code: AuditAutomationCode): string => {
 			switch (code) {
@@ -1209,12 +1220,6 @@ export class RpcHostController {
 					return "The requested run was not found in the audit scope.";
 				case "audit_replay_incomplete":
 					return "The audit replay could not be constructed safely.";
-				case "external_mapping_invalid":
-					return "The external mapping is invalid.";
-				case "external_mapping_conflict":
-					return "The external mapping conflicts with append-only mapping history.";
-				case "audit_persistence_failed":
-					return "The external mapping could not be persisted.";
 			}
 		};
 
@@ -1520,7 +1525,7 @@ export class RpcHostController {
 		/**
 		 * Rebuild the Automation Host state stores for the current Session. The Run
 		 * lookup and Task Gate lookup are read-only adapters over the live
-			 * coordinator/gate store, so attach only sees current-Session accepted or
+		 * coordinator/gate store, so attach only sees current-Session accepted or
 		 * running Runs and terminal lookup sees only canonical receipt projections; the Task
 		 * Graph store never starts, cancels, or rewrites a Run and never creates,
 		 * approves, rejects, or cancels a Gate. The Task Credential service is
@@ -1843,7 +1848,7 @@ export class RpcHostController {
 									direct: {
 										provider: currentModel.provider,
 										id: currentModel.id,
-									thinkingLevel: binding.session.thinkingLevel,
+										thinkingLevel: binding.session.thinkingLevel,
 									},
 								});
 				if (!result.ok) return { error: modelSelectionError(result.error) };
@@ -1955,7 +1960,6 @@ export class RpcHostController {
 				policyProfile?: string;
 				modelRoute?: ModelRouteSelection;
 				modelRole?: ModelRoleSelection;
-				external?: ExternalExecutionRef;
 				externalConnector?: ExternalConnectorSelection;
 				deadlineAt?: string;
 			},
@@ -1976,7 +1980,6 @@ export class RpcHostController {
 					policyProfile: input.policyProfile,
 					modelRoute: input.modelRoute,
 					modelRole: input.modelRole,
-					external: input.external,
 					externalConnector: input.externalConnector,
 					deadlineAt: input.deadlineAt,
 				}),
@@ -2000,7 +2003,6 @@ export class RpcHostController {
 			if (publicRecord.clientRequestId !== undefined) data.clientRequestId = publicRecord.clientRequestId;
 			if (publicRecord.requestFingerprint !== undefined) data.requestFingerprint = publicRecord.requestFingerprint;
 			if (idempotent) data.idempotent = true;
-			if (publicRecord.external !== undefined) data.external = publicRecord.external;
 			if (publicRecord.deadlineAt !== undefined) data.deadlineAt = publicRecord.deadlineAt;
 			if (publicRecord.bindingAssociation !== undefined) data.bindingAssociation = publicRecord.bindingAssociation;
 			if (publicRecord.modelBindingId !== undefined) data.modelBindingId = publicRecord.modelBindingId;
@@ -2097,7 +2099,8 @@ export class RpcHostController {
 				pending.fingerprint !== identity.fingerprint ||
 				identity.claimToken === undefined ||
 				pending.claimToken !== identity.claimToken
-			) return;
+			)
+				return;
 			pendingRunRequests.delete(identity.key);
 			for (const waiter of pending.waiters) {
 				output({ ...response, id: waiter.id, command: waiter.command } as RpcAutomationResponse);
@@ -2120,7 +2123,8 @@ export class RpcHostController {
 				pending.fingerprint !== identity.fingerprint ||
 				identity.claimToken === undefined ||
 				pending.claimToken !== identity.claimToken
-			) return;
+			)
+				return;
 			pendingRunRequests.delete(identity.key);
 		};
 
@@ -2214,32 +2218,35 @@ export class RpcHostController {
 			id?: string,
 			command: "run.start" | "run.resume" = "run.start",
 		): Promise<RpcAutomationResponse | undefined> => {
-			const tracked = control?.runId === undefined || control.lifecycleController === undefined || control.deadlineController === undefined
-				? pending
-				: raceWithAbortSignal(
-					raceWithAbortSignal(pending, control.lifecycleController.signal),
-					control.deadlineController.signal,
-				).catch((error: unknown) => {
-					if (control.deadlineController?.signal.aborted === true) {
-						const response = automationError(
-							id,
-							command,
-							createAutomationError(
-								"run_deadline_exceeded",
-								"The Run deadline was exceeded before acceptance.",
-								false,
-							),
-						);
-						finishRunRequest(control.requestClaim, response);
-						return response;
-					}
-					if (control.lifecycleController?.signal.aborted === true) {
-						discardRunRequest(control.requestClaim);
-						return undefined;
-					}
-					discardRunRequest(control.requestClaim);
-					throw error;
-				});
+			const tracked =
+				control?.runId === undefined ||
+				control.lifecycleController === undefined ||
+				control.deadlineController === undefined
+					? pending
+					: raceWithAbortSignal(
+							raceWithAbortSignal(pending, control.lifecycleController.signal),
+							control.deadlineController.signal,
+						).catch((error: unknown) => {
+							if (control.deadlineController?.signal.aborted === true) {
+								const response = automationError(
+									id,
+									command,
+									createAutomationError(
+										"run_deadline_exceeded",
+										"The Run deadline was exceeded before acceptance.",
+										false,
+									),
+								);
+								finishRunRequest(control.requestClaim, response);
+								return response;
+							}
+							if (control.lifecycleController?.signal.aborted === true) {
+								discardRunRequest(control.requestClaim);
+								return undefined;
+							}
+							discardRunRequest(control.requestClaim);
+							throw error;
+						});
 			pendingStartPromises.add(tracked);
 			if (binding !== undefined && control?.runId !== undefined) {
 				binding.pendingExternalStarts.set(control.runId, tracked);
@@ -2283,7 +2290,6 @@ export class RpcHostController {
 			inheritedModelBinding: ModelBindingLedgerRecord | undefined,
 			modelRoute: ModelRouteSelection | undefined,
 			modelRole: ModelRoleSelection | undefined,
-			external: ExternalExecutionRef | undefined,
 			externalConnector: ExternalConnectorSelection | undefined,
 			deadlineAt: string | undefined,
 			clientRequestId: string | undefined,
@@ -2298,10 +2304,6 @@ export class RpcHostController {
 			if (inputError !== undefined) {
 				discardRunRequest(precomputedRequestIdentity);
 				return inputError;
-			}
-			if (external !== undefined && !isExternalExecutionRef(external)) {
-				discardRunRequest(precomputedRequestIdentity);
-				return automationError(id, commandType, auditCommandError(undefined, "external_mapping_invalid"));
 			}
 			if (externalConnector !== undefined && !isExternalConnectorSelection(externalConnector)) {
 				discardRunRequest(precomputedRequestIdentity);
@@ -2368,7 +2370,6 @@ export class RpcHostController {
 					policyProfile,
 					modelRoute,
 					modelRole,
-					external,
 					externalConnector,
 					deadlineAt,
 				});
@@ -2524,9 +2525,9 @@ export class RpcHostController {
 				const selected = await registry.select(safeSelection);
 				if (externalStartWasTornDown()) return abandonExternalStart();
 				if (!selected.ok) {
-					const providerExists = registry.list().some(
-						(descriptor) => descriptor.providerId === safeSelection.providerId,
-					);
+					const providerExists = registry
+						.list()
+						.some((descriptor) => descriptor.providerId === safeSelection.providerId);
 					return startFailure(
 						automationError(
 							id,
@@ -2691,12 +2692,12 @@ export class RpcHostController {
 				externalConnectorResolved.capabilitySnapshot.modelAccess !== "aos_gateway"
 					? { resolution: undefined, error: undefined }
 					: await resolveRequestedModel(
-						runBinding,
-						modelRoute,
-						modelRole,
-						inheritedModelBinding,
-						externalConnectorResolved?.capabilitySnapshot.modelAccess !== "aos_gateway",
-					);
+							runBinding,
+							modelRoute,
+							modelRole,
+							inheritedModelBinding,
+							externalConnectorResolved?.capabilitySnapshot.modelAccess !== "aos_gateway",
+						);
 			if (externalStartWasTornDown()) {
 				releaseOwnReservation();
 				return abandonExternalStart();
@@ -2973,8 +2974,7 @@ export class RpcHostController {
 				const execution = persistExternalConnectorProductRunAfterAcceptance({
 					...externalProductAdmission,
 					input: { ...externalProductAdmission.input, signal: deadlineController.signal },
-				})
-					.then(executePreparedExternalConnectorProductRun);
+				}).then(executePreparedExternalConnectorProductRun);
 				const settlement = execution.then(() => undefined);
 				runBinding.externalRunSettlements.set(proposedRunId, settlement);
 				void settlement.then(
@@ -3036,7 +3036,6 @@ export class RpcHostController {
 								requestFingerprint: requestClaim?.fingerprint,
 								attempt,
 								sourceRunId,
-								external,
 								deadlineAt,
 								previousBindingId,
 								previousPolicyBindingId,
@@ -3537,20 +3536,21 @@ export class RpcHostController {
 			for (const controller of binding.externalPendingControllers.values()) controller.abort();
 			const settleWithinDeadline = async (work: Promise<unknown>[]): Promise<void> => {
 				const settledWork = Promise.allSettled(work);
-				const settled = signal === undefined
-					? await settledWork
-					: await new Promise<Awaited<typeof settledWork> | undefined>((resolve) => {
-					if (signal.aborted) {
-						resolve(undefined);
-						return;
-					}
-					const onAbort = (): void => resolve(undefined);
-					signal.addEventListener("abort", onAbort, { once: true });
-					void settledWork.then((results) => {
-						signal.removeEventListener("abort", onAbort);
-						resolve(results);
-					});
-				});
+				const settled =
+					signal === undefined
+						? await settledWork
+						: await new Promise<Awaited<typeof settledWork> | undefined>((resolve) => {
+								if (signal.aborted) {
+									resolve(undefined);
+									return;
+								}
+								const onAbort = (): void => resolve(undefined);
+								signal.addEventListener("abort", onAbort, { once: true });
+								void settledWork.then((results) => {
+									signal.removeEventListener("abort", onAbort);
+									resolve(results);
+								});
+							});
 				for (const result of settled ?? []) {
 					if (result.status === "rejected") cleanupFailures.push(result.reason);
 				}
@@ -3691,7 +3691,7 @@ export class RpcHostController {
 						protocolVersion: 1,
 						sessionId: currentBinding.session.sessionId,
 						runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
-						auditCommands: ["audit.query", "audit.replay", "external.map"],
+						auditCommands: ["audit.query", "audit.replay"],
 						taskGateCommands: [
 							"task.gate.request",
 							"task.gate.get",
@@ -3709,15 +3709,15 @@ export class RpcHostController {
 						],
 						...(taskCredentialsEnabled
 							? {
-								taskCredentialCommands: [
-									"task.credential.issue",
-									"task.credential.get",
-									"task.credential.list",
-									"task.credential.heartbeat",
-									"task.credential.revoke",
-									"task.credential.settle",
-								],
-							}
+									taskCredentialCommands: [
+										"task.credential.issue",
+										"task.credential.get",
+										"task.credential.list",
+										"task.credential.heartbeat",
+										"task.credential.revoke",
+										"task.credential.settle",
+									],
+								}
 							: {}),
 						...(workerRegistry === undefined
 							? {}
@@ -3804,7 +3804,9 @@ export class RpcHostController {
 					if (
 						subagents.some(
 							(entry) =>
-								entry === undefined || entry.sessionId !== currentBinding.session.sessionId || entry.runId !== command.runId,
+								entry === undefined ||
+								entry.sessionId !== currentBinding.session.sessionId ||
+								entry.runId !== command.runId,
 						)
 					) {
 						return rpcSubagentError(id, "subagent.list", "subagent_invalid");
@@ -4045,11 +4047,13 @@ export class RpcHostController {
 					if (!hostInitialized || currentBinding.coordinator === undefined) {
 						return automationError(id, "audit.query", hostNotInitializedError());
 					}
+					if (Object.keys(command).some((key) => !AUDIT_QUERY_COMMAND_KEYS.has(key))) {
+						return automationError(id, "audit.query", auditCommandError(undefined, "audit_query_invalid"));
+					}
 					const query: AuditQuery = {
 						scope: command.scope,
 						...(command.sessionId === undefined ? {} : { sessionId: command.sessionId }),
 						...(command.runId === undefined ? {} : { runId: command.runId }),
-						...(command.external === undefined ? {} : { external: command.external }),
 						...(command.types === undefined ? {} : { types: command.types }),
 						...(command.from === undefined ? {} : { from: command.from }),
 						...(command.to === undefined ? {} : { to: command.to }),
@@ -4070,11 +4074,13 @@ export class RpcHostController {
 					if (!hostInitialized || currentBinding.coordinator === undefined) {
 						return automationError(id, "audit.replay", hostNotInitializedError());
 					}
+					if (Object.keys(command).some((key) => !AUDIT_REPLAY_COMMAND_KEYS.has(key))) {
+						return automationError(id, "audit.replay", auditCommandError(undefined, "audit_query_invalid"));
+					}
 					const query: AuditReplayQuery = {
 						runId: command.runId,
 						...(command.scope === undefined ? {} : { scope: command.scope }),
 						...(command.sessionId === undefined ? {} : { sessionId: command.sessionId }),
-						...(command.external === undefined ? {} : { external: command.external }),
 						...(command.types === undefined ? {} : { types: command.types }),
 						...(command.from === undefined ? {} : { from: command.from }),
 						...(command.to === undefined ? {} : { to: command.to }),
@@ -4088,28 +4094,6 @@ export class RpcHostController {
 						return { id, type: "response", command: "audit.replay", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.replay", auditCommandError(err, "audit_replay_incomplete"));
-					}
-				}
-
-				case "external.map": {
-					if (!hostInitialized || currentBinding.coordinator === undefined) {
-						return automationError(id, "external.map", hostNotInitializedError());
-					}
-					if (command.aosSessionId !== currentBinding.session.sessionId || !isExternalExecutionRef(command.external)) {
-						return automationError(id, "external.map", auditCommandError(undefined, "external_mapping_invalid"));
-					}
-					const request: ExternalMappingRequest = {
-						external: command.external,
-						aosSessionId: command.aosSessionId,
-						...(command.aosRunId === undefined ? {} : { aosRunId: command.aosRunId }),
-						...(command.source === undefined ? {} : { source: command.source }),
-						...(command.correlationId === undefined ? {} : { correlationId: command.correlationId }),
-					};
-					try {
-						const data = currentBinding.coordinator.persistExternalMapping(request) satisfies ExternalMapData;
-						return { id, type: "response", command: "external.map", success: true, data };
-					} catch (err) {
-						return automationError(id, "external.map", auditCommandError(err, "audit_persistence_failed"));
 					}
 				}
 
@@ -4819,9 +4803,8 @@ export class RpcHostController {
 							),
 						);
 					}
-					const externalStartControl = command.externalConnector === undefined
-						? undefined
-						: {} satisfies ExternalPendingStartControl;
+					const externalStartControl =
+						command.externalConnector === undefined ? undefined : ({} satisfies ExternalPendingStartControl);
 					return trackPendingStart(
 						startRun(
 							currentBinding,
@@ -4839,7 +4822,6 @@ export class RpcHostController {
 							undefined,
 							command.modelRoute,
 							command.modelRole,
-							command.external,
 							command.externalConnector,
 							command.deadlineAt,
 							command.clientRequestId,
@@ -4946,13 +4928,6 @@ export class RpcHostController {
 							const requestEpoch = transportEpoch;
 							const inputError = slashRunInputError(id, "run.resume", command.message);
 							if (inputError !== undefined) return inputError;
-							if (command.external !== undefined && !isExternalExecutionRef(command.external)) {
-								return automationError(
-									id,
-									"run.resume",
-									auditCommandError(undefined, "external_mapping_invalid"),
-								);
-							}
 							if (
 								command.externalConnector !== undefined &&
 								!isExternalConnectorSelection(command.externalConnector)
@@ -4980,9 +4955,9 @@ export class RpcHostController {
 										),
 									);
 								}
-								const descriptor = registry.list().find(
-									(candidate) => candidate.providerId === command.externalConnector?.providerId,
-								);
+								const descriptor = registry
+									.list()
+									.find((candidate) => candidate.providerId === command.externalConnector?.providerId);
 								if (
 									descriptor === undefined ||
 									descriptor.revision !== command.externalConnector.revision ||
@@ -4995,7 +4970,9 @@ export class RpcHostController {
 										id,
 										"run.resume",
 										createAutomationError(
-											descriptor === undefined ? "external_connector_unavailable" : "external_capability_mismatch",
+											descriptor === undefined
+												? "external_connector_unavailable"
+												: "external_capability_mismatch",
 											descriptor !== undefined
 												? "External Connector capability snapshot is unavailable or drifted."
 												: "The selected External Connector is not registered in this Host.",
@@ -5087,7 +5064,6 @@ export class RpcHostController {
 								policyProfile: command.policyProfile,
 								modelRoute: command.modelRoute,
 								modelRole: command.modelRole,
-								external: command.external,
 								externalConnector: command.externalConnector,
 								deadlineAt: command.deadlineAt,
 							});
@@ -5120,7 +5096,10 @@ export class RpcHostController {
 									),
 								);
 							if (requestEpoch !== transportEpoch) return resumeFailure(connectionClosedResponse());
-							if (currentBinding.coordinator.activeRun !== undefined || currentBinding.activeReservation !== undefined) {
+							if (
+								currentBinding.coordinator.activeRun !== undefined ||
+								currentBinding.activeReservation !== undefined
+							) {
 								return resumeFailure(
 									automationError(
 										id,
@@ -5201,8 +5180,7 @@ export class RpcHostController {
 							// RPC cannot yet map an external source Run back to its canonical
 							// durable Attempt. Reject here instead of starting a different
 							// execution kind or a new Connector Attempt.
-							const sourceIsExternal =
-								sourceRun.record.external !== undefined || sourceRun.record.model.provider === "external_connector";
+							const sourceIsExternal = sourceRun.record.model.provider === "external_connector";
 							if (sourceIsExternal) {
 								return resumeFailure(
 									automationError(
@@ -5256,7 +5234,6 @@ export class RpcHostController {
 								inheritedModelBinding,
 								command.modelRoute,
 								command.modelRole,
-								command.external,
 								command.externalConnector,
 								command.deadlineAt,
 								command.clientRequestId,

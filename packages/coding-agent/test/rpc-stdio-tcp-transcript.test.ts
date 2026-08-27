@@ -896,7 +896,7 @@ function assertTaskGraphTranscript(records: ParsedRecord[]): void {
 			host: "automation-host",
 			protocolVersion: 1,
 			runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
-			auditCommands: ["audit.query", "audit.replay", "external.map"],
+			auditCommands: ["audit.query", "audit.replay"],
 			taskGateCommands: [
 				"task.gate.request",
 				"task.gate.get",
@@ -1197,7 +1197,7 @@ function assertTaskGateTranscript(records: ParsedRecord[]): void {
 			host: "automation-host",
 			protocolVersion: 1,
 			runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
-			auditCommands: ["audit.query", "audit.replay", "external.map"],
+			auditCommands: ["audit.query", "audit.replay"],
 			taskGateCommands: [
 				"task.gate.request",
 				"task.gate.get",

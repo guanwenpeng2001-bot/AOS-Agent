@@ -8,7 +8,6 @@ import type {
 import type { Api, ImageContent, Model } from "@aos-agent/ai";
 import type { CompactionResult } from "./compaction/index.ts";
 import type { AgentRuntimeCompositionFactory } from "./agent-runtime-composition.ts";
-import type { ExternalAgentEvent } from "./external-agent-adapter.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -91,8 +90,7 @@ export type AgentSessionEvent =
 			reason: "manual" | "threshold" | "overflow";
 		}
 	| { type: "summarization_retry_finished" }
-	| { type: "bash_execution_update"; id?: string; delta: string }
-	| { type: "external_agent_event"; event: ExternalAgentEvent };
+	| { type: "bash_execution_update"; id?: string; delta: string };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 

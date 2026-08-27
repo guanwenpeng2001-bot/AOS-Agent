@@ -31,9 +31,6 @@ import {
 	AUDIT_SCHEMA_VERSION,
 	AUDIT_SOURCE_CUSTOM_TYPES,
 	AUDIT_WARNING_CODES,
-	EXTERNAL_EXECUTION_REF_KEYS,
-	EXTERNAL_MAP_COMMAND,
-	EXTERNAL_MAPPING_KEYS,
 } from "./fixtures/execution-audit-contract.ts";
 import { canonicalAuditRunEntries } from "./support/canonical-audit-run.ts";
 
@@ -60,21 +57,39 @@ describe("execution audit T0 contract", () => {
 		const { digest: _digest, ...safeBase } = safe;
 		const forgedStatusBase = { ...safeBase, status: "forged_status" };
 		const forgedProviderBase = { ...safeBase, providerKind: "forged_provider" };
-		expect(projectSubagentAuditSourceV1({
-			...forgedStatusBase,
-			digest: fingerprintFoundationValue(forgedStatusBase),
-		})).toBeUndefined();
-		expect(projectSubagentAuditSourceV1({
-			...forgedProviderBase,
-			digest: fingerprintFoundationValue(forgedProviderBase),
-		})).toBeUndefined();
-		expect(Object.keys(replaySubagentAuditSourceV1(safe) ?? {})).not.toEqual(expect.arrayContaining(["pid", "executable", "argv", "cwd", "env", "transcript", "prompt", "token", "secret", "header", "providerStack", "rawFrame"]));
+		expect(
+			projectSubagentAuditSourceV1({
+				...forgedStatusBase,
+				digest: fingerprintFoundationValue(forgedStatusBase),
+			}),
+		).toBeUndefined();
+		expect(
+			projectSubagentAuditSourceV1({
+				...forgedProviderBase,
+				digest: fingerprintFoundationValue(forgedProviderBase),
+			}),
+		).toBeUndefined();
+		expect(Object.keys(replaySubagentAuditSourceV1(safe) ?? {})).not.toEqual(
+			expect.arrayContaining([
+				"pid",
+				"executable",
+				"argv",
+				"cwd",
+				"env",
+				"transcript",
+				"prompt",
+				"token",
+				"secret",
+				"header",
+				"providerStack",
+				"rawFrame",
+			]),
+		);
 	});
 	it("freezes the v1 commands, event union, and source types", () => {
 		expect(AUDIT_SCHEMA_VERSION).toBe(1);
 		expect(AUDIT_QUERY_COMMAND).toBe("audit.query");
 		expect(AUDIT_REPLAY_COMMAND).toBe("audit.replay");
-		expect(EXTERNAL_MAP_COMMAND).toBe("external.map");
 		expect(AUDIT_SOURCE_CUSTOM_TYPES).toEqual([
 			"model.binding",
 			"model.attempt",
@@ -85,7 +100,6 @@ describe("execution audit T0 contract", () => {
 			"policy.approval",
 			"sandbox.lifecycle",
 			"policy.violation",
-			"external.mapping",
 			"task.gate",
 		]);
 		expect(AUDIT_EXCLUDED_CUSTOM_TYPES).toEqual(["context.memory", "mcp.content.audit"]);
@@ -105,7 +119,6 @@ describe("execution audit T0 contract", () => {
 			"policy.approval",
 			"sandbox.lifecycle",
 			"policy.violation",
-			"external.mapping",
 			"task.gate",
 		]);
 	});
@@ -121,7 +134,6 @@ describe("execution audit T0 contract", () => {
 			"duplicate_source",
 			"source_unavailable",
 			"ambiguous_run_association",
-			"mapping_conflict",
 		]);
 		expect(AUDIT_ERROR_CODES).toEqual([
 			"audit_query_invalid",
@@ -129,27 +141,13 @@ describe("execution audit T0 contract", () => {
 			"audit_scope_unavailable",
 			"audit_run_not_found",
 			"audit_replay_incomplete",
-			"external_mapping_invalid",
-			"external_mapping_conflict",
-			"audit_persistence_failed",
 		]);
 		expect(AUDIT_DEFAULT_LIMIT).toBe(50);
 		expect(AUDIT_MAX_LIMIT).toBe(200);
 		expect(AUDIT_CURSOR_SORT_KEYS).toEqual(["recordedAt", "sessionId", "sourceEntryId", "eventId"]);
 	});
 
-	it("freezes external mapping keys and public summary allowlists", () => {
-		expect(EXTERNAL_EXECUTION_REF_KEYS).toEqual(["namespace", "externalSessionId", "externalRunId"]);
-		expect(EXTERNAL_MAPPING_KEYS).toEqual([
-			"namespace",
-			"externalSessionId",
-			"externalRunId",
-			"aosSessionId",
-			"aosRunId",
-			"createdAt",
-			"source",
-			"correlationId",
-		]);
+	it("freezes public summary allowlists", () => {
 		expect(AUDIT_PUBLIC_SUMMARY_KEYS.run).toEqual([
 			"status",
 			"attempt",
@@ -246,7 +244,67 @@ describe("execution audit T0 contract", () => {
 			"actorId",
 			"reasonCode",
 		]);
-		expect(AUDIT_PUBLIC_SUMMARY_KEYS.externalMapping).toBe(EXTERNAL_MAPPING_KEYS);
+	});
+
+	it("reads historical Adapter associations without emitting current audit facts", () => {
+		const sessionId = "legacy-audit-session";
+		const runId = "legacy-audit-run";
+		const external = {
+			namespace: "legacy-ci",
+			externalSessionId: "legacy-job",
+			externalRunId: "legacy-attempt",
+		};
+		const entry = (id: string, timestamp: string, data: unknown): Extract<SessionEntry, { type: "custom" }> => ({
+			type: "custom",
+			id,
+			parentId: null,
+			timestamp,
+			customType: "automation.run",
+			data,
+		});
+		const entries: SessionEntry[] = [
+			entry("legacy-accepted", "2026-08-01T00:00:00.000Z", {
+				schemaVersion: 1,
+				kind: "accepted",
+				record: {
+					id: runId,
+					sessionId,
+					external,
+					attempt: 1,
+					status: "accepted",
+					model: { provider: "legacy", id: "adapter", thinkingLevel: "off" },
+				},
+			}),
+			entry("legacy-started", "2026-08-01T00:00:01.000Z", {
+				schemaVersion: 1,
+				kind: "started",
+				runId,
+				startedAt: "2026-08-01T00:00:01.000Z",
+			}),
+			entry("legacy-terminal", "2026-08-01T00:00:02.000Z", {
+				schemaVersion: 1,
+				kind: "terminal",
+				receipt: {
+					runId,
+					sessionId,
+					external,
+					status: "completed",
+					usage: { input: 1, output: 1, total: 2 },
+				},
+				endedAt: "2026-08-01T00:00:02.000Z",
+			}),
+		];
+
+		const folded = new ExecutionAuditAdapter({
+			getSessionId: () => sessionId,
+			getEntries: () => entries,
+		}).fold();
+		expect(folded.events.map((event) => event.type)).toEqual(["run.accepted", "run.started", "run.completed"]);
+		for (const event of folded.events) expect(event).not.toHaveProperty("external");
+		const serialized = JSON.stringify(folded);
+		expect(serialized).not.toContain("legacy-ci");
+		expect(serialized).not.toContain("legacy-job");
+		expect(serialized).not.toContain("legacy-attempt");
 	});
 
 	it("keeps forbidden data and side effects outside the contract", () => {
@@ -260,19 +318,25 @@ describe("execution audit T0 contract", () => {
 		expect(AUDIT_NO_SIDE_EFFECT_OPERATIONS).toContain("Policy authorize/approve/reject");
 		expect(AUDIT_NO_SIDE_EFFECT_OPERATIONS).toContain("SandboxProvider.prepare/execute/dispose");
 		expect(AUDIT_NO_SIDE_EFFECT_OPERATIONS).toContain("Context memory write");
-		expect(AUDIT_NO_SIDE_EFFECT_OPERATIONS).toContain("TaskGateStore mutation (task.gate.request/approve/reject/cancel)");
+		expect(AUDIT_NO_SIDE_EFFECT_OPERATIONS).toContain(
+			"TaskGateStore mutation (task.gate.request/approve/reject/cancel)",
+		);
 		for (const testCase of AUDIT_CONTRACT_CASES) expect(testCase.sideEffects, testCase.id).toEqual([]);
 	});
 
 	it("keeps the replay/error distinction explicit", () => {
-		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "accepted-without-terminal-is-interrupted")?.expectedStatus).toBe(
-			"interrupted",
+		expect(
+			AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "accepted-without-terminal-is-interrupted")
+				?.expectedStatus,
+		).toBe("interrupted");
+		expect(
+			AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "malformed-source-is-incomplete")?.expectedStatus,
+		).toBe("incomplete");
+		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "missing-run-is-an-error")?.expectedError).toBe(
+			"audit_run_not_found",
 		);
-		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "malformed-source-is-incomplete")?.expectedStatus).toBe("incomplete");
-		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "missing-run-is-an-error")?.expectedError).toBe("audit_run_not_found");
-		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "bad-cursor-is-an-error")?.expectedError).toBe("audit_cursor_invalid");
-		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "mapping-persistence-failure-is-an-error")?.expectedError).toBe(
-			"audit_persistence_failed",
+		expect(AUDIT_CONTRACT_CASES.find((testCase) => testCase.id === "bad-cursor-is-an-error")?.expectedError).toBe(
+			"audit_cursor_invalid",
 		);
 	});
 });
@@ -477,14 +541,24 @@ describe("execution audit task graph contract", () => {
 		// The T0 fixture predates the remote.operation and task.credential
 		// sources; ignoring those known later additions, task.graph must be the
 		// only remaining delta.
-		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
-			...AUDIT_SOURCE_CUSTOM_TYPES,
-			"task.graph",
-		]);
-		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && type !== "task.credential" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
-			...AUDIT_EVENT_TYPES,
-			"task.graph",
-		]);
+		expect(
+			SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter(
+				(type) =>
+					type !== "remote.operation" &&
+					type !== "task.credential" &&
+					!type.startsWith("worker") &&
+					!type.startsWith("scheduler."),
+			),
+		).toEqual([...AUDIT_SOURCE_CUSTOM_TYPES, "task.graph"]);
+		expect(
+			SRC_AUDIT_EVENT_TYPES.filter(
+				(type) =>
+					type !== "remote.operation" &&
+					type !== "task.credential" &&
+					!type.startsWith("worker") &&
+					!type.startsWith("scheduler."),
+			),
+		).toEqual([...AUDIT_EVENT_TYPES, "task.graph"]);
 	});
 
 	it("keeps the task.graph summary allowlist disjoint from the forbidden keys", () => {
@@ -613,10 +687,9 @@ describe("execution audit task graph contract", () => {
 		).fold();
 		const graphEvents = folded.events.filter((event: AuditEvent) => event.type === "task.graph");
 		expect(graphEvents).toEqual([]);
-		expect(folded.warnings.filter((warning) => warning.eventType === "task.graph").map((warning) => warning.code)).toEqual([
-			"malformed_source",
-			"malformed_source",
-		]);
+		expect(
+			folded.warnings.filter((warning) => warning.eventType === "task.graph").map((warning) => warning.code),
+		).toEqual(["malformed_source", "malformed_source"]);
 		const encoded = JSON.stringify(folded);
 		expect(encoded).not.toContain("top secret prompt");
 		expect(encoded).not.toContain("rm -rf");
@@ -693,44 +766,113 @@ describe("execution audit task graph contract", () => {
 			"graph-settled",
 		]);
 		const graphWarnings = (entryId: string) =>
-			folded.warnings.filter(
-				(warning) => warning.eventType === "task.graph" && warning.sourceEntryId === entryId,
-			);
+			folded.warnings.filter((warning) => warning.eventType === "task.graph" && warning.sourceEntryId === entryId);
 		expect(graphWarnings("graph-unsupported")).toEqual([
-			{ code: "unsupported_schema", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-unsupported", eventType: "task.graph", schemaVersion: 2 },
+			{
+				code: "unsupported_schema",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-unsupported",
+				eventType: "task.graph",
+				schemaVersion: 2,
+			},
 		]);
 		expect(graphWarnings("graph-garbage")).toEqual([
-			{ code: "malformed_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-garbage", eventType: "task.graph" },
+			{
+				code: "malformed_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-garbage",
+				eventType: "task.graph",
+			},
 		]);
 		expect(graphWarnings("graph-foreign-create")).toEqual([
-			{ code: "orphan_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-foreign-create", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "orphan_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-foreign-create",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		expect(graphWarnings("graph-unknown-dep")).toEqual([
-			{ code: "malformed_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-unknown-dep", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "malformed_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-unknown-dep",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		expect(graphWarnings("graph-cycle")).toEqual([
-			{ code: "malformed_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-cycle", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "malformed_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-cycle",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		expect(graphWarnings("graph-foreign-attach")).toEqual([
-			{ code: "orphan_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-foreign-attach", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "orphan_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-foreign-attach",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		expect(graphWarnings("graph-gap")).toEqual([
-			{ code: "malformed_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-gap", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "malformed_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-gap",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		expect(graphWarnings("graph-jump")).toEqual([
-			{ code: "malformed_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-jump", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "malformed_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-jump",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		expect(graphWarnings("graph-dup-key")).toEqual([
-			{ code: "duplicate_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-dup-key", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "duplicate_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-dup-key",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		expect(graphWarnings("graph-dup-run")).toEqual([
-			{ code: "duplicate_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-dup-run", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "duplicate_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-dup-run",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		expect(graphWarnings("graph-repeat")).toEqual([
-			{ code: "duplicate_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-repeat", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "duplicate_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-repeat",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		expect(graphWarnings("graph-second-create")).toEqual([
-			{ code: "duplicate_source", sessionId: GRAPH_SESSION_ID, sourceEntryId: "graph-second-create", eventType: "task.graph", schemaVersion: 1 },
+			{
+				code: "duplicate_source",
+				sessionId: GRAPH_SESSION_ID,
+				sourceEntryId: "graph-second-create",
+				eventType: "task.graph",
+				schemaVersion: 1,
+			},
 		]);
 		const encoded = JSON.stringify(folded);
 		expect(encoded).not.toContain("raw graph secret");
@@ -822,20 +964,22 @@ function customEntry(
 	>;
 }
 
-function credentialGrantSnapshot(options: {
-	leaseId?: string;
-	grantId?: string;
-	bindingId?: string;
-	sessionId?: string;
-	revision?: number;
-	status?: string;
-	heartbeatSequence?: number;
-	targetId?: string;
-	reasonCode?: string;
-	runId?: string;
-	stageId?: string;
-	stageRevision?: number;
-} = {}): Record<string, unknown> {
+function credentialGrantSnapshot(
+	options: {
+		leaseId?: string;
+		grantId?: string;
+		bindingId?: string;
+		sessionId?: string;
+		revision?: number;
+		status?: string;
+		heartbeatSequence?: number;
+		targetId?: string;
+		reasonCode?: string;
+		runId?: string;
+		stageId?: string;
+		stageRevision?: number;
+	} = {},
+): Record<string, unknown> {
 	return {
 		schemaVersion: 1,
 		grantId: options.grantId ?? "cred_grant_1",
@@ -1083,16 +1227,16 @@ function credentialSession(entries: ReadonlyArray<SessionEntry>): AuditSession {
 
 describe("execution audit task credential contract", () => {
 	it("adds task.credential as the only additive audit source and event type", () => {
-		expect(SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
-			...AUDIT_SOURCE_CUSTOM_TYPES,
-			"task.graph",
-			"task.credential",
-		]);
-		expect(SRC_AUDIT_EVENT_TYPES.filter((type) => type !== "remote.operation" && !type.startsWith("worker") && !type.startsWith("scheduler."))).toEqual([
-			...AUDIT_EVENT_TYPES,
-			"task.graph",
-			"task.credential",
-		]);
+		expect(
+			SRC_AUDIT_SOURCE_CUSTOM_TYPES.filter(
+				(type) => type !== "remote.operation" && !type.startsWith("worker") && !type.startsWith("scheduler."),
+			),
+		).toEqual([...AUDIT_SOURCE_CUSTOM_TYPES, "task.graph", "task.credential"]);
+		expect(
+			SRC_AUDIT_EVENT_TYPES.filter(
+				(type) => type !== "remote.operation" && !type.startsWith("worker") && !type.startsWith("scheduler."),
+			),
+		).toEqual([...AUDIT_EVENT_TYPES, "task.graph", "task.credential"]);
 	});
 
 	it("keeps the task.credential summary allowlist disjoint from the forbidden keys", () => {
@@ -1138,13 +1282,14 @@ describe("execution audit task credential contract", () => {
 		// The summary carries exactly the documented allowlist keys; optional
 		// fields are absent when the transition has none.
 		for (const key of Object.keys(issued.summary ?? {})) {
-			expect(
-				TASK_CREDENTIAL_SUMMARY_KEYS.includes(key as (typeof TASK_CREDENTIAL_SUMMARY_KEYS)[number]),
-				key,
-			).toBe(true);
+			expect(TASK_CREDENTIAL_SUMMARY_KEYS.includes(key as (typeof TASK_CREDENTIAL_SUMMARY_KEYS)[number]), key).toBe(
+				true,
+			);
 		}
 		expect(Object.keys(issued.summary ?? {})).toEqual(
-			TASK_CREDENTIAL_SUMMARY_KEYS.filter((key) => key !== "stageId" && key !== "stageRevision" && key !== "targetId" && key !== "reasonCode"),
+			TASK_CREDENTIAL_SUMMARY_KEYS.filter(
+				(key) => key !== "stageId" && key !== "stageRevision" && key !== "targetId" && key !== "reasonCode",
+			),
 		);
 		const settled = credentialEvents[4]!;
 		expect(settled).toMatchObject({
@@ -1152,9 +1297,7 @@ describe("execution audit task credential contract", () => {
 			summary: { action: "settled", status: "settled", recordedAt: CREDENTIAL_TIMES.settled },
 		});
 		expect((settled as { summary: { reasonCode?: string } }).summary.reasonCode).toBeUndefined();
-		expect((credentialEvents[3] as { summary: { reasonCode?: string } }).summary.reasonCode).toBe(
-			"operator_revoked",
-		);
+		expect((credentialEvents[3] as { summary: { reasonCode?: string } }).summary.reasonCode).toBe("operator_revoked");
 		// No idempotency keys, scope values, or material in any serialization.
 		const encoded = JSON.stringify(folded);
 		expect(encoded).not.toContain("clientRequestId");
@@ -1411,22 +1554,18 @@ function workerLifecycleEntry(
 	extra: Record<string, unknown> = {},
 	entryTimestamp = timestamp,
 ): Extract<SessionEntry, { type: "custom" }> {
-	const {
-		operationId,
-		receiptId: transitionReceiptId,
-		recordReceiptId,
-		...recordExtra
-	} = extra;
-	const persistedReceiptId = recordReceiptId === null
-		? undefined
-		: recordReceiptId ??
-			(["completed", "cancelled"].includes(status)
-				? transitionReceiptId ?? "receipt-1"
-				: status === "failed"
-					? transitionReceiptId
-					: ["reclaiming", "reclaimed", "reclaim_unknown"].includes(status)
-						? "receipt-1"
-						: undefined);
+	const { operationId, receiptId: transitionReceiptId, recordReceiptId, ...recordExtra } = extra;
+	const persistedReceiptId =
+		recordReceiptId === null
+			? undefined
+			: (recordReceiptId ??
+				(["completed", "cancelled"].includes(status)
+					? (transitionReceiptId ?? "receipt-1")
+					: status === "failed"
+						? transitionReceiptId
+						: ["reclaiming", "reclaimed", "reclaim_unknown"].includes(status)
+							? "receipt-1"
+							: undefined));
 	return workerEntry(id, entryTimestamp, "worker.lifecycle_transitioned", {
 		schemaVersion: 1,
 		class: "durable",
@@ -1480,9 +1619,8 @@ function workerOperationEntry(
 	extra: Record<string, unknown> = {},
 ): Extract<SessionEntry, { type: "custom" }> {
 	const { sideEffectState, receiptId: suppliedReceiptId, ...payloadExtra } = extra;
-	const receiptId = suppliedReceiptId === null
-		? undefined
-		: suppliedReceiptId ?? (phase === "terminal" ? "receipt-1" : undefined);
+	const receiptId =
+		suppliedReceiptId === null ? undefined : (suppliedReceiptId ?? (phase === "terminal" ? "receipt-1" : undefined));
 	const effectiveSideEffectState = sideEffectState ?? (phase === "terminal" ? "none" : undefined);
 	return workerEntry(id, timestamp, "worker.operation_recorded", {
 		schemaVersion: 1,
@@ -1552,7 +1690,10 @@ function validWorkerEntries(): Extract<SessionEntry, { type: "custom" }>[] {
 		workerOperationEntry("worker-claimed", WORKER_TIMES.ready, "claimed", 2),
 		workerLifecycleEntry("worker-running", WORKER_TIMES.running, "running", 3, { operationId: "operation-1" }),
 		workerOperationEntry("worker-started", WORKER_TIMES.running, "started", 3),
-		workerLifecycleEntry("worker-completed", WORKER_TIMES.completed, "completed", 4, { operationId: "operation-1", receiptId: "receipt-1" }),
+		workerLifecycleEntry("worker-completed", WORKER_TIMES.completed, "completed", 4, {
+			operationId: "operation-1",
+			receiptId: "receipt-1",
+		}),
 		workerOperationEntry("worker-terminal", WORKER_TIMES.completed, "terminal", 4, { receiptId: "receipt-1" }),
 		workerReceiptEntry(),
 	];
@@ -1620,17 +1761,38 @@ describe("execution audit Worker source contract", () => {
 		const folded = new ExecutionAuditAdapter(workerSession(validWorkerEntries())).fold();
 		const workerEvents = folded.events.filter((event) => event.type.startsWith("worker."));
 		expect(workerEvents.map((event) => event.type)).toEqual([
-			"worker.lifecycle", "worker.operation", "worker.lifecycle", "worker.lifecycle",
-			"worker.operation", "worker.lifecycle", "worker.operation", "worker.receipt",
+			"worker.lifecycle",
+			"worker.operation",
+			"worker.lifecycle",
+			"worker.lifecycle",
+			"worker.operation",
+			"worker.lifecycle",
+			"worker.operation",
+			"worker.receipt",
 		]);
 		expect(workerEvents.every((event) => event.runId === WORKER_RUN_ID)).toBe(true);
 		expect(workerEvents.map((event) => event.sourceEntryId)).toEqual([
-			"worker-starting", "worker-claimed", "worker-ready", "worker-running",
-			"worker-started", "worker-completed", "worker-terminal", "worker-receipt-entry",
+			"worker-starting",
+			"worker-claimed",
+			"worker-ready",
+			"worker-running",
+			"worker-started",
+			"worker-completed",
+			"worker-terminal",
+			"worker-receipt-entry",
 		]);
-		expect(workerEvents[0]).toMatchObject({ type: "worker.lifecycle", summary: { status: "starting", revision: 1, workerId: "worker-1" } });
-		expect(workerEvents[1]).toMatchObject({ type: "worker.operation", summary: { phase: "claimed", operationId: "operation-1", revision: 2 } });
-		expect(workerEvents.at(-1)).toMatchObject({ type: "worker.receipt", summary: { workerReceiptId: "receipt-1", terminalRecordRevision: 4 } });
+		expect(workerEvents[0]).toMatchObject({
+			type: "worker.lifecycle",
+			summary: { status: "starting", revision: 1, workerId: "worker-1" },
+		});
+		expect(workerEvents[1]).toMatchObject({
+			type: "worker.operation",
+			summary: { phase: "claimed", operationId: "operation-1", revision: 2 },
+		});
+		expect(workerEvents.at(-1)).toMatchObject({
+			type: "worker.receipt",
+			summary: { workerReceiptId: "receipt-1", terminalRecordRevision: 4 },
+		});
 		expect(folded.warnings).toEqual([]);
 	});
 
@@ -1657,7 +1819,9 @@ describe("execution audit Worker source contract", () => {
 			{ summary: { status: "reclaiming", endedAt: WORKER_TIMES.completed } },
 			{ summary: { status: "reclaim_unknown", endedAt: WORKER_TIMES.completed } },
 		]);
-		expect(JSON.stringify(unknownFold.events.filter((event) => event.type === "worker.lifecycle").slice(-2))).not.toContain("receiptId");
+		expect(
+			JSON.stringify(unknownFold.events.filter((event) => event.type === "worker.lifecycle").slice(-2)),
+		).not.toContain("receiptId");
 	});
 
 	it("preserves lifecycle facts while allowing only monotonic heartbeat snapshots", () => {
@@ -1688,9 +1852,33 @@ describe("execution audit Worker source contract", () => {
 		const folded = new ExecutionAuditAdapter(workerSession(entries)).fold();
 		expect(folded.warnings).toEqual([]);
 		expect(folded.events.filter((event) => event.type === "worker.lifecycle").slice(-3)).toMatchObject([
-			{ summary: { status: "completed", readyAt: WORKER_TIMES.ready, endedAt: WORKER_TIMES.completed, receiptId: "receipt-1", lastHeartbeatAt: "2026-08-16T00:00:02.500Z" } },
-			{ summary: { status: "reclaiming", readyAt: WORKER_TIMES.ready, endedAt: WORKER_TIMES.completed, receiptId: "receipt-1", lastHeartbeatAt: "2026-08-16T00:00:02.500Z" } },
-			{ summary: { status: "reclaimed", readyAt: WORKER_TIMES.ready, endedAt: WORKER_TIMES.completed, receiptId: "receipt-1", lastHeartbeatAt: "2026-08-16T00:00:02.500Z" } },
+			{
+				summary: {
+					status: "completed",
+					readyAt: WORKER_TIMES.ready,
+					endedAt: WORKER_TIMES.completed,
+					receiptId: "receipt-1",
+					lastHeartbeatAt: "2026-08-16T00:00:02.500Z",
+				},
+			},
+			{
+				summary: {
+					status: "reclaiming",
+					readyAt: WORKER_TIMES.ready,
+					endedAt: WORKER_TIMES.completed,
+					receiptId: "receipt-1",
+					lastHeartbeatAt: "2026-08-16T00:00:02.500Z",
+				},
+			},
+			{
+				summary: {
+					status: "reclaimed",
+					readyAt: WORKER_TIMES.ready,
+					endedAt: WORKER_TIMES.completed,
+					receiptId: "receipt-1",
+					lastHeartbeatAt: "2026-08-16T00:00:02.500Z",
+				},
+			},
 		]);
 	});
 
@@ -1716,11 +1904,16 @@ describe("execution audit Worker source contract", () => {
 		];
 		for (const snapshot of invalidSnapshots) {
 			const folded = new ExecutionAuditAdapter(workerSession([...prefix, snapshot])).fold();
-			expect(folded.events.some((event) => event.sourceEntryId === snapshot.id), snapshot.id).toBe(false);
-			expect(folded.warnings, snapshot.id).toContainEqual(expect.objectContaining({
-				code: "malformed_source",
-				sourceEntryId: snapshot.id,
-			}));
+			expect(
+				folded.events.some((event) => event.sourceEntryId === snapshot.id),
+				snapshot.id,
+			).toBe(false);
+			expect(folded.warnings, snapshot.id).toContainEqual(
+				expect.objectContaining({
+					code: "malformed_source",
+					sourceEntryId: snapshot.id,
+				}),
+			);
 		}
 	});
 
@@ -1751,11 +1944,16 @@ describe("execution audit Worker source contract", () => {
 		for (let index = 0; index < snapshots.length; index++) {
 			const snapshot = snapshots[index]!;
 			const folded = new ExecutionAuditAdapter(workerSession([...prefixes[index]!, snapshot])).fold();
-			expect(folded.events.some((event) => event.sourceEntryId === snapshot.id), snapshot.id).toBe(false);
-			expect(folded.warnings, snapshot.id).toContainEqual(expect.objectContaining({
-				code: "malformed_source",
-				sourceEntryId: snapshot.id,
-			}));
+			expect(
+				folded.events.some((event) => event.sourceEntryId === snapshot.id),
+				snapshot.id,
+			).toBe(false);
+			expect(folded.warnings, snapshot.id).toContainEqual(
+				expect.objectContaining({
+					code: "malformed_source",
+					sourceEntryId: snapshot.id,
+				}),
+			);
 		}
 	});
 
@@ -1779,11 +1977,16 @@ describe("execution audit Worker source contract", () => {
 		];
 		for (const scenario of scenarios) {
 			const folded = new ExecutionAuditAdapter(workerSession([...validWorkerEntries(), scenario])).fold();
-			expect(folded.events.some((event) => event.sourceEntryId === scenario.id), scenario.id).toBe(false);
-			expect(folded.warnings, scenario.id).toContainEqual(expect.objectContaining({
-				code: "malformed_source",
-				sourceEntryId: scenario.id,
-			}));
+			expect(
+				folded.events.some((event) => event.sourceEntryId === scenario.id),
+				scenario.id,
+			).toBe(false);
+			expect(folded.warnings, scenario.id).toContainEqual(
+				expect.objectContaining({
+					code: "malformed_source",
+					sourceEntryId: scenario.id,
+				}),
+			);
 		}
 	});
 
@@ -1818,11 +2021,16 @@ describe("execution audit Worker source contract", () => {
 		for (let index = 0; index < invalidTransitions.length; index++) {
 			const transition = invalidTransitions[index]!;
 			const folded = new ExecutionAuditAdapter(workerSession([...prefixes[index]!, transition])).fold();
-			expect(folded.events.some((event) => event.sourceEntryId === transition.id), transition.id).toBe(false);
-			expect(folded.warnings, transition.id).toContainEqual(expect.objectContaining({
-				code: "malformed_source",
-				sourceEntryId: transition.id,
-			}));
+			expect(
+				folded.events.some((event) => event.sourceEntryId === transition.id),
+				transition.id,
+			).toBe(false);
+			expect(folded.warnings, transition.id).toContainEqual(
+				expect.objectContaining({
+					code: "malformed_source",
+					sourceEntryId: transition.id,
+				}),
+			);
 		}
 	});
 
@@ -1844,7 +2052,9 @@ describe("execution audit Worker source contract", () => {
 					...workerRunEntries("failed"),
 					workerLifecycleEntry("worker-starting-lost", WORKER_TIMES.starting, "starting", 1),
 					workerLifecycleEntry("worker-ready-for-lost", WORKER_TIMES.ready, "ready", 2),
-					workerLifecycleEntry("worker-lost-without-operation", WORKER_TIMES.completed, "lost", 3, { recordReceiptId: null }),
+					workerLifecycleEntry("worker-lost-without-operation", WORKER_TIMES.completed, "lost", 3, {
+						recordReceiptId: null,
+					}),
 				],
 				statuses: ["starting", "ready", "lost"],
 			},
@@ -1907,19 +2117,30 @@ describe("execution audit Worker source contract", () => {
 					workerLifecycleEntry("worker-starting-for-cancel-id", WORKER_TIMES.starting, "starting", 1),
 					workerLifecycleEntry("worker-ready-for-cancel-id", WORKER_TIMES.ready, "ready", 2),
 				],
-				entry: workerLifecycleEntry("worker-cancelling-with-supplied-id", WORKER_TIMES.cancelling, "cancelling", 3, {
-					operationId: "operation-1",
-					activeOperationId: undefined,
-				}),
+				entry: workerLifecycleEntry(
+					"worker-cancelling-with-supplied-id",
+					WORKER_TIMES.cancelling,
+					"cancelling",
+					3,
+					{
+						operationId: "operation-1",
+						activeOperationId: undefined,
+					},
+				),
 			},
 		];
 		for (const scenario of scenarios) {
 			const folded = new ExecutionAuditAdapter(workerSession([...scenario.prefix, scenario.entry])).fold();
-			expect(folded.events.some((event) => event.sourceEntryId === scenario.entry.id), scenario.entry.id).toBe(false);
-			expect(folded.warnings, scenario.entry.id).toContainEqual(expect.objectContaining({
-				code: "malformed_source",
-				sourceEntryId: scenario.entry.id,
-			}));
+			expect(
+				folded.events.some((event) => event.sourceEntryId === scenario.entry.id),
+				scenario.entry.id,
+			).toBe(false);
+			expect(folded.warnings, scenario.entry.id).toContainEqual(
+				expect.objectContaining({
+					code: "malformed_source",
+					sourceEntryId: scenario.entry.id,
+				}),
+			);
 		}
 	});
 
@@ -1953,11 +2174,16 @@ describe("execution audit Worker source contract", () => {
 		];
 		for (const { entry, prefix } of scenarios) {
 			const folded = new ExecutionAuditAdapter(workerSession([...prefix, entry])).fold();
-			expect(folded.events.some((event) => event.sourceEntryId === entry.id), entry.id).toBe(false);
-			expect(folded.warnings, entry.id).toContainEqual(expect.objectContaining({
-				code: "malformed_source",
-				sourceEntryId: entry.id,
-			}));
+			expect(
+				folded.events.some((event) => event.sourceEntryId === entry.id),
+				entry.id,
+			).toBe(false);
+			expect(folded.warnings, entry.id).toContainEqual(
+				expect.objectContaining({
+					code: "malformed_source",
+					sourceEntryId: entry.id,
+				}),
+			);
 		}
 
 		const failedEntries = [
@@ -1986,12 +2212,16 @@ describe("execution audit Worker source contract", () => {
 			{ receiptId: null },
 		);
 		delete workerEnvelopeParts(failedMissingState).payload.sideEffectState;
-		const missingFold = new ExecutionAuditAdapter(workerSession([...failedEntries.slice(0, -1), failedMissingState])).fold();
+		const missingFold = new ExecutionAuditAdapter(
+			workerSession([...failedEntries.slice(0, -1), failedMissingState]),
+		).fold();
 		expect(missingFold.events.some((event) => event.sourceEntryId === failedMissingState.id)).toBe(false);
-		expect(missingFold.warnings).toContainEqual(expect.objectContaining({
-			code: "malformed_source",
-			sourceEntryId: failedMissingState.id,
-		}));
+		expect(missingFold.warnings).toContainEqual(
+			expect.objectContaining({
+				code: "malformed_source",
+				sourceEntryId: failedMissingState.id,
+			}),
+		);
 	});
 
 	it("binds a receipt marker to the terminal operation record receipt", () => {
@@ -2009,16 +2239,35 @@ describe("execution audit Worker source contract", () => {
 		};
 		const folded = new ExecutionAuditAdapter(workerSession([...validWorkerEntries(), mismatched])).fold();
 		expect(folded.events.some((event) => event.sourceEntryId === mismatched.id)).toBe(false);
-		expect(folded.warnings).toContainEqual(expect.objectContaining({
-			code: "malformed_source",
-			sourceEntryId: mismatched.id,
-		}));
+		expect(folded.warnings).toContainEqual(
+			expect.objectContaining({
+				code: "malformed_source",
+				sourceEntryId: mismatched.id,
+			}),
+		);
 	});
 
 	it("rejects every forbidden Worker field without echoing its value", () => {
-		const forbidden = ["pid", "executable", "argv", "cwd", "path", "env", "stdout", "stderr", "prompt", "secret", "token", "headers", "providerError", "rawFrame"];
+		const forbidden = [
+			"pid",
+			"executable",
+			"argv",
+			"cwd",
+			"path",
+			"env",
+			"stdout",
+			"stderr",
+			"prompt",
+			"secret",
+			"token",
+			"headers",
+			"providerError",
+			"rawFrame",
+		];
 		for (const key of forbidden) {
-			const tampered = workerLifecycleEntry(`worker-forbidden-${key}`, WORKER_TIMES.starting, "starting", 1, { [key]: `sensitive-${key}` });
+			const tampered = workerLifecycleEntry(`worker-forbidden-${key}`, WORKER_TIMES.starting, "starting", 1, {
+				[key]: `sensitive-${key}`,
+			});
 			const folded = new ExecutionAuditAdapter(workerSession([tampered])).fold();
 			expect(folded.events).toEqual([]);
 			expect(folded.warnings.some((warning) => warning.code === "malformed_source")).toBe(true);
@@ -2028,7 +2277,10 @@ describe("execution audit Worker source contract", () => {
 
 	it("fails closed for malformed, unknown, and out-of-order Worker records", () => {
 		const malformed = workerOperationEntry("worker-malformed", WORKER_TIMES.starting, "started", 1);
-		const unknown = customEntry("worker-unknown", WORKER_TIMES.starting, "worker.unknown", { schemaVersion: 1, pid: 123 });
+		const unknown = customEntry("worker-unknown", WORKER_TIMES.starting, "worker.unknown", {
+			schemaVersion: 1,
+			pid: 123,
+		});
 		const folded = new ExecutionAuditAdapter(workerSession([malformed, unknown])).fold();
 		expect(folded.events).toEqual([]);
 		expect(folded.warnings.map((warning) => warning.code)).toEqual(["malformed_source", "unknown_source"]);
@@ -2086,33 +2338,38 @@ describe("execution audit Worker source contract", () => {
 		const data = entry.data as Record<string, unknown>;
 		const payload = data.payload as Record<string, unknown>;
 		const mismatched = { ...entry, data: { ...data, payload: { ...payload, revision: 99 } } };
-		const folded = new ExecutionAuditAdapter(workerSession([
-			workerLifecycleEntry("worker-starting-for-revision", WORKER_TIMES.starting, "starting", 1),
-			workerLifecycleEntry("worker-ready-for-revision", WORKER_TIMES.ready, "ready", 2),
-			mismatched,
-		])).fold();
+		const folded = new ExecutionAuditAdapter(
+			workerSession([
+				workerLifecycleEntry("worker-starting-for-revision", WORKER_TIMES.starting, "starting", 1),
+				workerLifecycleEntry("worker-ready-for-revision", WORKER_TIMES.ready, "ready", 2),
+				mismatched,
+			]),
+		).fold();
 		expect(folded.events.filter((event) => event.type === "worker.operation")).toEqual([]);
 		expect(folded.warnings.some((warning) => warning.code === "malformed_source")).toBe(true);
 	});
 
 	it("rejects lifecycle envelope time rollback for a worker", () => {
-		const folded = new ExecutionAuditAdapter(workerSession([
-			workerLifecycleEntry("worker-starting-time-order", "2026-08-16T00:00:00.500Z", "starting", 1),
-			workerLifecycleEntry("worker-ready-time-rollback", "2026-08-16T00:00:00.400Z", "ready", 2, {
-				readyAt: "2026-08-16T00:00:00.400Z",
-			}),
-		])).fold();
+		const folded = new ExecutionAuditAdapter(
+			workerSession([
+				workerLifecycleEntry("worker-starting-time-order", "2026-08-16T00:00:00.500Z", "starting", 1),
+				workerLifecycleEntry("worker-ready-time-rollback", "2026-08-16T00:00:00.400Z", "ready", 2, {
+					readyAt: "2026-08-16T00:00:00.400Z",
+				}),
+			]),
+		).fold();
 		expect(folded.events.map((event) => event.sourceEntryId)).toEqual(["worker-starting-time-order"]);
-		expect(folded.warnings.some((warning) => warning.sourceEntryId === "worker-ready-time-rollback" && warning.code === "malformed_source")).toBe(true);
+		expect(
+			folded.warnings.some(
+				(warning) => warning.sourceEntryId === "worker-ready-time-rollback" && warning.code === "malformed_source",
+			),
+		).toBe(true);
 	});
 });
 
 describe("execution audit Scheduler source contract", () => {
-	const schedulerEntry = (dataOverride: Record<string, unknown> = {}): Extract<SessionEntry, { type: "custom" }> => customEntry(
-		"scheduler-entry-1",
-		"2026-08-22T00:00:00.000Z",
-		"scheduler.executor_selected",
-		{
+	const schedulerEntry = (dataOverride: Record<string, unknown> = {}): Extract<SessionEntry, { type: "custom" }> =>
+		customEntry("scheduler-entry-1", "2026-08-22T00:00:00.000Z", "scheduler.executor_selected", {
 			schemaVersion: 1,
 			class: "durable",
 			category: "scheduler.executor_selected",
@@ -2131,8 +2388,7 @@ describe("execution audit Scheduler source contract", () => {
 				scoreCount: 1,
 			},
 			...dataOverride,
-		},
-	);
+		});
 
 	it("projects validated scheduler metadata without payload material", () => {
 		const session: AuditSession = { getSessionId: () => "scheduler-session", getEntries: () => [schedulerEntry()] };

@@ -1628,26 +1628,30 @@ Response:
     "sessionId": "abc123",
     "sessionFile": "/path/to/session.jsonl",
     "runCommands": ["run.start", "run.get", "run.cancel", "run.resume"],
-    "auditCommands": ["audit.query", "audit.replay", "external.map"],
+    "auditCommands": ["audit.query", "audit.replay"],
     "taskGateCommands": ["task.gate.request", "task.gate.get", "task.gate.list", "task.gate.approve", "task.gate.reject", "task.gate.cancel"],
     "taskGraphCommands": ["task.graph.create", "task.graph.get", "task.graph.list", "task.graph.node.attach", "task.graph.node.settle"],
     "taskCredentialCommands": ["task.credential.issue", "task.credential.get", "task.credential.list", "task.credential.heartbeat", "task.credential.revoke", "task.credential.settle"],
     "subagentCommands": ["subagent.get", "subagent.list", "subagent.cancel"],
-    "externalAgentAdapters": [
-      {"adapterId": "trusted-adapter", "displayName": "Trusted Adapter", "version": "1"}
+    "externalConnectors": [
+      {
+        "schemaVersion": 1,
+        "providerId": "trusted-connector",
+        "providerClass": "external_connector",
+        "revision": 1,
+        "capabilitySnapshotDigest": {"algorithm": "sha256", "value": "..."}
+      }
     ]
   }
 }
 ```
 
-The response advertises the host version, the current `sessionId`, and the run, audit, task gate, task graph, and task credential commands available on this host. `taskGateCommands`, `taskGraphCommands`, `taskCredentialCommands`, `workerCommands`, `subagentCommands`, and `externalAgentAdapters` are optional and additive: legacy clients that ignore them keep working unchanged. `subagentCommands` is present only when trusted Host composition supplies the current Session's Run-owned child registry. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
+The response advertises the host version, the current `sessionId`, and the run, audit, task gate, task graph, and task credential commands available on this host. `taskGateCommands`, `taskGraphCommands`, `taskCredentialCommands`, `workerCommands`, `subagentCommands`, and `externalConnectors` are optional and additive. `subagentCommands` is present only when trusted Host composition supplies the current Session's Run-owned child registry. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
 
-`externalAgentAdapters` is an optional additive summary of adapters registered
-by the trusted Host composition; each entry contains only `adapterId`,
-`displayName`, and `version`. It advertises that the registry holds an
-adapter, never that a target is ready, and it never contains endpoints,
-commands, paths, or credentials. Target readiness is established by probing
-after an explicit `externalAgent` selection (see [External Agent Adapter selection](#external-agent-adapter-selection-externalagent)).
+`externalConnectors` is the safe descriptor list from the single trusted
+connector registry. Each entry pins the provider, revision, provider class,
+and capability snapshot digest; it contains no endpoint, command, path,
+credential, or vendor-driver detail.
 
 Unsupported version:
 ```json
@@ -1687,14 +1691,12 @@ With images and an optional declared route or role:
 {"type": "run.start", "message": "What's wrong in this screenshot?", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}], "modelRoute": "balanced"}
 ```
 
-The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `external` is an optional validated `{namespace, externalSessionId, externalRunId?}` reference. `deadlineAt` is an optional canonical UTC timestamp; it is included in the request fingerprint and propagates to model, tool, MCP, and Sandbox execution. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
+The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `deadlineAt` is an optional canonical UTC timestamp; it is included in the request fingerprint and propagates to model, tool, MCP, and Sandbox execution. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
 
-`externalAgent` is an optional explicit Adapter selection:
-`{"adapterId": "...", "targetId": "..."}`. When present, the host looks up
-the trusted registry, probes the target, runs normal Binding preflight,
-prepares an immutable binding, and only then accepts the Run (see
-[External Agent Adapter selection](#external-agent-adapter-selection-externalagent)).
-When absent, the existing AOS Loop / Provider path runs unchanged.
+`externalConnector` is an optional explicit connector selection. It pins
+`providerId`, `revision`, and `capabilitySnapshotDigest` to an advertised
+descriptor. The Host resolves the constructed connector from the trusted
+registry and sends it through the same executor pool as every other provider.
 
 If `deadlineAt` is already expired during command preflight, the command fails
 with `run_deadline_exceeded`; no Run ID, accepted ledger entry, `run.started`,
@@ -1724,15 +1726,13 @@ Accepted response (emitted before any run event):
     "attempt": 1,
     "status": "accepted",
     "deadlineAt": "2026-08-15T12:00:10.000Z",
-    "external": {"namespace": "ci", "externalSessionId": "job-123", "externalRunId": "attempt-1"},
     "modelBindingId": "model-binding:...",
     "finalModel": {"provider": "anthropic", "modelId": "claude-sonnet-4-5"}
   }
 }
 ```
 
-When `external` was supplied, the accepted response includes the validated
-external reference. Accepted and terminal run records may also include `previousModelBindingId`,
+Accepted and terminal run records may also include `previousModelBindingId`,
 `modelAttempts`, and `modelBudget`. These are metadata-only summaries. The
 same fields are available from `run.get` and terminal receipts; attempt
 records contain candidate identity, status, timestamps, and safe usage only.
@@ -1746,7 +1746,6 @@ Failures:
 - `run_deadline_invalid` when `deadlineAt` is not a canonical UTC timestamp
 - `run_deadline_exceeded` when the deadline has expired before the run is accepted, including while asynchronous preflight is still running
 - `ledger_persistence_failed` when the accepted or started run fact cannot be appended. The host does not publish a successful accepted response or enter the Agent loop in that case.
-- `audit_persistence_failed` when an optional external mapping cannot be durably appended. The host does not publish a successful accepted response or acknowledge the mapping.
 
 ```json
 {
@@ -1876,17 +1875,11 @@ Success response mirrors `run.start` — a new accepted run whose `attempt` is t
 }
 ```
 
-`run.resume` accepts the same optional `external` reference, `externalAgent`
-selection, and `deadlineAt`. The deadline participates in idempotency and is
-persisted on the successor attempt. Its preflight and accepted-run expiry
-rules are the same as `run.start`. The external reference is persisted as the
-successor attempt's mapping; omitting it does not create a new mapping.
-
-An `externalAgent` on `run.resume` requires a verified external `resume`
-capability (from the snapshot or a fresh probe) plus a unique, complete
-`external.mapping` and a compatible prepared Binding. When the target cannot
-resume safely, the host returns `external_agent_resume_unsupported`; it never
-silently converts the resume into a new external `start`.
+`run.resume` accepts the same optional `externalConnector` selection and
+`deadlineAt`. The deadline and pinned connector selection participate in
+idempotency and are persisted on the successor attempt. Connector resume
+requires matching current capability evidence; drift or unsupported resume
+fails closed and never becomes a new external start.
 
 Failures:
 - `session_busy` when the current session already has an active run
@@ -1896,7 +1889,6 @@ Failures:
 - `session_switch_cancelled` when a session-switch extension cancelled the switch
 - `start_rejected` when the new run input is rejected (including the slash-command rule)
 - `ledger_persistence_failed` when the new attempt's accepted or started fact cannot be appended
-- `audit_persistence_failed` when the successor's optional external mapping cannot be durably appended
 - `run_deadline_invalid` or `run_deadline_exceeded` when the requested deadline is malformed or already expired
 
 ### Deadline semantics
@@ -1941,7 +1933,7 @@ Callers should branch on `terminalError.code`, not on the human-readable
 message. TCP and stdio consume the same Host dispatch, so the public records
 are identical.
 
-### Audit query, replay, and external mapping
+### Audit query and replay
 
 These commands require a successful `initialize`. `audit.query` and
 `audit.replay` are read-only: they only fold safe audit summaries from the
@@ -1991,7 +1983,7 @@ Missing runs return `audit_run_not_found`. A safe partial replay returns
 `status: "incomplete"` rather than exposing source errors or failing closed
 with a raw exception. Warning codes are stable (`unknown_source`,
 `malformed_source`, `unsupported_schema`, `orphan_source`, `duplicate_source`,
-`source_unavailable`, `ambiguous_run_association`, and `mapping_conflict`);
+`source_unavailable`, and `ambiguous_run_association`);
 warnings contain only safe identifiers and never raw custom-entry data.
 
 An accepted Run that reaches its deadline is a normal terminal replay: the
@@ -2004,34 +1996,7 @@ An accepted Run whose process ended before that terminal fact was persisted is
 instead `"interrupted"` (see [Persistence and recovery](#persistence-and-recovery));
 replay never fabricates a deadline failure from the requested timestamp.
 
-#### external.map
-
-`external.map` appends a validated mapping for the current Session:
-
-```json
-{
-  "type": "external.map",
-  "external": {
-    "namespace": "ci",
-    "externalSessionId": "job-123",
-    "externalRunId": "attempt-1"
-  },
-  "aosSessionId": "abc123",
-  "aosRunId": "run_abc123",
-  "source": "ci",
-  "correlationId": "trace-1"
-}
-```
-
-Identifiers are bounded safe identifiers, not URLs, paths, commands, or
-payload containers. Repeating the same mapping is idempotent. Mapping either
-the same external execution or the same AOS execution to a different target
-returns `external_mapping_conflict`; the append-only history is never rewritten
-and contradictory historical entries produce a `mapping_conflict` warning.
-If persistence cannot be confirmed, the command returns
-`audit_persistence_failed` and no success acknowledgement.
-
-All audit and mapping responses are redacted public types. They omit prompts,
+All audit responses are redacted public types. They omit prompts,
 messages, final text, custom-entry `data`, raw source bodies, paths, URLs,
 commands, environment/header values, credentials, provider errors, stacks, and
 other free-form diagnostics. Public error messages are generic; clients should
@@ -2484,7 +2449,7 @@ Task Graph preserves the existing single-active-run boundary. A Graph is shared 
 
 #### Audit summary
 
-Each legal `task.graph` transition produces exactly one safe `task.graph` audit event whose summary allows only `taskId`, `graphRevision`, `nodeId`, `action`, `status`, `nodeRevision`, `dependsOn`, `gateRef`, `runId`, and `outcomeCode` (see [Execution Audit / Replay / External Mapping Contract](execution-audit-contract.md)). A Graph event with a `runId` matching the replayed Run appears in that Run's replay as a non-terminal correlation event; events without `runId` are never guessed into a Run by `taskId`, `nodeId`, or dependency structure. Audit and replay never attach a Run, settle a node, or start a Run.
+Each legal `task.graph` transition produces exactly one safe `task.graph` audit event whose summary allows only `taskId`, `graphRevision`, `nodeId`, `action`, `status`, `nodeRevision`, `dependsOn`, `gateRef`, `runId`, and `outcomeCode` (see [Execution Audit / Replay Contract](execution-audit-contract.md)). A Graph event with a `runId` matching the replayed Run appears in that Run's replay as a non-terminal correlation event; events without `runId` are never guessed into a Run by `taskId`, `nodeId`, or dependency structure. Audit and replay never attach a Run, settle a node, or start a Run.
 
 #### Non-goals
 
@@ -2496,7 +2461,7 @@ Task Graph deliberately does not implement:
 - a cross-agent message bus, shared prompts, free-text handoff, budget allocation, or a TaskReceipt ledger;
 - inline editing of a created Graph; structural changes require a new `graphRevision`;
 - Gate creation or decision; Graph only consumes Gate state;
-- an external Agent Adapter, MCP OAuth, resources/prompts, or remote Workers;
+- an additional External Agent Connector protocol, MCP OAuth, resources/prompts, or remote Workers;
 - CLI/TUI commands, login/roles, TLS, WebSocket, a database, or a message queue.
 
 Graph commands are control-plane commands only. They are not registered as builtin, Extension, Skill, or MCP tools, and a model cannot mutate Graph state itself.
@@ -2666,76 +2631,48 @@ protocol frames. Stable command errors are `subagent_invalid`,
 `subagent_not_found`, `subagent_unavailable`, and
 `subagent_cancel_failed` (plus `host_not_initialized`).
 
-The `agent_runtime_host`, `acp`, and `sdk` provider descriptors are
-registration contracts with consumer-shaped fake conformance only. Their
-`implementedInThisLine` flag remains false and registry resolution fails with
-`subagent_provider_unavailable`; RPC does not turn them into implementations.
+The Native Subagent taxonomy contains only `in_process`, `fork`, and
+`agent_runtime_host`. External connectors do not enter this taxonomy.
 See [Native Subagent Runtime Contract](subagent-contract.md).
 
-### External Agent Adapter selection (`externalAgent`)
+### External Agent Connector selection (`externalConnector`)
 
-`run.start` and `run.resume` accept an optional `externalAgent` selection
-(`adapterId` + `targetId`, both bounded safe identifiers) that hands the Run's
-execution to an External Agent Adapter registered by the trusted Host
-composition. The full contract is frozen in
-[External Agent Adapter](external-agent-adapter.md); this section fixes the
-RPC surface only.
+`run.start` and `run.resume` accept an optional `externalConnector` selection
+that pins a descriptor registered by trusted Host composition. The full
+contract is described in [External Agent Connector](external-agent-connector.md).
 
-Selection is explicit and never implicit: a model provider, model ID,
-configuration name, or prompt never selects an Adapter. The `external`
-reference remains the identity relationship and can never replace
-`externalAgent`. No URL, command, args, env, header, credential, protocol
-payload, or callback field is accepted, and no `adapter.start`,
-`adapter.cancel`, `adapter.exec`, or other bypass command is added.
+Selection is explicit and never inferred from a model provider, model ID,
+configuration name, prompt, or vendor name. No URL, command, args, env,
+header, credential, protocol payload, callback, or driver handle is accepted.
 
 ```json
 {
   "type": "run.start",
   "message": "bounded in-memory Run input",
-  "externalAgent": {"adapterId": "trusted-adapter", "targetId": "target-a"},
+  "externalConnector": {
+    "providerId": "trusted-connector",
+    "revision": 1,
+    "capabilitySnapshotDigest": {"algorithm": "sha256", "value": "..."}
+  },
   "deadlineAt": "2026-08-16T12:00:00.000Z"
 }
 ```
 
-Preflight order for a selected Run:
+The selected Run follows the canonical path:
 
 ```text
-validate selection shape
-  → registry lookup and target ownership
-  → adapter.probe (protocol, version, start, cancel, receipt)
-  → normal Model / Capability / Policy / Sandbox preflight
-  → adapter.prepare (immutable prepared Binding)
-  → existing Run accepted fact
-  → adapter.start with in-memory input
-  → validate external ref and persist external.mapping
-  → publish run.started / bounded events
-  → existing cancel / deadline boundary
-  → validate terminal receipt
-  → remote.operation safe receipt
-  → existing Run terminal gate
+validate and pin selection
+  → registry resolve and capability revalidation
+  → canonical input / Model / Capability / Policy / Sandbox preflight
+  → Run accepted fact
+  → unified executor pool
+  → Task / Dispatch / Binding / Attempt / AttemptReceipt
+  → TaskResult / RunReceipt
 ```
 
-Rules:
-
-- Probe or prepare failure rejects the request before acceptance: no Run ID,
-  no accepted ledger fact, no `run.started`, no external execution.
-- Accepted-persistence failure never starts the external Agent; mapping
-  persistence failure prefers `adapter.cancel` and fails closed as
-  `side-effect-unknown` when the target may have produced side effects. There
-  is no Host fallback execution.
-- `run.started` and bounded events are published only after the
-  `external.mapping` is durably persisted. Progress events are never terminal
-  and never change Run status.
-- Cancel, deadline, resume, receipt, and recovery keep the existing Run
-  Lifecycle semantics: an external receipt is evidence for the existing Run
-  terminal gate, never a direct terminal write; an accepted Run that reaches
-  its deadline still settles as `run.failed` with
-  `terminalError.code: "run_deadline_exceeded"`; a target without a verifiable
-  terminal receipt or cancel capability cannot be selected for a controlled
-  Run.
-- Run events, ordering, and terminal records are identical to a normal run:
-  one accepted response, `run.started`, zero or more `run.event` records, and
-  exactly one terminal event.
+There is no legacy product fallback. Connector evidence settles the canonical
+`AttemptReceipt`; it does not create a peer receipt or Run terminal writer.
+Current external traces never contain an `AgentInstance`.
 
 ### Structured errors
 
@@ -2771,9 +2708,6 @@ Error codes:
 | `audit_scope_unavailable` | The requested Session audit scope cannot be read safely | no |
 | `audit_run_not_found` | The requested Run has no accepted audit fact in scope | no |
 | `audit_replay_incomplete` | No safe replay result could be constructed | no |
-| `external_mapping_invalid` | External mapping identifiers or metadata are invalid | no |
-| `external_mapping_conflict` | Mapping history already binds a key to another target | no |
-| `audit_persistence_failed` | The external mapping could not be durably appended | no |
 | `task_gate_invalid` | Task Gate input failed validation (IDs, `stageRevision`, `reasonCode`, or payload bounds) | no |
 | `task_gate_not_found` | The given `gateId` does not exist in the current session | no |
 | `task_gate_conflict` | The business key already has a Gate, or the Gate was already terminated by an opposite decision | no |
@@ -2815,21 +2749,14 @@ Error codes:
 | `subagent_not_found` | The child is not owned by the requested Run in the current Session | no |
 | `subagent_unavailable` | The current Session has no available Subagent authority | yes |
 | `subagent_cancel_failed` | The Run Supervisor did not confirm child cancellation | yes |
-| `external_agent_adapter_invalid` | Adapter selection or registration is invalid (unsafe `adapterId` / `targetId` / descriptor) | no |
-| `external_agent_target_not_found` | The trusted registry has no such target | no |
-| `external_agent_probe_failed` | Target probe failed or timed out; probe has no business side effects by contract | yes |
-| `external_agent_protocol_unsupported` | Protocol or version has no verified translator | no |
-| `external_agent_capability_missing` | The target lacks `start`, terminal `receipt`, `cancel`, or another required capability | no |
-| `external_agent_binding_unsupported` | The current Model / Capability / Policy / Sandbox Binding cannot be mapped safely | no |
-| `external_agent_start_failed` | The target rejected start or the start result is unconfirmed; reconcile before retrying | no |
-| `external_agent_mapping_invalid` | The external identity is unsafe or inconsistent with the request | no |
-| `external_agent_mapping_conflict` | Append-only mapping history already binds a key to another target | no |
-| `external_agent_cancel_unsupported` | The target has no verifiable cancel capability | no |
-| `external_agent_cancel_failed` | The cancel request failed; the target must not be claimed stopped | no |
-| `external_agent_receipt_invalid` | The receipt is missing, malformed, or identity-mismatched | no |
-| `external_agent_side_effect_unknown` | An external effect may have occurred; automatic retry is forbidden | no |
-| `external_agent_resume_unsupported` | The target cannot resume and no safe successor can be established | no |
-| `external_agent_persistence_failed` | Mapping or operation facts could not be durably persisted | no |
+| `external_connector_unavailable` | No trusted External Connector registry is composed, or the selected Connector is not registered | no |
+| `external_resume_unsupported` | The source External Connector run cannot be restored as the same durable Attempt | no |
+| `external_binding_invalid` | Connector selection, canonical input, or gateway model binding is invalid or cannot be translated safely | no |
+| `external_capability_mismatch` | The pinned Connector capability snapshot is missing, unsupported, or changed during preflight | no |
+| `external_event_invalid` | The Connector emitted invalid or out-of-order supervised output | no |
+| `external_resource_limit_exceeded` | Connector input or supervised output exceeded a bounded resource limit | no |
+| `external_path_outside_workspace` | A Connector input or artifact reference resolves outside its trusted workspace | no |
+| `side_effect_unknown` | An external effect may have occurred without conclusive durable evidence; automatic retry is forbidden | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
 
 `retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. After acceptance, `run_deadline_exceeded` is likewise carried by a terminal `run.failed` receipt, not returned as a second command response. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.
@@ -3098,7 +3025,7 @@ Source files:
 - [`src/core/task-gate.ts`](../src/core/task-gate.ts) - Task Gate record, status/action constants, transition, and mutation service types
 - [`src/core/task-graph.ts`](../src/core/task-graph.ts) - Task Graph record, node status/availability constants, DAG definition, transition, and mutation service types
 - [`src/core/subagent-composition.ts`](../src/core/subagent-composition.ts), [`src/core/subagent-supervisor.ts`](../src/core/subagent-supervisor.ts), and [`src/core/subagent-registry.ts`](../src/core/subagent-registry.ts) - trusted child-agent composition, Run-owned lifecycle projections, provider registry, and unavailable-provider registration contracts
-- [`src/core/external-agent-adapter.ts`](../src/core/external-agent-adapter.ts) and [`src/core/external-agent-registry.ts`](../src/core/external-agent-registry.ts) - External Agent Adapter contract and trusted registry (probe, prepared binding, events, terminal receipt, driver handle, stable `external_agent_*` errors); the fact guards and persistence live in [`src/core/external-session-mapping.ts`](../src/core/external-session-mapping.ts), [`src/core/remote-operation.ts`](../src/core/remote-operation.ts), [`src/core/execution-audit.ts`](../src/core/execution-audit.ts) / [`src/core/execution-audit-query.ts`](../src/core/execution-audit-query.ts), with host wiring in [`src/modes/rpc/rpc-host.ts`](../src/modes/rpc/rpc-host.ts)
+- [`src/core/external-agent-registry.ts`](../src/core/external-agent-registry.ts) and [`src/core/external-agent-connector.ts`](../src/core/external-agent-connector.ts) - the single trusted External Connector registry and executor implementation; vendor drivers remain private, with Host wiring in [`src/modes/rpc/rpc-host.ts`](../src/modes/rpc/rpc-host.ts)
 
 ### Model
 
