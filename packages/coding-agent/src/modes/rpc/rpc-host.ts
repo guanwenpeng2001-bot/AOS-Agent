@@ -5311,6 +5311,18 @@ export class RpcHostController {
 									selection,
 									expectedText: command.message,
 									signal: recoveryController.signal,
+									reconstruction: {
+										canonicalInput: { schemaVersion: 1, text: command.message, artifacts: [] },
+										inputAdmission: {
+											inspectArtifact: () => {
+												throw new Error("RPC has no trusted artifact reference authority");
+											},
+										},
+										workspace: recoveryBinding.session.cwd,
+										...(sourceRun.record.startedAt === undefined
+											? {}
+											: { acceptedAt: sourceRun.record.startedAt }),
+									},
 								});
 								const settlement = recovery.then(() => undefined);
 								recoveryBinding.externalRunSettlements.set(command.sourceRunId, settlement);
