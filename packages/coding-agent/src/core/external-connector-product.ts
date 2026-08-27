@@ -113,23 +113,22 @@ export interface ExternalConnectorProductRecoveryInput {
 	readonly runId: string;
 	readonly providerId: string;
 	readonly selection?: ExternalConnectorSelection;
-	/** RPC recovery must exactly match the immutable canonical input of the durable Attempt. */
+	/** RPC recovery must exactly match the immutable durable canonical execution input. */
 	readonly expectedCanonicalInput: CanonicalExternalAgentInput;
-	/** Omission means the durable Attempt must not contain a Tool Gateway request. */
+	/** Omission means the durable execution input must not contain a Tool Gateway request. */
 	readonly expectedToolGatewayRequest?: ExternalConnectorToolGatewayRequestInput;
+	/** When supplied, the caller's resolved route must exactly match the durable model projection. */
+	readonly expectedGatewayModelRoute?: ExternalConnectorProductExecutionInput["gatewayModelRoute"];
 	readonly signal?: AbortSignal;
 	/**
-	 * Accepted transport facts can precede every product fact. This input is the
-	 * read-only admission material needed to reconstruct that proven
-	 * no-side-effect prefix with the same deterministic product identities.
+	 * Accepted transport facts can precede the canonical Task and binding facts.
+	 * This contains only trusted admission context; exact execution material is
+	 * always reconstructed from the durable pre-accept execution-input fact.
 	 */
 	readonly reconstruction?: {
-		readonly canonicalInput: CanonicalExternalAgentInput;
 		readonly inputAdmission: Pick<ExternalAgentInputAdmissionOptions, "inspectArtifact">;
 		readonly workspace: string;
 		readonly acceptedAt?: string;
-		readonly toolGatewayRequest?: ExternalConnectorToolGatewayRequestInput;
-		readonly gatewayModelRoute?: ExternalConnectorProductExecutionInput["gatewayModelRoute"];
 	};
 }
 
@@ -172,7 +171,7 @@ interface PersistedExternalConnectorProductRun {
 	readonly timestamp: string;
 }
 
-/** Read-only admission result. No Foundation fact exists until this value is persisted after acceptance. */
+/** Read-only admission result. The immutable execution input is persisted before transport acceptance. */
 export interface ExternalConnectorProductAdmission {
 	readonly input: ExternalConnectorProductExecutionInput;
 	readonly selected: ExternalConnectorResolvedSelection;
@@ -284,6 +283,24 @@ function modelRouteFor(selection: ExternalConnectorResolvedSelection, input: Ext
 	};
 }
 
+function exactModelProjection(
+	route: NonNullable<ExternalConnectorProductExecutionInput["gatewayModelRoute"]>,
+): ExternalResolvedModelProjection {
+	const projection = {
+		schemaVersion: 1 as const,
+		provider: route.provider,
+		model: route.model,
+		effort: route.effort,
+		serviceTier: route.serviceTier,
+		fallbackDecision: route.fallbackDecision,
+		bindingDigest: route.bindingDigest,
+	};
+	if (!isExternalResolvedModelProjection(projection)) {
+		throw new ExternalConnectorProductError("external_binding_invalid", "External gateway model projection is invalid");
+	}
+	return projection;
+}
+
 const TOOL_GATEWAY_REQUEST_INPUT_KEYS = new Set([
 	"schemaVersion",
 	"toolCallId",
@@ -364,18 +381,7 @@ export async function prepareExternalConnectorProductRun(
 		if (gatewayRoute === undefined) {
 			throw new ExternalConnectorProductError("external_binding_invalid", "External gateway model binding is missing");
 		}
-		const exactProjection = {
-			schemaVersion: 1 as const,
-			provider: gatewayRoute.provider,
-			model: gatewayRoute.model,
-			effort: gatewayRoute.effort,
-			serviceTier: gatewayRoute.serviceTier,
-			fallbackDecision: gatewayRoute.fallbackDecision,
-			bindingDigest: gatewayRoute.bindingDigest,
-		};
-		if (!isExternalResolvedModelProjection(exactProjection)) {
-			throw new ExternalConnectorProductError("external_binding_invalid", "External gateway model projection is invalid");
-		}
+		const exactProjection = exactModelProjection(gatewayRoute);
 		const preflight = modelProjectionPreflight(selected.value.connector);
 		if (preflight === undefined) {
 			throw new ExternalConnectorProductError("external_binding_invalid", "External gateway model translation is unavailable");
@@ -399,11 +405,53 @@ export async function prepareExternalConnectorProductRun(
 	};
 }
 
+function durableExecutionInputForAdmission(
+	admission: ExternalConnectorProductAdmission,
+): ExternalConnectorExecutionInput {
+	return cloneDeepFrozen({
+		schemaVersion: 1,
+		taskId: externalConnectorProductIdentity(
+			admission.input.runId,
+			admission.selected.descriptor.providerId,
+		).taskId,
+		requestFingerprint: admission.requestFingerprint,
+		input: admission.admittedInput,
+		...(admission.toolGatewayRequest === undefined ? {} : { toolGatewayRequest: admission.toolGatewayRequest }),
+		...(admission.modelProjection === undefined ? {} : { modelProjection: admission.modelProjection }),
+		...(admission.modelTranslation === undefined ? {} : { modelTranslation: admission.modelTranslation }),
+	});
+}
+
+/** Persist exact immutable execution material before RPC accepted/started facts. */
+export async function persistExternalConnectorProductAdmissionBeforeAcceptance(
+	admission: ExternalConnectorProductAdmission,
+): Promise<void> {
+	const identity = externalConnectorProductIdentity(
+		admission.input.runId,
+		admission.selected.descriptor.providerId,
+	);
+	const ledger = new SessionLedger(admission.input.session, {
+		ownerId: `external-connector-admission:${identity.bindingId}`,
+		...(admission.input.writer === undefined ? {} : { writer: admission.input.writer }),
+	});
+	try {
+		await persistImmutable(
+			ledger,
+			EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE,
+			identity.taskId,
+			durableExecutionInputForAdmission(admission) as unknown as FoundationJsonValue,
+			{ taskId: identity.taskId, bindingId: identity.bindingId },
+		);
+	} finally {
+		await ledger.release();
+	}
+}
+
 /** Persist an already accepted admission before starting its pure Attempt. */
 export async function persistExternalConnectorProductRunAfterAcceptance(
 	admission: ExternalConnectorProductAdmission,
 ): Promise<PreparedExternalConnectorProductRun> {
-	const { input, selected, admittedInput, requestFingerprint, route, modelProjection, modelTranslation, toolGatewayRequest } = admission;
+	const { input, selected, admittedInput, requestFingerprint, route, toolGatewayRequest } = admission;
 	const timestamp = (input.now ?? (() => new Date().toISOString()))();
 	const identityToken = token(input.runId, selected.descriptor.providerId);
 	const identity = externalConnectorProductIdentity(input.runId, selected.descriptor.providerId);
@@ -545,15 +593,7 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 		await persistImmutable(ledger, "capability_binding", refs.capability.id, sourcePayloads.capability, correlationBase);
 		await persistImmutable(ledger, "model_broker_binding", refs.model.id, sourcePayloads.model, correlationBase);
 		await persistImmutable(ledger, "policy_binding", refs.policy.id, sourcePayloads.policy, correlationBase);
-		const durableExecutionInput = {
-			schemaVersion: 1,
-			taskId: persistedTask.value.taskId,
-			requestFingerprint,
-			input: admittedInput,
-			...(toolGatewayRequest === undefined ? {} : { toolGatewayRequest }),
-			...(modelProjection === undefined ? {} : { modelProjection }),
-			...(modelTranslation === undefined ? {} : { modelTranslation }),
-		};
+		const durableExecutionInput = durableExecutionInputForAdmission(admission);
 		await persistImmutable(
 			ledger,
 			EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE,
@@ -711,6 +751,15 @@ export async function executePreparedExternalConnectorProductRun(
 		...(input.writer === undefined ? {} : { writer: input.writer }),
 	});
 	try {
+		const started = await settlement.startDispatch({
+			provider: selected.connector,
+			dispatch,
+			binding,
+			initialBindingEpoch: epoch,
+			correlation,
+			...(input.signal === undefined ? {} : { signal: input.signal }),
+		});
+		if (!started.ok) throw started.error;
 		const gateway = await resolvePreparedToolGateway(prepared, store);
 		if (gateway.kind === "ambiguous") {
 			throw new FoundationError(
@@ -875,47 +924,84 @@ function validateExternalConnectorRecoveryExpectedInput(
 	input: ExternalConnectorProductRecoveryInput,
 	selected: ExternalConnectorResolvedSelection,
 	durableExecutionInput: ExternalConnectorExecutionInput | undefined,
-): void {
+): asserts durableExecutionInput is ExternalConnectorExecutionInput {
+	if (durableExecutionInput === undefined) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"External Connector recovery facts do not contain durable execution input.",
+		);
+	}
 	const expectedInput = validateCanonicalExternalAgentInput(input.expectedCanonicalInput);
 	if (!expectedInput.ok) {
 		throw new ExternalConnectorProductError(
 			"external_binding_invalid",
-			"External Connector recovery input does not match the persisted Attempt.",
+			"External Connector recovery input does not match the durable execution input.",
 		);
 	}
 	const expectedRequest = input.expectedToolGatewayRequest === undefined
 		? undefined
 		: materializeToolGatewayRequest(input.expectedToolGatewayRequest, input.runId, selected);
 	if (
-		input.reconstruction !== undefined &&
-		canonicalFoundationJson(input.reconstruction.canonicalInput) !== canonicalFoundationJson(expectedInput.value)
-	) {
-		throw new ExternalConnectorProductError(
-			"external_binding_invalid",
-			"External Connector recovery input does not match its reconstruction.",
-		);
-	}
-	const reconstructionRequest = input.reconstruction?.toolGatewayRequest === undefined
-		? undefined
-		: materializeToolGatewayRequest(input.reconstruction.toolGatewayRequest, input.runId, selected);
-	if (!optionalCanonicalValuesMatch(reconstructionRequest, expectedRequest)) {
-		throw new ExternalConnectorProductError(
-			"external_binding_invalid",
-			"External Connector recovery Tool Gateway request does not match its reconstruction.",
-		);
-	}
-	if (
-		durableExecutionInput !== undefined &&
-		(
-			canonicalFoundationJson(durableExecutionInput.input) !== canonicalFoundationJson(expectedInput.value) ||
-			!optionalCanonicalValuesMatch(durableExecutionInput.toolGatewayRequest, expectedRequest)
-		)
+		canonicalFoundationJson(durableExecutionInput.input) !== canonicalFoundationJson(expectedInput.value) ||
+		!optionalCanonicalValuesMatch(durableExecutionInput.toolGatewayRequest, expectedRequest)
 	) {
 		throw new ExternalConnectorProductError(
 			"external_binding_invalid",
 			"External Connector recovery input does not match the persisted Attempt.",
 		);
 	}
+	const requiresGatewayModel = selected.capabilitySnapshot.modelAccess === "aos_gateway";
+	if (
+		(durableExecutionInput.modelProjection !== undefined) !== requiresGatewayModel ||
+		(durableExecutionInput.modelTranslation !== undefined) !== requiresGatewayModel
+	) {
+		throw new ExternalConnectorProductError(
+			"external_binding_invalid",
+			"External Connector recovery model projection does not match the persisted capability.",
+		);
+	}
+	if (input.expectedGatewayModelRoute !== undefined) {
+		const expectedModelProjection = exactModelProjection(input.expectedGatewayModelRoute);
+		if (
+			durableExecutionInput.modelProjection === undefined ||
+			canonicalFoundationJson(durableExecutionInput.modelProjection) !==
+				canonicalFoundationJson(expectedModelProjection)
+		) {
+			throw new ExternalConnectorProductError(
+				"external_binding_invalid",
+				"External Connector recovery model projection does not match the durable execution input.",
+			);
+		}
+	}
+}
+
+function gatewayModelRouteFromDurableInput(
+	input: ExternalConnectorExecutionInput,
+): ExternalConnectorProductExecutionInput["gatewayModelRoute"] {
+	const projection = input.modelProjection;
+	if (projection === undefined) return undefined;
+	return {
+		provider: projection.provider,
+		model: projection.model,
+		effort: projection.effort,
+		serviceTier: projection.serviceTier,
+		fallbackDecision: projection.fallbackDecision,
+		bindingDigest: projection.bindingDigest,
+	};
+}
+
+function toolGatewayRequestInputFromDurableInput(
+	request: ToolGatewayRequest,
+): ExternalConnectorToolGatewayRequestInput {
+	return {
+		schemaVersion: 1,
+		toolCallId: request.toolCallId,
+		toolName: request.toolName,
+		originalArguments: request.originalArguments,
+		...(request.namespace === undefined ? {} : { namespace: request.namespace }),
+		...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
+		...(request.deadlineAt === undefined ? {} : { deadlineAt: request.deadlineAt }),
+	};
 }
 
 /** Validate immutable recovery input before RPC publishes a resumed acceptance. */
@@ -987,6 +1073,7 @@ export async function recoverExternalConnectorProductRun(
 			durableExecutionInput !== undefined
 		) {
 			const metadata = await input.session.getMetadata();
+			const durableGatewayModelRoute = gatewayModelRouteFromDurableInput(durableExecutionInput);
 			prepared = {
 				input: {
 					session: input.session,
@@ -1008,16 +1095,11 @@ export async function recoverExternalConnectorProductRun(
 					...(durableExecutionInput.toolGatewayRequest === undefined
 						? {}
 						: {
-							toolGatewayRequest: {
-								schemaVersion: 1,
-								toolCallId: durableExecutionInput.toolGatewayRequest.toolCallId,
-								toolName: durableExecutionInput.toolGatewayRequest.toolName,
-								originalArguments: durableExecutionInput.toolGatewayRequest.originalArguments,
-								...(durableExecutionInput.toolGatewayRequest.namespace === undefined ? {} : { namespace: durableExecutionInput.toolGatewayRequest.namespace }),
-								...(durableExecutionInput.toolGatewayRequest.idempotencyKey === undefined ? {} : { idempotencyKey: durableExecutionInput.toolGatewayRequest.idempotencyKey }),
-								...(durableExecutionInput.toolGatewayRequest.deadlineAt === undefined ? {} : { deadlineAt: durableExecutionInput.toolGatewayRequest.deadlineAt }),
-							},
+							toolGatewayRequest: toolGatewayRequestInputFromDurableInput(
+								durableExecutionInput.toolGatewayRequest,
+							),
 						}),
+					...(durableGatewayModelRoute === undefined ? {} : { gatewayModelRoute: durableGatewayModelRoute }),
 					...(input.signal === undefined ? {} : { signal: input.signal }),
 				},
 				selected,
@@ -1054,17 +1136,21 @@ export async function recoverExternalConnectorProductRun(
 				registry: input.registry,
 				selection,
 				runId: input.runId,
-				message: reconstruction.canonicalInput.text,
-				canonicalInput: reconstruction.canonicalInput,
+				message: durableExecutionInput.input.text,
+				canonicalInput: durableExecutionInput.input,
 				inputAdmission: reconstruction.inputAdmission,
 				workspace: reconstruction.workspace,
 				...(input.signal === undefined ? {} : { signal: input.signal }),
-				...(reconstruction.toolGatewayRequest === undefined
+				...(durableExecutionInput.toolGatewayRequest === undefined
 					? {}
-					: { toolGatewayRequest: reconstruction.toolGatewayRequest }),
-				...(reconstruction.gatewayModelRoute === undefined
+					: {
+							toolGatewayRequest: toolGatewayRequestInputFromDurableInput(
+								durableExecutionInput.toolGatewayRequest,
+							),
+						}),
+				...(durableExecutionInput.modelProjection === undefined
 					? {}
-					: { gatewayModelRoute: reconstruction.gatewayModelRoute }),
+					: { gatewayModelRoute: gatewayModelRouteFromDurableInput(durableExecutionInput) }),
 				now: () => durableTask?.createdAt ?? reconstruction.acceptedAt ?? new Date().toISOString(),
 			});
 			if (admission.selected.connector !== selected.connector) {

@@ -52,6 +52,7 @@ import {
 import {
 	executePreparedExternalConnectorProductRun,
 	externalConnectorProductIdentity,
+	persistExternalConnectorProductAdmissionBeforeAcceptance,
 	persistExternalConnectorProductRunAfterAcceptance,
 	preflightExternalConnectorProductRecovery,
 	prepareExternalConnectorProductRun,
@@ -2960,8 +2961,50 @@ export class RpcHostController {
 				}
 				if (
 					externalStartWasTornDown() ||
-					runBinding.activeReservation !== reservation ||
-					externalStartControl?.lifecycleController?.signal.aborted === true
+					runBinding.activeReservation !== reservation
+				) {
+					if (runBinding.activeReservation === reservation) runBinding.activeReservation = undefined;
+					try {
+						reservation.release();
+					} catch {
+						// Lifecycle teardown may already have released this reservation.
+					}
+					clearRunDeadline(runBinding, proposedRunId);
+					discardRunRequest(requestClaim);
+					return undefined;
+				}
+				if (
+					deadlineController.signal.aborted ||
+					(deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.now())
+				) {
+					runBinding.activeReservation = undefined;
+					try {
+						reservation.release();
+					} catch {
+						// Deadline teardown may already have released this reservation.
+					}
+					return startFailure(
+						automationError(
+							id,
+							commandType,
+							createAutomationError(
+								"run_deadline_exceeded",
+								"The Run deadline was exceeded before acceptance.",
+								false,
+							),
+						),
+					);
+				}
+				try {
+					await persistExternalConnectorProductAdmissionBeforeAcceptance(externalProductAdmission);
+				} catch (err) {
+					releaseOwnReservation();
+					clearRunDeadline(runBinding, proposedRunId);
+					return startFailure(automationError(id, commandType, asAutomationError(err)));
+				}
+				if (
+					externalStartWasTornDown() ||
+					runBinding.activeReservation !== reservation
 				) {
 					if (runBinding.activeReservation === reservation) runBinding.activeReservation = undefined;
 					try {
@@ -5380,6 +5423,55 @@ export class RpcHostController {
 										),
 									);
 								}
+								let expectedGatewayModelRoute: ExternalConnectorProductAdmission["input"]["gatewayModelRoute"];
+								if (
+									selected.value.capabilitySnapshot.modelAccess === "aos_gateway" &&
+									(command.modelRoute !== undefined || command.modelRole !== undefined)
+								) {
+									const modelSelection = await resolveRequestedModel(
+										recoveryBinding,
+										command.modelRoute,
+										command.modelRole,
+										undefined,
+										false,
+									);
+									const resolution = modelSelection.resolution;
+									const effort = resolution?.reference.thinkingLevel;
+									const serviceTier = resolution?.reference.serviceTier;
+									const fallbackDecision =
+										resolution === undefined ? undefined : externalFallbackDecisionForResolution(resolution);
+									if (
+										modelSelection.error !== undefined ||
+										resolution === undefined ||
+										effort === undefined ||
+										serviceTier === undefined ||
+										fallbackDecision === undefined
+									) {
+										recoveryBinding.activeReservation = undefined;
+										recoveryReservation.release();
+										clearRunDeadline(recoveryBinding, command.sourceRunId);
+										return resumeFailure(
+											automationError(
+												id,
+												"run.resume",
+												modelSelection.error ??
+													createAutomationError(
+														"external_binding_invalid",
+														"The resolved AOS gateway model lacks an exact translatable route.",
+														false,
+													),
+											),
+										);
+									}
+									expectedGatewayModelRoute = {
+										provider: resolution.reference.provider,
+										model: resolution.reference.id,
+										effort,
+										serviceTier,
+										fallbackDecision,
+										bindingDigest: fingerprintFoundationValue(resolution.binding),
+									};
+								}
 								const expectedCanonicalInput: CanonicalExternalAgentInput = {
 									schemaVersion: 1,
 									text: command.message,
@@ -5396,17 +5488,16 @@ export class RpcHostController {
 									...(command.toolGatewayRequest === undefined
 										? {}
 										: { expectedToolGatewayRequest: command.toolGatewayRequest }),
+									...(expectedGatewayModelRoute === undefined
+										? {}
+										: { expectedGatewayModelRoute }),
 									signal: recoveryController.signal,
 									reconstruction: {
-										canonicalInput: expectedCanonicalInput,
 										inputAdmission: {
 											inspectArtifact: (reference: CanonicalExternalAgentArtifactReference) =>
 												hostController.inspectExternalArtifact(reference),
 										},
 										workspace: recoveryBinding.session.cwd,
-										...(command.toolGatewayRequest === undefined
-											? {}
-											: { toolGatewayRequest: command.toolGatewayRequest }),
 										...(sourceRun.record.startedAt === undefined
 											? {}
 											: { acceptedAt: sourceRun.record.startedAt }),

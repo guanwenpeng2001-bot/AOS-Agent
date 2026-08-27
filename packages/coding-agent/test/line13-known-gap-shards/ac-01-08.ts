@@ -5,12 +5,16 @@ import { join } from "node:path";
 import {
 	InMemorySessionStorage,
 	LayeredResultSettlement,
+	Result,
 	Session,
 	SessionLedger,
 	SessionT5Ledger,
 	createConnectorCapabilitySnapshot,
 	type AgentBinding,
+	type FoundationError,
 	type TaskEnvelope,
+	type ToolExecutionResult,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import { fauxAssistantMessage, registerFauxProvider } from "@aos-agent/ai/compat";
 import * as codingAgentEntry from "../../src/index.ts";
@@ -20,6 +24,7 @@ import {
 	createAgentSessionServices,
 	createExternalConnectorRegistry,
 	executeExternalConnectorProductRun,
+	externalConnectorProductIdentity,
 	SchedulerExecutorRegistry,
 	SchedulerQueueStore,
 	type CreateAgentSessionRuntimeFactory,
@@ -636,8 +641,21 @@ async function createCurrentConnectorFixture(toolGateway = false) {
 		artifacts: false,
 		images: false,
 	});
-	let toolGatewayCalls = 0;
-	const invokeToolGateway = (): void => { toolGatewayCalls += 1; };
+	const toolGatewayRequests: ToolGatewayRequest[] = [];
+	const toolGatewayResults: ToolExecutionResult[] = [];
+	const invokeToolGateway = (request: ToolGatewayRequest): Result<ToolExecutionResult, FoundationError> => {
+		toolGatewayRequests.push(request);
+		const result: ToolExecutionResult = {
+			schemaVersion: 1,
+			toolCallId: request.toolCallId,
+			toolName: request.toolName,
+			ok: true,
+			sideEffectState: "none",
+			toolReceiptRef: `line13-receipt-${request.toolCallId}`,
+		};
+		toolGatewayResults.push(result);
+		return Result.ok(result);
+	};
 	const connector = createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,
 		capability: snapshot,
@@ -674,7 +692,7 @@ async function createCurrentConnectorFixture(toolGateway = false) {
 		revision: descriptor.revision,
 		capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
 	};
-	return { session, t5, registry, descriptor, selection, invokeToolGateway, toolGatewayCalls: () => toolGatewayCalls };
+	return { session, t5, registry, descriptor, selection, toolGatewayRequests, toolGatewayResults };
 }
 
 export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
@@ -929,12 +947,21 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 			scenario: {
 				fixture: () => createCurrentConnectorFixture(true),
 				assertion: async (fixture) => {
-					await executeExternalConnectorProductRun({
+					const runId = "line13-ac07-tool-gateway";
+					const request = {
+						schemaVersion: 1 as const,
+						toolCallId: "line13-ac07-tool-call",
+						toolName: "workspace.read",
+						namespace: "workspace",
+						originalArguments: { path: "docs/evidence.txt", mode: "metadata" },
+						idempotencyKey: "line13-ac07-once",
+					};
+					const execution = await executeExternalConnectorProductRun({
 						session: fixture.session,
 						writer: fixture.t5.writer,
 						registry: fixture.registry,
 						selection: fixture.selection,
-						runId: "line13-ac07-tool-gateway",
+						runId,
 						message: "Reach the bound tool gateway during real execution",
 						canonicalInput: {
 							schemaVersion: 1,
@@ -943,12 +970,43 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 						},
 						inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 						workspace: "workspace-ref",
+						toolGatewayRequest: request,
 						now: () => NOW,
 					});
-					assert.equal(
-						fixture.toolGatewayCalls(),
-						1,
-						"advertised tool gateway must be invoked by real product execution",
+					const identity = externalConnectorProductIdentity(runId, fixture.descriptor.providerId);
+					const expectedRequest: ToolGatewayRequest = {
+						...request,
+						context: {
+							schemaVersion: 1,
+							bindingId: identity.bindingId,
+							bindingEpochId: identity.bindingEpochId,
+							taskId: identity.taskId,
+							dispatchId: identity.dispatchId,
+							providerId: fixture.descriptor.providerId,
+							attemptId: identity.attemptId,
+							operationId: runId,
+						},
+					};
+					const expectedResult: ToolExecutionResult = {
+						schemaVersion: 1,
+						toolCallId: request.toolCallId,
+						toolName: request.toolName,
+						ok: true,
+						sideEffectState: "none",
+						toolReceiptRef: `line13-receipt-${request.toolCallId}`,
+					};
+					assert.deepStrictEqual(
+						{
+							requests: fixture.toolGatewayRequests,
+							results: fixture.toolGatewayResults,
+							exchange: execution.toolGatewayExchange,
+						},
+						{
+							requests: [expectedRequest],
+							results: [expectedResult],
+							exchange: { request: expectedRequest, result: expectedResult },
+						},
+						"advertised tool gateway must execute one concrete canonical request/result exchange",
 					);
 				},
 			},
