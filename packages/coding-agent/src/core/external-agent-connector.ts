@@ -69,7 +69,9 @@ export interface ExternalAgentConnectorRuntimeOptions {
 	readonly providerId: string;
 	readonly capability: ConnectorCapabilitySnapshot;
 	/** @internal Trusted Host probe used for registry admission and lifecycle truth rechecks. */
-	readonly capabilityProbe?: () => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
+	readonly capabilityProbe?: (
+		options?: FoundationProviderExecutionOptions,
+	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
 	readonly store: ExternalConnectorDurableStore;
 	readonly driver: ExternalConnectorVendorDriver;
 	readonly supervision: {
@@ -340,7 +342,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly providerClass = "external_connector" as const;
 	readonly providerId: string;
 	readonly #capability: ConnectorCapabilitySnapshot;
-	readonly #capabilityProbe: () => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
+	readonly #capabilityProbe: (
+		options?: FoundationProviderExecutionOptions,
+	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
 	readonly #store: ExternalConnectorDurableStore;
 	readonly #driver: ExternalConnectorVendorDriver;
 	readonly #supervision: ExternalAgentConnectorRuntimeOptions["supervision"];
@@ -420,8 +424,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		return EXTERNAL_CONNECTOR_CAPABILITIES;
 	}
 
-	async probeCapabilities(): Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>> {
-		return this.#capabilityProbe();
+	async probeCapabilities(
+		options?: FoundationProviderExecutionOptions,
+	): Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>> {
+		return this.#capabilityProbe(options);
 	}
 
 	async createAttempt(

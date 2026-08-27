@@ -12,11 +12,12 @@ import {
 	type ConnectorCapabilitySnapshot,
 	type ExecutionCorrelation,
 	type ExternalAgentConnector,
+	type FoundationProviderExecutionOptions,
 	type Result as ResultValue,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
 import {
@@ -112,9 +113,17 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 	spawnCalls = 0;
 	readCalls = 0;
 	readonly #throwOnDispose: boolean;
+	readonly #readHangs: boolean;
+	readonly #returnsCancelEvidence: boolean;
 
-	constructor(options: { readonly throwOnDispose?: boolean } = {}) {
+	constructor(options: {
+		readonly readHangs?: boolean;
+		readonly returnsCancelEvidence?: boolean;
+		readonly throwOnDispose?: boolean;
+	} = {}) {
 		this.#throwOnDispose = options.throwOnDispose ?? false;
+		this.#readHangs = options.readHangs ?? false;
+		this.#returnsCancelEvidence = options.returnsCancelEvidence ?? false;
 	}
 
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
@@ -141,6 +150,7 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 
 	async read(handle: ExternalConnectorDriverHandle): Promise<ExternalConnectorTerminalEvidence> {
 		this.readCalls += 1;
+		if (this.#readHangs) await new Promise<never>(() => undefined);
 		return {
 			externalSessionId: handle.externalSessionId,
 			externalTurnId: handle.externalTurnId,
@@ -154,9 +164,19 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 
 	async write(): Promise<void> {}
 	async heartbeat(): Promise<void> {}
-	async cancel(): Promise<undefined> {
+	async cancel(
+		handle: ExternalConnectorDriverHandle,
+	): Promise<ExternalConnectorTerminalEvidence | undefined> {
 		this.cancelCalls += 1;
-		return undefined;
+		return this.#returnsCancelEvidence ? {
+			externalSessionId: handle.externalSessionId,
+			externalTurnId: handle.externalTurnId,
+			operationNonce: handle.operationNonce,
+			status: "cancelled",
+			artifacts: [],
+			sideEffectState: "none",
+			producedAt: NOW,
+		} : undefined;
 	}
 
 	async dispose(): Promise<void> {
@@ -181,7 +201,13 @@ function createSupportedConnector(options: {
 	readonly driver?: ThirdPartyZetaDriver;
 	readonly capabilityProbe?: (
 		snapshot: ConnectorCapabilitySnapshot,
+		options?: FoundationProviderExecutionOptions,
 	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
+	readonly supervisionDeadlines?: {
+		readonly event?: { readonly hardMs: number; readonly idleMs: number };
+		readonly receipt?: { readonly hardMs: number; readonly idleMs: number };
+		readonly dispose?: { readonly hardMs: number; readonly idleMs: number };
+	};
 } = {}): SupportedConnectorFixture {
 	supervisedFixtureId += 1;
 	const fixtureId = supervisedFixtureId;
@@ -194,13 +220,21 @@ function createSupportedConnector(options: {
 	const supervision = createExternalConnectorTestSupervision();
 	const driver = options.driver ?? new ThirdPartyZetaDriver();
 	const capabilityProbe = options.capabilityProbe;
+	const supervisionOptions = options.supervisionDeadlines === undefined
+		? supervision.options
+		: {
+			...supervision.options,
+			deadlines: { ...supervision.options.deadlines, ...options.supervisionDeadlines },
+		};
 	const connector = createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,
 		capability: snapshot,
-		...(capabilityProbe === undefined ? {} : { capabilityProbe: () => capabilityProbe(snapshot) }),
+		...(capabilityProbe === undefined
+			? {}
+			: { capabilityProbe: (probeOptions?: FoundationProviderExecutionOptions) => capabilityProbe(snapshot, probeOptions) }),
 		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
 		driver,
-		supervision: supervision.options,
+		supervision: supervisionOptions,
 		now: () => NOW,
 		operationNonce: () => `zeta-nonce-${fixtureId}`,
 	});
@@ -289,12 +323,16 @@ function driftedCapabilitySnapshot(snapshot: ConnectorCapabilitySnapshot): Conne
 	return createConnectorCapabilitySnapshot({ ...unpinned, revision: snapshot.revision + 1 });
 }
 
-function createDriftingConnector(): SupportedConnectorFixture & { readonly probeCalls: () => number } {
+function createDriftingConnector(
+	driftAt = 3,
+	driver?: ThirdPartyZetaDriver,
+): SupportedConnectorFixture & { readonly probeCalls: () => number } {
 	let probeCalls = 0;
 	const fixture = createSupportedConnector({
+		...(driver === undefined ? {} : { driver }),
 		capabilityProbe: async (snapshot) => {
 			probeCalls += 1;
-			return Result.ok(probeCalls === 3 ? driftedCapabilitySnapshot(snapshot) : snapshot);
+			return Result.ok(probeCalls === driftAt ? driftedCapabilitySnapshot(snapshot) : snapshot);
 		},
 	});
 	return { ...fixture, probeCalls: () => probeCalls };
@@ -546,8 +584,8 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		await registry.dispose();
 	});
 
-	it("rechecks pinned truth for resume, reconcile, and cancel lifecycle entry points", async () => {
-		for (const operation of ["resume", "reconcile", "cancel"] as const) {
+	it("rechecks pinned truth for resume and reconcile lifecycle entry points", async () => {
+		for (const operation of ["resume", "reconcile"] as const) {
 			const fixture = createDriftingConnector();
 			const registry = createExternalConnectorRegistry();
 			expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
@@ -555,17 +593,13 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 
 			const result = operation === "resume"
 				? await persisted.connector.resumeAttempt(persisted.attempt, { correlation: persisted.correlation })
-				: operation === "reconcile"
-					? await persisted.connector.reconcileAttempt(persisted.attempt, { correlation: persisted.correlation })
-					: await persisted.connector.cancelAttempt(persisted.attempt.attemptId);
+				: await persisted.connector.reconcileAttempt(persisted.attempt, { correlation: persisted.correlation });
 
 			expect(result).toMatchObject({
 				ok: false,
 				error: {
 					code: "scheduler_attempt_recovery_failed",
-					message: operation === "cancel"
-						? "External connector capability truth could not be rechecked"
-						: "External connector operation does not exist",
+					message: "External connector operation does not exist",
 				},
 			});
 			expect(fixture.probeCalls()).toBe(3);
@@ -575,6 +609,113 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			await persisted.settlement.release();
 			await registry.dispose();
 		}
+	});
+
+	it("contains the same Attempt when capability truth drifts during cancellation", async () => {
+		const driver = new ThirdPartyZetaDriver({ readHangs: true, returnsCancelEvidence: true });
+		const fixture = createDriftingConnector(4, driver);
+		const registry = createExternalConnectorRegistry();
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-cancel-drift");
+		const running = persisted.connector.runAttempt(persisted.attempt, {
+			correlation: persisted.correlation,
+		});
+		await expect.poll(() => driver.readCalls).toBe(1);
+
+		const cancelled = await persisted.connector.cancelAttempt(persisted.attempt.attemptId);
+
+		expect(cancelled).toMatchObject({
+			ok: false,
+			error: {
+				code: "scheduler_attempt_recovery_failed",
+				message: "External connector capability truth could not be rechecked",
+			},
+		});
+		expect(fixture.probeCalls()).toBe(4);
+		expect(driver.cancelCalls).toBe(1);
+		expect(await running).toMatchObject({ ok: true, value: { status: "cancelled" } });
+		await persisted.settlement.release();
+		await registry.dispose();
+	});
+
+	it("bounds hanging capability probes and aborts the probe operation", async () => {
+		let abortObserved = false;
+		const fixture = createSupportedConnector({
+			capabilityProbe: async (_snapshot, options) => new Promise<never>(() => {
+				options?.signal?.addEventListener("abort", () => {
+					abortObserved = true;
+				}, { once: true });
+			}),
+		});
+		const registry = createExternalConnectorRegistry({
+			capabilityProbeDeadline: { hardMs: 50, idleMs: 10 },
+		});
+		expect(registry.registerPrepared(registration(fixture), fixture.snapshot)).toMatchObject({ ok: true });
+		const startedAt = Date.now();
+
+		const selected = await registry.select(selection(fixture.snapshot));
+
+		expect(selected).toMatchObject({ ok: false });
+		expect(Date.now() - startedAt).toBeLessThan(250);
+		expect(abortObserved).toBe(true);
+		await registry.dispose();
+	});
+
+	it("bounds a hanging lifecycle recheck before same-Attempt cancellation containment", async () => {
+		let probeCalls = 0;
+		let abortObserved = false;
+		const driver = new ThirdPartyZetaDriver({ readHangs: true, returnsCancelEvidence: true });
+		const fixture = createSupportedConnector({
+			driver,
+			capabilityProbe: async (snapshot, options) => {
+				probeCalls += 1;
+				if (probeCalls < 4) return Result.ok(snapshot);
+				return new Promise<never>(() => {
+					options?.signal?.addEventListener("abort", () => {
+						abortObserved = true;
+					}, { once: true });
+				});
+			},
+		});
+		const registry = createExternalConnectorRegistry({
+			capabilityProbeDeadline: { hardMs: 10, idleMs: 50 },
+		});
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-cancel-probe-hang");
+		const running = persisted.connector.runAttempt(persisted.attempt, {
+			correlation: persisted.correlation,
+		});
+		await expect.poll(() => driver.readCalls).toBe(1);
+		const startedAt = Date.now();
+
+		const cancelled = await persisted.connector.cancelAttempt(persisted.attempt.attemptId);
+
+		expect(cancelled).toMatchObject({ ok: false, error: { code: "scheduler_attempt_recovery_failed" } });
+		expect(Date.now() - startedAt).toBeLessThan(250);
+		expect(abortObserved).toBe(true);
+		expect(driver.cancelCalls).toBe(1);
+		expect(await running).toMatchObject({ ok: true, value: { status: "cancelled" } });
+		await persisted.settlement.release();
+		await registry.dispose();
+	});
+
+	it("keeps caller abort separate from capability drift during lifecycle entry", async () => {
+		const fixture = createSupportedConnector();
+		const registry = createExternalConnectorRegistry();
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-aborted-recheck");
+		const controller = new AbortController();
+		controller.abort();
+
+		const completed = await persisted.connector.runAttempt(persisted.attempt, {
+			correlation: persisted.correlation,
+			signal: controller.signal,
+		});
+
+		expect(completed).toMatchObject({ ok: true, value: { status: "cancelled" } });
+		expect(fixture.driver.spawnCalls).toBe(0);
+		await persisted.settlement.release();
+		await registry.dispose();
 	});
 
 	it("normalizes thrown and returned probe failures without exposing connector error data", async () => {
@@ -752,9 +893,59 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		expect(registry.registerPrepared(registration(first), first.snapshot)).toMatchObject({ ok: true });
 		expect(registry.registerPrepared(registration(second), second.snapshot)).toMatchObject({ ok: true });
 
-		await registry.dispose();
+		const disposal = registry.dispose();
+		await expect(disposal).rejects.toMatchObject({
+			code: "side_effect_unknown",
+			message: "External connector registry shutdown could not confirm cleanup.",
+		});
+		await disposal.catch((error: unknown) => {
+			expect(JSON.stringify(error)).not.toContain("planned third-party driver disposal failure");
+			expect(FoundationError.is(error)).toBe(true);
+			if (FoundationError.is(error)) {
+				expect(error.cause).toBeUndefined();
+				expect(error.details).toBeUndefined();
+			}
+		});
 
 		expect(first.driver.disposeCalls).toBe(1);
 		expect(second.driver.disposeCalls).toBe(1);
+	});
+
+	it("does not finish registry disposal before slow forced process cleanup is confirmed", async () => {
+		vi.useFakeTimers();
+		try {
+			const driver = new ThirdPartyZetaDriver({ readHangs: true });
+			const fixture = createSupportedConnector({
+				driver,
+				supervisionDeadlines: {
+					event: { hardMs: 10_000, idleMs: 10_000 },
+					receipt: { hardMs: 10_000, idleMs: 10_000 },
+					dispose: { hardMs: 6_000, idleMs: 6_000 },
+				},
+			});
+			fixture.supervision.processController.forceExits = false;
+			const registry = createExternalConnectorRegistry();
+			expect(registry.registerPrepared(registration(fixture), fixture.snapshot)).toMatchObject({ ok: true });
+			const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-slow-cleanup");
+			const running = persisted.connector.runAttempt(persisted.attempt, {
+				correlation: persisted.correlation,
+			});
+			await vi.waitFor(() => expect(driver.readCalls).toBe(1));
+			let disposalSettled = false;
+			const disposal = registry.dispose().finally(() => {
+				disposalSettled = true;
+			});
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			expect(disposalSettled).toBe(false);
+			expect(fixture.supervision.processController.forceCalls).toBe(1);
+			fixture.supervision.processController.resolveExits();
+			await disposal;
+			expect(disposalSettled).toBe(true);
+			expect(await running).toMatchObject({ ok: false });
+			await persisted.settlement.release();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

@@ -1008,38 +1008,73 @@ export class ExternalConnectorBoundedSupervisor {
 /** Bound provider cleanup when no child process exists, without launching a synthetic process. */
 export async function runExternalConnectorHostDispose(
 	operation: (signal: AbortSignal) => Promise<void>,
-	options: { readonly deadline?: Partial<ExternalConnectorSegmentDeadline>; readonly clock?: RuntimeClock } = {},
+	options: {
+		readonly deadline?: Partial<ExternalConnectorSegmentDeadline>;
+		readonly clock?: RuntimeClock;
+		readonly signals?: readonly AbortSignal[];
+	} = {},
 ): Promise<void> {
+	return runExternalConnectorHostOperation("dispose", operation, options);
+}
+
+/** Bound a Host-owned operation that has no process handle of its own. */
+export async function runExternalConnectorHostOperation<T>(
+	segment: ExternalConnectorSupervisorSegment,
+	operation: (signal: AbortSignal) => Promise<T>,
+	options: {
+		readonly deadline?: Partial<ExternalConnectorSegmentDeadline>;
+		readonly clock?: RuntimeClock;
+		readonly signals?: readonly AbortSignal[];
+	} = {},
+): Promise<T> {
 	const deadline = {
-		hardMs: options.deadline?.hardMs ?? DEFAULT_DEADLINES.dispose.hardMs,
-		idleMs: options.deadline?.idleMs ?? DEFAULT_DEADLINES.dispose.idleMs,
+		hardMs: options.deadline?.hardMs ?? DEFAULT_DEADLINES[segment].hardMs,
+		idleMs: options.deadline?.idleMs ?? DEFAULT_DEADLINES[segment].idleMs,
 	};
 	if (!isPositiveBound(deadline.hardMs) || !isPositiveBound(deadline.idleMs)) {
-		throw new RangeError("External Connector host dispose deadlines must be positive safe integers");
+		throw new RangeError(`External Connector host ${segment} deadlines must be positive safe integers`);
 	}
 	const controller = new AbortController();
+	const aborted = deferred<void>();
+	const listeners = new Map<AbortSignal, () => void>();
+	const sourceSignals = new Set(options.signals ?? []);
+	const preAborted = [...sourceSignals].find((signal) => signal.aborted);
+	if (preAborted !== undefined) {
+		controller.abort(preAborted.reason);
+		throw new ExternalConnectorSupervisorError("side_effect_unknown", segment, false);
+	}
+	for (const signal of sourceSignals) {
+		const abort = (): void => {
+			controller.abort(signal.reason);
+			aborted.resolve();
+		};
+		listeners.set(signal, abort);
+		signal.addEventListener("abort", abort, { once: true });
+	}
 	const timer = new SegmentTimer(options.clock ?? SYSTEM_RUNTIME_CLOCK, deadline);
-	let promise: Promise<void>;
+	let promise: Promise<T>;
 	try {
 		promise = operation(controller.signal);
 	} catch (error) {
 		promise = Promise.reject(error);
 	}
 	try {
-		const outcome = await Promise.race<AwaitOutcome<void>>([
+		const outcome = await Promise.race<AwaitOutcome<T>>([
 			promise.then(
-				(): AwaitOutcome<void> => ({ kind: "value", value: undefined }),
-				(error: unknown): AwaitOutcome<void> => ({ kind: "rejected", error }),
+				(value): AwaitOutcome<T> => ({ kind: "value", value }),
+				(error: unknown): AwaitOutcome<T> => ({ kind: "rejected", error }),
 			),
-			timer.expired.then((): AwaitOutcome<void> => ({ kind: "timeout" })),
+			timer.expired.then((): AwaitOutcome<T> => ({ kind: "timeout" })),
+			aborted.promise.then((): AwaitOutcome<T> => ({ kind: "aborted" })),
 		]);
-		if (outcome.kind === "value") return;
+		if (outcome.kind === "value") return outcome.value;
 		if (outcome.kind === "rejected") throw outcome.error;
-		controller.abort();
+		if (!controller.signal.aborted) controller.abort();
 		void promise.catch(() => undefined);
-		throw new ExternalConnectorSupervisorError("side_effect_unknown", "dispose", false);
+		throw new ExternalConnectorSupervisorError("side_effect_unknown", segment, false);
 	} finally {
 		timer.close();
+		for (const [signal, abort] of listeners) signal.removeEventListener("abort", abort);
 	}
 }
 

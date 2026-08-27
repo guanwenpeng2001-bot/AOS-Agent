@@ -92,6 +92,11 @@ class TestProcessHandle implements ExternalConnectorProcessHandle {
 		}
 		return "termination_requested";
 	}
+
+	resolveExit(): void {
+		this.#resolveExit?.();
+		this.#resolveExit = undefined;
+	}
 }
 
 export class TestExternalConnectorPrivateStateStore extends InMemoryExternalConnectorSupervisorPrivateStateStore {
@@ -181,6 +186,10 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 			return { status: "identity_mismatch" };
 		}
 		return { status: "attached", handle };
+	}
+
+	resolveExits(): void {
+		for (const handle of this.handles.values()) handle.resolveExit();
 	}
 }
 
