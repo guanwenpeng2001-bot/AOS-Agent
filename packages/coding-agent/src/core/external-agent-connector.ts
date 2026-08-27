@@ -388,6 +388,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly #active = new Map<string, Promise<ResultValue<AttemptReceipt, FoundationError>>>();
 	readonly #cancelling = new Map<string, Promise<ResultValue<void, FoundationError>>>();
 	readonly #toolGatewayConsumers = new Map<string, ExternalConnectorToolGatewayConsumer>();
+	readonly #drainWaiters = new Set<() => void>();
+	#lifecycle: "accepting" | "draining" | "disposed" = "accepting";
+	#disposal: Promise<void> | undefined;
 
 	constructor(options: ExternalAgentConnectorRuntimeOptions) {
 		const checked = validateConnectorCapabilitySnapshotForProvider(options.capability, {
@@ -541,45 +544,81 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	}
 
 	cancelAttempt(attemptId: string): Promise<ResultValue<void, FoundationError>> {
+		if (this.#lifecycle !== "accepting") {
+			return Promise.resolve(
+				Result.err(externalFailure("side_effect_unknown", "External connector is draining", attemptId)),
+			);
+		}
 		const active = this.#cancelling.get(attemptId);
 		if (active !== undefined) return active;
 		const cancellation = this.#captureVoid(() => this.#cancel(attemptId));
 		this.#cancelling.set(attemptId, cancellation);
-		void cancellation.finally(() => this.#cancelling.delete(attemptId));
+		void cancellation.finally(() => {
+			this.#cancelling.delete(attemptId);
+			this.#notifyDrain();
+		});
 		return cancellation;
 	}
 
-	async dispose(): Promise<void> {
-		const supervisors = [...this.#supervisors.entries()];
-		const disposalSupervisor = supervisors[0]?.[1];
-		let disposalFailure: unknown;
-		try {
-			if (disposalSupervisor !== undefined) {
-				await disposalSupervisor.run("dispose", (signal) => this.#driver.dispose({ signal }));
-			} else {
-				await runExternalConnectorHostDispose((signal) => this.#driver.dispose({ signal }), {
-					...(this.#supervision.deadlines?.dispose === undefined
-						? {}
-						: { deadline: this.#supervision.deadlines.dispose }),
-					...(this.#supervision.clock === undefined ? {} : { clock: this.#supervision.clock }),
-				});
-			}
-		} catch (error) {
-			disposalFailure = error;
-		}
-		const cleanupResults = await Promise.allSettled(
-			supervisors.map(async ([attemptId, supervisor]) => {
-				await supervisor.dispose();
-				if (supervisor.snapshot.cleaned) await this.#supervision.privateStateStore.delete(attemptId);
-			}),
-		);
-		this.#supervisors.clear();
-		this.#driverHandles.clear();
+	dispose(): Promise<void> {
+		if (this.#disposal !== undefined) return this.#disposal;
+		this.#lifecycle = "draining";
 		for (const controller of this.#observationControllers.values()) controller.abort();
-		this.#observationControllers.clear();
-		this.#pendingCancellations.clear();
-		this.#toolGatewayConsumers.clear();
-		disposalFailure ??= cleanupResults.find((result) => result.status === "rejected")?.reason;
+		this.#disposal = this.#drainAndDispose();
+		return this.#disposal;
+	}
+
+	async #drainAndDispose(): Promise<void> {
+		let disposalFailure: unknown;
+		for (;;) {
+			for (const controller of this.#observationControllers.values()) controller.abort();
+			const supervisors = [...this.#supervisors.entries()];
+			const cleanupResults = await Promise.allSettled(
+				supervisors.map(async ([attemptId, supervisor]) => {
+					await supervisor.dispose();
+					if (supervisor.snapshot.cleaned) {
+						await this.#supervision.privateStateStore.delete(attemptId);
+						if (this.#supervisors.get(attemptId) === supervisor) this.#supervisors.delete(attemptId);
+					}
+				}),
+			);
+			disposalFailure ??= cleanupResults.find((result) => result.status === "rejected")?.reason;
+			const operations = [...this.#active.values(), ...this.#cancelling.values()];
+			if (this.#active.size === 0 && this.#cancelling.size === 0) {
+				const hasUnseenSupervisor = [...this.#supervisors.entries()].some(
+					([attemptId, supervisor]) =>
+						!supervisors.some(
+							([currentAttemptId, currentSupervisor]) =>
+								currentAttemptId === attemptId && currentSupervisor === supervisor,
+						),
+				);
+				if (!hasUnseenSupervisor) break;
+				continue;
+			}
+			const changed = new Promise<void>((resolve) => this.#drainWaiters.add(resolve));
+			await Promise.race([
+				changed,
+				...operations.map((operation) => operation.then(() => undefined, () => undefined)),
+			]);
+		}
+		try {
+			await runExternalConnectorHostDispose((signal) => this.#driver.dispose({ signal }), {
+				...(this.#supervision.deadlines?.dispose === undefined
+					? {}
+					: { deadline: this.#supervision.deadlines.dispose }),
+				...(this.#supervision.clock === undefined ? {} : { clock: this.#supervision.clock }),
+			});
+		} catch (error) {
+			disposalFailure ??= error;
+		} finally {
+			this.#supervisors.clear();
+			this.#driverHandles.clear();
+			this.#observationControllers.clear();
+			this.#pendingCancellations.clear();
+			this.#toolGatewayConsumers.clear();
+			this.#drainWaiters.clear();
+			this.#lifecycle = "disposed";
+		}
 		if (disposalFailure !== undefined) throw disposalFailure;
 	}
 
@@ -587,12 +626,25 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		attemptId: string,
 		operation: () => Promise<ResultValue<AttemptReceipt, FoundationError>>,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		if (this.#lifecycle !== "accepting") {
+			return Promise.resolve(
+				Result.err(externalFailure("side_effect_unknown", "External connector is draining", attemptId)),
+			);
+		}
 		const active = this.#active.get(attemptId);
 		if (active !== undefined) return active;
 		const current = this.#capture(operation);
 		this.#active.set(attemptId, current);
-		void current.finally(() => this.#active.delete(attemptId));
+		void current.finally(() => {
+			this.#active.delete(attemptId);
+			this.#notifyDrain();
+		});
 		return current;
+	}
+
+	#notifyDrain(): void {
+		for (const resolve of this.#drainWaiters) resolve();
+		this.#drainWaiters.clear();
 	}
 
 	async #capture(
@@ -680,8 +732,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			await supervisor.launch(async (state) => {
 				await this.#supervision.privateStateStore.write(operation.attemptId, state);
 				statePersisted = true;
-			});
+			}, signal);
 			this.#supervisors.set(operation.attemptId, supervisor);
+			this.#notifyDrain();
 			return supervisor;
 		} catch (error) {
 			const privateState = supervisor.hostPrivateState;
@@ -750,6 +803,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		try {
 			supervisor.reattach(state);
 			this.#supervisors.set(operation.attemptId, supervisor);
+			this.#notifyDrain();
 			return supervisor;
 		} catch (error) {
 			throw externalConnectorSupervisorFailure(error);
@@ -1032,6 +1086,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			if (concurrentReceipt.ok && concurrentReceipt.value !== undefined) {
 				return Result.ok(concurrentReceipt.value);
 			}
+			if (this.#pendingCancellations.has(attempt.attemptId)) {
+				return Result.err(
+					externalFailure(
+						"worker_cancel_failed",
+						"External connector cancellation is containing the active process",
+						attempt.attemptId,
+					),
+				);
+			}
 			if (options?.signal?.aborted === true && !supervisor.snapshot.cleaned) {
 				await this.#markReconcile(operation, "driver_failure");
 				return Result.err(
@@ -1129,6 +1192,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			}
 			this.#driverHandles.delete(attempt.attemptId);
 			this.#observationControllers.delete(attempt.attemptId);
+			if (this.#pendingCancellations.has(attempt.attemptId)) {
+				return Result.err(
+					externalFailure(
+						"worker_cancel_failed",
+						"External connector cancellation is containing the active process",
+						attempt.attemptId,
+					),
+				);
+			}
 			if (cleanupUnknown) {
 				await this.#markReconcile(operation, "driver_failure");
 				return Result.err(
@@ -1322,6 +1394,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			}
 			this.#driverHandles.delete(attempt.attemptId);
 			this.#observationControllers.delete(attempt.attemptId);
+			if (this.#pendingCancellations.has(attempt.attemptId)) {
+				return Result.err(
+					externalFailure(
+						"worker_cancel_failed",
+						"External connector cancellation is containing the active process",
+						attempt.attemptId,
+					),
+				);
+			}
 			if (cleanupUnknown) {
 				await this.#markReconcile(operation, "driver_failure");
 				return Result.err(
@@ -1442,8 +1523,25 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				this.#observationControllers.get(attemptId)?.abort();
 				await this.#releaseSupervisor(attemptId, supervisor).catch(() => undefined);
 				this.#pendingCancellations.delete(attemptId);
+				return Result.ok(undefined);
 			}
-			return Result.ok(undefined);
+			this.#observationControllers.get(attemptId)?.abort();
+			try {
+				await supervisor.containAfterCancellationGrace();
+			} finally {
+				if (supervisor.snapshot.cleaned) {
+					await this.#releaseSupervisor(attemptId, supervisor).catch(() => undefined);
+				}
+			}
+			await this.#markReconcile(operation, "driver_failure");
+			this.#pendingCancellations.delete(attemptId);
+			return Result.err(
+				externalFailure(
+					"worker_cancel_failed",
+					"External connector cancellation produced no terminal evidence",
+					attemptId,
+				),
+			);
 		} catch {
 			if (supervisor?.snapshot.cleaned === true) {
 				this.#supervisors.delete(attemptId);
@@ -1452,6 +1550,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			const concurrentReceipt = await this.#requirePriorReceipt(attempt);
 			if (concurrentReceipt.ok && concurrentReceipt.value !== undefined) return Result.ok(undefined);
 			await this.#markReconcile(operation, "driver_failure");
+			this.#pendingCancellations.delete(attemptId);
 			return Result.err(
 				externalFailure("worker_cancel_failed", "External connector cancellation outcome is unknown", attemptId),
 			);
@@ -1469,32 +1568,31 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			await this.#releaseSupervisor(attemptId, supervisor);
 			throw sourceSignal.reason;
 		}
-		const controller = new AbortController();
-		this.#observationControllers.set(attemptId, controller);
-		const abort = (): void => controller.abort(sourceSignal?.reason);
-		sourceSignal?.addEventListener("abort", abort, { once: true });
+		const stopController = new AbortController();
+		this.#observationControllers.set(attemptId, stopController);
 		const events = supervisor.consumeEvents(
 			(signal) => this.#driver.events(handle, { signal }),
 			handle,
-			controller.signal,
+			sourceSignal,
 			(event, signal) => this.#consumeToolGatewayEvent(operation, handle, event, signal),
+			stopController.signal,
 		);
 		const receipt = supervisor.run(
 			"receipt",
 			(signal) => this.#driver.read(handle, { signal }),
-			controller.signal,
+			sourceSignal,
 			"terminal_evidence",
+			stopController.signal,
 		);
 		try {
 			const [, evidence] = await Promise.all([events, receipt]);
 			return evidence;
 		} catch (error) {
-			if (!controller.signal.aborted) controller.abort();
+			if (!stopController.signal.aborted) stopController.abort();
 			await Promise.allSettled([events, receipt]);
 			throw error;
 		} finally {
-			sourceSignal?.removeEventListener("abort", abort);
-			if (this.#observationControllers.get(attemptId) === controller) {
+			if (this.#observationControllers.get(attemptId) === stopController) {
 				this.#observationControllers.delete(attemptId);
 			}
 		}

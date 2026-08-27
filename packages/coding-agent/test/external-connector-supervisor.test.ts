@@ -27,6 +27,8 @@ class ControlledHandle implements ExternalConnectorProcessHandle {
 	readonly identity: ExternalConnectorProcessIdentity;
 	readonly exited: Promise<void>;
 	activationCalls = 0;
+	activationGate: Promise<void> | undefined;
+	activationAbortObserved = false;
 	forceCalls = 0;
 	resolveOnForce = true;
 	terminationIdentity: ExternalConnectorProcessIdentity;
@@ -42,8 +44,21 @@ class ControlledHandle implements ExternalConnectorProcessHandle {
 		});
 	}
 
-	async activate(): Promise<void> {
+	async activate(options?: { readonly signal?: AbortSignal }): Promise<void> {
 		this.activationCalls += 1;
+		if (this.activationGate !== undefined) {
+			await Promise.race([
+				this.activationGate,
+				new Promise<never>((_resolve, reject) => {
+					const abort = (): void => {
+						this.activationAbortObserved = true;
+						reject(new Error("activation aborted"));
+					};
+					if (options?.signal?.aborted === true) abort();
+					else options?.signal?.addEventListener("abort", abort, { once: true });
+				}),
+			]);
+		}
 	}
 
 	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult {
@@ -70,12 +85,34 @@ class ControlledProcessController implements ExternalConnectorProcessController 
 		fileIdentity: "vendor-file",
 	};
 	lastHandle: ControlledHandle | undefined;
+	launchGate: Promise<void> | undefined;
+	launchAbortObserved = false;
 	launchRequest: ExternalConnectorProcessLaunchRequest | undefined;
 	reattachResult: ExternalConnectorProcessReattachResult | undefined;
 
-	async launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle> {
+	async launch(
+		request: ExternalConnectorProcessLaunchRequest,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<ExternalConnectorProcessHandle> {
 		this.launchRequest = request;
 		this.lastHandle = new ControlledHandle(request, this.identity);
+		if (this.launchGate !== undefined) {
+			await Promise.race([
+				this.launchGate,
+				new Promise<never>((_resolve, reject) => {
+					const abort = (): void => {
+						this.launchAbortObserved = true;
+						this.lastHandle?.forceTerminate({
+							operationNonce: request.operationNonce,
+							processIdentity: this.identity,
+						});
+						reject(new Error("launch aborted"));
+					};
+					if (options?.signal?.aborted === true) abort();
+					else options?.signal?.addEventListener("abort", abort, { once: true });
+				}),
+			]);
+		}
 		return this.lastHandle;
 	}
 
@@ -164,6 +201,39 @@ describe("current External Connector robust supervision", () => {
 		expect(externalConnectorProcessContainment("win32")).toBe("job_object");
 		expect(() => externalConnectorProcessContainment("freebsd")).toThrow("unsupported");
 	});
+
+	for (const stage of ["launch", "private-state persistence", "activation"] as const) {
+		for (const deadlineKind of ["hard", "idle"] as const) {
+			it(`includes ${stage} inside the configured start ${deadlineKind} deadline`, async () => {
+				const clock = new DeterministicClock();
+				const controller = new ControlledProcessController();
+				const blocked = gate<void>();
+				if (stage === "launch") controller.launchGate = blocked.promise;
+				const value = supervisor(controller, {
+					start: deadlineKind === "hard"
+						? { hardMs: 5, idleMs: 50 }
+						: { hardMs: 50, idleMs: 5 },
+				}, true, clock);
+				let persistenceCalls = 0;
+				const launched = value.launch(async () => {
+					persistenceCalls += 1;
+					if (stage === "private-state persistence") await blocked.promise;
+					if (stage === "activation") controller.lastHandle!.activationGate = blocked.promise;
+				});
+				await drainPromiseJobs();
+
+				clock.advanceBy(5);
+				await drainPromiseJobs();
+
+				await expect(launched).rejects.toMatchObject({ segment: "start" });
+				expect(controller.lastHandle?.forceCalls).toBe(1);
+				expect(value.snapshot.cleaned).toBe(stage !== "launch");
+				if (stage === "launch") expect(controller.launchAbortObserved).toBe(true);
+				if (stage === "private-state persistence") expect(persistenceCalls).toBe(1);
+				if (stage === "activation") expect(controller.lastHandle?.activationAbortObserved).toBe(true);
+			});
+		}
+	}
 
 	for (const segment of ["start", "receipt", "cancel"] as const) {
 		for (const deadlineKind of ["hard", "idle"] as const) {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	AgentOperationError,
 	FoundationError,
@@ -296,12 +296,13 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 	onSpawn: (() => void) | undefined;
 	readFailure = false;
 	readHangs = false;
+	readAbortObserved = false;
 	eventNextHangs = false;
 	disposeHangs = false;
 	disposeAbortObserved = false;
 	eventValues: FoundationJsonValue[] = [];
 	evidence: ExternalConnectorTerminalEvidence = terminalEvidence();
-	cancelEvidence: ExternalConnectorTerminalEvidence = terminalEvidence("cancelled");
+	cancelEvidence: ExternalConnectorTerminalEvidence | undefined = terminalEvidence("cancelled");
 	spawnHandle: unknown;
 	connectHandle: unknown;
 	lookupResult: unknown = { status: "terminal", evidence: terminalEvidence() };
@@ -355,10 +356,20 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		return this.lookupResult as ExternalConnectorDriverLookup;
 	}
 
-	async read(): Promise<ExternalConnectorTerminalEvidence> {
+	async read(
+		_handle: ExternalConnectorDriverHandle,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<ExternalConnectorTerminalEvidence> {
 		this.calls.read++;
 		if (this.readFailure) throw new Error("injected read failure");
-		if (this.readHangs) await new Promise<void>(() => undefined);
+		if (this.readHangs) {
+			await new Promise<never>((_resolve, reject) => {
+				options?.signal?.addEventListener("abort", () => {
+					this.readAbortObserved = true;
+					reject(new Error("read aborted"));
+				}, { once: true });
+			});
+		}
 		return this.evidence;
 	}
 
@@ -370,7 +381,7 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		this.calls.heartbeat++;
 	}
 
-	async cancel(): Promise<ExternalConnectorTerminalEvidence> {
+	async cancel(): Promise<ExternalConnectorTerminalEvidence | undefined> {
 		this.calls.cancel++;
 		return this.cancelEvidence;
 	}
@@ -892,6 +903,38 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.driver.calls.connect).toBe(0);
 		expect(value.store.receiptWrites).toBe(1);
 		expect(value.store.receipts.get(value.attempt.attemptId)?.status).toBe("cancelled");
+	});
+
+	it("stops observation and force-contains the process after evidence-free cancel grace", async () => {
+		vi.useFakeTimers();
+		try {
+			const value = await fixture();
+			persistAttempt(value);
+			value.driver.readHangs = true;
+			value.driver.eventNextHangs = true;
+			value.driver.cancelEvidence = undefined;
+			const running = value.connector.runAttempt(value.attempt, { correlation });
+			await vi.waitFor(() => expect(value.driver.calls.read).toBe(1));
+
+			const cancelled = value.connector.cancelAttempt(value.attempt.attemptId);
+			await vi.waitFor(() => expect(value.driver.readAbortObserved).toBe(true));
+			expect(value.supervision.processController.forceCalls).toBe(0);
+			await vi.advanceTimersByTimeAsync(500);
+			expect(value.supervision.processController.forceCalls).toBe(0);
+			await vi.advanceTimersByTimeAsync(500);
+
+			await expect(cancelled).resolves.toMatchObject({ ok: false, error: { code: "worker_cancel_failed" } });
+			await expect(running).resolves.toMatchObject({ ok: false, error: { code: "worker_cancel_failed" } });
+			expect(value.supervision.processController.forceCalls).toBe(1);
+			expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+				status: "reconcile_required",
+				reconcileReason: "driver_failure",
+			});
+			expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
+			await value.connector.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("cancels idempotently after persisting cancelling", async () => {
@@ -1563,5 +1606,40 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.driver.calls.dispose).toBe(1);
 		expect(value.driver.disposeAbortObserved).toBe(true);
 		expect(value.supervision.processController.launchCalls).toBe(0);
+	});
+
+	it("fences admission and drains a supervisor added during concurrent disposal", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.driver.readHangs = true;
+		value.driver.eventNextHangs = true;
+		let markPrivateWrite: (() => void) | undefined;
+		let releasePrivateWrite: (() => void) | undefined;
+		const privateWriteStarted = new Promise<void>((resolve) => {
+			markPrivateWrite = resolve;
+		});
+		value.supervision.privateStateStore.writeGate = new Promise<void>((resolve) => {
+			releasePrivateWrite = resolve;
+		});
+		value.supervision.privateStateStore.onWrite = () => markPrivateWrite?.();
+		const running = value.connector.runAttempt(value.attempt, { correlation });
+		await privateWriteStarted;
+		let disposalSettled = false;
+		const disposal = value.connector.dispose().finally(() => {
+			disposalSettled = true;
+		});
+		await Promise.resolve();
+		expect(disposalSettled).toBe(false);
+
+		releasePrivateWrite?.();
+		await disposal;
+
+		expect(await running).toMatchObject({ ok: false });
+		expect(value.supervision.processController.forceCalls).toBe(1);
+		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
+		expect(value.driver.calls.dispose).toBe(1);
+		const launchCalls = value.supervision.processController.launchCalls;
+		expect(await value.connector.runAttempt(value.attempt, { correlation })).toMatchObject({ ok: false });
+		expect(value.supervision.processController.launchCalls).toBe(launchCalls);
 	});
 });

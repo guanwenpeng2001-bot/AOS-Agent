@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createConnectorCapabilitySnapshot } from "@aos-agent/agent-core";
+import { Result, createConnectorCapabilitySnapshot } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import { DurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
 import type { ExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
@@ -76,6 +76,71 @@ describe("production External Connector composition", () => {
 		if (!registered.ok) throw registered.error;
 		expect(registered).toMatchObject({ ok: true });
 		await registry.dispose();
+	});
+
+	it("propagates the trusted capability probe so registry lifecycle rechecks detect runtime drift", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-external-production-probe-"));
+		const capability = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: "production-probe-connector",
+			revision: 1,
+			protocol: { name: "production-protocol", version: "1" },
+			modelAccess: "agent_owned",
+			resume: false,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		});
+		const drifted = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: capability.providerId,
+			revision: 2,
+			protocol: capability.protocol,
+			modelAccess: capability.modelAccess,
+			resume: capability.resume,
+			toolGateway: capability.toolGateway,
+			artifacts: capability.artifacts,
+			images: capability.images,
+		});
+		let drift = false;
+		let probeCalls = 0;
+		const registry = createExternalConnectorRegistry();
+		try {
+			const connector = await createProductionExternalAgentConnector({
+				providerId: capability.providerId,
+				capability,
+				capabilityProbe: async () => {
+					probeCalls += 1;
+					return Result.ok(drift ? drifted : capability);
+				},
+				store: Object.freeze({}) as ExternalConnectorDurableStore,
+				driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
+				privateStatePath: join(root, "private", "supervisors.json"),
+				process: processOptions,
+			});
+			expect(await registry.register({
+				descriptor: {
+					schemaVersion: 1,
+					providerId: capability.providerId,
+					providerClass: "external_connector",
+					revision: capability.revision,
+					capabilitySnapshotDigest: capability.digest,
+				},
+				connector,
+				trusted: true,
+			})).toMatchObject({ ok: true });
+			drift = true;
+
+			expect(await registry.select({
+				providerId: capability.providerId,
+				revision: capability.revision,
+				capabilitySnapshotDigest: capability.digest,
+			})).toMatchObject({ ok: false });
+			expect(probeCalls).toBe(2);
+		} finally {
+			await registry.dispose();
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	// The Windows test worker is already in a kill-on-close Job, so it cannot leave a nested guardian orphan.

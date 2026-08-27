@@ -51,6 +51,7 @@ export async function createProductionExternalAgentConnector(
 	const connector = createDurableExternalAgentConnector({
 		providerId: options.providerId,
 		capability: options.capability,
+		...(options.capabilityProbe === undefined ? {} : { capabilityProbe: options.capabilityProbe }),
 		store: options.store,
 		driver: options.driver,
 		supervision: createProductionExternalConnectorSupervision(options),

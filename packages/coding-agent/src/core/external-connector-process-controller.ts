@@ -565,7 +565,11 @@ function childExited(child: ChildProcessWithoutNullStreams): Promise<void> {
 	return new Promise((resolve) => child.once("exit", () => resolve()));
 }
 
-function waitForProtocolLine(child: ChildProcessWithoutNullStreams, expected: string): Promise<void> {
+function waitForProtocolLine(
+	child: ChildProcessWithoutNullStreams,
+	expected: string,
+	signal?: AbortSignal,
+): Promise<void> {
 	return new Promise((resolve, reject) => {
 		let output = "";
 		let errorOutput = "";
@@ -593,12 +597,14 @@ function waitForProtocolLine(child: ChildProcessWithoutNullStreams, expected: st
 		};
 		const onError = (error: Error): void => finish(error);
 		const onExit = (): void => finish(new Error("External Connector containment helper exited early"));
+		const onAbort = (): void => finish(new Error("External Connector containment helper operation was aborted"));
 		const cleanup = (): void => {
 			clearTimeout(timer);
 			child.stdout.off("data", onOutput);
 			child.stderr.off("data", onErrorOutput);
 			child.off("error", onError);
 			child.off("exit", onExit);
+			signal?.removeEventListener("abort", onAbort);
 		};
 		const finish = (error?: Error): void => {
 			cleanup();
@@ -609,6 +615,8 @@ function waitForProtocolLine(child: ChildProcessWithoutNullStreams, expected: st
 		child.stderr.on("data", onErrorOutput);
 		child.once("error", onError);
 		child.once("exit", onExit);
+		if (signal?.aborted === true) onAbort();
+		else signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
@@ -644,8 +652,9 @@ class ProductionExternalConnectorProcessHandle implements ExternalConnectorProce
 		this.#terminationOperation = options.forceTerminate;
 	}
 
-	async activate(): Promise<void> {
+	async activate(options?: { readonly signal?: AbortSignal }): Promise<void> {
 		if (this.#activated) return;
+		if (options?.signal?.aborted === true) throw new Error("External Connector process activation was aborted");
 		await this.#activateOperation();
 		this.#activated = true;
 	}
@@ -681,12 +690,16 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		}
 	}
 
-	async launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle> {
+	async launch(
+		request: ExternalConnectorProcessLaunchRequest,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<ExternalConnectorProcessHandle> {
 		this.#validateRequest(request);
+		if (options?.signal?.aborted === true) throw new Error("External Connector process launch was aborted");
 		const marker = nonceMarker(request.operationNonce);
 		const child = this.#spawnGuardian(marker);
 		try {
-			await waitForProtocolLine(child, `READY ${marker}`);
+			await waitForProtocolLine(child, `READY ${marker}`, options?.signal);
 			const inspection = this.#inspect(child.pid!, request.operationNonce);
 			if (inspection.status !== "live" || !inspection.value.nonceMarkerPresent) {
 				throw new Error("External Connector containment helper identity was ambiguous");
@@ -699,7 +712,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 				exited: childExited(child),
 				activated: false,
 				activate: async () => {
-					const active = waitForProtocolLine(child, `ACTIVE ${marker}`);
+					const active = waitForProtocolLine(child, `ACTIVE ${marker}`, options?.signal);
 					child.stdin.end(`ACTIVATE ${marker} ${this.#processSpec}\n`);
 					await active;
 				},

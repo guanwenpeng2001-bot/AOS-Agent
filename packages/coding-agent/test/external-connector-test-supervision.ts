@@ -104,6 +104,8 @@ export class TestExternalConnectorPrivateStateStore extends InMemoryExternalConn
 	failLists = 0;
 	failReads = 0;
 	failWrites = 0;
+	writeGate: Promise<void> | undefined;
+	onWrite: (() => void) | undefined;
 
 	override async list() {
 		if (this.failLists > 0) {
@@ -122,6 +124,8 @@ export class TestExternalConnectorPrivateStateStore extends InMemoryExternalConn
 	}
 
 	override async write(attemptId: string, state: ExternalConnectorSupervisorPrivateState): Promise<void> {
+		this.onWrite?.();
+		if (this.writeGate !== undefined) await this.writeGate;
 		if (this.failWrites > 0) {
 			this.failWrites -= 1;
 			throw new Error("injected private identity persistence failure");

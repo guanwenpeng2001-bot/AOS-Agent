@@ -1070,4 +1070,40 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("drains a selected run whose supervisor appears while registry replacement disposes the connector", async () => {
+		const driver = new ThirdPartyZetaDriver({ readHangs: true });
+		const fixture = createSupportedConnector({ driver });
+		const registry = createExternalConnectorRegistry();
+		expect(registry.registerPrepared(registration(fixture), fixture.snapshot)).toMatchObject({ ok: true });
+		const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-replacement-race");
+		let markPrivateWrite: (() => void) | undefined;
+		let releasePrivateWrite: (() => void) | undefined;
+		const privateWriteStarted = new Promise<void>((resolve) => {
+			markPrivateWrite = resolve;
+		});
+		fixture.supervision.privateStateStore.writeGate = new Promise<void>((resolve) => {
+			releasePrivateWrite = resolve;
+		});
+		fixture.supervision.privateStateStore.onWrite = () => markPrivateWrite?.();
+		const running = persisted.connector.runAttempt(persisted.attempt, {
+			correlation: persisted.correlation,
+		});
+		await privateWriteStarted;
+		let replacementSettled = false;
+		const replacement = registry.dispose().finally(() => {
+			replacementSettled = true;
+		});
+		await Promise.resolve();
+		expect(replacementSettled).toBe(false);
+
+		releasePrivateWrite?.();
+		await replacement;
+
+		expect(await running).toMatchObject({ ok: false });
+		expect(fixture.supervision.processController.forceCalls).toBe(1);
+		expect(await fixture.supervision.privateStateStore.list()).toEqual([]);
+		expect(driver.disposeCalls).toBe(1);
+		await persisted.settlement.release();
+	});
 });

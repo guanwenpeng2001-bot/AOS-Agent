@@ -68,7 +68,7 @@ export interface ExternalConnectorProcessHandle {
 	readonly identity: ExternalConnectorProcessIdentity;
 	readonly exited: Promise<void>;
 	/** Release a parent-death guard only after the private process identity is durable. */
-	activate(): Promise<void>;
+	activate(options?: { readonly signal?: AbortSignal }): Promise<void>;
 	/** Immediately compare the nonce and full live identity before terminating the contained process. */
 	forceTerminate(request: ExternalConnectorProcessTerminationRequest): ExternalConnectorProcessTerminationResult;
 }
@@ -90,7 +90,10 @@ export type ExternalConnectorProcessReattachResult =
 
 export interface ExternalConnectorProcessController {
 	/** Launch inactive inside the requested non-detached process group or Windows Job containment. */
-	launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle>;
+	launch(
+		request: ExternalConnectorProcessLaunchRequest,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<ExternalConnectorProcessHandle>;
 	/** Reattach only when the nonce and full live identity match; PID-only lookup is forbidden. */
 	reattach?(
 		identity: ExternalConnectorProcessIdentity,
@@ -363,6 +366,7 @@ type AwaitOutcome<T> =
 	| { readonly kind: "rejected"; readonly error: unknown }
 	| { readonly kind: "timeout" }
 	| { readonly kind: "aborted" }
+	| { readonly kind: "stopped" }
 	| { readonly kind: "process_exit" };
 
 class SegmentTimer {
@@ -400,6 +404,13 @@ class SegmentTimer {
 		const handle = this.#clock.setTimeout(() => this.#timeout.resolve(), delayMs);
 		this.#clock.unrefTimeout(handle);
 		return handle;
+	}
+}
+
+class ExternalConnectorObservationStopped extends Error {
+	constructor() {
+		super("External Connector observation stopped");
+		this.name = "ExternalConnectorObservationStopped";
 	}
 }
 
@@ -636,30 +647,82 @@ export class ExternalConnectorBoundedSupervisor {
 
 	async launch(
 		persistBeforeActivation: (state: ExternalConnectorSupervisorPrivateState) => Promise<void>,
+		sourceSignal?: AbortSignal,
 	): Promise<ExternalConnectorSupervisorPrivateState> {
 		if (this.#processHandle !== undefined || this.#phase !== "idle") {
 			throw new Error("External Connector supervisor is single-use");
 		}
-		let handle: ExternalConnectorProcessHandle;
+		const controller = new AbortController();
+		const aborted = deferred<void>();
+		const abort = (): void => {
+			controller.abort(sourceSignal?.reason);
+			aborted.resolve();
+		};
+		if (sourceSignal?.aborted === true) {
+			throw new ExternalConnectorSupervisorError("side_effect_unknown", "start", false);
+		}
+		sourceSignal?.addEventListener("abort", abort, { once: true });
+		const timer = new SegmentTimer(this.#clock, this.#deadlines.start);
+		const launch = async (): Promise<ExternalConnectorSupervisorPrivateState> => {
+			let handle: ExternalConnectorProcessHandle;
+			try {
+				handle = await this.#processController.launch(this.#launchRequest(), { signal: controller.signal });
+			} catch {
+				this.#quarantined = true;
+				throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
+			}
+			if (!validProcessHandle(handle, this.reference, this.#containment)) {
+				this.#quarantined = true;
+				throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
+			}
+			this.#bind(handle);
+			timer.touch();
+			try {
+				if (controller.signal.aborted) throw controller.signal.reason;
+				await persistBeforeActivation(clonePrivateState(this.#privateState!));
+				timer.touch();
+				if (controller.signal.aborted) throw controller.signal.reason;
+				await handle.activate({ signal: controller.signal });
+			} catch {
+				throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
+			}
+			this.#phase = "running";
+			return clonePrivateState(this.#privateState!);
+		};
+		const launched = launch();
 		try {
-			handle = await this.#processController.launch(this.#launchRequest());
-		} catch {
-			this.#quarantined = true;
-			throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
+			const outcome = await Promise.race<AwaitOutcome<ExternalConnectorSupervisorPrivateState>>([
+				launched.then(
+					(value): AwaitOutcome<ExternalConnectorSupervisorPrivateState> => ({ kind: "value", value }),
+					(error: unknown): AwaitOutcome<ExternalConnectorSupervisorPrivateState> => ({
+						kind: "rejected",
+						error,
+					}),
+				),
+				timer.expired.then((): AwaitOutcome<ExternalConnectorSupervisorPrivateState> => ({ kind: "timeout" })),
+				aborted.promise.then((): AwaitOutcome<ExternalConnectorSupervisorPrivateState> => ({ kind: "aborted" })),
+			]);
+			if (outcome.kind === "value") return outcome.value;
+			if (!controller.signal.aborted) controller.abort();
+			if (this.#processHandle !== undefined) {
+				const cleaned = await this.#forceAndWait();
+				if (!cleaned) throw new ExternalConnectorSupervisorError("reconcile_required", "dispose", true);
+			} else {
+				void launched.then(
+					async () => {
+						if (this.#processHandle !== undefined) await this.#forceAndWait();
+					},
+					() => undefined,
+				);
+			}
+			if (outcome.kind === "rejected" && outcome.error instanceof ExternalConnectorSupervisorError) {
+				throw outcome.error;
+			}
+			throw new ExternalConnectorSupervisorError("side_effect_unknown", "start", this.#processHandle !== undefined);
+		} finally {
+			timer.close();
+			sourceSignal?.removeEventListener("abort", abort);
 		}
-		if (!validProcessHandle(handle, this.reference, this.#containment)) {
-			this.#quarantined = true;
-			throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
-		}
-		this.#bind(handle);
-		try {
-			await persistBeforeActivation(clonePrivateState(this.#privateState!));
-			await handle.activate();
-		} catch {
-			throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
-		}
-		this.#phase = "running";
-		return clonePrivateState(this.#privateState!);
 	}
 
 	async recoverAndReap(stateValue: unknown): Promise<void> {
@@ -707,8 +770,10 @@ export class ExternalConnectorBoundedSupervisor {
 		operation: (signal: AbortSignal) => Promise<T>,
 		sourceSignal?: AbortSignal,
 		resultKind: "opaque" | "terminal_evidence" | "optional_terminal_evidence" = "opaque",
+		stopSignal?: AbortSignal,
 	): Promise<T> {
 		this.#requireProcess();
+		if (stopSignal?.aborted === true) throw new ExternalConnectorObservationStopped();
 		if (sourceSignal?.aborted === true) {
 			const cleaned = await this.#forceAndWait();
 			throw new ExternalConnectorSupervisorError(
@@ -719,11 +784,17 @@ export class ExternalConnectorBoundedSupervisor {
 		}
 		const controller = new AbortController();
 		const aborted = deferred<void>();
+		const stopped = deferred<void>();
 		const abort = (): void => {
 			controller.abort(sourceSignal?.reason);
 			aborted.resolve();
 		};
 		sourceSignal?.addEventListener("abort", abort, { once: true });
+		const stop = (): void => {
+			stopped.resolve();
+			controller.abort(stopSignal?.reason);
+		};
+		stopSignal?.addEventListener("abort", stop, { once: true });
 		const timer = new SegmentTimer(this.#clock, this.#deadlines[segment]);
 		if (segment === "receipt") this.#receiptActivityTimers.add(timer);
 		try {
@@ -740,6 +811,7 @@ export class ExternalConnectorBoundedSupervisor {
 				),
 				timer.expired.then((): AwaitOutcome<T> => ({ kind: "timeout" })),
 				aborted.promise.then((): AwaitOutcome<T> => ({ kind: "aborted" })),
+				stopped.promise.then((): AwaitOutcome<T> => ({ kind: "stopped" })),
 				this.#processHandle!.exited.then((): AwaitOutcome<T> => ({ kind: "process_exit" })),
 			]);
 			if (outcome.kind === "value") {
@@ -761,6 +833,10 @@ export class ExternalConnectorBoundedSupervisor {
 				}
 				return outcome.value;
 			}
+			if (outcome.kind === "stopped") {
+				void operationPromise.catch(() => undefined);
+				throw new ExternalConnectorObservationStopped();
+			}
 			if (!controller.signal.aborted) controller.abort();
 			const cleaned = await this.#forceAndWait();
 			if (!cleaned) throw new ExternalConnectorSupervisorError("reconcile_required", "dispose", true);
@@ -772,6 +848,7 @@ export class ExternalConnectorBoundedSupervisor {
 			if (segment === "receipt") this.#receiptActivityTimers.delete(timer);
 			timer.close();
 			sourceSignal?.removeEventListener("abort", abort);
+			stopSignal?.removeEventListener("abort", stop);
 		}
 	}
 
@@ -780,8 +857,10 @@ export class ExternalConnectorBoundedSupervisor {
 		handle: ExternalConnectorDriverHandle,
 		sourceSignal?: AbortSignal,
 		onEvent?: (event: ExternalConnectorDriverEvent, signal: AbortSignal) => Promise<void>,
+		stopSignal?: AbortSignal,
 	): Promise<void> {
 		this.#requireProcess();
+		if (stopSignal?.aborted === true) throw new ExternalConnectorObservationStopped();
 		if (sourceSignal?.aborted === true) {
 			const cleaned = await this.#forceAndWait();
 			throw new ExternalConnectorSupervisorError(
@@ -792,11 +871,17 @@ export class ExternalConnectorBoundedSupervisor {
 		}
 		const controller = new AbortController();
 		const aborted = deferred<void>();
+		const stopped = deferred<void>();
 		const abort = (): void => {
 			controller.abort(sourceSignal?.reason);
 			aborted.resolve();
 		};
 		sourceSignal?.addEventListener("abort", abort, { once: true });
+		const stop = (): void => {
+			stopped.resolve();
+			controller.abort(stopSignal?.reason);
+		};
+		stopSignal?.addEventListener("abort", stop, { once: true });
 		const timer = new SegmentTimer(this.#clock, this.#deadlines.event);
 		let iterator: AsyncIterator<unknown>;
 		try {
@@ -833,11 +918,13 @@ export class ExternalConnectorBoundedSupervisor {
 					),
 					timer.expired.then((): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "timeout" })),
 					aborted.promise.then((): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "aborted" })),
+					stopped.promise.then((): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "stopped" })),
 					this.#processHandle!.exited.then(
 						(): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "process_exit" }),
 					),
 				]);
 				if (outcome.kind !== "value") {
+					if (outcome.kind === "stopped") throw new ExternalConnectorObservationStopped();
 					if (!controller.signal.aborted) controller.abort();
 					const cleaned = await this.#forceAndWait();
 					throw new ExternalConnectorSupervisorError(
@@ -862,9 +949,11 @@ export class ExternalConnectorBoundedSupervisor {
 						),
 						timer.expired.then((): AwaitOutcome<void> => ({ kind: "timeout" })),
 						aborted.promise.then((): AwaitOutcome<void> => ({ kind: "aborted" })),
+						stopped.promise.then((): AwaitOutcome<void> => ({ kind: "stopped" })),
 						this.#processHandle!.exited.then((): AwaitOutcome<void> => ({ kind: "process_exit" })),
 					]);
 					if (callbackOutcome.kind !== "value") {
+						if (callbackOutcome.kind === "stopped") throw new ExternalConnectorObservationStopped();
 						if (callbackOutcome.kind === "rejected") throw callbackOutcome.error;
 						if (!controller.signal.aborted) controller.abort();
 						const cleaned = await this.#forceAndWait();
@@ -879,6 +968,7 @@ export class ExternalConnectorBoundedSupervisor {
 				this.#touchReceiptActivity();
 			}
 		} catch (error) {
+			if (error instanceof ExternalConnectorObservationStopped) throw error;
 			if (error instanceof ExternalConnectorSupervisorError && this.#forcedTermination) throw error;
 			const cleaned = await this.#forceAndWait();
 			if (error instanceof ExternalConnectorSupervisorError && cleaned) throw error;
@@ -890,6 +980,29 @@ export class ExternalConnectorBoundedSupervisor {
 		} finally {
 			timer.close();
 			sourceSignal?.removeEventListener("abort", abort);
+			stopSignal?.removeEventListener("abort", stop);
+		}
+	}
+
+	/** Stop cooperative observation first, then force the exact tree after the cancel grace expires. */
+	async containAfterCancellationGrace(): Promise<void> {
+		const handle = this.#requireProcess();
+		const timer = new SegmentTimer(this.#clock, this.#deadlines.cancel);
+		try {
+			const exited = await Promise.race([
+				handle.exited.then(() => true, () => false),
+				timer.expired.then(() => false),
+			]);
+			if (exited) {
+				this.#cleaned = true;
+				this.#phase = "terminal";
+				return;
+			}
+			const cleaned = await this.#forceAndWait();
+			if (!cleaned) throw new ExternalConnectorSupervisorError("reconcile_required", "dispose", true);
+			this.#phase = "terminal";
+		} finally {
+			timer.close();
 		}
 	}
 
