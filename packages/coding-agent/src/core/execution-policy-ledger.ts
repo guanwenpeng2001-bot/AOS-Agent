@@ -9,7 +9,10 @@
 
 import {
 	EXECUTION_POLICY_SCHEMA_VERSION,
+	POLICY_APPROVAL_OUTCOMES,
+	POLICY_APPROVAL_SOURCES,
 	POLICY_BINDING_CUSTOM_TYPE,
+	POLICY_RESOURCE_CATEGORIES,
 	PolicyError,
 	type PolicyAction,
 	type PolicyApprovalOutcome,
@@ -28,6 +31,18 @@ import {
 	type SandboxStatus,
 	type WorkspaceScope,
 } from "./execution-policy.ts";
+import {
+	createPolicyReviewEvidence,
+	isCanonicalPolicyTimestamp,
+	isCanonicalReviewScopeDigest,
+	isPolicyReviewEvidence,
+	isPolicyReviewRequirement,
+	isSafeReviewerId,
+	type PolicyEffect,
+	type PolicyReviewEvidence,
+	type PolicyReviewerIdentity,
+	type PolicyReviewRequirement,
+} from "./protected-path-policy.ts";
 
 export const EXECUTION_POLICY_LEDGER_SCHEMA_VERSION = 1;
 export const POLICY_DECISION_CUSTOM_TYPE = "policy.decision";
@@ -92,6 +107,11 @@ export interface PolicyBindingLedgerRecord {
 			readonly action: PolicyAction;
 			readonly allowedNameCount: number;
 		};
+		readonly protectedPaths?: {
+			readonly ruleCount: number;
+			readonly managedLockCount: number;
+			readonly policyDigest: string;
+		};
 	};
 	readonly bindingHash: string;
 }
@@ -108,6 +128,11 @@ export interface PolicyDecisionLedgerRecord {
 	readonly reasonCode?: PolicyErrorCode;
 	readonly requestId?: string;
 	readonly timestamp: string;
+	readonly effects?: ReadonlyArray<PolicyEffect>;
+	readonly protectedPathCount?: number;
+	readonly matchedProtectedRuleIds?: ReadonlyArray<string>;
+	readonly reviewRequirement?: PolicyReviewRequirement;
+	readonly scopeDigest?: string;
 }
 
 export interface PolicyApprovalLedgerRecord {
@@ -116,18 +141,26 @@ export interface PolicyApprovalLedgerRecord {
 	readonly requestId?: string;
 	readonly bindingId: string;
 	readonly resource: PolicyResource;
-	readonly reasonCode: "policy_approval_required";
+	readonly reasonCode: "policy_approval_required" | "policy_review_required";
 	readonly createdAt: string;
+	readonly reviewRequirement?: Exclude<PolicyReviewRequirement, "none">;
+	readonly scopeDigest?: string;
 	/** Present only after the request has been resolved. */
 	readonly outcome?: PolicyApprovalOutcome;
 	/** Interaction source that resolved the request; present with `outcome`. */
 	readonly source?: PolicyApprovalSource;
+	/** Real resolution time; newly written terminal records always include it. */
+	readonly resolvedAt?: string;
+	readonly reviewer?: PolicyReviewerIdentity;
 	readonly scope: {
 		readonly resource: PolicyResource;
 		readonly workspaceScopes?: ReadonlyArray<WorkspaceScope>;
 		readonly environmentCount?: number;
 		readonly destinationCount?: number;
 		readonly credentialCount?: number;
+		readonly effectCount?: number;
+		readonly pathCount?: number;
+		readonly scopeDigest?: string;
 	};
 }
 
@@ -177,6 +210,10 @@ export interface PersistedPolicyLedgerEntry {
 export interface PolicyApprovalLedgerResolution {
 	readonly outcome: PolicyApprovalOutcome;
 	readonly source: PolicyApprovalSource;
+	readonly resolvedAt?: string;
+	readonly reviewer?: PolicyReviewerIdentity;
+	readonly requirement?: Exclude<PolicyReviewRequirement, "none" | "approval">;
+	readonly scopeDigest?: string;
 }
 
 function deepFreeze<T>(value: T): T {
@@ -186,12 +223,25 @@ function deepFreeze<T>(value: T): T {
 	return value;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isWorkspaceScope(value: unknown): value is WorkspaceScope {
+	return value === "workspace" || value === "declared-read-only" || value === "temporary" || value === "credentials" || value === "agent-internal";
+}
+
 function cloneSandboxCapabilities(capabilities: SandboxCapabilities): SandboxCapabilities {
 	return {
 		filesystem: capabilities.filesystem,
 		process: capabilities.process,
 		network: capabilities.network,
 		credentialIsolation: capabilities.credentialIsolation,
+		...(capabilities.credentialDelivery === undefined ? {} : { credentialDelivery: capabilities.credentialDelivery }),
 	};
 }
 
@@ -236,6 +286,9 @@ function clonePolicyBinding(binding: PolicyBinding): PolicyBindingLedgerRecord {
 				action: binding.constraints.credentials.action,
 				allowedNameCount: binding.constraints.credentials.allowedNameCount,
 			},
+			...(binding.constraints.protectedPaths === undefined
+				? {}
+				: { protectedPaths: { ...binding.constraints.protectedPaths } }),
 		},
 		bindingHash: binding.bindingHash,
 	});
@@ -254,6 +307,11 @@ function clonePolicyDecision(decision: PolicyDecision): PolicyDecisionLedgerReco
 		...(decision.reasonCode === undefined ? {} : { reasonCode: decision.reasonCode }),
 		...(decision.requestId === undefined ? {} : { requestId: decision.requestId }),
 		timestamp: decision.timestamp,
+		...(decision.effects === undefined ? {} : { effects: [...decision.effects] }),
+		...(decision.protectedPathCount === undefined ? {} : { protectedPathCount: decision.protectedPathCount }),
+		...(decision.matchedProtectedRuleIds === undefined ? {} : { matchedProtectedRuleIds: [...decision.matchedProtectedRuleIds] }),
+		...(decision.reviewRequirement === undefined ? {} : { reviewRequirement: decision.reviewRequirement }),
+		...(decision.scopeDigest === undefined ? {} : { scopeDigest: decision.scopeDigest }),
 	});
 }
 
@@ -261,6 +319,30 @@ function clonePolicyApproval(
 	approval: PolicyApprovalRequest,
 	resolution?: PolicyApprovalLedgerResolution,
 ): PolicyApprovalLedgerRecord {
+	const resolvedAt = resolution === undefined ? undefined : resolution.resolvedAt ?? new Date().toISOString();
+	if (resolvedAt !== undefined && !isCanonicalPolicyTimestamp(resolvedAt)) throw new PolicyError("policy_review_evidence_invalid");
+	if (resolution?.reviewer !== undefined) {
+		if (
+			resolution.requirement === undefined ||
+			resolution.scopeDigest === undefined ||
+			!isCanonicalReviewScopeDigest(resolution.scopeDigest) ||
+			approval.reviewRequirement !== resolution.requirement ||
+			approval.scopeDigest !== resolution.scopeDigest ||
+			resolvedAt === undefined ||
+			Date.parse(resolvedAt) < Date.parse(approval.createdAt) ||
+			!isPolicyReviewEvidence({
+				requestId: approval.id,
+				bindingId: approval.bindingId,
+				requirement: resolution.requirement,
+				reviewer: resolution.reviewer,
+				decision: resolution.outcome,
+				resolvedAt,
+				scopeDigest: resolution.scopeDigest,
+			})
+		) {
+			throw new PolicyError("policy_review_evidence_invalid");
+		}
+	}
 	return deepFreeze({
 		id: approval.id,
 		requestId: approval.id,
@@ -268,13 +350,25 @@ function clonePolicyApproval(
 		resource: approval.resource,
 		reasonCode: approval.reasonCode,
 		createdAt: approval.createdAt,
-		...(resolution === undefined ? {} : { outcome: resolution.outcome, source: resolution.source }),
+		...(approval.reviewRequirement === undefined ? {} : { reviewRequirement: approval.reviewRequirement }),
+		...(approval.scopeDigest === undefined ? {} : { scopeDigest: approval.scopeDigest }),
+		...(resolution === undefined
+			? {}
+			: {
+				outcome: resolution.outcome,
+				source: resolution.source,
+				resolvedAt,
+				...(resolution.reviewer === undefined ? {} : { reviewer: { ...resolution.reviewer } }),
+			}),
 		scope: {
 			resource: approval.scope.resource,
 			...(approval.scope.workspaceScopes === undefined ? {} : { workspaceScopes: [...approval.scope.workspaceScopes] }),
 			...(approval.scope.environmentCount === undefined ? {} : { environmentCount: approval.scope.environmentCount }),
 			...(approval.scope.destinationCount === undefined ? {} : { destinationCount: approval.scope.destinationCount }),
 			...(approval.scope.credentialCount === undefined ? {} : { credentialCount: approval.scope.credentialCount }),
+			...(approval.scope.effectCount === undefined ? {} : { effectCount: approval.scope.effectCount }),
+			...(approval.scope.pathCount === undefined ? {} : { pathCount: approval.scope.pathCount }),
+			...(approval.scope.scopeDigest === undefined ? {} : { scopeDigest: approval.scope.scopeDigest }),
 		},
 	});
 }
@@ -323,6 +417,147 @@ function persist(session: PolicyLedgerSession | undefined, customType: PolicyLed
 	}
 }
 
+function parsePersistedApprovalRecord(value: unknown): PolicyApprovalLedgerRecord | undefined {
+	if (!isRecord(value) || !isRecord(value.scope)) return undefined;
+	const createdAt = isCanonicalPolicyTimestamp(value.createdAt) ? value.createdAt : undefined;
+	const resolvedAt = isCanonicalPolicyTimestamp(value.resolvedAt) ? value.resolvedAt : undefined;
+	if (
+		!isSafeReviewerId(value.id) ||
+		(value.requestId !== undefined && !isSafeReviewerId(value.requestId)) ||
+		!isSafeReviewerId(value.bindingId) ||
+		!(POLICY_RESOURCE_CATEGORIES as readonly unknown[]).includes(value.resource) ||
+		(value.reasonCode !== "policy_approval_required" && value.reasonCode !== "policy_review_required") ||
+		createdAt === undefined ||
+		value.scope.resource !== value.resource
+	) {
+		return undefined;
+	}
+	for (const count of [value.scope.environmentCount, value.scope.destinationCount, value.scope.credentialCount, value.scope.effectCount, value.scope.pathCount]) {
+		if (count !== undefined && !isNonNegativeInteger(count)) return undefined;
+	}
+	if (
+		value.scope.workspaceScopes !== undefined &&
+		(!Array.isArray(value.scope.workspaceScopes) || !value.scope.workspaceScopes.every(isWorkspaceScope))
+	) {
+		return undefined;
+	}
+	if (value.scope.scopeDigest !== undefined && !isCanonicalReviewScopeDigest(value.scope.scopeDigest)) return undefined;
+	if (value.reviewRequirement !== undefined && (!isPolicyReviewRequirement(value.reviewRequirement) || value.reviewRequirement === "none")) {
+		return undefined;
+	}
+	if (value.scopeDigest !== undefined && !isCanonicalReviewScopeDigest(value.scopeDigest)) return undefined;
+	if (value.scopeDigest !== undefined && value.scope.scopeDigest !== value.scopeDigest) return undefined;
+	const terminal = value.outcome !== undefined || value.source !== undefined || value.resolvedAt !== undefined || value.reviewer !== undefined;
+	if (terminal) {
+		if (
+			!(POLICY_APPROVAL_OUTCOMES as readonly unknown[]).includes(value.outcome) ||
+			!(POLICY_APPROVAL_SOURCES as readonly unknown[]).includes(value.source) ||
+			(value.resolvedAt !== undefined && resolvedAt === undefined)
+		) {
+			return undefined;
+		}
+	}
+	if (value.reviewer !== undefined) {
+		if (
+			(value.reviewRequirement !== "reviewer" && value.reviewRequirement !== "team_enforced") ||
+			value.scopeDigest === undefined ||
+			resolvedAt === undefined ||
+			Date.parse(resolvedAt) < Date.parse(createdAt) ||
+			!isRecord(value.reviewer) ||
+			!isPolicyReviewEvidence({
+				requestId: value.requestId ?? value.id,
+				bindingId: value.bindingId,
+				requirement: value.reviewRequirement,
+				reviewer: value.reviewer,
+				decision: value.outcome,
+				resolvedAt,
+				scopeDigest: value.scopeDigest,
+			})
+		) {
+			return undefined;
+		}
+	}
+	return deepFreeze({
+		id: value.id,
+		...(value.requestId === undefined ? {} : { requestId: value.requestId as string }),
+		bindingId: value.bindingId,
+		resource: value.resource as PolicyResource,
+		reasonCode: value.reasonCode,
+		createdAt,
+		...(value.reviewRequirement === undefined ? {} : { reviewRequirement: value.reviewRequirement }),
+		...(value.scopeDigest === undefined ? {} : { scopeDigest: value.scopeDigest }),
+		...(value.outcome === undefined ? {} : { outcome: value.outcome as PolicyApprovalOutcome }),
+		...(value.source === undefined ? {} : { source: value.source as PolicyApprovalSource }),
+		...(resolvedAt === undefined ? {} : { resolvedAt }),
+		...(value.reviewer === undefined ? {} : { reviewer: { ...value.reviewer } as unknown as PolicyReviewerIdentity }),
+		scope: {
+			resource: value.scope.resource as PolicyResource,
+			...(value.scope.workspaceScopes === undefined ? {} : { workspaceScopes: [...value.scope.workspaceScopes] as WorkspaceScope[] }),
+			...(value.scope.environmentCount === undefined ? {} : { environmentCount: value.scope.environmentCount as number }),
+			...(value.scope.destinationCount === undefined ? {} : { destinationCount: value.scope.destinationCount as number }),
+			...(value.scope.credentialCount === undefined ? {} : { credentialCount: value.scope.credentialCount as number }),
+			...(value.scope.effectCount === undefined ? {} : { effectCount: value.scope.effectCount as number }),
+			...(value.scope.pathCount === undefined ? {} : { pathCount: value.scope.pathCount as number }),
+			...(value.scope.scopeDigest === undefined ? {} : { scopeDigest: value.scope.scopeDigest as string }),
+		},
+	});
+}
+
+function replayApprovalEvents(entries: ReadonlyArray<PolicyLedgerSessionEntry>): PolicyLedgerEvent[] {
+	const events: PolicyLedgerEvent[] = [];
+	const sequences = new Set<number>();
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== POLICY_APPROVAL_CUSTOM_TYPE || !isRecord(entry.data)) continue;
+		if (
+			entry.data.schemaVersion !== EXECUTION_POLICY_LEDGER_SCHEMA_VERSION ||
+			!Number.isSafeInteger(entry.data.sequence) ||
+			(entry.data.sequence as number) < 1 ||
+			sequences.has(entry.data.sequence as number)
+		) {
+			continue;
+		}
+		const record = parsePersistedApprovalRecord(entry.data.record);
+		if (record === undefined) continue;
+		const sequence = entry.data.sequence as number;
+		sequences.add(sequence);
+		events.push(deepFreeze({
+			sequence,
+			...(entry.id === undefined ? {} : { entryId: entry.id }),
+			customType: POLICY_APPROVAL_CUSTOM_TYPE,
+			schemaVersion: EXECUTION_POLICY_LEDGER_SCHEMA_VERSION,
+			timestamp: record.resolvedAt ?? record.createdAt,
+			record,
+		}));
+	}
+	return events.sort((left, right) => left.sequence - right.sequence);
+}
+
+function maxPersistedSequence(entries: ReadonlyArray<PolicyLedgerSessionEntry>): number {
+	const customTypes = new Set<string>([
+		POLICY_BINDING_CUSTOM_TYPE,
+		POLICY_DECISION_CUSTOM_TYPE,
+		POLICY_APPROVAL_CUSTOM_TYPE,
+		SANDBOX_LIFECYCLE_CUSTOM_TYPE,
+		POLICY_VIOLATION_CUSTOM_TYPE,
+	]);
+	let maximum = 0;
+	for (const entry of entries) {
+		if (
+			entry.type === "custom" &&
+			entry.customType !== undefined &&
+			customTypes.has(entry.customType) &&
+			isRecord(entry.data) &&
+			entry.data.schemaVersion === EXECUTION_POLICY_LEDGER_SCHEMA_VERSION &&
+			Number.isSafeInteger(entry.data.sequence) &&
+			(entry.data.sequence as number) > 0 &&
+			(entry.data.sequence as number) < Number.MAX_SAFE_INTEGER
+		) {
+			maximum = Math.max(maximum, entry.data.sequence as number);
+		}
+	}
+	return maximum;
+}
+
 export function createPolicyBindingLedgerRecord(binding: PolicyBinding): PolicyBindingLedgerRecord {
 	return clonePolicyBinding(binding);
 }
@@ -345,6 +580,11 @@ export class InMemoryExecutionPolicyLedger {
 
 	constructor(session?: PolicyLedgerSession) {
 		this.session = session;
+		if (session !== undefined) {
+			const entries = session.getEntries();
+			this.events.push(...replayApprovalEvents(entries));
+			this.nextSequence = maxPersistedSequence(entries) + 1;
+		}
 	}
 
 	appendBinding(binding: PolicyBinding): PolicyLedgerEvent {
@@ -364,6 +604,59 @@ export class InMemoryExecutionPolicyLedger {
 		resolution: PolicyApprovalLedgerResolution,
 	): PolicyLedgerEvent {
 		return this.append(POLICY_APPROVAL_CUSTOM_TYPE, clonePolicyApproval(approval, resolution));
+	}
+
+	appendReviewOutcome(
+		approval: PolicyApprovalRequest,
+		evidence: PolicyReviewEvidence,
+		source: PolicyApprovalSource = "system",
+	): PolicyLedgerEvent {
+		const safeEvidence = createPolicyReviewEvidence(evidence);
+		if (
+			approval.id !== safeEvidence.requestId ||
+			approval.bindingId !== safeEvidence.bindingId ||
+			approval.reviewRequirement !== safeEvidence.requirement ||
+			approval.scopeDigest !== safeEvidence.scopeDigest ||
+			Date.parse(safeEvidence.resolvedAt) < Date.parse(approval.createdAt)
+		) {
+			throw new PolicyError("policy_review_evidence_invalid");
+		}
+		return this.append(POLICY_APPROVAL_CUSTOM_TYPE, clonePolicyApproval(approval, {
+			outcome: safeEvidence.decision,
+			source,
+			resolvedAt: safeEvidence.resolvedAt,
+			reviewer: safeEvidence.reviewer,
+			requirement: safeEvidence.requirement,
+			scopeDigest: safeEvidence.scopeDigest,
+		}));
+	}
+
+	reviewEvidence(filter: { readonly requestId?: string; readonly bindingId?: string; readonly scopeDigest?: string } = {}): ReadonlyArray<PolicyReviewEvidence> {
+		return this.events.flatMap((event) => {
+			if (event.customType !== POLICY_APPROVAL_CUSTOM_TYPE) return [];
+			const record = event.record;
+			if (
+				record.reviewer === undefined ||
+				record.resolvedAt === undefined ||
+				record.outcome === undefined ||
+				(record.reviewRequirement !== "reviewer" && record.reviewRequirement !== "team_enforced") ||
+				record.scopeDigest === undefined ||
+				(filter.requestId !== undefined && (record.requestId ?? record.id) !== filter.requestId) ||
+				(filter.bindingId !== undefined && record.bindingId !== filter.bindingId) ||
+				(filter.scopeDigest !== undefined && record.scopeDigest !== filter.scopeDigest)
+			) {
+				return [];
+			}
+			return [createPolicyReviewEvidence({
+				requestId: record.requestId ?? record.id,
+				bindingId: record.bindingId,
+				requirement: record.reviewRequirement,
+				reviewer: record.reviewer,
+				decision: record.outcome,
+				resolvedAt: record.resolvedAt,
+				scopeDigest: record.scopeDigest,
+			})];
+		});
 	}
 
 	appendSandboxLifecycle(record: SandboxLifecycleLedgerRecord): PolicyLedgerEvent {
