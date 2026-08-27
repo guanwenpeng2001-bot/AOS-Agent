@@ -1699,10 +1699,10 @@ descriptor. The Host resolves the constructed connector from the trusted
 registry and sends it through the same executor pool as every other provider.
 
 `artifacts` optionally carries canonical metadata-only Artifact references for
-the selected Connector. `toolGatewayRequest` optionally carries the canonical
-Tool Gateway request fields supported by the RPC command type; the Host adds
-execution context after admission. Both fields are included in the immutable
-request and resume reconstruction instead of being dropped by `RpcClient`.
+the selected Connector. RPC callers cannot supply Tool Gateway requests. Only
+a request emitted by the running Connector may enter the Host's private Tool
+Gateway bridge, after the canonical Attempt and its execution intent are
+durable.
 
 If `deadlineAt` is already expired during command preflight, the command fails
 with `run_deadline_exceeded`; no Run ID, accepted ledger entry, `run.started`,
@@ -1882,10 +1882,10 @@ Success response mirrors `run.start` — a new accepted run whose `attempt` is t
 ```
 
 `run.resume` accepts the same optional `externalConnector` selection,
-`artifacts`, `toolGatewayRequest`, and `deadlineAt`. These fields participate
-in idempotency and are persisted on the successor attempt. Connector resume
-requires matching current capability evidence; drift or unsupported resume
-fails closed and never becomes a new external start.
+`artifacts`, and `deadlineAt`. These fields participate in idempotency and are
+persisted on the successor attempt. Connector resume requires matching current
+capability evidence; drift or unsupported resume fails closed and never
+becomes a new external start.
 
 Failures:
 - `session_busy` when the current session already has an active run

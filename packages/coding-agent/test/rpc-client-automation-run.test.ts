@@ -2,10 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ImageContent } from "@aos-agent/ai";
 import { AutomationRpcError, RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import type { RpcRunStreamEvent } from "../src/modes/rpc/rpc-client.ts";
-import type {
-	CanonicalExternalAgentArtifactReference,
-	ExternalConnectorToolGatewayRequestInput,
-} from "../src/index.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../src/index.ts";
 
 type RpcClientPrivate = {
 	send: (command: { type: string }) => Promise<unknown>;
@@ -31,15 +28,6 @@ const ARTIFACT: CanonicalExternalAgentArtifactReference = {
 	provenance: { source: "artifact_store", producer: "rpc-client", trust: "trusted" },
 	readHandle: { kind: "artifact_store", ref: ARTIFACT_ID },
 };
-const TOOL_GATEWAY_REQUEST: ExternalConnectorToolGatewayRequestInput = {
-	schemaVersion: 1,
-	toolCallId: "tool-call-rpc-client",
-	toolName: "workspace.read",
-	namespace: "workspace",
-	originalArguments: { path: "docs/input.txt" },
-	idempotencyKey: "rpc-client-gateway-request",
-};
-
 const acceptedResponse = {
 	type: "response",
 	command: "run.start",
@@ -152,7 +140,7 @@ describe("RpcClient Automation Host request shapes", () => {
 		expect(result).toEqual({ runId: "r2", sessionId: "s2", attempt: 2, status: "accepted" });
 	});
 
-	it("startRun and resumeRun serialize canonical artifacts and Tool Gateway request fields", async () => {
+	it("startRun and resumeRun serialize canonical artifact fields", async () => {
 		const { client, privateClient } = createClient();
 		const send = vi.fn(async () => acceptedResponse);
 		privateClient.send = send;
@@ -173,7 +161,6 @@ describe("RpcClient Automation Host request shapes", () => {
 			undefined,
 			externalConnector,
 			[ARTIFACT],
-			TOOL_GATEWAY_REQUEST,
 		);
 		expect(send).toHaveBeenLastCalledWith({
 			type: "run.start",
@@ -181,7 +168,6 @@ describe("RpcClient Automation Host request shapes", () => {
 			images: undefined,
 			externalConnector,
 			artifacts: [ARTIFACT],
-			toolGatewayRequest: TOOL_GATEWAY_REQUEST,
 		});
 
 		await client.resumeRun(
@@ -197,7 +183,6 @@ describe("RpcClient Automation Host request shapes", () => {
 			undefined,
 			externalConnector,
 			[ARTIFACT],
-			TOOL_GATEWAY_REQUEST,
 		);
 		expect(send).toHaveBeenLastCalledWith({
 			type: "run.resume",
@@ -207,7 +192,6 @@ describe("RpcClient Automation Host request shapes", () => {
 			images: undefined,
 			externalConnector,
 			artifacts: [ARTIFACT],
-			toolGatewayRequest: TOOL_GATEWAY_REQUEST,
 		});
 	});
 

@@ -617,7 +617,6 @@ export {
 	type ExternalConnectorProductExecution,
 	type ExternalConnectorProductExecutionInput,
 	type ExternalConnectorToolGatewayExchange,
-	type ExternalConnectorToolGatewayRequestInput,
 } from "./core/external-connector-product.ts";
 // Supported Host construction path. Raw connector construction and Host-proof
 // inspection remain private so structural connectors cannot mint registry trust.

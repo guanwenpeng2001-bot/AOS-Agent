@@ -20,14 +20,14 @@ import {
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import * as packageEntry from "../src/index.ts";
-import {
-	DurableExternalAgentConnector,
-	externalConnectorAttemptId,
-} from "../src/core/external-agent-connector.ts";
+import { DurableExternalAgentConnector, externalConnectorAttemptId } from "../src/core/external-agent-connector.ts";
 import type {
 	ExternalConnectorDurableStore,
 	ExternalConnectorOperation,
 	ExternalConnectorOperationStatus,
+	ExternalConnectorToolGatewayExecution,
+	ExternalConnectorToolGatewayIntent,
+	ExternalConnectorToolGatewayTerminal,
 } from "../src/core/external-agent-operation.ts";
 import {
 	cloneExternalConnectorOperation,
@@ -166,6 +166,7 @@ class FakeStore implements ExternalConnectorDurableStore {
 	readonly operations = new Map<string, ExternalConnectorOperation>();
 	readonly mappings = new Map<string, CanonicalExternalConnectorMapping>();
 	readonly receipts = new Map<string, AttemptReceipt>();
+	readonly toolGatewayExecutions = new Map<string, ExternalConnectorToolGatewayExecution>();
 	readonly operationHistory: ExternalConnectorOperationStatus[] = [];
 	reads = 0;
 	mappingWrites = 0;
@@ -239,6 +240,24 @@ class FakeStore implements ExternalConnectorDurableStore {
 		this.receipts.set(receipt.attemptId, receipt);
 		return receipt;
 	}
+
+	async readToolGatewayExecution(attemptId: string): Promise<ExternalConnectorToolGatewayExecution | undefined> {
+		return this.toolGatewayExecutions.get(attemptId);
+	}
+
+	async writeToolGatewayIntent(value: ExternalConnectorToolGatewayIntent) {
+		const current = this.toolGatewayExecutions.get(value.attemptId);
+		if (current !== undefined) return { intent: current.intent, claimed: false };
+		this.toolGatewayExecutions.set(value.attemptId, { intent: value });
+		return { intent: value, claimed: true };
+	}
+
+	async writeToolGatewayTerminal(value: ExternalConnectorToolGatewayTerminal) {
+		const current = this.toolGatewayExecutions.get(value.attemptId);
+		if (current === undefined) throw new FoundationError("session_ledger_missing_intent", "Missing test intent");
+		this.toolGatewayExecutions.set(value.attemptId, { intent: current.intent, terminal: value });
+		return value;
+	}
 }
 
 class OperationLedger {
@@ -259,7 +278,17 @@ class OperationLedger {
 }
 
 class FakeDriver implements ExternalConnectorVendorDriver {
-	readonly calls = { spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 };
+	readonly calls = {
+		spawn: 0,
+		events: 0,
+		connect: 0,
+		lookup: 0,
+		read: 0,
+		write: 0,
+		heartbeat: 0,
+		cancel: 0,
+		dispose: 0,
+	};
 	readonly spawnStates: Array<ExternalConnectorOperationStatus | undefined> = [];
 	store: FakeStore | undefined;
 	spawnFailure = false;
@@ -302,11 +331,12 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		let index = 0;
 		return {
 			[Symbol.asyncIterator]: () => ({
-				next: async () => this.eventNextHangs
-					? new Promise<never>(() => undefined)
-					: index < this.eventValues.length
-						? { done: false, value: this.eventValues[index++] }
-						: { done: true, value: undefined },
+				next: async () =>
+					this.eventNextHangs
+						? new Promise<never>(() => undefined)
+						: index < this.eventValues.length
+							? { done: false, value: this.eventValues[index++] }
+							: { done: true, value: undefined },
 			}),
 		};
 	}
@@ -349,9 +379,13 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		this.calls.dispose++;
 		if (this.disposeHangs) {
 			await new Promise<void>(() => {
-				options?.signal?.addEventListener("abort", () => {
-					this.disposeAbortObserved = true;
-				}, { once: true });
+				options?.signal?.addEventListener(
+					"abort",
+					() => {
+						this.disposeAbortObserved = true;
+					},
+					{ once: true },
+				);
 			});
 		}
 	}
@@ -539,7 +573,17 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const value = await fixture();
 		expect(value.store.reads).toBe(0);
 		expect(value.store.operationHistory).toEqual([]);
-		expect(value.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+		expect(value.driver.calls).toEqual({
+			spawn: 0,
+			events: 0,
+			connect: 0,
+			lookup: 0,
+			read: 0,
+			write: 0,
+			heartbeat: 0,
+			cancel: 0,
+			dispose: 0,
+		});
 
 		const rejected = await value.connector.runAttempt(value.attempt, { correlation });
 		expect(rejected.ok).toBe(false);
@@ -587,13 +631,33 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 			receiptId: `attempt_receipt_${value.attempt.attemptId}`,
 		});
 		expect(value.store.operationHistory).toEqual(["terminal"]);
-		expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+		expect(restarted.driver.calls).toEqual({
+			spawn: 0,
+			events: 0,
+			connect: 0,
+			lookup: 0,
+			read: 0,
+			write: 0,
+			heartbeat: 0,
+			cancel: 0,
+			dispose: 0,
+		});
 
 		const replayed = await restarted.connector.reconcileAttempt(value.attempt, { correlation });
 
 		expect(replayed).toEqual({ ok: true, value: value.store.receipts.get(value.attempt.attemptId) });
 		expect(value.store.operationHistory).toEqual(["terminal"]);
-		expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+		expect(restarted.driver.calls).toEqual({
+			spawn: 0,
+			events: 0,
+			connect: 0,
+			lookup: 0,
+			read: 0,
+			write: 0,
+			heartbeat: 0,
+			cancel: 0,
+			dispose: 0,
+		});
 	});
 
 	it("resumes only an existing mapped Attempt when capability is supported", async () => {
@@ -670,16 +734,18 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
 		await persistSupervisorIdentity(value);
-		value.driver.eventValues = [{
-			schemaVersion: 1,
-			type: "progress",
-			externalSessionId: value.driver.handle.externalSessionId,
-			...(value.driver.handle.externalTurnId === undefined
-				? {}
-				: { externalTurnId: value.driver.handle.externalTurnId }),
-			sequence: 1,
-			producedAt: now,
-		}];
+		value.driver.eventValues = [
+			{
+				schemaVersion: 1,
+				type: "progress",
+				externalSessionId: value.driver.handle.externalSessionId,
+				...(value.driver.handle.externalTurnId === undefined
+					? {}
+					: { externalTurnId: value.driver.handle.externalTurnId }),
+				sequence: 1,
+				producedAt: now,
+			},
+		];
 		const resumed = await value.connector.resumeAttempt(value.attempt, { correlation });
 		expect(resumed.ok).toBe(true);
 		if (resumed.ok) {
@@ -709,7 +775,17 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(completed.ok).toBe(true);
 		if (completed.ok) expect(completed.value.status).toBe("cancelled");
 		expect(value.supervision.processController.launchCalls).toBe(0);
-		expect(value.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+		expect(value.driver.calls).toEqual({
+			spawn: 0,
+			events: 0,
+			connect: 0,
+			lookup: 0,
+			read: 0,
+			write: 0,
+			heartbeat: 0,
+			cancel: 0,
+			dispose: 0,
+		});
 	});
 
 	it("cleans a launched supervisor before settling an abort observed ahead of driver observation", async () => {
@@ -787,7 +863,17 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.store.operations.has(value.attempt.attemptId)).toBe(false);
 		expect(value.store.receipts.size).toBe(1);
 		expect(value.store.receiptWrites).toBe(1);
-		expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+		expect(restarted.driver.calls).toEqual({
+			spawn: 0,
+			events: 0,
+			connect: 0,
+			lookup: 0,
+			read: 0,
+			write: 0,
+			heartbeat: 0,
+			cancel: 0,
+			dispose: 0,
+		});
 	});
 
 	it("uses one cooperative driver cancel after launch and returns one canonical cancelled receipt", async () => {
@@ -937,11 +1023,12 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 			value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 			value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
 
-			const result = recovery === "resume"
-				? await value.connector.resumeAttempt(value.attempt, { correlation })
-				: recovery === "reconcile"
-					? await value.connector.reconcileAttempt(value.attempt, { correlation })
-					: await value.connector.cancelAttempt(value.attempt.attemptId);
+			const result =
+				recovery === "resume"
+					? await value.connector.resumeAttempt(value.attempt, { correlation })
+					: recovery === "reconcile"
+						? await value.connector.reconcileAttempt(value.attempt, { correlation })
+						: await value.connector.cancelAttempt(value.attempt.attemptId);
 
 			expect(result.ok).toBe(false);
 			expect(value.supervision.processController.launchCalls).toBe(0);
@@ -963,7 +1050,17 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.supervision.processController.launchCalls).toBe(0);
 		expect(value.supervision.processController.forceCalls).toBe(1);
 		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
-		expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+		expect(restarted.driver.calls).toEqual({
+			spawn: 0,
+			events: 0,
+			connect: 0,
+			lookup: 0,
+			read: 0,
+			write: 0,
+			heartbeat: 0,
+			cancel: 0,
+			dispose: 0,
+		});
 		expect(value.store.mappings.size).toBe(0);
 		expect(value.store.receipts.size).toBe(0);
 		expect(value.store.receiptWrites).toBe(0);
@@ -999,7 +1096,17 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 			expect(value.supervision.processController.launchCalls).toBe(0);
 			expect(value.supervision.processController.forceCalls).toBe(1);
 			expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
-			expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+			expect(restarted.driver.calls).toEqual({
+				spawn: 0,
+				events: 0,
+				connect: 0,
+				lookup: 0,
+				read: 0,
+				write: 0,
+				heartbeat: 0,
+				cancel: 0,
+				dispose: 0,
+			});
 			if (canonicalState !== "missing_operation") {
 				expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
 					status: "reconcile_required",
@@ -1033,7 +1140,17 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 				status: "reconcile_required",
 				reconcileReason: "driver_failure",
 			});
-			expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+			expect(restarted.driver.calls).toEqual({
+				spawn: 0,
+				events: 0,
+				connect: 0,
+				lookup: 0,
+				read: 0,
+				write: 0,
+				heartbeat: 0,
+				cancel: 0,
+				dispose: 0,
+			});
 		}
 	});
 
@@ -1047,10 +1164,12 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 
 		const recovered = await restarted.connector.recoverPrivateSupervisorState();
 
-		expect(recovered).toEqual([{
-			attemptId: value.attempt.attemptId,
-			status: "cleanup_confirmed_state_retained",
-		}]);
+		expect(recovered).toEqual([
+			{
+				attemptId: value.attempt.attemptId,
+				status: "cleanup_confirmed_state_retained",
+			},
+		]);
 		expect(value.supervision.processController.forceCalls).toBe(1);
 		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeDefined();
 	});
@@ -1080,7 +1199,17 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 			expect(value.supervision.processController.launchCalls).toBe(0);
 			expect(value.supervision.processController.forceCalls).toBe(0);
 			expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeDefined();
-			expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+			expect(restarted.driver.calls).toEqual({
+				spawn: 0,
+				events: 0,
+				connect: 0,
+				lookup: 0,
+				read: 0,
+				write: 0,
+				heartbeat: 0,
+				cancel: 0,
+				dispose: 0,
+			});
 			expect(value.store.receipts.size).toBe(0);
 			expect(value.store.receiptWrites).toBe(0);
 			expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
@@ -1245,9 +1374,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 			{ url: "https://secret.invalid" },
 			{ path: "C:\\secret" },
 		]) {
-			expect(() => cloneExternalConnectorOperation({ ...prepared, ...injected })).toThrowError(
-				FoundationError,
-			);
+			expect(() => cloneExternalConnectorOperation({ ...prepared, ...injected })).toThrowError(FoundationError);
 			expect(() =>
 				transitionExternalConnectorOperation(
 					{ ...prepared, ...injected } as unknown as ExternalConnectorOperation,
@@ -1277,10 +1404,18 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(Object.isFrozen(cloned.correlation)).toBe(true);
 		expect(Object.isFrozen(cloned.bindingDigest)).toBe(true);
 		expect(Object.isFrozen(cloned.capabilityDigest)).toBe(true);
-		expect(() => cloneExternalConnectorOperation({ ...prepared, operationNonce: "https://secret.invalid" })).toThrowError(FoundationError);
-		expect(() => cloneExternalConnectorOperation({ ...prepared, updatedAt: "2026-08-27T00:00:00Z" })).toThrowError(FoundationError);
-		expect(() => cloneExternalConnectorOperation({ ...prepared, bindingDigest: { algorithm: "sha256", value: "bad" } })).toThrowError(FoundationError);
-		expect(() => cloneExternalConnectorOperation({ ...prepared, reconcileReason: "unknown_reason" })).toThrowError(FoundationError);
+		expect(() =>
+			cloneExternalConnectorOperation({ ...prepared, operationNonce: "https://secret.invalid" }),
+		).toThrowError(FoundationError);
+		expect(() => cloneExternalConnectorOperation({ ...prepared, updatedAt: "2026-08-27T00:00:00Z" })).toThrowError(
+			FoundationError,
+		);
+		expect(() =>
+			cloneExternalConnectorOperation({ ...prepared, bindingDigest: { algorithm: "sha256", value: "bad" } }),
+		).toThrowError(FoundationError);
+		expect(() => cloneExternalConnectorOperation({ ...prepared, reconcileReason: "unknown_reason" })).toThrowError(
+			FoundationError,
+		);
 
 		const ledger = new OperationLedger();
 		ledger.payload = { ...prepared, prompt: "secret" };

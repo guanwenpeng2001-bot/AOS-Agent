@@ -19,11 +19,15 @@ export type ExternalConnectorSupervisorErrorCode =
 	| "external_event_invalid"
 	| "external_resource_limit_exceeded"
 	| "terminal_evidence_invalid"
+	| "tool_gateway_ambiguous"
+	| "tool_gateway_callback_failed"
 	| "side_effect_unknown"
 	| "reconcile_required";
 export type ExternalConnectorProcessContainment = "process_group" | "job_object";
 
-export function externalConnectorProcessContainment(platform: string = process.platform): ExternalConnectorProcessContainment {
+export function externalConnectorProcessContainment(
+	platform: string = process.platform,
+): ExternalConnectorProcessContainment {
 	if (platform === "linux" || platform === "darwin") return "process_group";
 	if (platform === "win32") return "job_object";
 	throw new TypeError(`External Connector process supervision is unsupported on ${platform}`);
@@ -154,9 +158,7 @@ function serializeExternalConnectorSupervisorPrivateStateFile(
 }
 
 /** Crash-safe restricted local storage for process identity. Never place this file in canonical Session storage. */
-export class FileExternalConnectorSupervisorPrivateStateStore
-	implements ExternalConnectorSupervisorPrivateStateStore
-{
+export class FileExternalConnectorSupervisorPrivateStateStore implements ExternalConnectorSupervisorPrivateStateStore {
 	readonly #storage: LockedAtomicFileStorage;
 
 	constructor(path: string) {
@@ -512,16 +514,18 @@ function samePrivateState(
 function mergeDeadlines(
 	overrides: ExternalConnectorSupervisorDeadlineOverrides | undefined,
 ): Readonly<Record<ExternalConnectorSupervisorSegment, ExternalConnectorSegmentDeadline>> {
-	const result = Object.fromEntries(EXTERNAL_CONNECTOR_SUPERVISOR_SEGMENTS.map((segment) => {
-		const deadline = {
-			hardMs: overrides?.[segment]?.hardMs ?? DEFAULT_DEADLINES[segment].hardMs,
-			idleMs: overrides?.[segment]?.idleMs ?? DEFAULT_DEADLINES[segment].idleMs,
-		};
-		if (!isPositiveBound(deadline.hardMs) || !isPositiveBound(deadline.idleMs)) {
-			throw new RangeError(`External Connector ${segment} deadlines must be positive safe integers`);
-		}
-		return [segment, Object.freeze(deadline)];
-	})) as unknown as Record<ExternalConnectorSupervisorSegment, ExternalConnectorSegmentDeadline>;
+	const result = Object.fromEntries(
+		EXTERNAL_CONNECTOR_SUPERVISOR_SEGMENTS.map((segment) => {
+			const deadline = {
+				hardMs: overrides?.[segment]?.hardMs ?? DEFAULT_DEADLINES[segment].hardMs,
+				idleMs: overrides?.[segment]?.idleMs ?? DEFAULT_DEADLINES[segment].idleMs,
+			};
+			if (!isPositiveBound(deadline.hardMs) || !isPositiveBound(deadline.idleMs)) {
+				throw new RangeError(`External Connector ${segment} deadlines must be positive safe integers`);
+			}
+			return [segment, Object.freeze(deadline)];
+		}),
+	) as unknown as Record<ExternalConnectorSupervisorSegment, ExternalConnectorSegmentDeadline>;
 	return Object.freeze(result);
 }
 
@@ -775,6 +779,7 @@ export class ExternalConnectorBoundedSupervisor {
 		createEvents: (signal: AbortSignal) => AsyncIterable<unknown>,
 		handle: ExternalConnectorDriverHandle,
 		sourceSignal?: AbortSignal,
+		onEvent?: (event: ExternalConnectorDriverEvent, signal: AbortSignal) => Promise<void>,
 	): Promise<void> {
 		this.#requireProcess();
 		if (sourceSignal?.aborted === true) {
@@ -799,7 +804,11 @@ export class ExternalConnectorBoundedSupervisor {
 			iterator = events[Symbol.asyncIterator]();
 		} catch {
 			const cleaned = await this.#forceAndWait();
-			throw new ExternalConnectorSupervisorError(cleaned ? "side_effect_unknown" : "reconcile_required", "event", true);
+			throw new ExternalConnectorSupervisorError(
+				cleaned ? "side_effect_unknown" : "reconcile_required",
+				"event",
+				true,
+			);
 		}
 		try {
 			for (;;) {
@@ -824,15 +833,48 @@ export class ExternalConnectorBoundedSupervisor {
 					),
 					timer.expired.then((): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "timeout" })),
 					aborted.promise.then((): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "aborted" })),
-					this.#processHandle!.exited.then((): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "process_exit" })),
+					this.#processHandle!.exited.then(
+						(): AwaitOutcome<IteratorResult<unknown>> => ({ kind: "process_exit" }),
+					),
 				]);
 				if (outcome.kind !== "value") {
 					if (!controller.signal.aborted) controller.abort();
 					const cleaned = await this.#forceAndWait();
-					throw new ExternalConnectorSupervisorError(cleaned ? "side_effect_unknown" : "reconcile_required", cleaned ? "event" : "dispose", true);
+					throw new ExternalConnectorSupervisorError(
+						cleaned ? "side_effect_unknown" : "reconcile_required",
+						cleaned ? "event" : "dispose",
+						true,
+					);
 				}
 				if (outcome.value.done) return;
-				this.#acceptEvent(outcome.value.value, handle);
+				const event = this.#acceptEvent(outcome.value.value, handle);
+				if (onEvent !== undefined) {
+					let callback: Promise<void>;
+					try {
+						callback = Promise.resolve(onEvent(event, controller.signal));
+					} catch (error) {
+						callback = Promise.reject(error);
+					}
+					const callbackOutcome = await Promise.race<AwaitOutcome<void>>([
+						callback.then(
+							(): AwaitOutcome<void> => ({ kind: "value", value: undefined }),
+							(error: unknown): AwaitOutcome<void> => ({ kind: "rejected", error }),
+						),
+						timer.expired.then((): AwaitOutcome<void> => ({ kind: "timeout" })),
+						aborted.promise.then((): AwaitOutcome<void> => ({ kind: "aborted" })),
+						this.#processHandle!.exited.then((): AwaitOutcome<void> => ({ kind: "process_exit" })),
+					]);
+					if (callbackOutcome.kind !== "value") {
+						if (callbackOutcome.kind === "rejected") throw callbackOutcome.error;
+						if (!controller.signal.aborted) controller.abort();
+						const cleaned = await this.#forceAndWait();
+						throw new ExternalConnectorSupervisorError(
+							cleaned ? "side_effect_unknown" : "reconcile_required",
+							cleaned ? "event" : "dispose",
+							true,
+						);
+					}
+				}
 				timer.touch();
 				this.#touchReceiptActivity();
 			}
@@ -840,7 +882,11 @@ export class ExternalConnectorBoundedSupervisor {
 			if (error instanceof ExternalConnectorSupervisorError && this.#forcedTermination) throw error;
 			const cleaned = await this.#forceAndWait();
 			if (error instanceof ExternalConnectorSupervisorError && cleaned) throw error;
-			throw new ExternalConnectorSupervisorError(cleaned ? "side_effect_unknown" : "reconcile_required", cleaned ? "event" : "dispose", true);
+			throw new ExternalConnectorSupervisorError(
+				cleaned ? "side_effect_unknown" : "reconcile_required",
+				cleaned ? "event" : "dispose",
+				true,
+			);
 		} finally {
 			timer.close();
 			sourceSignal?.removeEventListener("abort", abort);
@@ -881,7 +927,7 @@ export class ExternalConnectorBoundedSupervisor {
 		return this.#processHandle;
 	}
 
-	#acceptEvent(value: unknown, handle: ExternalConnectorDriverHandle): void {
+	#acceptEvent(value: unknown, handle: ExternalConnectorDriverHandle): ExternalConnectorDriverEvent {
 		if (!isExternalConnectorDriverEvent(value) || !this.#matchesHandle(value, handle)) {
 			throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
 		}
@@ -904,7 +950,7 @@ export class ExternalConnectorBoundedSupervisor {
 					throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
 				}
 				this.#lastHeartbeatSequence = value.sequence;
-			} else {
+			} else if (value.type === "artifact") {
 				if (!this.#artifactsAllowed) {
 					throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
 				}
@@ -925,6 +971,7 @@ export class ExternalConnectorBoundedSupervisor {
 			throw new ExternalConnectorSupervisorError("external_resource_limit_exceeded", "event", false);
 		}
 		this.#observeValue(value, "event");
+		return value;
 	}
 
 	#matchesHandle(event: ExternalConnectorDriverEvent, handle: ExternalConnectorDriverHandle): boolean {
@@ -971,10 +1018,12 @@ export class ExternalConnectorBoundedSupervisor {
 			this.#forcedTermination = true;
 			let termination: ExternalConnectorProcessTerminationResult;
 			try {
-				termination = handle.forceTerminate(Object.freeze({
-					operationNonce: state.reference.operationNonce,
-					processIdentity: cloneIdentity(state.processIdentity),
-				}));
+				termination = handle.forceTerminate(
+					Object.freeze({
+						operationNonce: state.reference.operationNonce,
+						processIdentity: cloneIdentity(state.processIdentity),
+					}),
+				);
 			} catch {
 				this.#quarantined = true;
 				return false;
@@ -987,7 +1036,10 @@ export class ExternalConnectorBoundedSupervisor {
 		const timer = new SegmentTimer(this.#clock, this.#deadlines.dispose);
 		try {
 			const exited = await Promise.race([
-				handle.exited.then(() => true, () => false),
+				handle.exited.then(
+					() => true,
+					() => false,
+				),
 				timer.expired.then(() => false),
 			]);
 			this.#cleaned = exited;
