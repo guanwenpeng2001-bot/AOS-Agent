@@ -3,6 +3,7 @@ import {
 	InMemorySessionStorage,
 	Result,
 	Session,
+	SessionLedger,
 	SessionT5Ledger,
 	createAttempt,
 	createBindingEpoch,
@@ -26,6 +27,8 @@ import {
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
+import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
 import {
 	createExternalConnectorRegistry,
 	type ExternalConnectorRegistration,
@@ -37,10 +40,21 @@ import {
 } from "../src/core/external-connector-product.ts";
 import { SchedulerExecutorRegistry } from "../src/core/scheduler-executors.ts";
 import type { SchedulerExecutorEntryV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
+import type {
+	ExternalConnectorDriverHandle,
+	ExternalConnectorDriverLookup,
+	ExternalConnectorTerminalEvidence,
+	ExternalConnectorVendorDriver,
+} from "../src/core/vendor-drivers/types.ts";
+import {
+	createExternalConnectorTestRegistrationRuntime,
+	createExternalConnectorTestSupervision,
+} from "./external-connector-test-supervision.ts";
 
 const NOW = "2026-08-27T00:00:00.000Z";
 const PROVIDER_ID = "arbitrary.zeta-connector";
 const CAPABILITY: FoundationProviderCapability = { schemaVersion: 1, id: "arbitrary.zeta.execute", version: 4 };
+let supervisedFixtureId = 0;
 
 const TASK: TaskEnvelope = {
 	schemaVersion: 1,
@@ -248,6 +262,60 @@ class ZetaConnector implements ExternalAgentConnector {
 	}
 }
 
+class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
+	disposeCalls = 0;
+
+	async spawn(): Promise<ExternalConnectorDriverHandle> {
+		throw new Error("registry conformance does not start the driver");
+	}
+
+	async *events(): AsyncIterable<never> {}
+
+	async connect(): Promise<ExternalConnectorDriverHandle> {
+		throw new Error("registry conformance does not connect the driver");
+	}
+
+	async lookup(): Promise<ExternalConnectorDriverLookup> {
+		return { status: "missing" };
+	}
+
+	async read(): Promise<ExternalConnectorTerminalEvidence> {
+		throw new Error("registry conformance does not read the driver");
+	}
+
+	async write(): Promise<void> {}
+	async heartbeat(): Promise<void> {}
+	async cancel(): Promise<undefined> { return undefined; }
+
+	async dispose(): Promise<void> {
+		this.disposeCalls += 1;
+	}
+}
+
+function createSupportedConnector(
+	providerId: string,
+	snapshot: ConnectorCapabilitySnapshot,
+	driver: ThirdPartyZetaDriver = new ThirdPartyZetaDriver(),
+) {
+	supervisedFixtureId += 1;
+	const session = new Session(new InMemorySessionStorage({
+		id: `supervised-zeta-${supervisedFixtureId}`,
+		createdAt: supervisedFixtureId,
+	}));
+	const t5 = new SessionT5Ledger(session, { ownerId: `supervised-zeta-${supervisedFixtureId}` });
+	const supervision = createExternalConnectorTestSupervision();
+	const connector = createDurableExternalAgentConnector({
+		providerId,
+		capability: snapshot,
+		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
+		driver,
+		supervision: supervision.options,
+		now: () => NOW,
+		operationNonce: () => `zeta-nonce-${supervisedFixtureId}`,
+	});
+	return { connector, driver, supervision };
+}
+
 function evidence(connector: ZetaConnector): ExternalConnectorRegistration["capabilityEvidence"] {
 	if (!connector.snapshot.toolGateway && connector.snapshot.modelAccess !== "aos_gateway") return undefined;
 	return {
@@ -276,7 +344,7 @@ function registration(connector: ZetaConnector): ExternalConnectorRegistration {
 			revision: connector.snapshot.revision,
 			capabilitySnapshotDigest: connector.snapshot.digest,
 		},
-		connector,
+		connector: createExternalConnectorTestRegistrationRuntime(connector, connector.snapshot),
 		trusted: true,
 		...(capabilityEvidence === undefined ? {} : { capabilityEvidence }),
 	};
@@ -377,8 +445,56 @@ function expectSafeRegistryProbeFailure(
 	}
 }
 
-describe("ExternalConnectorRegistry open SPI", () => {
-	it("registers and selects an arbitrary connector, then schedules, runs, and settles its Attempt", async () => {
+describe("ExternalConnectorRegistry supervised SPI", () => {
+	it("rejects an arbitrary never-settling connector before probe and leaves its provider slot available", async () => {
+		const arbitrary = new ZetaConnector(PROVIDER_ID, { modelAccess: "agent_owned", toolGateway: false });
+		let arbitraryProbeCalls = 0;
+		Object.defineProperty(arbitrary, "probeCapabilities", {
+			value: () => {
+				arbitraryProbeCalls += 1;
+				return new Promise<never>(() => undefined);
+			},
+		});
+		const descriptor = {
+			schemaVersion: 1 as const,
+			providerId: arbitrary.providerId,
+			providerClass: "external_connector" as const,
+			revision: arbitrary.snapshot.revision,
+			capabilitySnapshotDigest: arbitrary.snapshot.digest,
+		};
+		const registry = createExternalConnectorRegistry();
+
+		const preparedRejected = registry.registerPrepared(
+			{ descriptor, connector: arbitrary, trusted: true },
+			arbitrary.snapshot,
+		);
+		const rejected = await registry.register({ descriptor, connector: arbitrary, trusted: true });
+
+		expect(preparedRejected).toMatchObject({ ok: false });
+		expect(rejected).toMatchObject({ ok: false });
+		expect(arbitraryProbeCalls).toBe(0);
+		expect(arbitrary.disposeCalls).toBe(0);
+		expect(registry.list()).toEqual([]);
+
+		const supported = createSupportedConnector(arbitrary.providerId, arbitrary.snapshot);
+		const accepted = await registry.register({ descriptor, connector: supported.connector, trusted: true });
+		expect(accepted).toMatchObject({ ok: true });
+		expect(registry.list()).toEqual([descriptor]);
+		expect(supported.supervision.processController.launchCalls).toBe(0);
+
+		const selected = await registry.select({
+			providerId: descriptor.providerId,
+			revision: descriptor.revision,
+			capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+		});
+		expect(selected).toMatchObject({ ok: true });
+		await registry.dispose();
+		expect(supported.driver.disposeCalls).toBe(1);
+		expect(supported.supervision.processController.launchCalls).toBe(0);
+		expect(registry.list()).toEqual([]);
+	});
+
+	it("registers and selects a third-party connector through the Host factory, then schedules, runs, and settles its Attempt", async () => {
 		const connector = new ZetaConnector();
 		const executor: TaskExecutorProvider = connector;
 		expect(executor.providerClass).toBe("external_connector");

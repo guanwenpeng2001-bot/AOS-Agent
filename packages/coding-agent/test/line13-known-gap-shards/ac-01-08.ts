@@ -65,7 +65,10 @@ import {
 	defineLine13ResolvedCase,
 	LINE13_T0_BASE_SHA,
 } from "../support/line13-known-gaps.ts";
-import { createExternalConnectorTestSupervision } from "../external-connector-test-supervision.ts";
+import {
+	createExternalConnectorTestRegistrationRuntime,
+	createExternalConnectorTestSupervision,
+} from "../external-connector-test-supervision.ts";
 
 const NOW = "2026-08-25T00:00:00.000Z";
 const LATER = "2026-08-25T00:06:00.000Z";
@@ -361,7 +364,7 @@ function createCompositionConnectorRegistry(): ExternalConnectorRegistry {
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},
-		connector,
+		connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
 		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;
@@ -713,7 +716,7 @@ async function createCurrentConnectorFixture(toolGateway = false) {
 	};
 	const registered = await registry.register({
 		descriptor,
-		connector,
+		connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
 		trusted: true,
 		...(toolGateway ? {
 			capabilityEvidence: {

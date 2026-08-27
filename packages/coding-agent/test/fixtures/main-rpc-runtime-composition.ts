@@ -37,6 +37,7 @@ import { SessionManager } from "../../src/core/session-manager.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "../../src/core/subagent-composition.ts";
 import { createTaskCredentialTestProvider } from "../../src/core/task-credential-provider.ts";
 import { TaskGraphStore } from "../../src/core/task-graph.ts";
+import { createExternalConnectorTestRegistrationRuntime } from "../external-connector-test-supervision.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("./fake-worker-child.ts", import.meta.url));
@@ -310,7 +311,7 @@ function createConnectorRegistry() {
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},
-		connector,
+		connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
 		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;

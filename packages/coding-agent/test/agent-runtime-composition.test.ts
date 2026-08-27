@@ -64,6 +64,7 @@ import { createTaskCredentialTestProvider } from "../src/core/task-credential-pr
 import { TaskGraphStore } from "../src/core/task-graph.ts";
 import { createCodingAgentHarness } from "../src/server/create-harness.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
+import { createExternalConnectorTestRegistrationRuntime } from "./external-connector-test-supervision.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
@@ -369,7 +370,7 @@ function createTestExternalConnectorRegistry(sessionId: string): ExternalConnect
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},
-		connector,
+		connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
 		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;

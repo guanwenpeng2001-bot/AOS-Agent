@@ -14,8 +14,11 @@ import {
 	type ExternalConnectorProcessReattachResult,
 	type ExternalConnectorProcessTerminationRequest,
 	type ExternalConnectorProcessTerminationResult,
+	type ExternalConnectorSupervisorLimits,
 	type ExternalConnectorSupervisorSegment,
 } from "../src/core/external-connector-supervisor.ts";
+import type { RuntimeClock } from "../src/core/runtime-clock.ts";
+import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 class ControlledHandle implements ExternalConnectorProcessHandle {
 	readonly operationNonce: string;
@@ -90,6 +93,8 @@ function supervisor(
 	controller: ControlledProcessController,
 	deadlines: Partial<Record<ExternalConnectorSupervisorSegment, { hardMs: number; idleMs: number }>> = {},
 	artifactsAllowed = true,
+	clock?: RuntimeClock,
+	limits: Partial<ExternalConnectorSupervisorLimits> = {},
 ) {
 	return new ExternalConnectorBoundedSupervisor({
 		reference: { schemaVersion: 1, supervisorRef: "current-supervisor", operationNonce: "current-nonce" },
@@ -111,7 +116,9 @@ function supervisor(
 			maxItemBytes: 512,
 			maxTotalBytes: 1_024,
 			maxArtifactRefs: 1,
+			...limits,
 		},
+		...(clock === undefined ? {} : { clock }),
 	});
 }
 
@@ -123,7 +130,7 @@ const driverHandle = {
 } as const;
 
 function event(
-	type: "started" | "progress" | "artifact",
+	type: "started" | "progress" | "heartbeat" | "artifact",
 	extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
 	return {
@@ -134,6 +141,20 @@ function event(
 		producedAt: "2026-08-27T00:00:00.000Z",
 		...extra,
 	};
+}
+
+function gate<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+	let resolve = (_value: T): void => {
+		throw new Error("gate resolver is unavailable");
+	};
+	const promise = new Promise<T>((currentResolve) => {
+		resolve = currentResolve;
+	});
+	return { promise, resolve };
+}
+
+async function drainPromiseJobs(): Promise<void> {
+	for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
 
 describe("current External Connector robust supervision", () => {
@@ -193,6 +214,94 @@ describe("current External Connector robust supervision", () => {
 		expect(controller.lastHandle?.forceCalls).toBe(1);
 	});
 
+	it("lets a receipt run longer than the 30 second idle window while valid events remain active", async () => {
+		const clock = new DeterministicClock();
+		const controller = new ControlledProcessController();
+		const value = supervisor(controller, {
+			event: { hardMs: 120_000, idleMs: 30_000 },
+			receipt: { hardMs: 120_000, idleMs: 30_000 },
+		}, true, clock, { maxEvents: 4, maxEventsPerWindow: 4 });
+		await value.launch(() => Promise.resolve());
+		const heartbeat = gate<void>();
+		const progress = gate<void>();
+		const eventsDone = gate<void>();
+		const receipt = gate<{
+			readonly externalSessionId: string;
+			readonly externalTurnId: string;
+			readonly operationNonce: string;
+			readonly status: "succeeded";
+			readonly sideEffectState: "none";
+			readonly producedAt: string;
+		}>();
+		async function* activeEvents(): AsyncGenerator<unknown> {
+			yield event("started");
+			await heartbeat.promise;
+			yield event("heartbeat", { sequence: 1 });
+			await progress.promise;
+			yield event("progress", { sequence: 1 });
+			await eventsDone.promise;
+		}
+		const observed = value.consumeEvents(() => activeEvents(), driverHandle);
+		const evidence = value.run("receipt", () => receipt.promise, undefined, "terminal_evidence");
+		await drainPromiseJobs();
+
+		clock.advanceBy(20_000);
+		heartbeat.resolve(undefined);
+		await drainPromiseJobs();
+		clock.advanceBy(20_000);
+		progress.resolve(undefined);
+		await drainPromiseJobs();
+		clock.advanceBy(20_000);
+		eventsDone.resolve(undefined);
+		receipt.resolve({
+			externalSessionId: driverHandle.externalSessionId,
+			externalTurnId: driverHandle.externalTurnId,
+			operationNonce: driverHandle.operationNonce,
+			status: "succeeded",
+			sideEffectState: "none",
+			producedAt: "2026-08-27T00:01:00.000Z",
+		});
+		await drainPromiseJobs();
+
+		await expect(Promise.all([observed, evidence])).resolves.toMatchObject([
+			undefined,
+			{ status: "succeeded" },
+		]);
+		expect(value.snapshot.eventCount).toBe(3);
+		expect(controller.lastHandle?.forceCalls).toBe(0);
+		await value.dispose();
+	});
+
+	it("terminates a stalled receipt and event stream after supervised activity stops", async () => {
+		const clock = new DeterministicClock();
+		const controller = new ControlledProcessController();
+		const value = supervisor(controller, {
+			event: { hardMs: 120_000, idleMs: 30_000 },
+			receipt: { hardMs: 120_000, idleMs: 30_000 },
+		}, true, clock);
+		await value.launch(() => Promise.resolve());
+		async function* stalledEvents(): AsyncGenerator<unknown> {
+			yield event("started");
+			await new Promise<never>(() => undefined);
+		}
+		const observed = value.consumeEvents(() => stalledEvents(), driverHandle);
+		const evidence = value.run(
+			"receipt",
+			() => new Promise<never>(() => undefined),
+			undefined,
+			"terminal_evidence",
+		);
+		await drainPromiseJobs();
+
+		clock.advanceBy(30_000);
+		await drainPromiseJobs();
+
+		const outcomes = await Promise.allSettled([observed, evidence]);
+		expect(outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
+		expect(controller.lastHandle?.forceCalls).toBe(1);
+		expect(value.snapshot.cleaned).toBe(true);
+	});
+
 	it("dispose enforces both deadline bounds when force termination cannot be confirmed", async () => {
 		for (const deadline of [{ hardMs: 5, idleMs: 50 }, { hardMs: 50, idleMs: 5 }]) {
 			const controller = new ControlledProcessController();
@@ -245,6 +354,7 @@ describe("current External Connector robust supervision", () => {
 			{ events: [event("progress", { sequence: 1 })], artifactsAllowed: true },
 			{ events: [event("started"), event("started")], artifactsAllowed: true },
 			{ events: [event("started"), event("progress", { sequence: 2 }), event("progress", { sequence: 1 })], artifactsAllowed: true },
+			{ events: [event("started"), event("heartbeat", { sequence: 2 }), event("heartbeat", { sequence: 1 })], artifactsAllowed: true },
 			{ events: [{ ...event("started"), externalSessionId: "different-session" }], artifactsAllowed: true },
 			{ events: [{ ...event("started"), unknown: true }], artifactsAllowed: true },
 			{

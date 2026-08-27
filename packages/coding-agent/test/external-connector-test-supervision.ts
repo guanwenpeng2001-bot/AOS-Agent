@@ -1,3 +1,13 @@
+import {
+	InMemorySessionStorage,
+	Session,
+	SessionLedger,
+	SessionT5Ledger,
+	type ConnectorCapabilitySnapshot,
+	type ExternalAgentConnector,
+} from "@aos-agent/agent-core";
+import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
 import type {
 	ExternalConnectorProcessController,
 	ExternalConnectorProcessHandle,
@@ -12,6 +22,26 @@ import {
 	externalConnectorProcessContainment,
 	InMemoryExternalConnectorSupervisorPrivateStateStore,
 } from "../src/core/external-connector-supervisor.ts";
+import type {
+	ExternalConnectorDriverHandle,
+	ExternalConnectorDriverLookup,
+	ExternalConnectorTerminalEvidence,
+	ExternalConnectorVendorDriver,
+} from "../src/core/vendor-drivers/types.ts";
+
+let registrationRuntimeId = 0;
+
+class RegistrationOnlyDriver implements ExternalConnectorVendorDriver {
+	async spawn(): Promise<ExternalConnectorDriverHandle> { throw new Error("registration-only driver"); }
+	async *events(): AsyncIterable<never> {}
+	async connect(): Promise<ExternalConnectorDriverHandle> { throw new Error("registration-only driver"); }
+	async lookup(): Promise<ExternalConnectorDriverLookup> { return { status: "missing" }; }
+	async read(): Promise<ExternalConnectorTerminalEvidence> { throw new Error("registration-only driver"); }
+	async write(): Promise<void> {}
+	async heartbeat(): Promise<void> {}
+	async cancel(): Promise<undefined> { return undefined; }
+	async dispose(): Promise<void> {}
+}
 
 class TestProcessHandle implements ExternalConnectorProcessHandle {
 	readonly operationNonce: string;
@@ -174,4 +204,45 @@ export function createExternalConnectorTestSupervision() {
 			},
 		},
 	};
+}
+
+/** Registry-only adapter for legacy composition fixtures. Lifecycle tests must use a real fake driver. */
+export function createExternalConnectorTestRegistrationRuntime(
+	delegate: ExternalAgentConnector,
+	snapshot: ConnectorCapabilitySnapshot,
+): ExternalAgentConnector {
+	registrationRuntimeId += 1;
+	const fixtureId = registrationRuntimeId;
+	const session = new Session(new InMemorySessionStorage({ id: `connector-registry-${fixtureId}`, createdAt: fixtureId }));
+	const t5 = new SessionT5Ledger(session, { ownerId: `connector-registry-${fixtureId}` });
+	const runtime = createDurableExternalAgentConnector({
+		providerId: delegate.providerId,
+		capability: snapshot,
+		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
+		driver: new RegistrationOnlyDriver(),
+		supervision: createExternalConnectorTestSupervision().options,
+		operationNonce: () => `connector-registry-nonce-${fixtureId}`,
+	});
+	const capabilities: ExternalAgentConnector["capabilities"] = () => delegate.capabilities();
+	const probeCapabilities: ExternalAgentConnector["probeCapabilities"] = () => delegate.probeCapabilities();
+	const createAttempt: ExternalAgentConnector["createAttempt"] = (dispatch, binding, context) =>
+		delegate.createAttempt(dispatch, binding, context);
+	const runAttempt: ExternalAgentConnector["runAttempt"] = (attempt, options) => delegate.runAttempt(attempt, options);
+	const resumeAttempt: ExternalAgentConnector["resumeAttempt"] = (attempt, options) => delegate.resumeAttempt(attempt, options);
+	const reconcileAttempt: ExternalAgentConnector["reconcileAttempt"] = (attempt, options) =>
+		delegate.reconcileAttempt(attempt, options);
+	const cancelAttempt: ExternalAgentConnector["cancelAttempt"] = (attemptId) => delegate.cancelAttempt(attemptId);
+	const dispose: ExternalAgentConnector["dispose"] = () => delegate.dispose();
+	Object.defineProperties(runtime, {
+		providerId: { configurable: true, get: () => delegate.providerId },
+		capabilities: { configurable: true, value: capabilities },
+		probeCapabilities: { configurable: true, value: probeCapabilities },
+		createAttempt: { configurable: true, value: createAttempt },
+		runAttempt: { configurable: true, value: runAttempt },
+		resumeAttempt: { configurable: true, value: resumeAttempt },
+		reconcileAttempt: { configurable: true, value: reconcileAttempt },
+		cancelAttempt: { configurable: true, value: cancelAttempt },
+		dispose: { configurable: true, value: dispose },
+	});
+	return runtime;
 }

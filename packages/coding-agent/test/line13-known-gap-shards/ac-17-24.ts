@@ -40,6 +40,7 @@ import { TaskGraphStore } from "../../src/core/task-graph.ts";
 import { WorkerSupervisorV1 } from "../../src/core/worker-supervisor.ts";
 import type { WorkerBindingV1 } from "../../src/core/worker.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
+import { createExternalConnectorTestRegistrationRuntime } from "../external-connector-test-supervision.ts";
 import { FakeWorkerProtocolTransportV1 } from "../fixtures/worker-protocol-fake-transport.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
 import {
@@ -665,7 +666,11 @@ const ac23 = defineLine13KnownGapCase({
 				capabilitySnapshotDigest: snapshot.digest,
 			};
 			const registry = createExternalConnectorRegistry();
-			const registered = registry.registerPrepared({ descriptor, connector, trusted: true }, snapshot);
+			const registered = registry.registerPrepared({
+				descriptor,
+				connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
+				trusted: true,
+			}, snapshot);
 			const projected = registry.list()[0];
 			fixture.exactSelection = registered.ok && projected?.providerId === providerId;
 			fixture.safeProjection = projected !== undefined && Object.keys(projected).sort().join(",") ===

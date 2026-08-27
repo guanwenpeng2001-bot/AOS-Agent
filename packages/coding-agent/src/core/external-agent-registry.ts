@@ -17,6 +17,7 @@ import {
 	type ExternalCapabilityHandlerEvidence,
 	type ExternalCapabilityTruthSnapshot,
 } from "./external-model-projection.ts";
+import { isHostSupervisedExternalAgentConnector } from "./external-agent-connector.ts";
 
 /** The only current provider class admitted by the open connector registry. */
 export const EXTERNAL_CONNECTOR_PROVIDER_CLASSES = Object.freeze(["external_connector"] as const);
@@ -154,7 +155,7 @@ function isExternalConnectorDescriptor(value: unknown): value is ExternalConnect
 }
 
 function isConstructedExternalConnector(value: unknown): value is ExternalAgentConnector {
-	if (!isConnectorRecord(value)) return false;
+	if (!isHostSupervisedExternalAgentConnector(value) || !isConnectorRecord(value)) return false;
 	return (
 		value.schemaVersion === 1 &&
 		isExternalConnectorIdentifier(value.providerId) &&
@@ -375,6 +376,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (
 			this.#disposed ||
 			this.#connectors.get(registered.descriptor.providerId) !== registered ||
+			!isConstructedExternalConnector(registered.connector) ||
 			registered.connector.providerClass !== "external_connector" ||
 			registered.connector.providerId !== registered.descriptor.providerId
 		) {

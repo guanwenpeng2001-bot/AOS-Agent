@@ -91,6 +91,13 @@ const EXTERNAL_CONNECTOR_CAPABILITIES: readonly FoundationProviderCapability[] =
 	Object.freeze({ schemaVersion: 1, id: "external_connector.lifecycle", version: 1 }),
 ]);
 
+const HOST_SUPERVISED_EXTERNAL_CONNECTORS = new WeakSet<object>();
+
+/** @internal Runtime proof minted only by the Host-supervised durable connector factory. */
+export function isHostSupervisedExternalAgentConnector(value: unknown): value is ExternalAgentConnector {
+	return typeof value === "object" && value !== null && HOST_SUPERVISED_EXTERNAL_CONNECTORS.has(value as object);
+}
+
 export function externalConnectorAttemptId(providerId: string, dispatchId: string): string {
 	return `external_attempt_${fingerprintFoundationValue({ providerId, dispatchId }).value}`;
 }
@@ -1473,6 +1480,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 
 export function createDurableExternalAgentConnector(
 	options: ExternalAgentConnectorRuntimeOptions,
-): ExternalAgentConnector {
-	return new DurableExternalAgentConnector(options);
+): DurableExternalAgentConnector {
+	const connector = new DurableExternalAgentConnector(options);
+	HOST_SUPERVISED_EXTERNAL_CONNECTORS.add(connector);
+	return connector;
 }

@@ -73,6 +73,7 @@ import {
 	defineLine13ResolvedCase,
 } from "../support/line13-known-gaps.ts";
 import { LINE13_T0_PUBLIC_ROOTS, line13RepoRoot } from "../support/line13-t0-baseline-inventory.ts";
+import { createExternalConnectorTestRegistrationRuntime } from "../external-connector-test-supervision.ts";
 
 const BASE_SHA = "db279303b9e894b58acea165ab44f74bfdf0cddb" as const;
 const NOW = "2026-08-25T00:00:00.000Z";
@@ -754,7 +755,11 @@ function externalReadinessFixture(): ExternalReadinessFixture {
 		capabilitySnapshotDigest: snapshot.digest,
 	};
 	const registry = createExternalConnectorRegistry();
-	const registered = registry.registerPrepared({ descriptor, connector, trusted: true }, snapshot);
+	const registered = registry.registerPrepared({
+		descriptor,
+		connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
+		trusted: true,
+	}, snapshot);
 	if (!registered.ok) throw registered.error;
 	return { registry, descriptor, calls };
 }
