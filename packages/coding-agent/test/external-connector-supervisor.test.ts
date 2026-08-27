@@ -336,7 +336,7 @@ describe("current External Connector robust supervision", () => {
 		expect(restarted.snapshot.cleaned).toBe(true);
 	});
 
-	it("quarantines PID reuse and ambiguous identity without killing the observed process", async () => {
+	it("quarantines PID reuse and ambiguous identity during orphan recovery without killing", async () => {
 		for (const status of ["identity_mismatch", "ambiguous"] as const) {
 			const controller = new ControlledProcessController();
 			const first = supervisor(controller);
@@ -349,10 +349,25 @@ describe("current External Connector robust supervision", () => {
 				? { status: "ambiguous" }
 				: { status: "attached", handle: unrelated };
 			const restarted = supervisor(controller);
-			expect(() => restarted.reattach(state)).toThrow(ExternalConnectorSupervisorError);
+			await expect(restarted.recoverAndReap(state)).rejects.toBeInstanceOf(ExternalConnectorSupervisorError);
 			expect(restarted.snapshot.quarantined).toBe(true);
+			expect(restarted.snapshot.cleaned).toBe(false);
 			expect(unrelated.forceCalls).toBe(0);
 		}
+	});
+
+	it("keeps a missing guardian quarantined because descendants may remain", async () => {
+		const controller = new ControlledProcessController();
+		const first = supervisor(controller);
+		const state = await first.launch(() => Promise.resolve());
+		controller.reattachResult = { status: "not_found" };
+		const restarted = supervisor(controller);
+
+		await expect(restarted.recoverAndReap(state)).rejects.toBeInstanceOf(ExternalConnectorSupervisorError);
+
+		expect(restarted.snapshot.quarantined).toBe(true);
+		expect(restarted.snapshot.cleaned).toBe(false);
+		expect(controller.lastHandle?.forceCalls).toBe(0);
 	});
 
 	it("rechecks exact nonce and process identity before force termination", async () => {

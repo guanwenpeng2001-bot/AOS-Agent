@@ -406,7 +406,6 @@ function restartedConnector(value: Fixture): {
 } {
 	const driver = new FakeDriver();
 	driver.store = value.store;
-	const supervision = createExternalConnectorTestSupervision();
 	return {
 		driver,
 		connector: new DurableExternalAgentConnector({
@@ -414,7 +413,7 @@ function restartedConnector(value: Fixture): {
 			capability: value.snapshot,
 			store: value.store,
 			driver,
-			supervision: supervision.options,
+			supervision: value.supervision.options,
 			now: () => now,
 			operationNonce: () => "restart-must-not-create-an-operation",
 		}),
@@ -923,6 +922,79 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 			expect(result.ok).toBe(false);
 			expect(value.supervision.processController.launchCalls).toBe(0);
 			expect(value.driver.calls).toMatchObject({ spawn: 0, connect: 0, lookup: 0, cancel: 0 });
+		}
+	});
+
+	it("reaps the exact activated tree after a crash before mapping persistence", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "start_intent"));
+		await persistSupervisorIdentity(value);
+		const restarted = restartedConnector(value);
+
+		const reconciled = await restarted.connector.reconcileAttempt(value.attempt, { correlation });
+
+		expect(reconciled.ok).toBe(false);
+		if (!reconciled.ok) expect(reconciled.error.code).toBe("side_effect_unknown");
+		expect(value.supervision.processController.launchCalls).toBe(0);
+		expect(value.supervision.processController.forceCalls).toBe(1);
+		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
+		expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+		expect(value.store.mappings.size).toBe(0);
+		expect(value.store.receipts.size).toBe(0);
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "mapping_missing",
+		});
+	});
+
+	it("keeps missing, PID-reuse, and ambiguous mappingless identities quarantined without killing", async () => {
+		for (const status of ["not_found", "identity_mismatch", "ambiguous"] as const) {
+			const value = await fixture();
+			persistAttempt(value);
+			value.store.operations.set(value.attempt.attemptId, operationFor(value, "start_intent"));
+			await persistSupervisorIdentity(value);
+			value.supervision.processController.reattachResult = { status };
+			const restarted = restartedConnector(value);
+
+			const reconciled = await restarted.connector.reconcileAttempt(value.attempt, { correlation });
+
+			expect(reconciled.ok).toBe(false);
+			expect(value.supervision.processController.launchCalls).toBe(0);
+			expect(value.supervision.processController.forceCalls).toBe(0);
+			expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeDefined();
+			expect(restarted.driver.calls).toEqual({ spawn: 0, events: 0, connect: 0, lookup: 0, read: 0, write: 0, heartbeat: 0, cancel: 0, dispose: 0 });
+			expect(value.store.receipts.size).toBe(0);
+			expect(value.store.receiptWrites).toBe(0);
+			expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+				status: "reconcile_required",
+				reconcileReason: "mapping_missing",
+			});
+		}
+	});
+
+	it("surfaces mappingless private-state read and delete failures", async () => {
+		for (const failure of ["read", "delete"] as const) {
+			const value = await fixture();
+			persistAttempt(value);
+			value.store.operations.set(value.attempt.attemptId, operationFor(value, "start_intent"));
+			await persistSupervisorIdentity(value);
+			if (failure === "read") value.supervision.privateStateStore.failReads = 1;
+			else value.supervision.privateStateStore.failDeletes = 1;
+			const restarted = restartedConnector(value);
+
+			const reconciled = await restarted.connector.reconcileAttempt(value.attempt, { correlation });
+
+			expect(reconciled.ok).toBe(false);
+			expect(value.supervision.processController.launchCalls).toBe(0);
+			expect(value.supervision.processController.forceCalls).toBe(failure === "read" ? 0 : 1);
+			expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeDefined();
+			expect(value.store.receipts.size).toBe(0);
+			expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+				status: "reconcile_required",
+				reconcileReason: "mapping_missing",
+			});
 		}
 	});
 

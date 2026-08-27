@@ -65,7 +65,17 @@ class TestProcessHandle implements ExternalConnectorProcessHandle {
 }
 
 export class TestExternalConnectorPrivateStateStore extends InMemoryExternalConnectorSupervisorPrivateStateStore {
+	failDeletes = 0;
+	failReads = 0;
 	failWrites = 0;
+
+	override async read(attemptId: string): Promise<ExternalConnectorSupervisorPrivateState | undefined> {
+		if (this.failReads > 0) {
+			this.failReads -= 1;
+			throw new Error("injected private identity read failure");
+		}
+		return super.read(attemptId);
+	}
 
 	override async write(attemptId: string, state: ExternalConnectorSupervisorPrivateState): Promise<void> {
 		if (this.failWrites > 0) {
@@ -73,6 +83,14 @@ export class TestExternalConnectorPrivateStateStore extends InMemoryExternalConn
 			throw new Error("injected private identity persistence failure");
 		}
 		await super.write(attemptId, state);
+	}
+
+	override async delete(attemptId: string): Promise<void> {
+		if (this.failDeletes > 0) {
+			this.failDeletes -= 1;
+			throw new Error("injected private identity delete failure");
+		}
+		await super.delete(attemptId);
 	}
 }
 
@@ -82,6 +100,7 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 	activationCalls = 0;
 	forceCalls = 0;
 	forceExits = true;
+	reattachResult: ExternalConnectorProcessReattachResult | undefined;
 	#nextPid = 20_000;
 
 	async launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle> {
@@ -111,6 +130,7 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 		identity: ExternalConnectorProcessIdentity,
 		request: ExternalConnectorProcessLaunchRequest,
 	): ExternalConnectorProcessReattachResult {
+		if (this.reattachResult !== undefined) return this.reattachResult;
 		const handle = this.handles.get(identity.pid);
 		if (handle === undefined) return { status: "not_found" };
 		if (

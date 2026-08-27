@@ -424,6 +424,22 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		await this.#supervision.privateStateStore.delete(attemptId);
 	}
 
+	async #recoverSupervisorWithoutMapping(operation: ExternalConnectorOperation): Promise<void> {
+		const privateState = await this.#supervision.privateStateStore.read(operation.attemptId);
+		if (privateState === undefined) return;
+		const supervisor = this.#createSupervisor(operation);
+		await supervisor.recoverAndReap(privateState);
+		if (!supervisor.snapshot.cleaned) {
+			throw externalConnectorSupervisorFailure(
+				new Error("External Connector recovered process did not terminate"),
+			);
+		}
+		await this.#supervision.privateStateStore.delete(operation.attemptId);
+		this.#supervisors.delete(operation.attemptId);
+		this.#driverHandles.delete(operation.attemptId);
+		this.#observationControllers.delete(operation.attemptId);
+	}
+
 	async #reattachSupervisor(
 		operation: ExternalConnectorOperation,
 		signal?: AbortSignal,
@@ -1190,6 +1206,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		const mapping = await this.#store.readMapping(operation.attemptId);
 		if (mapping === undefined) {
 			await this.#markReconcile(operation, "mapping_missing");
+			await this.#recoverSupervisorWithoutMapping(operation);
 			return Result.err(externalFailure("side_effect_unknown", "External connector durable mapping is missing", operation.attemptId));
 		}
 		if (

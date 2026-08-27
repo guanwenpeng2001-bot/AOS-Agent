@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { ProductionExternalConnectorProcessController } from "../src/core/external-connector-process-controller.ts";
 import {
+	ExternalConnectorBoundedSupervisor,
 	externalConnectorProcessContainment,
 	type ExternalConnectorProcessHandle,
 	type ExternalConnectorProcessLaunchRequest,
@@ -21,6 +22,19 @@ function request(operationNonce = "production-nonce"): ExternalConnectorProcessL
 
 function fixtureProcess(argumentsValue: readonly string[] = ["-e", "setInterval(function(){},2147483647)"]) {
 	return { executablePath: process.execPath, arguments: argumentsValue };
+}
+
+function productionSupervisor(
+	controller: ProductionExternalConnectorProcessController,
+	operationNonce: string,
+): ExternalConnectorBoundedSupervisor {
+	return new ExternalConnectorBoundedSupervisor({
+		reference: { schemaVersion: 1, supervisorRef: "production-supervisor", operationNonce },
+		containment: externalConnectorProcessContainment(),
+		processController: controller,
+		artifactsAllowed: false,
+		deadlines: { dispose: { hardMs: 10_000, idleMs: 10_000 } },
+	});
 }
 
 function processIsLive(pid: number): boolean {
@@ -83,6 +97,35 @@ describe("production External Connector process controller", () => {
 				operationNonce: launchRequest.operationNonce,
 				processIdentity: handle.identity,
 			});
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it("reattaches and reaps an exact persisted tree without launching a replacement", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-external-process-recovery-"));
+		const targetPidPath = join(root, "target.pid");
+		const operationNonce = "production-recovery-nonce";
+		const controller = new ProductionExternalConnectorProcessController({
+			process: fixtureProcess([
+				"-e",
+				"require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(function(){},2147483647)",
+				targetPidPath,
+			]),
+		});
+		const first = productionSupervisor(controller, operationNonce);
+		try {
+			const privateState = await first.launch(() => Promise.resolve());
+			await expect.poll(() => existsSync(targetPidPath)).toBe(true);
+			const targetPid = Number(readFileSync(targetPidPath, "utf8"));
+			expect(processIsLive(targetPid)).toBe(true);
+
+			const restarted = productionSupervisor(controller, operationNonce);
+			await restarted.recoverAndReap(privateState);
+
+			expect(restarted.snapshot).toMatchObject({ cleaned: true, quarantined: false, phase: "terminal" });
+			await expect.poll(() => processIsLive(targetPid)).toBe(false);
+		} finally {
+			await first.dispose().catch(() => undefined);
 			rmSync(root, { recursive: true, force: true });
 		}
 	}, 30_000);
