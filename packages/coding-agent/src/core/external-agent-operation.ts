@@ -2,17 +2,23 @@
 
 import {
 	canonicalFoundationJson,
+	cloneDeepFrozen,
 	FoundationError,
 	type SessionLedger,
 	validateAttempt,
 	validateAttemptReceiptForProvider,
 	validateExecutionCorrelation,
 	validateImmutableAgentBinding,
+	validateToolExecutionResult,
+	validateToolGatewayRequest,
 	type AgentBinding,
 	type Attempt,
 	type AttemptReceipt,
 	type ExecutionCorrelation,
 	type Fingerprint,
+	type FoundationJsonValue,
+	type ToolExecutionResult,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import {
 	cloneCanonicalExternalConnectorMapping,
@@ -36,6 +42,8 @@ import {
 export const EXTERNAL_CONNECTOR_OPERATION_OBJECT_TYPE = "external_connector_operation" as const;
 export const EXTERNAL_CONNECTOR_MAPPING_OBJECT_TYPE = "external_connector_mapping" as const;
 export const EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE = "external_connector_execution_input" as const;
+export const EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE =
+	"external_connector_tool_gateway_execution" as const;
 export const EXTERNAL_CONNECTOR_OPERATION_STATUSES = [
 	"prepared",
 	"start_intent",
@@ -81,8 +89,50 @@ export interface ExternalConnectorExecutionInput {
 	readonly taskId: string;
 	readonly requestFingerprint: CanonicalExternalAgentRequestFingerprint;
 	readonly input: CanonicalExternalAgentInput;
+	readonly toolGatewayRequest?: ToolGatewayRequest;
 	readonly modelProjection?: ExternalResolvedModelProjection;
 	readonly modelTranslation?: ExternalTranslatedModelProjection;
+}
+
+export interface ExternalConnectorToolGatewayIntent {
+	readonly schemaVersion: 1;
+	readonly type: typeof EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE;
+	readonly id: string;
+	readonly phase: "intent";
+	readonly providerId: string;
+	readonly attemptId: string;
+	readonly bindingId: string;
+	readonly bindingEpochId: string;
+	readonly correlation: ExecutionCorrelation;
+	readonly request: ToolGatewayRequest;
+	readonly createdAt: string;
+}
+
+export interface ExternalConnectorToolGatewayTerminal {
+	readonly schemaVersion: 1;
+	readonly type: typeof EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE;
+	readonly id: string;
+	readonly phase: "terminal";
+	readonly providerId: string;
+	readonly attemptId: string;
+	readonly bindingId: string;
+	readonly bindingEpochId: string;
+	readonly correlation: ExecutionCorrelation;
+	readonly request: ToolGatewayRequest;
+	readonly result: ToolExecutionResult;
+	readonly createdAt: string;
+	readonly completedAt: string;
+}
+
+export interface ExternalConnectorToolGatewayExecution {
+	readonly intent: ExternalConnectorToolGatewayIntent;
+	readonly terminal?: ExternalConnectorToolGatewayTerminal;
+}
+
+export interface ExternalConnectorToolGatewayIntentWrite {
+	readonly intent: ExternalConnectorToolGatewayIntent;
+	/** True only for the process that durably won the pre-effect intent append. */
+	readonly claimed: boolean;
 }
 
 export interface ExternalConnectorDurableStore {
@@ -247,6 +297,177 @@ export function cloneExternalConnectorOperation(value: unknown): ExternalConnect
 	});
 }
 
+const EXTERNAL_CONNECTOR_TOOL_GATEWAY_INTENT_KEYS = new Set([
+	"schemaVersion",
+	"type",
+	"id",
+	"phase",
+	"providerId",
+	"attemptId",
+	"bindingId",
+	"bindingEpochId",
+	"correlation",
+	"request",
+	"createdAt",
+]);
+const EXTERNAL_CONNECTOR_TOOL_GATEWAY_TERMINAL_KEYS = new Set([
+	...EXTERNAL_CONNECTOR_TOOL_GATEWAY_INTENT_KEYS,
+	"result",
+	"completedAt",
+]);
+
+function gatewayRequestMatchesExecution(
+	request: ToolGatewayRequest,
+	providerId: string,
+	attemptId: string,
+	bindingId: string,
+	bindingEpochId: string,
+	correlation: ExecutionCorrelation,
+): boolean {
+	return (
+		correlation.runId !== undefined &&
+		correlation.operationId === correlation.runId &&
+		correlation.taskId !== undefined &&
+		correlation.dispatchId !== undefined &&
+		correlation.attemptId === attemptId &&
+		correlation.bindingId === bindingId &&
+		correlation.bindingEpochId === bindingEpochId &&
+		correlation.providerId === providerId &&
+		correlation.toolCallId === request.toolCallId &&
+		request.context.bindingId === bindingId &&
+		request.context.bindingEpochId === bindingEpochId &&
+		request.context.taskId === correlation.taskId &&
+		request.context.dispatchId === correlation.dispatchId &&
+		request.context.providerId === providerId &&
+		request.context.attemptId === attemptId &&
+		request.context.operationId === correlation.operationId &&
+		request.context.agentInstanceId === undefined
+	);
+}
+
+export function cloneExternalConnectorToolGatewayIntent(
+	value: unknown,
+): ExternalConnectorToolGatewayIntent {
+	if (
+		!operationRecord(value) ||
+		!operationExactKeys(value, EXTERNAL_CONNECTOR_TOOL_GATEWAY_INTENT_KEYS) ||
+		value.schemaVersion !== 1 ||
+		value.type !== EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE ||
+		value.phase !== "intent" ||
+		!isExternalConnectorMappingIdentifier(value.id) ||
+		!isExternalConnectorMappingIdentifier(value.providerId) ||
+		!isExternalConnectorMappingIdentifier(value.attemptId) ||
+		value.id !== value.attemptId ||
+		!isExternalConnectorMappingIdentifier(value.bindingId) ||
+		!isExternalConnectorMappingIdentifier(value.bindingEpochId) ||
+		!isCanonicalExternalConnectorMappingTimestamp(value.createdAt)
+	) {
+		throw new FoundationError("session_ledger_corrupt", "Durable Tool Gateway intent is invalid");
+	}
+	const correlation = cloneOperationCorrelation(value.correlation);
+	const request = validateToolGatewayRequest(value.request);
+	if (
+		correlation === undefined ||
+		!request.ok ||
+		!gatewayRequestMatchesExecution(
+			request.value,
+			value.providerId,
+			value.attemptId,
+			value.bindingId,
+			value.bindingEpochId,
+			correlation,
+		)
+	) {
+		throw new FoundationError("session_ledger_corrupt", "Durable Tool Gateway intent is invalid");
+	}
+	return Object.freeze({
+		schemaVersion: 1,
+		type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+		id: value.id,
+		phase: "intent",
+		providerId: value.providerId,
+		attemptId: value.attemptId,
+		bindingId: value.bindingId,
+		bindingEpochId: value.bindingEpochId,
+		correlation,
+		request: cloneDeepFrozen(request.value),
+		createdAt: value.createdAt,
+	});
+}
+
+export function cloneExternalConnectorToolGatewayTerminal(
+	value: unknown,
+): ExternalConnectorToolGatewayTerminal {
+	if (
+		!operationRecord(value) ||
+		!operationExactKeys(value, EXTERNAL_CONNECTOR_TOOL_GATEWAY_TERMINAL_KEYS) ||
+		value.schemaVersion !== 1 ||
+		value.type !== EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE ||
+		value.phase !== "terminal" ||
+		!isExternalConnectorMappingIdentifier(value.id) ||
+		!isExternalConnectorMappingIdentifier(value.providerId) ||
+		!isExternalConnectorMappingIdentifier(value.attemptId) ||
+		value.id !== value.attemptId ||
+		!isExternalConnectorMappingIdentifier(value.bindingId) ||
+		!isExternalConnectorMappingIdentifier(value.bindingEpochId) ||
+		!isCanonicalExternalConnectorMappingTimestamp(value.createdAt) ||
+		!isCanonicalExternalConnectorMappingTimestamp(value.completedAt)
+	) {
+		throw new FoundationError("session_ledger_corrupt", "Durable Tool Gateway terminal result is invalid");
+	}
+	const correlation = cloneOperationCorrelation(value.correlation);
+	const request = validateToolGatewayRequest(value.request);
+	const result = validateToolExecutionResult(value.result);
+	if (
+		correlation === undefined ||
+		!request.ok ||
+		!result.ok ||
+		result.value.toolCallId !== request.value.toolCallId ||
+		result.value.toolName !== request.value.toolName ||
+		!gatewayRequestMatchesExecution(
+			request.value,
+			value.providerId,
+			value.attemptId,
+			value.bindingId,
+			value.bindingEpochId,
+			correlation,
+		)
+	) {
+		throw new FoundationError("session_ledger_corrupt", "Durable Tool Gateway terminal result is invalid");
+	}
+	return Object.freeze({
+		schemaVersion: 1,
+		type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+		id: value.id,
+		phase: "terminal",
+		providerId: value.providerId,
+		attemptId: value.attemptId,
+		bindingId: value.bindingId,
+		bindingEpochId: value.bindingEpochId,
+		correlation,
+		request: cloneDeepFrozen(request.value),
+		result: cloneDeepFrozen(result.value),
+		createdAt: value.createdAt,
+		completedAt: value.completedAt,
+	});
+}
+
+function gatewayTerminalMatchesIntent(
+	terminal: ExternalConnectorToolGatewayTerminal,
+	intent: ExternalConnectorToolGatewayIntent,
+): boolean {
+	return (
+		terminal.id === intent.id &&
+		terminal.providerId === intent.providerId &&
+		terminal.attemptId === intent.attemptId &&
+		terminal.bindingId === intent.bindingId &&
+		terminal.bindingEpochId === intent.bindingEpochId &&
+		terminal.createdAt === intent.createdAt &&
+		canonicalFoundationJson(terminal.correlation) === canonicalFoundationJson(intent.correlation) &&
+		canonicalFoundationJson(terminal.request) === canonicalFoundationJson(intent.request)
+	);
+}
+
 const OPERATION_TRANSITIONS: Readonly<Record<ExternalConnectorOperationStatus, ReadonlySet<ExternalConnectorOperationStatus>>> = {
 	prepared: new Set(["start_intent", "terminal", "reconcile_required"]),
 	start_intent: new Set(["running", "terminal", "reconcile_required"]),
@@ -401,15 +622,20 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		const modelTranslation = record.modelTranslation === undefined
 			? undefined
 			: isExternalTranslatedModelProjection(record.modelTranslation) ? record.modelTranslation : null;
+		const toolGatewayRequest = record.toolGatewayRequest === undefined
+			? undefined
+			: validateToolGatewayRequest(record.toolGatewayRequest);
 		if (
 			!checked.ok ||
+			(toolGatewayRequest !== undefined && !toolGatewayRequest.ok) ||
+			(toolGatewayRequest?.ok && toolGatewayRequest.value.context.taskId !== taskId) ||
 			modelProjection === null ||
 			modelTranslation === null ||
 			(modelProjection === undefined) !== (modelTranslation === undefined) ||
 			(modelProjection !== undefined && modelTranslation !== undefined &&
 				modelProjection.bindingDigest.value !== modelTranslation.sourceBindingDigest.value) ||
 			Reflect.ownKeys(record).some(
-				(key) => typeof key !== "string" || !["schemaVersion", "taskId", "requestFingerprint", "input", "modelProjection", "modelTranslation"].includes(key),
+				(key) => typeof key !== "string" || !["schemaVersion", "taskId", "requestFingerprint", "input", "toolGatewayRequest", "modelProjection", "modelTranslation"].includes(key),
 			) ||
 			record.schemaVersion !== 1 ||
 			record.taskId !== taskId ||
@@ -425,9 +651,137 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			taskId,
 			requestFingerprint: record.requestFingerprint as CanonicalExternalAgentRequestFingerprint,
 			input: checked.value,
+			...(toolGatewayRequest === undefined || !toolGatewayRequest.ok
+				? {}
+				: { toolGatewayRequest: cloneDeepFrozen(toolGatewayRequest.value) }),
 			...(modelProjection === undefined ? {} : { modelProjection }),
 			...(modelTranslation === undefined ? {} : { modelTranslation }),
 		});
+	}
+
+	async readToolGatewayExecution(
+		attemptId: string,
+	): Promise<ExternalConnectorToolGatewayExecution | undefined> {
+		const intentRecords = await this.#ledger.find({
+			kind: "intent",
+			objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+			objectId: attemptId,
+			includePruned: true,
+			order: "oldestFirst",
+		});
+		if (intentRecords.length > 1) {
+			throw new FoundationError("session_ledger_corrupt", "Tool Gateway execution has multiple durable intents", {
+				details: { attemptId },
+			});
+		}
+		const current = await this.#ledger.get(
+			EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+			attemptId,
+		);
+		if (intentRecords.length === 0) {
+			if (current !== undefined) {
+				throw new FoundationError("session_ledger_corrupt", "Tool Gateway terminal result has no durable intent", {
+					details: { attemptId },
+				});
+			}
+			return undefined;
+		}
+		const intentRecord = intentRecords[0]!;
+		if (
+			intentRecord.kind !== "intent" ||
+			intentRecord.objectId !== attemptId ||
+			intentRecord.clientRequestId !== `external-connector-tool-gateway:${attemptId}`
+		) {
+			throw new FoundationError("session_ledger_corrupt", "Tool Gateway durable intent identity is invalid", {
+				details: { attemptId },
+			});
+		}
+		const intent = cloneExternalConnectorToolGatewayIntent(intentRecord.payload);
+		if (intent.attemptId !== attemptId) {
+			throw new FoundationError("invalid_correlation", "Tool Gateway durable intent Attempt is invalid", {
+				details: { attemptId },
+			});
+		}
+		if (current === undefined) return Object.freeze({ intent });
+		const terminal = cloneExternalConnectorToolGatewayTerminal(
+			requireFactPayload(current, EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE),
+		);
+		if (current.revision !== 2 || terminal.attemptId !== attemptId || !gatewayTerminalMatchesIntent(terminal, intent)) {
+			throw new FoundationError("session_ledger_corrupt", "Tool Gateway terminal result conflicts with its intent", {
+				details: { attemptId },
+			});
+		}
+		return Object.freeze({ intent, terminal });
+	}
+
+	async writeToolGatewayIntent(
+		value: ExternalConnectorToolGatewayIntent,
+	): Promise<ExternalConnectorToolGatewayIntentWrite> {
+		const proposed = cloneExternalConnectorToolGatewayIntent(value);
+		const current = await this.readToolGatewayExecution(proposed.attemptId);
+		if (current !== undefined) {
+			if (canonicalFoundationJson(current.intent) !== canonicalFoundationJson(proposed)) {
+				throw new FoundationError("session_ledger_conflict", "Tool Gateway request conflicts with durable intent", {
+					details: { attemptId: proposed.attemptId },
+				});
+			}
+			return Object.freeze({ intent: current.intent, claimed: false });
+		}
+		const persisted = await this.#ledger.appendIntent(
+			EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+			proposed.attemptId,
+			{
+				clientRequestId: `external-connector-tool-gateway:${proposed.attemptId}`,
+				expectedRevision: 0,
+				intent: "create",
+				payload: proposed as unknown as FoundationJsonValue,
+				correlation: proposed.correlation,
+			},
+		);
+		const durable = cloneExternalConnectorToolGatewayIntent(persisted.record.payload);
+		if (canonicalFoundationJson(durable) !== canonicalFoundationJson(proposed)) {
+			throw new FoundationError("session_ledger_conflict", "Tool Gateway request conflicts with durable intent", {
+				details: { attemptId: proposed.attemptId },
+			});
+		}
+		return Object.freeze({ intent: durable, claimed: !persisted.replayed });
+	}
+
+	async writeToolGatewayTerminal(
+		value: ExternalConnectorToolGatewayTerminal,
+	): Promise<ExternalConnectorToolGatewayTerminal> {
+		const proposed = cloneExternalConnectorToolGatewayTerminal(value);
+		const current = await this.readToolGatewayExecution(proposed.attemptId);
+		if (current === undefined || !gatewayTerminalMatchesIntent(proposed, current.intent)) {
+			throw new FoundationError("session_ledger_missing_intent", "Tool Gateway terminal result requires its durable intent", {
+				details: { attemptId: proposed.attemptId },
+			});
+		}
+		if (current.terminal !== undefined) {
+			if (canonicalFoundationJson(current.terminal) !== canonicalFoundationJson(proposed)) {
+				throw new FoundationError("session_ledger_conflict", "Tool Gateway already has a different terminal result", {
+					details: { attemptId: proposed.attemptId },
+				});
+			}
+			return current.terminal;
+		}
+		const persisted = await this.#ledger.appendFact(
+			EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+			proposed.attemptId,
+			proposed,
+			{
+				clientRequestId: `external-connector-tool-gateway:${proposed.attemptId}:terminal`,
+				expectedRevision: 1,
+				correlation: proposed.correlation,
+			},
+		);
+		const durable = cloneExternalConnectorToolGatewayTerminal(persisted.payload);
+		if (canonicalFoundationJson(durable) !== canonicalFoundationJson(proposed)) {
+			throw new FoundationError("session_ledger_corrupt", "Persisted Tool Gateway terminal result changed shape", {
+				details: { attemptId: proposed.attemptId },
+			});
+		}
+		return durable;
 	}
 
 	async readOperation(attemptId: string): Promise<ExternalConnectorOperation | undefined> {

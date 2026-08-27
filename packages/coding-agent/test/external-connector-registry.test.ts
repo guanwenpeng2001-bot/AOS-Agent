@@ -13,6 +13,8 @@ import {
 	type ExecutionCorrelation,
 	type ExternalAgentConnector,
 	type Result as ResultValue,
+	type ToolExecutionResult,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
@@ -207,9 +209,14 @@ function createSupportedConnector(options: {
 
 function registration(
 	fixture: SupportedConnectorFixture,
-	options: { readonly toolGatewayCalls?: { count: number } } = {},
+	options: {
+		readonly toolGateway?: {
+			count: number;
+			readonly requests: ToolGatewayRequest[];
+		};
+	} = {},
 ): ExternalConnectorRegistration {
-	const toolGatewayCalls = options.toolGatewayCalls;
+	const toolGateway = options.toolGateway;
 	return {
 		descriptor: descriptor(fixture.snapshot),
 		connector: fixture.connector,
@@ -220,8 +227,20 @@ function registration(
 					declaration: { id: "zeta.tool-gateway", revision: 3, reachable: true as const },
 					handler: {
 						id: "zeta.tool-gateway-handler",
-						invoke: () => {
-							if (toolGatewayCalls !== undefined) toolGatewayCalls.count += 1;
+						invoke: (request: ToolGatewayRequest) => {
+							if (toolGateway !== undefined) {
+								toolGateway.count += 1;
+								toolGateway.requests.push(request);
+							}
+							const result: ToolExecutionResult = {
+								schemaVersion: 1,
+								toolCallId: request.toolCallId,
+								toolName: request.toolName,
+								ok: true,
+								sideEffectState: "none",
+								toolReceiptRef: `tool-receipt-${request.toolCallId}`,
+							};
+							return Result.ok(result);
 						},
 					},
 				},
@@ -234,7 +253,7 @@ function productInput(
 	fixture: SupportedConnectorFixture,
 	registry: ReturnType<typeof createExternalConnectorRegistry>,
 	runId: string,
-	requiresToolGateway = false,
+	includeToolGatewayRequest = false,
 ): ExternalConnectorProductExecutionInput {
 	const text = `Execute supervised third-party connector run ${runId}`;
 	return {
@@ -251,7 +270,16 @@ function productInput(
 		canonicalInput: { schemaVersion: 1, text, artifacts: [] },
 		inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 		workspace: "workspace-zeta",
-		...(requiresToolGateway ? { requiresToolGateway: true } : {}),
+		...(includeToolGatewayRequest ? {
+			toolGatewayRequest: {
+				schemaVersion: 1,
+				toolCallId: `tool-call-${runId}`,
+				toolName: "workspace.read",
+				namespace: "workspace",
+				originalArguments: { path: "docs/input.txt" },
+				idempotencyKey: `gateway-${runId}`,
+			},
+		} : {}),
 		now: () => NOW,
 	};
 }
@@ -446,16 +474,37 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 	});
 
 	it("executes only an advertised Tool Gateway before the supervised vendor driver", async () => {
-		const gatewayCalls = { count: 0 };
+		const gateway = { count: 0, requests: [] as ToolGatewayRequest[] };
 		const enabled = createSupportedConnector({ toolGateway: true });
 		const enabledRegistry = createExternalConnectorRegistry();
-		expect(await enabledRegistry.register(registration(enabled, { toolGatewayCalls: gatewayCalls }))).toMatchObject({ ok: true });
+		expect(await enabledRegistry.register(registration(enabled, { toolGateway: gateway }))).toMatchObject({ ok: true });
 
+		const runId = "run-zeta-tool-gateway";
 		const execution = await executeExternalConnectorProductRun(
-			productInput(enabled, enabledRegistry, "run-zeta-tool-gateway"),
+			productInput(enabled, enabledRegistry, runId, true),
 		);
 		expect(execution.runReceipt.terminalStatus).toBe("completed");
-		expect(gatewayCalls.count).toBe(1);
+		expect(gateway.count).toBe(1);
+		expect(gateway.requests).toHaveLength(1);
+		expect(gateway.requests[0]).toMatchObject({
+			toolCallId: `tool-call-${runId}`,
+			toolName: "workspace.read",
+			context: {
+				providerId: PROVIDER_ID,
+				operationId: runId,
+			},
+		});
+		expect(execution.toolGatewayExchange).toEqual({
+			request: gateway.requests[0],
+			result: {
+				schemaVersion: 1,
+				toolCallId: `tool-call-${runId}`,
+				toolName: "workspace.read",
+				ok: true,
+				sideEffectState: "none",
+				toolReceiptRef: `tool-receipt-tool-call-${runId}`,
+			},
+		});
 		expect(enabled.driver.spawnCalls).toBe(1);
 
 		const disabled = createSupportedConnector();

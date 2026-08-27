@@ -3,11 +3,16 @@
 import {
 	FoundationError,
 	Result,
+	cloneDeepFrozen,
+	validateToolExecutionResult,
+	validateToolGatewayRequest,
 	validateConnectorCapabilitySnapshotForProvider,
 	type ConnectorCapabilitySnapshot,
 	type ExternalAgentConnector,
 	type Fingerprint,
 	type Result as ResultValue,
+	type ToolExecutionResult,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import {
 	EXTERNAL_CAPABILITY_BEHAVIORS,
@@ -56,9 +61,10 @@ export interface ExternalConnectorResolvedSelection {
 	readonly connector: ExternalAgentConnector;
 	readonly capabilitySnapshot: ConnectorCapabilitySnapshot;
 	readonly capabilityTruth: ExternalCapabilityTruthSnapshot;
-	readonly capabilityHandlers: Readonly<
-		Partial<Record<ExternalCapabilityBehavior, ExternalCapabilityHandlerEvidence["invoke"]>>
-	>;
+	executeToolGateway(
+		request: ToolGatewayRequest,
+		options?: { readonly signal?: AbortSignal },
+	): Promise<ResultValue<ToolExecutionResult, FoundationError>>;
 }
 
 export interface ExternalConnectorRegistry {
@@ -259,8 +265,6 @@ function lifecycleCapabilityError(): FoundationError {
 function createCapabilityPinnedConnector(
 	connector: ExternalAgentConnector,
 	implementation: HostSupervisedExternalAgentConnectorImplementation,
-	truth: ExternalCapabilityTruthSnapshot,
-	handlers: Readonly<Partial<Record<ExternalCapabilityBehavior, ExternalCapabilityHandlerEvidence["invoke"]>>>,
 	recheck: () => Promise<FoundationError | undefined>,
 ): ExternalAgentConnector {
 	const reconcileAttempt: ExternalAgentConnector["reconcileAttempt"] = async (attempt, options) => {
@@ -271,23 +275,6 @@ function createCapabilityPinnedConnector(
 		const drift = await recheck();
 		if (drift !== undefined) {
 			return Reflect.apply(implementation.reconcileAttempt, connector, [attempt, options]);
-		}
-		if (truth.capabilities.toolGateway) {
-			const handler = handlers.toolGateway;
-			if (handler === undefined) {
-				return Result.err(new FoundationError(
-					"provider_spawn_failed",
-					"External connector Tool Gateway handler is unavailable",
-				));
-			}
-			try {
-				await handler();
-			} catch {
-				return Result.err(new FoundationError(
-					"provider_spawn_failed",
-					"External connector Tool Gateway handler failed",
-				));
-			}
 		}
 		return Reflect.apply(implementation.runAttempt, connector, [attempt, options]);
 	};
@@ -536,8 +523,6 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		const selectedConnector = createCapabilityPinnedConnector(
 			connector,
 			implementation,
-			truthResult.value,
-			handlers,
 			async () => {
 				if (stored === undefined) return lifecycleCapabilityError();
 				const verified = await this.#verifyRegisteredConnector(stored);
@@ -575,12 +560,55 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		}
 		const verified = await this.#verifyRegisteredConnector(registered);
 		if (!verified.ok) return verified;
+		const executeToolGateway: ExternalConnectorResolvedSelection["executeToolGateway"] = async (request, options) => {
+			const current = await this.#verifyRegisteredConnector(registered);
+			if (!current.ok) return Result.err(lifecycleCapabilityError());
+			if (!current.value.truth.capabilities.toolGateway) {
+				return Result.err(connectorRegistryError("External connector does not support the Tool Gateway bridge."));
+			}
+			const checkedRequest = validateToolGatewayRequest(request);
+			if (!checkedRequest.ok) return checkedRequest;
+			const canonicalRequest = cloneDeepFrozen(checkedRequest.value);
+			const handler = registered.capabilityHandlers.toolGateway;
+			if (handler === undefined) {
+				return Result.err(connectorRegistryError("External connector Tool Gateway handler is unavailable."));
+			}
+			if (options?.signal?.aborted === true) {
+				return Result.err(new FoundationError("provider_spawn_failed", "External connector Tool Gateway request was aborted."));
+			}
+			let result: unknown;
+			try {
+				result = await Reflect.apply(handler, undefined, [canonicalRequest, options ?? {}]);
+			} catch {
+				return Result.err(new FoundationError("provider_spawn_failed", "External connector Tool Gateway handler failed."));
+			}
+			if (!isConnectorRecord(result) || typeof result.ok !== "boolean") {
+				return Result.err(connectorRegistryError("External connector Tool Gateway handler returned a malformed result."));
+			}
+			if (!result.ok) {
+				return hasExactConnectorKeys(result, RESULT_ERROR_KEYS) && FoundationError.is(result.error)
+					? Result.err(result.error)
+					: Result.err(connectorRegistryError("External connector Tool Gateway handler returned a malformed failure."));
+			}
+			if (!hasExactConnectorKeys(result, RESULT_OK_KEYS)) {
+				return Result.err(connectorRegistryError("External connector Tool Gateway handler returned a malformed result."));
+			}
+			const checkedResult = validateToolExecutionResult(result.value);
+			if (!checkedResult.ok) return checkedResult;
+			if (
+				checkedResult.value.toolCallId !== canonicalRequest.toolCallId ||
+				checkedResult.value.toolName !== canonicalRequest.toolName
+			) {
+				return Result.err(connectorRegistryError("External connector Tool Gateway result does not match its request."));
+			}
+			return Result.ok(cloneDeepFrozen(checkedResult.value));
+		};
 		return Result.ok(Object.freeze({
 			descriptor: registered.descriptor,
 			connector: registered.selectedConnector,
 			capabilitySnapshot: verified.value.snapshot,
 			capabilityTruth: verified.value.truth,
-			capabilityHandlers: registered.capabilityHandlers,
+			executeToolGateway,
 		}));
 	}
 
