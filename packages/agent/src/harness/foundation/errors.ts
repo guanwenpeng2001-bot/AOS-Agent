@@ -225,10 +225,10 @@ function forbiddenKey(key: string): boolean {
 
 export function redactText(text: string): string {
 	return text
-		.replace(/(prompt|payload|originalArguments|translatedConfig|input)\s*[:=]\s*[^\n]+/gi, `$1=${REDACTED}`)
+		.replace(/(prompt|transcript|payload|originalArguments|translatedConfig|input)\s*[:=]\s*[^\n]+/gi, `$1=${REDACTED}`)
 		.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, REDACTED)
 		.replace(/bearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${REDACTED}`)
-		.replace(/(password|secret|token|api[-_]?key)\s*[:=]\s*[^\s,;]+/gi, `$1=${REDACTED}`)
+		.replace(/(password|credential|secret|token|api[-_]?key)\s*[:=]\s*[^\s,;]+/gi, `$1=${REDACTED}`)
 		.replace(/https?:\/\/[^\s]+/gi, REDACTED_URL)
 		.replace(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|tmp|var|workspace|mnt|private)\/)[^\s,;]+/g, REDACTED_PATH);
 }
