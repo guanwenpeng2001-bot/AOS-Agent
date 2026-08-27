@@ -68,6 +68,8 @@ import {
 export interface ExternalAgentConnectorRuntimeOptions {
 	readonly providerId: string;
 	readonly capability: ConnectorCapabilitySnapshot;
+	/** @internal Trusted Host probe used for registry admission and lifecycle truth rechecks. */
+	readonly capabilityProbe?: () => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
 	readonly store: ExternalConnectorDurableStore;
 	readonly driver: ExternalConnectorVendorDriver;
 	readonly supervision: {
@@ -338,6 +340,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly providerClass = "external_connector" as const;
 	readonly providerId: string;
 	readonly #capability: ConnectorCapabilitySnapshot;
+	readonly #capabilityProbe: () => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
 	readonly #store: ExternalConnectorDurableStore;
 	readonly #driver: ExternalConnectorVendorDriver;
 	readonly #supervision: ExternalAgentConnectorRuntimeOptions["supervision"];
@@ -367,6 +370,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		) throw externalFailure("invalid_correlation", "External connector supervision is invalid");
 		this.providerId = options.providerId;
 		this.#capability = checked.value;
+		this.#capabilityProbe = options.capabilityProbe ?? (() => Promise.resolve(Result.ok(this.#capability)));
 		this.#store = options.store;
 		this.#driver = options.driver;
 		this.#supervision = options.supervision;
@@ -417,7 +421,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	}
 
 	async probeCapabilities(): Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>> {
-		return Result.ok(this.#capability);
+		return this.#capabilityProbe();
 	}
 
 	async createAttempt(

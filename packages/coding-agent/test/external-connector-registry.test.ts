@@ -1,14 +1,18 @@
 import {
 	FoundationError,
 	InMemorySessionStorage,
+	LayeredResultSettlement,
 	Result,
 	Session,
 	SessionLedger,
 	SessionT5Ledger,
 	createConnectorCapabilitySnapshot,
 	fingerprintFoundationValue,
+	type Attempt,
 	type ConnectorCapabilitySnapshot,
+	type ExecutionCorrelation,
 	type ExternalAgentConnector,
+	type Result as ResultValue,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
@@ -19,6 +23,8 @@ import {
 } from "../src/core/external-agent-registry.ts";
 import {
 	executeExternalConnectorProductRun,
+	persistExternalConnectorProductRunAfterAcceptance,
+	prepareExternalConnectorProductRun,
 	type ExternalConnectorProductExecutionInput,
 } from "../src/core/external-connector-product.ts";
 import type {
@@ -97,7 +103,10 @@ class ArbitraryConnector implements ExternalAgentConnector {
 }
 
 class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
+	cancelCalls = 0;
+	connectCalls = 0;
 	disposeCalls = 0;
+	lookupCalls = 0;
 	spawnCalls = 0;
 	readCalls = 0;
 	readonly #throwOnDispose: boolean;
@@ -119,10 +128,12 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 	async *events(): AsyncIterable<never> {}
 
 	async connect(): Promise<ExternalConnectorDriverHandle> {
+		this.connectCalls += 1;
 		throw new Error("Zeta driver has no resumable session in this fixture.");
 	}
 
 	async lookup(): Promise<ExternalConnectorDriverLookup> {
+		this.lookupCalls += 1;
 		return { status: "missing" };
 	}
 
@@ -141,7 +152,10 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 
 	async write(): Promise<void> {}
 	async heartbeat(): Promise<void> {}
-	async cancel(): Promise<undefined> { return undefined; }
+	async cancel(): Promise<undefined> {
+		this.cancelCalls += 1;
+		return undefined;
+	}
 
 	async dispose(): Promise<void> {
 		this.disposeCalls += 1;
@@ -163,6 +177,9 @@ function createSupportedConnector(options: {
 	readonly toolGateway?: boolean;
 	readonly modelAccess?: "agent_owned" | "aos_gateway";
 	readonly driver?: ThirdPartyZetaDriver;
+	readonly capabilityProbe?: (
+		snapshot: ConnectorCapabilitySnapshot,
+	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
 } = {}): SupportedConnectorFixture {
 	supervisedFixtureId += 1;
 	const fixtureId = supervisedFixtureId;
@@ -174,9 +191,11 @@ function createSupportedConnector(options: {
 	const t5 = new SessionT5Ledger(session, { ownerId: `supervised-zeta-${fixtureId}` });
 	const supervision = createExternalConnectorTestSupervision();
 	const driver = options.driver ?? new ThirdPartyZetaDriver();
+	const capabilityProbe = options.capabilityProbe;
 	const connector = createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,
 		capability: snapshot,
+		...(capabilityProbe === undefined ? {} : { capabilityProbe: () => capabilityProbe(snapshot) }),
 		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
 		driver,
 		supervision: supervision.options,
@@ -235,6 +254,81 @@ function productInput(
 		...(requiresToolGateway ? { requiresToolGateway: true } : {}),
 		now: () => NOW,
 	};
+}
+
+function driftedCapabilitySnapshot(snapshot: ConnectorCapabilitySnapshot): ConnectorCapabilitySnapshot {
+	const { digest: _digest, ...unpinned } = snapshot;
+	return createConnectorCapabilitySnapshot({ ...unpinned, revision: snapshot.revision + 1 });
+}
+
+function createDriftingConnector(): SupportedConnectorFixture & { readonly probeCalls: () => number } {
+	let probeCalls = 0;
+	const fixture = createSupportedConnector({
+		capabilityProbe: async (snapshot) => {
+			probeCalls += 1;
+			return Result.ok(probeCalls === 3 ? driftedCapabilitySnapshot(snapshot) : snapshot);
+		},
+	});
+	return { ...fixture, probeCalls: () => probeCalls };
+}
+
+async function createPersistedProductAttempt(
+	fixture: SupportedConnectorFixture,
+	registry: ReturnType<typeof createExternalConnectorRegistry>,
+	runId: string,
+): Promise<{
+	readonly attempt: Attempt;
+	readonly connector: ExternalAgentConnector;
+	readonly correlation: ExecutionCorrelation;
+	readonly settlement: LayeredResultSettlement;
+}> {
+	const admission = await prepareExternalConnectorProductRun(productInput(fixture, registry, runId));
+	const prepared = await persistExternalConnectorProductRunAfterAcceptance(admission);
+	const settlement = new LayeredResultSettlement(fixture.session, {
+		ownerId: `external-connector-registry:${runId}`,
+		writer: fixture.t5.writer,
+	});
+	const started = await settlement.startDispatch({
+		provider: prepared.selected.connector,
+		dispatch: prepared.dispatch,
+		binding: prepared.binding,
+		initialBindingEpoch: prepared.initialBindingEpoch,
+		correlation: prepared.correlation,
+	});
+	if (!started.ok) {
+		await settlement.release();
+		throw started.error;
+	}
+	return {
+		attempt: started.value.attempt,
+		connector: prepared.selected.connector,
+		correlation: prepared.correlation,
+		settlement,
+	};
+}
+
+function expectSafeRegistryProbeFailure(
+	error: FoundationError,
+	expectedMessage: string,
+	forbiddenValues: readonly string[],
+): void {
+	expect(error.code).toBe("task_executor_invalid_provider_class");
+	expect(error.message).toBe(expectedMessage);
+	expect(error.cause).toBeUndefined();
+	expect(error.details).toBeUndefined();
+
+	const exposedSurfaces = [
+		...Object.getOwnPropertyNames(error).map((property) => `${property}:${String(Reflect.get(error, property))}`),
+		JSON.stringify(error),
+		String(error.cause),
+		error.message,
+		JSON.stringify(error.details),
+		JSON.stringify(error.redact()),
+		JSON.stringify(error.toPublicExecutionError()),
+	].join("\n");
+	for (const forbiddenValue of forbiddenValues) {
+		expect(exposedSurfaces).not.toContain(forbiddenValue);
+	}
 }
 
 describe("ExternalConnectorRegistry supervised SPI", () => {
@@ -378,6 +472,192 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		expect(await disabled.session.findFoundationRecords({ includePruned: true })).toEqual([]);
 		await enabledRegistry.dispose();
 		await disabledRegistry.dispose();
+	});
+
+	it("rechecks pinned truth before run and routes drift to supervised reconciliation", async () => {
+		const fixture = createDriftingConnector();
+		const registry = createExternalConnectorRegistry();
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-capability-drift");
+
+		const result = await persisted.connector.runAttempt(persisted.attempt, {
+			correlation: persisted.correlation,
+		});
+
+		expect(result).toMatchObject({
+			ok: false,
+			error: {
+				code: "scheduler_attempt_recovery_failed",
+				message: "External connector operation does not exist",
+			},
+		});
+		expect(fixture.probeCalls()).toBe(3);
+		expect(fixture.driver.spawnCalls).toBe(0);
+		await persisted.settlement.release();
+		await registry.dispose();
+	});
+
+	it("rechecks pinned truth for resume, reconcile, and cancel lifecycle entry points", async () => {
+		for (const operation of ["resume", "reconcile", "cancel"] as const) {
+			const fixture = createDriftingConnector();
+			const registry = createExternalConnectorRegistry();
+			expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+			const persisted = await createPersistedProductAttempt(fixture, registry, `run-zeta-${operation}-drift`);
+
+			const result = operation === "resume"
+				? await persisted.connector.resumeAttempt(persisted.attempt, { correlation: persisted.correlation })
+				: operation === "reconcile"
+					? await persisted.connector.reconcileAttempt(persisted.attempt, { correlation: persisted.correlation })
+					: await persisted.connector.cancelAttempt(persisted.attempt.attemptId);
+
+			expect(result).toMatchObject({
+				ok: false,
+				error: {
+					code: "scheduler_attempt_recovery_failed",
+					message: operation === "cancel"
+						? "External connector capability truth could not be rechecked"
+						: "External connector operation does not exist",
+				},
+			});
+			expect(fixture.probeCalls()).toBe(3);
+			expect(fixture.driver.connectCalls).toBe(0);
+			expect(fixture.driver.lookupCalls).toBe(0);
+			expect(fixture.driver.cancelCalls).toBe(0);
+			await persisted.settlement.release();
+			await registry.dispose();
+		}
+	});
+
+	it("normalizes thrown and returned probe failures without exposing connector error data", async () => {
+		const rawExceptionText = "raw vendor exception text 9f4d";
+		const credential = "credential-registry-canary";
+		const token = "sk-registry-token-canary";
+		const path = "C:\\vendor-private\\connector\\credentials.json";
+		const url = "https://user:password@vendor.invalid/probe?token=registry-canary";
+		const vendorPayload = "vendor-payload-registry-canary";
+		const forbiddenValues = [rawExceptionText, credential, token, path, url, vendorPayload];
+		const thrownError = Object.assign(
+			new Error(`${rawExceptionText}; ${credential}; ${token}; ${path}; ${url}; ${vendorPayload}`),
+			{ credential, token, path, url, vendorPayload: { body: vendorPayload } },
+		);
+
+		const assertProbeFailure = async (
+			capabilityProbe: () => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>,
+			expectedMessage: string,
+			sourceError: Error,
+		): Promise<void> => {
+			const fixture = createSupportedConnector({ capabilityProbe });
+			const registry = createExternalConnectorRegistry();
+			const result = await registry.register(registration(fixture));
+
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.error).not.toBe(sourceError);
+				expectSafeRegistryProbeFailure(result.error, expectedMessage, forbiddenValues);
+			}
+			await fixture.connector.dispose();
+		};
+
+		await assertProbeFailure(
+			async () => {
+				throw thrownError;
+			},
+			"External connector threw while probing capabilities.",
+			thrownError,
+		);
+
+		const returnedError = new FoundationError("provider_spawn_failed", rawExceptionText, {
+			cause: thrownError,
+			details: { credential, token, path, url, vendorPayload },
+		});
+		await assertProbeFailure(
+			async () => Result.err(returnedError),
+			"External connector capability probe failed.",
+			returnedError,
+		);
+	});
+
+	it("disposes a pending registration exactly once when shutdown wins its delayed probe", async () => {
+		let markProbeStarted: (() => void) | undefined;
+		let releaseProbe: (() => void) | undefined;
+		const probeStarted = new Promise<void>((resolve) => {
+			markProbeStarted = resolve;
+		});
+		const probeGate = new Promise<void>((resolve) => {
+			releaseProbe = resolve;
+		});
+		const fixture = createSupportedConnector({
+			capabilityProbe: async (snapshot) => {
+				markProbeStarted?.();
+				await probeGate;
+				return Result.ok(snapshot);
+			},
+		});
+		const registry = createExternalConnectorRegistry();
+		const pendingRegistration = registry.register(registration(fixture));
+		await probeStarted;
+
+		await registry.dispose();
+		releaseProbe?.();
+		const registered = await pendingRegistration;
+
+		expect(registered.ok).toBe(false);
+		expect(registry.list()).toEqual([]);
+		expect(fixture.driver.disposeCalls).toBe(1);
+	});
+
+	it("fails a delayed selection closed when shutdown disposes its registered connector", async () => {
+		let markProbeStarted: (() => void) | undefined;
+		let releaseProbe: (() => void) | undefined;
+		const probeStarted = new Promise<void>((resolve) => {
+			markProbeStarted = resolve;
+		});
+		const probeGate = new Promise<void>((resolve) => {
+			releaseProbe = resolve;
+		});
+		const fixture = createSupportedConnector({
+			capabilityProbe: async (snapshot) => {
+				markProbeStarted?.();
+				await probeGate;
+				return Result.ok(snapshot);
+			},
+		});
+		const registry = createExternalConnectorRegistry();
+		expect(registry.registerPrepared(registration(fixture), fixture.snapshot)).toMatchObject({ ok: true });
+		const pendingSelection = registry.select(selection(fixture.snapshot));
+		await probeStarted;
+
+		await registry.dispose();
+		releaseProbe?.();
+		const selected = await pendingSelection;
+
+		expect(selected.ok).toBe(false);
+		expect(fixture.driver.disposeCalls).toBe(1);
+	});
+
+	it("cannot install a prepared connector after reentrant registry disposal", async () => {
+		const fixture = createSupportedConnector();
+		const prepared = registration(fixture);
+		const registry = createExternalConnectorRegistry();
+		let armed = false;
+		const reentrantRegistration: ExternalConnectorRegistration = {
+			get descriptor() {
+				if (armed) void registry.dispose();
+				return prepared.descriptor;
+			},
+			connector: prepared.connector,
+			trusted: true,
+		};
+		armed = true;
+
+		const registered = registry.registerPrepared(reentrantRegistration, fixture.snapshot);
+
+		expect(registered.ok).toBe(false);
+		expect(registry.list()).toEqual([]);
+		expect(fixture.driver.disposeCalls).toBe(0);
+		await registry.dispose();
+		await fixture.connector.dispose();
+		expect(fixture.driver.disposeCalls).toBe(1);
 	});
 
 	it("fails closed on untrusted, mismatched, and unknown connector facts", async () => {
