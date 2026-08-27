@@ -8,6 +8,7 @@
 
 import {
 	FoundationError,
+	publicExecutionError,
 	validateArtifactRef,
 	validatePublicExecutionError,
 	type ArtifactRef,
@@ -181,7 +182,7 @@ export function isExternalConnectorDriverEvent(value: unknown): value is Externa
 	return value.type !== "artifact" || validateArtifactRef(value.artifact).ok;
 }
 
-/** Exact, secret-free terminal evidence accepted from a private vendor driver. */
+/** Exact terminal evidence accepted from an untrusted private vendor driver. */
 export function isExternalConnectorTerminalEvidence(value: unknown): value is ExternalConnectorTerminalEvidence {
 	if (
 		!isTerminalEvidenceRecord(value) ||
@@ -223,7 +224,14 @@ export function cloneExternalConnectorTerminalEvidence(value: unknown): External
 		...(value.artifacts === undefined
 			? {}
 			: { artifacts: Object.freeze(value.artifacts.map((artifact) => Object.freeze({ ...artifact }))) }),
-		...(value.error === undefined ? {} : { error: Object.freeze({ ...value.error }) }),
+		...(value.error === undefined
+			? {}
+			: {
+					error: Object.freeze(publicExecutionError(value.error.code, value.error.message, {
+						...(value.error.category === undefined ? {} : { category: value.error.category }),
+						retryable: value.error.retryable,
+					})),
+				}),
 		sideEffectState: value.sideEffectState,
 		producedAt: value.producedAt,
 	});
