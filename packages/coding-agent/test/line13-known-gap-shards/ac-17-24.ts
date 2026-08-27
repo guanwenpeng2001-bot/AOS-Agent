@@ -465,6 +465,7 @@ const ac21 = defineLine13ResolvedCase({
 		setup: async (fixture) => {
 			const invalidProvider = createLocalToolGatewayProvider({
 				providerId: "catalog-provider",
+				revision: 1,
 				routes: [
 					{ kind: "local", toolName: "read", namespace: "line13", providerId: "missing-provider", revision: 1 },
 				],
@@ -503,6 +504,7 @@ const ac21 = defineLine13ResolvedCase({
 			};
 			const provider = createSandboxOperationToolGatewayProvider({
 				providerId: "sandbox-provider",
+				revision: 1,
 				routes: [
 					{ kind: "sandbox", toolName: "write", namespace: "line13", providerId: "sandbox-provider", revision: 1 },
 				],

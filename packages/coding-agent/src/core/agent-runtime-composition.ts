@@ -2,7 +2,9 @@ import type {
 	AgentHarness,
 	Session,
 	ToolGateway,
+	ToolGatewayProvider,
 } from "@aos-agent/agent-core";
+import { createFoundationToolGateway } from "@aos-agent/agent-core";
 import { createCanonicalExternalToolGateway, bindCanonicalExternalToolGatewayPolicy } from "./external-tool-gateway-authority.ts";
 import type { ExternalToolGatewayPolicyAuthority } from "./external-tool-gateway-authority.ts";
 import type { Models } from "@aos-agent/ai";
@@ -73,6 +75,15 @@ export interface AgentRuntimeCompositionContext {
 }
 
 export type TrustedToolGatewayFactory = (context: AgentRuntimeCompositionContext) => ToolGateway;
+export interface TrustedToolGatewayCatalog {
+	readonly gatewayId: string;
+	readonly builtinLocalProviders: readonly ToolGatewayProvider[];
+	readonly mcpProviders: readonly ToolGatewayProvider[];
+	readonly sandboxProviders: readonly ToolGatewayProvider[];
+}
+export type TrustedToolGatewayCatalogFactory = (
+	context: AgentRuntimeCompositionContext,
+) => TrustedToolGatewayCatalog;
 export type TrustedSubagentCompositionFactory = (
 	context: AgentRuntimeCompositionContext,
 ) => TrustedSubagentCompositionOptionsV1;
@@ -92,6 +103,8 @@ export type TrustedTaskCredentialProviderFactory = (
 /** Trusted optional providers accepted by the public composition root. */
 export interface AgentRuntimeCompositionOptions {
 	readonly toolGateway?: TrustedToolGatewayFactory;
+	/** Composition-owned provider catalog validated before runtime readiness. */
+	readonly toolGatewayCatalog?: TrustedToolGatewayCatalogFactory;
 	readonly trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 	readonly subagents?: TrustedSubagentCompositionFactory;
 	readonly scheduler?: TrustedSchedulerCompositionFactory;
@@ -178,6 +191,9 @@ function createPublicContext(context: AgentRuntimeCompositionContext): AgentRunt
 }
 
 function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRuntimeCompositionFactory {
+	if (options.toolGateway !== undefined && options.toolGatewayCatalog !== undefined) {
+		throw new TypeError("Trusted Tool Gateway must have one composition source");
+	}
 	if (options.workerSandboxProvider !== undefined && options.trustedWorkerSandboxFactory !== undefined) {
 		throw new TypeError("Trusted Worker providers must have one composition source");
 	}
@@ -205,7 +221,30 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				),
 				"Trusted Worker provider",
 			);
-			const explicitToolGateway = snapshot.toolGateway?.(publicContext);
+			const composedCatalog = snapshot.toolGatewayCatalog?.(publicContext);
+			let explicitToolGateway = snapshot.toolGateway?.(publicContext);
+			if (composedCatalog !== undefined) {
+				if (
+					composedCatalog.gatewayId.length === 0 ||
+					composedCatalog.builtinLocalProviders.some((provider) => provider.kind !== "local") ||
+					composedCatalog.mcpProviders.some((provider) => provider.kind !== "mcp") ||
+					composedCatalog.sandboxProviders.some((provider) => provider.kind !== "sandbox")
+				) {
+					throw new TypeError("Trusted Tool Gateway provider catalog is invalid");
+				}
+				const providers = [
+					...composedCatalog.builtinLocalProviders,
+					...composedCatalog.mcpProviders,
+					...composedCatalog.sandboxProviders,
+				];
+				for (const provider of providers) {
+					requireFresh(provider, "Trusted Tool Gateway provider");
+				}
+				explicitToolGateway = createFoundationToolGateway({
+					gatewayId: composedCatalog.gatewayId,
+					providers,
+				});
+			}
 			const subagents = requireFresh(
 				snapshot.subagents?.(publicContext) ?? snapshot.subagentOptions,
 				"Trusted Subagent composition",
@@ -263,6 +302,7 @@ export function createAgentRuntimeCompositionFactory(
 ): AgentRuntimeCompositionFactory {
 	if (
 		options.toolGateway === undefined &&
+		options.toolGatewayCatalog === undefined &&
 		options.trustedWorkerSandboxFactory === undefined &&
 		options.subagents === undefined &&
 		options.scheduler === undefined &&

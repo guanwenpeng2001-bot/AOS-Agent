@@ -234,6 +234,7 @@ describe("Run lifecycle Operation Worker wiring", () => {
 			gatewayId: "worker-run-gateway",
 			providers: [createSandboxOperationToolGatewayProvider({
 				providerId: workerProvider.providerId,
+				revision: 1,
 				routes: [{ kind: "sandbox", toolName: "read", providerId: workerProvider.providerId, revision: 1 }],
 				sandbox: workerProvider,
 				capabilities: await workerProvider.capabilities(),

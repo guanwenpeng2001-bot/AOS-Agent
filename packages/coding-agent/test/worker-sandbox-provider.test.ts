@@ -1158,6 +1158,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const current = provider("success", { requireRegisteredPayload: true });
 		const gateway = createSandboxOperationToolGatewayProvider({
 			providerId: current.providerId,
+			revision: 1,
 			routes: [{ kind: "sandbox", toolName: "read", providerId: current.providerId, revision: 1 }],
 			sandbox: current,
 			onOperationPayload: (operationId, payload) => current.onOperationPayload(operationId, payload),
@@ -1189,6 +1190,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const current = realWorkerProvider(root, policyBinding.id, runId);
 		const gateway = createSandboxOperationToolGatewayProvider({
 			providerId: current.providerId,
+			revision: 1,
 			routes: [
 				{ kind: "sandbox", toolName: "read", providerId: current.providerId, revision: 1 },
 				{ kind: "sandbox", toolName: "write", providerId: current.providerId, revision: 1 },

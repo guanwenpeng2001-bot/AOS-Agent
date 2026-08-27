@@ -20,12 +20,14 @@ import {
 	type Dispatch,
 	type ExecutionCorrelation,
 	type ExternalAgentConnector,
+	type Fingerprint,
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
 	type Result as ResultValue,
 	type TaskExecutorAttemptContext,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
+	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import {
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
@@ -102,10 +104,26 @@ export interface ExternalConnectorStartupRecoveryResult {
 	readonly status: "cleanup_confirmed_state_retained" | "quarantined" | "reattached" | "reaped";
 }
 
-export type ExternalConnectorToolGatewayConsumer = (
+export interface ExternalConnectorToolGatewayScope {
+	readonly schemaVersion: 1;
+	readonly gatewayId: string;
+	readonly catalogDigest: Fingerprint;
+	readonly bindingId: string;
+	readonly capabilityBindingId: string;
+	readonly policyBindingId: string;
+	readonly policyRevision: number;
+	readonly policyBindingDigest: Fingerprint;
+	readonly mcpSelectionDigest: Fingerprint;
+	readonly routes: readonly ToolGatewayRoute[];
+}
+
+export type ExternalConnectorToolGatewayConsumer = ((
 	request: ToolGatewayRequest,
 	options?: { readonly signal?: AbortSignal },
-) => Promise<ResultValue<ToolExecutionResult, FoundationError>>;
+) => Promise<ResultValue<ToolExecutionResult, FoundationError>>) & {
+	/** Immutable, exact route list visible to this durable AgentBinding. */
+	readonly scope: ExternalConnectorToolGatewayScope;
+};
 
 const EXTERNAL_CONNECTOR_CAPABILITIES: readonly FoundationProviderCapability[] = Object.freeze([
 	Object.freeze({ schemaVersion: 1, id: "external_connector.lifecycle", version: 1 }),
@@ -514,7 +532,16 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	}
 
 	bindToolGatewayConsumer(attemptId: string, consumer: ExternalConnectorToolGatewayConsumer): () => void {
-		if (!isExternalConnectorMappingIdentifier(attemptId) || typeof consumer !== "function") {
+		if (
+			!isExternalConnectorMappingIdentifier(attemptId) ||
+			typeof consumer !== "function" ||
+			consumer.scope?.schemaVersion !== 1 ||
+			consumer.scope.gatewayId.length === 0 ||
+			consumer.scope.catalogDigest.algorithm !== "sha256" ||
+			!Array.isArray(consumer.scope.routes) ||
+			!Object.isFrozen(consumer.scope) ||
+			!Object.isFrozen(consumer.scope.routes)
+		) {
 			throw externalFailure("invalid_correlation", "External connector Tool Gateway consumer binding is invalid");
 		}
 		if (this.#toolGatewayConsumers.has(attemptId)) {

@@ -490,6 +490,7 @@ async function createCodingAgentHarnessInternal(options: InternalCreateCodingAge
 	};
 	const sandboxProvider = createSandboxOperationToolGatewayProvider({
 		providerId: operationWorker.providerId,
+		revision: 1,
 		routes: workerSandbox.routes,
 		sandbox: operationWorker,
 		capabilities: workerCapabilities,

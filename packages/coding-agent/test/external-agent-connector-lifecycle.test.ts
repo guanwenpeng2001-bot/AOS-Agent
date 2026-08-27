@@ -23,7 +23,11 @@ import {
 	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import * as packageEntry from "../src/index.ts";
-import { DurableExternalAgentConnector, externalConnectorAttemptId } from "../src/core/external-agent-connector.ts";
+import {
+	DurableExternalAgentConnector,
+	externalConnectorAttemptId,
+	type ExternalConnectorToolGatewayConsumer,
+} from "../src/core/external-agent-connector.ts";
 import type {
 	ExternalConnectorDurableStore,
 	ExternalConnectorOperation,
@@ -633,6 +637,36 @@ function gatewayRequestFor(
 	};
 }
 
+function scopedConsumer(
+	value: Fixture,
+	invoke: (
+		request: ToolGatewayRequest,
+		options?: { readonly signal?: AbortSignal },
+	) => ReturnType<ExternalConnectorToolGatewayConsumer>,
+): ExternalConnectorToolGatewayConsumer {
+	Object.defineProperty(invoke, "scope", {
+		value: Object.freeze({
+			schemaVersion: 1,
+			gatewayId: "test-tool-gateway",
+			catalogDigest: fingerprintFoundationValue("test-tool-gateway-catalog"),
+			bindingId: value.binding.bindingId,
+			capabilityBindingId: value.binding.capabilityRevision.id,
+			policyBindingId: value.binding.policyRevision.id,
+			policyRevision: value.binding.policyRevision.revision,
+			policyBindingDigest: value.binding.policyRevision.fingerprint!,
+			mcpSelectionDigest: value.binding.mcpSelection.digest,
+			routes: Object.freeze([Object.freeze({
+				kind: "local" as const,
+				namespace: "workspace",
+				toolName: "workspace.read",
+				providerId,
+				revision: 1,
+			})]),
+		}),
+	});
+	return Object.freeze(invoke) as ExternalConnectorToolGatewayConsumer;
+}
+
 function gatewayEventsFor(value: Fixture, requests: readonly ToolGatewayRequest[]): FoundationJsonValue[] {
 	return [
 		{
@@ -705,7 +739,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const second = gatewayRequestFor(value, "tool-call-2", { path: "docs/two.txt" });
 		value.driver.eventValues = gatewayEventsFor(value, [first, first, second]);
 		const effects: ToolGatewayRequest[] = [];
-		const release = value.connector.bindToolGatewayConsumer(value.attempt.attemptId, async (request) => {
+		const release = value.connector.bindToolGatewayConsumer(value.attempt.attemptId, scopedConsumer(value, async (request) => {
 			effects.push(request);
 			return Result.ok({
 				schemaVersion: 1,
@@ -715,7 +749,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 				sideEffectState: "none",
 				toolReceiptRef: `receipt-${request.toolCallId}`,
 			});
-		});
+		}));
 		try {
 			const completed = await value.connector.runAttempt(value.attempt, {
 				correlation: gatewayCorrelation(),
@@ -741,7 +775,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const conflict = gatewayRequestFor(value, "tool-call-conflict", { path: "docs/two.txt" });
 		value.driver.eventValues = gatewayEventsFor(value, [first, conflict]);
 		const effects: ToolGatewayRequest[] = [];
-		const release = value.connector.bindToolGatewayConsumer(value.attempt.attemptId, async (request) => {
+		const release = value.connector.bindToolGatewayConsumer(value.attempt.attemptId, scopedConsumer(value, async (request) => {
 			effects.push(request);
 			const result: ToolExecutionResult = {
 				schemaVersion: 1,
@@ -752,7 +786,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 				toolReceiptRef: `receipt-${request.toolCallId}`,
 			};
 			return Result.ok(result);
-		});
+		}));
 		try {
 			const completed = await value.connector.runAttempt(value.attempt, {
 				correlation: gatewayCorrelation(),

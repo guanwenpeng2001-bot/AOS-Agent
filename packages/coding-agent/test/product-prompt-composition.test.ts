@@ -103,6 +103,7 @@ function childBinding(
 		capabilityRevision: input.parentBinding.capabilityRevision,
 		modelBrokerBindingRevision: input.parentBinding.modelBrokerBindingRevision,
 		policyRevision: input.parentBinding.policyRevision,
+		mcpSelection: input.parentBinding.mcpSelection,
 		newBindingId: `binding_product_child_${sha256HexValue(input.runId).slice(0, 16)}_${suffix}`,
 		now: () => input.timestamp,
 	});

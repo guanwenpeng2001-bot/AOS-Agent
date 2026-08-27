@@ -751,6 +751,8 @@ export {
 	type TrustedSchedulerRuntimeOptions,
 	type TrustedSubagentCompositionFactory,
 	type TrustedTaskCredentialProviderFactory,
+	type TrustedToolGatewayCatalog,
+	type TrustedToolGatewayCatalogFactory,
 	type TrustedToolGatewayFactory,
 	createBashTool,
 	// Tool factories (for custom cwd)
