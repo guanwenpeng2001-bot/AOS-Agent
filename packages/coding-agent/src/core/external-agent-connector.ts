@@ -98,7 +98,7 @@ export interface ExternalAgentConnectorRuntimeOptions {
 
 export interface ExternalConnectorStartupRecoveryResult {
 	readonly attemptId: string;
-	readonly status: "cleanup_confirmed_state_retained" | "quarantined" | "reaped";
+	readonly status: "cleanup_confirmed_state_retained" | "quarantined" | "reattached" | "reaped";
 }
 
 export type ExternalConnectorToolGatewayConsumer = (
@@ -386,6 +386,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly #supervisors = new Map<string, ExternalConnectorBoundedSupervisor>();
 	readonly #driverHandles = new Map<string, ExternalConnectorDriverHandle>();
 	readonly #observationControllers = new Map<string, AbortController>();
+	readonly #startCancellationControllers = new Map<string, AbortController>();
 	readonly #pendingCancellations = new Set<string>();
 	readonly #active = new Map<string, Promise<ResultValue<AttemptReceipt, FoundationError>>>();
 	readonly #cancelling = new Map<string, Promise<ResultValue<void, FoundationError>>>();
@@ -420,12 +421,28 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		this.#operationNonce = options.operationNonce ?? randomUUID;
 	}
 
-	/** Reap every provable Host-owned process tree before production accepts lifecycle work. */
+	/** Reattach mapped live operations and reap private trees that cannot be resumed or reconciled. */
 	async recoverPrivateSupervisorState(): Promise<readonly ExternalConnectorStartupRecoveryResult[]> {
 		const entries = await this.#supervision.privateStateStore.list();
 		const results: ExternalConnectorStartupRecoveryResult[] = [];
 		for (const entry of entries) {
+			if (this.#supervisors.has(entry.attemptId)) {
+				results.push(Object.freeze({ attemptId: entry.attemptId, status: "reattached" }));
+				continue;
+			}
 			const supervisor = this.#createSupervisorForReference(entry.state.reference);
+			if (await this.#isStartupReattachable(entry)) {
+				try {
+					supervisor.reattach(entry.state);
+					this.#supervisors.set(entry.attemptId, supervisor);
+					this.#notifyDrain();
+					results.push(Object.freeze({ attemptId: entry.attemptId, status: "reattached" }));
+				} catch {
+					await this.#markStartupReconcile(entry);
+					results.push(Object.freeze({ attemptId: entry.attemptId, status: "quarantined" }));
+				}
+				continue;
+			}
 			try {
 				await supervisor.recoverAndReap(entry.state);
 			} catch {
@@ -566,6 +583,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (this.#disposal !== undefined) return this.#disposal;
 		this.#lifecycle = "draining";
 		for (const controller of this.#observationControllers.values()) controller.abort();
+		for (const controller of this.#startCancellationControllers.values()) controller.abort();
 		this.#disposal = this.#drainAndDispose();
 		return this.#disposal;
 	}
@@ -574,6 +592,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		let disposalFailure: unknown;
 		for (;;) {
 			for (const controller of this.#observationControllers.values()) controller.abort();
+			for (const controller of this.#startCancellationControllers.values()) controller.abort();
 			const supervisors = [...this.#supervisors.entries()];
 			const cleanupResults = await Promise.allSettled(
 				supervisors.map(async ([attemptId, supervisor]) => {
@@ -600,7 +619,12 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			const changed = new Promise<void>((resolve) => this.#drainWaiters.add(resolve));
 			await Promise.race([
 				changed,
-				...operations.map((operation) => operation.then(() => undefined, () => undefined)),
+				...operations.map((operation) =>
+					operation.then(
+						() => undefined,
+						() => undefined,
+					),
+				),
 			]);
 		}
 		try {
@@ -616,6 +640,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			this.#supervisors.clear();
 			this.#driverHandles.clear();
 			this.#observationControllers.clear();
+			this.#startCancellationControllers.clear();
 			this.#pendingCancellations.clear();
 			this.#toolGatewayConsumers.clear();
 			this.#drainWaiters.clear();
@@ -705,22 +730,54 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	}
 
 	async #markStartupReconcile(entry: ExternalConnectorSupervisorPrivateStateEntry): Promise<void> {
+		const operationValue = await this.#store.readOperation(entry.attemptId);
+		if (operationValue === undefined) return;
+		let operation: ExternalConnectorOperation;
 		try {
-			const operationValue = await this.#store.readOperation(entry.attemptId);
-			if (operationValue === undefined) return;
-			const operation = cloneExternalConnectorOperation(operationValue);
-			if (
-				operation.providerId !== this.providerId ||
-				operation.attemptId !== entry.attemptId ||
-				operation.operationNonce !== entry.state.reference.operationNonce ||
-				operation.status === "terminal" ||
-				operation.status === "reconcile_required"
-			)
-				return;
-			await this.#markReconcile(operation, "driver_failure");
+			operation = cloneExternalConnectorOperation(operationValue);
 		} catch {
-			// Process cleanup is authoritative only for private identity; corrupt canonical state stays untouched.
+			return;
 		}
+		if (
+			operation.providerId !== this.providerId ||
+			operation.attemptId !== entry.attemptId ||
+			operation.operationNonce !== entry.state.reference.operationNonce ||
+			operation.status === "terminal" ||
+			operation.status === "reconcile_required"
+		)
+			return;
+		await this.#markReconcile(operation, "driver_failure");
+	}
+
+	async #isStartupReattachable(entry: ExternalConnectorSupervisorPrivateStateEntry): Promise<boolean> {
+		const operationValue = await this.#store.readOperation(entry.attemptId);
+		if (operationValue === undefined) return false;
+		let operation: ExternalConnectorOperation;
+		try {
+			operation = cloneExternalConnectorOperation(operationValue);
+		} catch {
+			return false;
+		}
+		if (
+			operation.providerId !== this.providerId ||
+			operation.attemptId !== entry.attemptId ||
+			operation.operationNonce !== entry.state.reference.operationNonce ||
+			operation.status === "prepared" ||
+			operation.status === "terminal"
+		)
+			return false;
+		const mapping = await this.#store.readMapping(entry.attemptId);
+		return (
+			mapping !== undefined &&
+			mapping.providerId === operation.providerId &&
+			mapping.attemptId === operation.attemptId &&
+			mapping.binding.revision === operation.bindingRevision &&
+			sameFingerprint(mapping.binding.digest, operation.bindingDigest) &&
+			mapping.capability.revision === operation.capabilityRevision &&
+			sameFingerprint(mapping.capability.digest, operation.capabilityDigest) &&
+			mapping.supervisor.ref === entry.state.reference.supervisorRef &&
+			mapping.supervisor.nonce === operation.operationNonce
+		);
 	}
 
 	async #launchSupervisor(
@@ -744,15 +801,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				try {
 					await supervisor.dispose();
 				} catch (cleanupError) {
+					this.#supervisors.set(operation.attemptId, supervisor);
+					this.#notifyDrain();
 					if (!statePersisted) {
-						await this.#supervision.privateStateStore
-							.write(operation.attemptId, privateState)
-							.catch(() => undefined);
+						await this.#supervision.privateStateStore.write(operation.attemptId, privateState);
 					}
 					throw externalConnectorSupervisorFailure(cleanupError);
 				}
 				if (supervisor.snapshot.cleaned) {
-					await this.#supervision.privateStateStore.delete(operation.attemptId).catch(() => undefined);
+					await this.#supervision.privateStateStore.delete(operation.attemptId);
 				}
 			}
 			throw externalConnectorSupervisorFailure(error);
@@ -961,9 +1018,6 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		try {
 			supervisor = await this.#launchSupervisor(operation, options?.signal);
 		} catch {
-			if (isAborted()) {
-				return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
-			}
 			await this.#markReconcile(operation, "start_outcome_unknown");
 			return Result.err(
 				externalFailure(
@@ -974,11 +1028,25 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			);
 		}
 		if (isAborted()) {
-			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
+			try {
+				await this.#releaseSupervisor(attempt.attemptId, supervisor);
+			} catch {
+				await this.#markReconcile(operation, "start_outcome_unknown");
+				return Result.err(
+					externalFailure(
+						"side_effect_unknown",
+						"External connector process cleanup could not be proven",
+						attempt.attemptId,
+					),
+				);
+			}
 			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
 		}
 		let handle: ExternalConnectorDriverHandle;
 		let spawnCalled = false;
+		const startCancellation = new AbortController();
+		this.#startCancellationControllers.set(attempt.attemptId, startCancellation);
+		if (this.#pendingCancellations.has(attempt.attemptId)) startCancellation.abort();
 		try {
 			handle = await supervisor.run(
 				"start",
@@ -1001,6 +1069,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					});
 				},
 				options?.signal,
+				"opaque",
+				undefined,
+				startCancellation.signal,
 			);
 		} catch {
 			if (supervisor.snapshot.cleaned) {
@@ -1008,6 +1079,16 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				await this.#supervision.privateStateStore.delete(attempt.attemptId);
 			}
 			if (isAborted()) {
+				if (!supervisor.snapshot.cleaned) {
+					await this.#markReconcile(operation, "start_outcome_unknown");
+					return Result.err(
+						externalFailure(
+							"side_effect_unknown",
+							"External connector process cleanup is unknown",
+							attempt.attemptId,
+						),
+					);
+				}
 				return spawnCalled
 					? this.#settleFailedWithoutMapping(attempt, correlation.value, operation, options?.signal)
 					: this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
@@ -1016,6 +1097,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			return Result.err(
 				externalFailure("provider_spawn_failed", "External connector start outcome is unknown", attempt.attemptId),
 			);
+		} finally {
+			if (this.#startCancellationControllers.get(attempt.attemptId) === startCancellation) {
+				this.#startCancellationControllers.delete(attempt.attemptId);
+			}
 		}
 
 		const checkedHandle = this.#requireAuthoritativeDriverHandle(handle, supervisor);
@@ -1472,7 +1557,12 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return Result.err(frozen.error);
 		if (operation.status === "start_intent") {
-			if (this.#active.has(attemptId)) return Result.ok(undefined);
+			const active = this.#active.get(attemptId);
+			if (active !== undefined) {
+				this.#startCancellationControllers.get(attemptId)?.abort();
+				const completed = await active;
+				return completed.ok ? Result.ok(undefined) : Result.err(completed.error);
+			}
 			await this.#markReconcile(operation, "start_outcome_unknown");
 			return Result.err(
 				externalFailure(
@@ -1634,10 +1724,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			if (consumer === undefined) {
 				throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
 			}
-			let execution = await this.#store.readToolGatewayExecution(
-				operation.attemptId,
-				request.toolCallId,
-			);
+			let execution = await this.#store.readToolGatewayExecution(operation.attemptId, request.toolCallId);
 			if (
 				execution !== undefined &&
 				canonicalFoundationJson(execution.intent.request) !== canonicalFoundationJson(request)
@@ -1663,10 +1750,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				};
 				const writtenIntent = await this.#store.writeToolGatewayIntent(intent);
 				if (!writtenIntent.claimed) {
-					execution = await this.#store.readToolGatewayExecution(
-						operation.attemptId,
-						request.toolCallId,
-					);
+					execution = await this.#store.readToolGatewayExecution(operation.attemptId, request.toolCallId);
 					if (execution?.terminal === undefined) {
 						throw new ExternalConnectorSupervisorError("tool_gateway_ambiguous", "event", false);
 					}

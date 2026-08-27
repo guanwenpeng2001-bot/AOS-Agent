@@ -2,13 +2,23 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Result, createConnectorCapabilitySnapshot } from "@aos-agent/agent-core";
+import {
+	Result,
+	createConnectorCapabilitySnapshot,
+	fingerprintFoundationValue,
+	type ExternalAgentConnector,
+} from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import { DurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
-import type { ExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import type {
+	ExternalConnectorDurableStore,
+	ExternalConnectorOperation,
+} from "../src/core/external-agent-operation.ts";
 import { ProductionExternalConnectorProcessController } from "../src/core/external-connector-process-controller.ts";
 import { createProductionExternalConnectorSupervision } from "../src/core/external-connector-production.ts";
+import { cloneCanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
 import {
+	ExternalConnectorBoundedSupervisor,
 	FileExternalConnectorSupervisorPrivateStateStore,
 	externalConnectorProcessContainment,
 } from "../src/core/external-connector-supervisor.ts";
@@ -118,30 +128,142 @@ describe("production External Connector composition", () => {
 				privateStatePath: join(root, "private", "supervisors.json"),
 				process: processOptions,
 			});
-			expect(await registry.register({
-				descriptor: {
-					schemaVersion: 1,
-					providerId: capability.providerId,
-					providerClass: "external_connector",
-					revision: capability.revision,
-					capabilitySnapshotDigest: capability.digest,
-				},
-				connector,
-				trusted: true,
-			})).toMatchObject({ ok: true });
+			expect(
+				await registry.register({
+					descriptor: {
+						schemaVersion: 1,
+						providerId: capability.providerId,
+						providerClass: "external_connector",
+						revision: capability.revision,
+						capabilitySnapshotDigest: capability.digest,
+					},
+					connector,
+					trusted: true,
+				}),
+			).toMatchObject({ ok: true });
 			drift = true;
 
-			expect(await registry.select({
-				providerId: capability.providerId,
-				revision: capability.revision,
-				capabilitySnapshotDigest: capability.digest,
-			})).toMatchObject({ ok: false });
+			expect(
+				await registry.select({
+					providerId: capability.providerId,
+					revision: capability.revision,
+					capabilitySnapshotDigest: capability.digest,
+				}),
+			).toMatchObject({ ok: false });
 			expect(probeCalls).toBe(2);
 		} finally {
 			await registry.dispose();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it("preserves a reattachable mapped operation during production restart", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-external-production-resume-"));
+		const privateStatePath = join(root, "private", "supervisors.json");
+		const targetPidPath = join(root, "target.pid");
+		const providerId = "production-resume-connector";
+		const attemptId = "attempt-production-resume";
+		const operationNonce = "production-resume-nonce";
+		const supervisorRef = "production-resume-supervisor";
+		const capability = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId,
+			revision: 1,
+			protocol: { name: "production-protocol", version: "1" },
+			modelAccess: "agent_owned",
+			resume: true,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		});
+		const bindingDigest = fingerprintFoundationValue("production-resume-binding");
+		const operation: ExternalConnectorOperation = {
+			schemaVersion: 1,
+			providerId,
+			attemptId,
+			bindingId: "binding-production-resume",
+			bindingEpochId: "binding-epoch-production-resume",
+			bindingDigest,
+			bindingRevision: 1,
+			capabilityDigest: capability.digest,
+			capabilityRevision: capability.revision,
+			operationNonce,
+			correlation: {
+				sessionId: "session-production-resume",
+				laneId: "main",
+				revision: 1,
+				taskId: "task-production-resume",
+				dispatchId: "dispatch-production-resume",
+				attemptId,
+				bindingId: "binding-production-resume",
+				bindingEpochId: "binding-epoch-production-resume",
+				providerId,
+			},
+			status: "running",
+			revision: 3,
+			updatedAt: "2026-08-27T00:00:00.000Z",
+		};
+		const mapping = cloneCanonicalExternalConnectorMapping({
+			schemaVersion: 1,
+			providerId,
+			attemptId,
+			externalSessionId: "external-session-production-resume",
+			binding: { digest: bindingDigest, revision: 1 },
+			capability: { digest: capability.digest, revision: capability.revision },
+			supervisor: { ref: supervisorRef, nonce: operationNonce },
+			createdAt: "2026-08-27T00:00:00.000Z",
+		});
+		const processConfiguration = {
+			executablePath: process.execPath,
+			arguments: [
+				"-e",
+				"require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(function(){},2147483647)",
+				targetPidPath,
+			],
+		} as const;
+		const controller = new ProductionExternalConnectorProcessController({ process: processConfiguration });
+		const first = new ExternalConnectorBoundedSupervisor({
+			reference: { schemaVersion: 1, supervisorRef, operationNonce },
+			containment: externalConnectorProcessContainment(),
+			processController: controller,
+			artifactsAllowed: false,
+			deadlines: { dispose: { hardMs: 10_000, idleMs: 10_000 } },
+		});
+		const privateStore = new FileExternalConnectorSupervisorPrivateStateStore(privateStatePath);
+		let connector: ExternalAgentConnector | undefined;
+		try {
+			await first.launch((state) => privateStore.write(attemptId, state));
+			await expect.poll(() => existsSync(targetPidPath)).toBe(true);
+			const targetPid = Number(readFileSync(targetPidPath, "utf8"));
+			const store = Object.freeze({
+				readOperation: async (candidateAttemptId: string) =>
+					candidateAttemptId === attemptId ? operation : undefined,
+				readMapping: async (candidateAttemptId: string) => (candidateAttemptId === attemptId ? mapping : undefined),
+			}) as unknown as ExternalConnectorDurableStore;
+			const created = await createProductionExternalAgentConnector({
+				providerId,
+				capability,
+				store,
+				driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
+				privateStatePath,
+				process: processConfiguration,
+			});
+			connector = created;
+
+			expect(processIsLive(targetPid)).toBe(true);
+			expect(await privateStore.list()).toHaveLength(1);
+			await created.dispose();
+			connector = undefined;
+			await expect.poll(() => processIsLive(targetPid), { timeout: 10_000 }).toBe(false);
+			expect(await privateStore.list()).toEqual([]);
+		} finally {
+			await connector?.dispose().catch(() => undefined);
+			await first.dispose().catch(() => undefined);
+			if ((await privateStore.list().catch(() => [{ attemptId }])).length === 0) {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}
+	}, 30_000);
 
 	// The Windows test worker is already in a kill-on-close Job, so it cannot leave a nested guardian orphan.
 	it.skipIf(process.platform === "win32")(
@@ -167,7 +289,10 @@ describe("production External Connector composition", () => {
 						artifacts: false,
 						images: false,
 					}),
-					store: Object.freeze({}) as ExternalConnectorDurableStore,
+					store: Object.freeze({
+						readOperation: async () => undefined,
+						readMapping: async () => undefined,
+					}) as unknown as ExternalConnectorDurableStore,
 					driver: Object.freeze({}) as ExternalConnectorVendorDriver,
 					privateStatePath,
 					process: {
@@ -215,7 +340,10 @@ describe("production External Connector composition", () => {
 					await recover().catch(() => undefined);
 					cleanupConfirmed = await new FileExternalConnectorSupervisorPrivateStateStore(privateStatePath)
 						.list()
-						.then((entries) => entries.length === 0, () => false);
+						.then(
+							(entries) => entries.length === 0,
+							() => false,
+						);
 				}
 				if (cleanupConfirmed) rmSync(root, { recursive: true, force: true });
 			}

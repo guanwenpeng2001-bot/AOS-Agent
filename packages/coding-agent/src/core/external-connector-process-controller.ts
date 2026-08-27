@@ -24,6 +24,13 @@ const { spawn } = require("node:child_process");
 const marker = process.argv[1];
 let active = false;
 let input = "";
+const terminateGroup = () => {
+	try {
+		process.kill(-process.pid, "SIGKILL");
+	} catch {
+		process.exit(76);
+	}
+};
 process.stdout.write("READY " + marker + "\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -49,8 +56,8 @@ process.stdin.on("data", (chunk) => {
 		windowsHide: true,
 	});
 	child.once("spawn", () => process.stdout.write("ACTIVE " + marker + "\n"));
-	child.once("error", () => process.exit(75));
-	child.once("exit", () => process.exit(76));
+	child.once("error", terminateGroup);
+	child.once("exit", terminateGroup);
 });
 process.stdin.on("end", () => {
 	if (!active) process.exit(73);
@@ -335,7 +342,7 @@ export function externalConnectorMinimalEnvironment(
 	const environment: Record<string, string> = {};
 	for (const allowedKey of MINIMAL_ENVIRONMENT_KEYS[supported]) {
 		const sourceKey = Object.keys(source).find((key) =>
-			supported === "win32" ? key.toLowerCase() === allowedKey.toLowerCase() : key === allowedKey
+			supported === "win32" ? key.toLowerCase() === allowedKey.toLowerCase() : key === allowedKey,
 		);
 		if (sourceKey === undefined) continue;
 		const value = source[sourceKey];
@@ -381,7 +388,9 @@ function sameIdentity(left: ExternalConnectorProcessIdentity, right: ExternalCon
 	);
 }
 
-function executableIdentity(path: string): Pick<ExternalConnectorProcessIdentity, "executableIdentity" | "fileIdentity"> {
+function executableIdentity(
+	path: string,
+): Pick<ExternalConnectorProcessIdentity, "executableIdentity" | "fileIdentity"> {
 	const resolved = realpathSync(path);
 	const stat = statSync(resolved, { bigint: true });
 	const digest = createHash("sha256").update(readFileSync(resolved)).digest("hex");
@@ -396,7 +405,10 @@ function inspectLinuxProcess(pid: number, expectedNonce: string): ProcessInspect
 		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
 		const close = stat.lastIndexOf(")");
 		if (close < 0) return { status: "ambiguous" };
-		const fields = stat.slice(close + 2).trim().split(/\s+/u);
+		const fields = stat
+			.slice(close + 2)
+			.trim()
+			.split(/\s+/u);
 		const startToken = fields[19];
 		if (startToken === undefined || !/^\d+$/u.test(startToken)) return { status: "ambiguous" };
 		const command = readFileSync(`/proc/${pid}/cmdline`)
@@ -532,7 +544,8 @@ function inspectWindowsProcess(pid: number, expectedNonce: string, shellPath: st
 			typeof value.path !== "string" ||
 			typeof value.startToken !== "string" ||
 			typeof value.commandLine !== "string"
-		) return { status: "ambiguous" };
+		)
+			return { status: "ambiguous" };
 		const marker = nonceMarker(expectedNonce);
 		const markerPattern = new RegExp(`(?:^|[\\s"'])${escapeRegExp(marker)}(?:$|[\\s"'])`, "u");
 		return {
@@ -560,11 +573,6 @@ function isMissingProcessError(error: unknown): boolean {
 	);
 }
 
-function childExited(child: ChildProcessWithoutNullStreams): Promise<void> {
-	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-	return new Promise((resolve) => child.once("exit", () => resolve()));
-}
-
 function waitForProtocolLine(
 	child: ChildProcessWithoutNullStreams,
 	expected: string,
@@ -573,7 +581,10 @@ function waitForProtocolLine(
 	return new Promise((resolve, reject) => {
 		let output = "";
 		let errorOutput = "";
-		const timer = setTimeout(() => finish(new Error("External Connector containment helper timed out")), ACTIVATION_TIMEOUT_MS);
+		const timer = setTimeout(
+			() => finish(new Error("External Connector containment helper timed out")),
+			ACTIVATION_TIMEOUT_MS,
+		);
 		timer.unref();
 		const onOutput = (chunk: Buffer): void => {
 			output += chunk.toString("utf8");
@@ -709,7 +720,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 				operationNonce: request.operationNonce,
 				containment: request.containment,
 				identity,
-				exited: childExited(child),
+				exited: this.#monitorContainmentExit(identity.pid),
 				activated: false,
 				activate: async () => {
 					const active = waitForProtocolLine(child, `ACTIVE ${marker}`, options?.signal);
@@ -730,8 +741,12 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 	): ExternalConnectorProcessReattachResult {
 		this.#validateRequest(request);
 		const inspection = this.#inspect(identity.pid, request.operationNonce);
-		if (inspection.status !== "live") return { status: inspection.status };
-		if (!inspection.value.nonceMarkerPresent || !sameIdentity(inspection.value.identity, identity)) {
+		if (inspection.status === "not_found" && this.#platform !== "win32") {
+			const groupStatus = this.#inspectProcessGroup(identity.pid);
+			if (groupStatus !== "live") return { status: groupStatus };
+		} else if (inspection.status !== "live") {
+			return { status: inspection.status };
+		} else if (!inspection.value.nonceMarkerPresent || !sameIdentity(inspection.value.identity, identity)) {
 			return { status: "identity_mismatch" };
 		}
 		return {
@@ -740,7 +755,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 				operationNonce: request.operationNonce,
 				containment: request.containment,
 				identity,
-				exited: this.#monitorExit(identity.pid),
+				exited: this.#monitorContainmentExit(identity.pid),
 				activated: true,
 				activate: () => Promise.resolve(),
 				forceTerminate: (termination) => this.#forceTerminate(identity, request.operationNonce, termination),
@@ -753,15 +768,20 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		boundNonce: string,
 		request: ExternalConnectorProcessTerminationRequest,
 	): ExternalConnectorProcessTerminationResult {
-		if (
-			request.operationNonce !== boundNonce ||
-			!sameIdentity(request.processIdentity, boundIdentity)
-		) return "identity_mismatch";
+		if (request.operationNonce !== boundNonce || !sameIdentity(request.processIdentity, boundIdentity))
+			return "identity_mismatch";
 		const inspection = this.#inspect(boundIdentity.pid, boundNonce);
-		if (inspection.status !== "live") {
+		if (inspection.status === "not_found" && this.#platform !== "win32") {
+			const groupStatus = this.#inspectProcessGroup(boundIdentity.pid);
+			if (groupStatus === "not_found") return "already_exited";
+			if (groupStatus === "ambiguous") return "ambiguous";
+		} else if (inspection.status !== "live") {
 			return inspection.status === "not_found" ? "already_exited" : "ambiguous";
 		}
-		if (!inspection.value.nonceMarkerPresent || !sameIdentity(inspection.value.identity, boundIdentity)) {
+		if (
+			inspection.status === "live" &&
+			(!inspection.value.nonceMarkerPresent || !sameIdentity(inspection.value.identity, boundIdentity))
+		) {
 			return "identity_mismatch";
 		}
 		try {
@@ -818,18 +838,28 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		return inspectWindowsProcess(pid, nonce, this.#shellPath!);
 	}
 
-	#monitorExit(pid: number): Promise<void> {
+	#monitorContainmentExit(pid: number): Promise<void> {
 		return new Promise((resolve) => {
 			const timer = setInterval(() => {
-				try {
-					process.kill(pid, 0);
-				} catch {
+				const status = this.#platform === "win32" ? this.#inspect(pid, "").status : this.#inspectProcessGroup(pid);
+				if (status === "not_found") {
 					clearInterval(timer);
 					resolve();
 				}
 			}, 250);
 			timer.unref();
 		});
+	}
+
+	#inspectProcessGroup(processGroupId: number): "live" | "not_found" | "ambiguous" {
+		try {
+			process.kill(-processGroupId, 0);
+			return "live";
+		} catch (error) {
+			if (isMissingProcessError(error)) return "not_found";
+			if (typeof error === "object" && error !== null && "code" in error && error.code === "EPERM") return "live";
+			return "ambiguous";
+		}
 	}
 
 	#resolveSetsid(): string {
@@ -852,7 +882,8 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 			request.supervisorRef.length === 0 ||
 			typeof request.operationNonce !== "string" ||
 			request.operationNonce.length === 0
-		) throw new TypeError("External Connector process launch request is invalid");
+		)
+			throw new TypeError("External Connector process launch request is invalid");
 	}
 }
 
@@ -868,14 +899,17 @@ function encodeProcessSpec(
 		typeof value?.executablePath !== "string" ||
 		!isAbsolute(value.executablePath) ||
 		value.executablePath.includes("\0") ||
-		(value.arguments !== undefined && (
-			!Array.isArray(value.arguments) ||
-			value.arguments.length > 256 ||
-			value.arguments.some((argument) =>
-				typeof argument !== "string" || argument.includes("\0") || Buffer.byteLength(argument, "utf8") > 64 * 1024
-			)
-		))
-	) throw new TypeError("External Connector companion process is invalid");
+		(value.arguments !== undefined &&
+			(!Array.isArray(value.arguments) ||
+				value.arguments.length > 256 ||
+				value.arguments.some(
+					(argument) =>
+						typeof argument !== "string" ||
+						argument.includes("\0") ||
+						Buffer.byteLength(argument, "utf8") > 64 * 1024,
+				)))
+	)
+		throw new TypeError("External Connector companion process is invalid");
 	const executablePath = realpathSync(value.executablePath);
 	if (!statSync(executablePath).isFile()) {
 		throw new TypeError("External Connector companion executable is not a file");

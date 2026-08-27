@@ -32,14 +32,24 @@ import type {
 let registrationRuntimeId = 0;
 
 class RegistrationOnlyDriver implements ExternalConnectorVendorDriver {
-	async spawn(): Promise<ExternalConnectorDriverHandle> { throw new Error("registration-only driver"); }
+	async spawn(): Promise<ExternalConnectorDriverHandle> {
+		throw new Error("registration-only driver");
+	}
 	async *events(): AsyncIterable<never> {}
-	async connect(): Promise<ExternalConnectorDriverHandle> { throw new Error("registration-only driver"); }
-	async lookup(): Promise<ExternalConnectorDriverLookup> { return { status: "missing" }; }
-	async read(): Promise<ExternalConnectorTerminalEvidence> { throw new Error("registration-only driver"); }
+	async connect(): Promise<ExternalConnectorDriverHandle> {
+		throw new Error("registration-only driver");
+	}
+	async lookup(): Promise<ExternalConnectorDriverLookup> {
+		return { status: "missing" };
+	}
+	async read(): Promise<ExternalConnectorTerminalEvidence> {
+		throw new Error("registration-only driver");
+	}
 	async write(): Promise<void> {}
 	async heartbeat(): Promise<void> {}
-	async cancel(): Promise<undefined> { return undefined; }
+	async cancel(): Promise<undefined> {
+		return undefined;
+	}
 	async dispose(): Promise<void> {}
 }
 
@@ -148,6 +158,8 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 	activationCalls = 0;
 	forceCalls = 0;
 	forceExits = true;
+	launchGate: Promise<void> | undefined;
+	onLaunch: (() => void) | undefined;
 	reattachResult: ExternalConnectorProcessReattachResult | undefined;
 	#nextPid = 20_000;
 
@@ -171,6 +183,8 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 			},
 		);
 		this.handles.set(pid, handle);
+		this.onLaunch?.();
+		if (this.launchGate !== undefined) await this.launchGate;
 		return handle;
 	}
 
@@ -220,12 +234,12 @@ export function createExternalConnectorTestSupervision() {
 }
 
 /** Host-supervised runtime for composition fixtures that only exercise registration and discovery. */
-export function createExternalConnectorTestRuntime(
-	snapshot: ConnectorCapabilitySnapshot,
-): ExternalAgentConnector {
+export function createExternalConnectorTestRuntime(snapshot: ConnectorCapabilitySnapshot): ExternalAgentConnector {
 	registrationRuntimeId += 1;
 	const fixtureId = registrationRuntimeId;
-	const session = new Session(new InMemorySessionStorage({ id: `connector-registry-${fixtureId}`, createdAt: fixtureId }));
+	const session = new Session(
+		new InMemorySessionStorage({ id: `connector-registry-${fixtureId}`, createdAt: fixtureId }),
+	);
 	const t5 = new SessionT5Ledger(session, { ownerId: `connector-registry-${fixtureId}` });
 	return createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,

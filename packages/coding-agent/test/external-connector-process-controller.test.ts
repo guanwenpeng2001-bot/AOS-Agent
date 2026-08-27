@@ -83,17 +83,21 @@ describe("production External Connector process controller", () => {
 			const targetPid = Number(readFileSync(targetPidPath, "utf8"));
 			expect(processIsLive(targetPid)).toBe(true);
 
-			expect(handle.forceTerminate({
-				operationNonce: launchRequest.operationNonce,
-				processIdentity: { ...handle.identity, startToken: "reused-process" },
-			})).toBe("identity_mismatch");
+			expect(
+				handle.forceTerminate({
+					operationNonce: launchRequest.operationNonce,
+					processIdentity: { ...handle.identity, startToken: "reused-process" },
+				}),
+			).toBe("identity_mismatch");
 			const attached = controller.reattach(handle.identity, launchRequest);
 			expect(attached.status).toBe("attached");
 			if (attached.status !== "attached") throw new Error("production process did not reattach");
-			expect(attached.handle.forceTerminate({
-				operationNonce: launchRequest.operationNonce,
-				processIdentity: handle.identity,
-			})).toBe("termination_requested");
+			expect(
+				attached.handle.forceTerminate({
+					operationNonce: launchRequest.operationNonce,
+					processIdentity: handle.identity,
+				}),
+			).toBe("termination_requested");
 			await waitForExit(handle);
 			await expect.poll(() => processIsLive(targetPid)).toBe(false);
 		} finally {
@@ -143,6 +147,84 @@ describe("production External Connector process controller", () => {
 		await waitForExit(handle);
 	}, 30_000);
 
+	it.skipIf(process.platform === "win32")(
+		"does not report cleanup until descendants are gone after the direct companion exits",
+		async () => {
+			const root = mkdtempSync(join(tmpdir(), "aos-external-process-descendant-exit-"));
+			const descendantPidPath = join(root, "descendant.pid");
+			const controller = new ProductionExternalConnectorProcessController({
+				process: fixtureProcess([
+					"-e",
+					"const{spawn}=require('node:child_process'),{writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(function(){},2147483647)'],{stdio:'ignore'});writeFileSync(process.argv[1],String(child.pid));setTimeout(function(){process.exit(0)},50)",
+					descendantPidPath,
+				]),
+			});
+			const launchRequest = request("descendant-exit-nonce");
+			const handle = await controller.launch(launchRequest);
+			try {
+				await handle.activate();
+				await expect.poll(() => existsSync(descendantPidPath)).toBe(true);
+				const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
+				await waitForExit(handle);
+				await expect.poll(() => processIsLive(descendantPid), { timeout: 10_000 }).toBe(false);
+			} finally {
+				handle.forceTerminate({
+					operationNonce: launchRequest.operationNonce,
+					processIdentity: handle.identity,
+				});
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+		30_000,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"force-contains a live process group after its guardian PID exits",
+		async () => {
+			const root = mkdtempSync(join(tmpdir(), "aos-external-process-dead-guardian-"));
+			const companionPidPath = join(root, "companion.pid");
+			const descendantPidPath = join(root, "descendant.pid");
+			const controller = new ProductionExternalConnectorProcessController({
+				process: fixtureProcess([
+					"-e",
+					"const{spawn}=require('node:child_process'),{writeFileSync}=require('node:fs');writeFileSync(process.argv[1],String(process.pid));const child=spawn(process.execPath,['-e','setInterval(function(){},2147483647)'],{stdio:'ignore'});writeFileSync(process.argv[2],String(child.pid));setInterval(function(){},2147483647)",
+					companionPidPath,
+					descendantPidPath,
+				]),
+			});
+			const launchRequest = request("dead-guardian-nonce");
+			const handle = await controller.launch(launchRequest);
+			try {
+				await handle.activate();
+				await expect.poll(() => existsSync(descendantPidPath)).toBe(true);
+				const companionPid = Number(readFileSync(companionPidPath, "utf8"));
+				const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
+				process.kill(handle.identity.pid, "SIGKILL");
+				await expect.poll(() => processIsLive(handle.identity.pid)).toBe(false);
+
+				const reattached = controller.reattach(handle.identity, launchRequest);
+				expect(reattached.status).toBe("attached");
+				if (reattached.status !== "attached") throw new Error("live process group did not reattach");
+				expect(
+					reattached.handle.forceTerminate({
+						operationNonce: launchRequest.operationNonce,
+						processIdentity: handle.identity,
+					}),
+				).toBe("termination_requested");
+				await waitForExit(handle);
+				await expect.poll(() => processIsLive(companionPid), { timeout: 10_000 }).toBe(false);
+				await expect.poll(() => processIsLive(descendantPid), { timeout: 10_000 }).toBe(false);
+			} finally {
+				handle.forceTerminate({
+					operationNonce: launchRequest.operationNonce,
+					processIdentity: handle.identity,
+				});
+				rmSync(root, { recursive: true, force: true });
+			}
+		},
+		30_000,
+	);
+
 	it("launches guardians and companions without ambient secrets", async () => {
 		const root = mkdtempSync(join(tmpdir(), "aos-external-process-environment-"));
 		const environmentPath = join(root, "environment.json");
@@ -184,21 +266,27 @@ describe("production External Connector process controller", () => {
 	}, 30_000);
 
 	it("keeps only platform-required environment variables", () => {
-		expect(externalConnectorMinimalEnvironment("linux", {
-			PATH: "/untrusted",
-			OPENAI_API_KEY: "secret",
-		})).toEqual({});
-		expect(externalConnectorMinimalEnvironment("darwin", {
-			TMPDIR: "/private/tmp",
-			PATH: "/untrusted",
-			ANTHROPIC_API_KEY: "secret",
-		})).toEqual({ TMPDIR: "/private/tmp" });
-		expect(externalConnectorMinimalEnvironment("win32", {
-			SYSTEMROOT: "C:\\Windows",
-			TEMP: "C:\\Temp",
-			PATH: "C:\\untrusted",
-			OPENAI_API_KEY: "secret",
-		})).toEqual({ SystemRoot: "C:\\Windows", TEMP: "C:\\Temp" });
+		expect(
+			externalConnectorMinimalEnvironment("linux", {
+				PATH: "/untrusted",
+				OPENAI_API_KEY: "secret",
+			}),
+		).toEqual({});
+		expect(
+			externalConnectorMinimalEnvironment("darwin", {
+				TMPDIR: "/private/tmp",
+				PATH: "/untrusted",
+				ANTHROPIC_API_KEY: "secret",
+			}),
+		).toEqual({ TMPDIR: "/private/tmp" });
+		expect(
+			externalConnectorMinimalEnvironment("win32", {
+				SYSTEMROOT: "C:\\Windows",
+				TEMP: "C:\\Temp",
+				PATH: "C:\\untrusted",
+				OPENAI_API_KEY: "secret",
+			}),
+		).toEqual({ SystemRoot: "C:\\Windows", TEMP: "C:\\Temp" });
 	});
 
 	it("rejects reattach when the nonce or any full-identity field differs", async () => {
@@ -207,10 +295,9 @@ describe("production External Connector process controller", () => {
 		const handle = await controller.launch(launchRequest);
 		try {
 			await handle.activate();
-			expect(controller.reattach(
-				{ ...handle.identity, fileIdentity: "different-file" },
-				launchRequest,
-			)).toEqual({ status: "identity_mismatch" });
+			expect(controller.reattach({ ...handle.identity, fileIdentity: "different-file" }, launchRequest)).toEqual({
+				status: "identity_mismatch",
+			});
 			expect(controller.reattach(handle.identity, request("different-nonce"))).toEqual({
 				status: "identity_mismatch",
 			});
@@ -229,10 +316,13 @@ describe("production External Connector process controller", () => {
 			guardianDetached: true,
 			companionDetached: false,
 		});
-		expect(() => new ProductionExternalConnectorProcessController({
-			platform: "darwin",
-			process: fixtureProcess(),
-		})).not.toThrow();
+		expect(
+			() =>
+				new ProductionExternalConnectorProcessController({
+					platform: "darwin",
+					process: fixtureProcess(),
+				}),
+		).not.toThrow();
 		expect(() => externalConnectorGuardianLaunchStrategy("freebsd")).toThrow("unsupported");
 	});
 });

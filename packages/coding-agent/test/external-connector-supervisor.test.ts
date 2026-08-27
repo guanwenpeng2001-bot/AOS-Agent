@@ -120,9 +120,10 @@ class ControlledProcessController implements ExternalConnectorProcessController 
 		_identity: ExternalConnectorProcessIdentity,
 		_request: ExternalConnectorProcessLaunchRequest,
 	): ExternalConnectorProcessReattachResult {
-		return this.reattachResult ?? (this.lastHandle === undefined
-			? { status: "not_found" }
-			: { status: "attached", handle: this.lastHandle });
+		return (
+			this.reattachResult ??
+			(this.lastHandle === undefined ? { status: "not_found" } : { status: "attached", handle: this.lastHandle })
+		);
 	}
 }
 
@@ -209,11 +210,14 @@ describe("current External Connector robust supervision", () => {
 				const controller = new ControlledProcessController();
 				const blocked = gate<void>();
 				if (stage === "launch") controller.launchGate = blocked.promise;
-				const value = supervisor(controller, {
-					start: deadlineKind === "hard"
-						? { hardMs: 5, idleMs: 50 }
-						: { hardMs: 50, idleMs: 5 },
-				}, true, clock);
+				const value = supervisor(
+					controller,
+					{
+						start: deadlineKind === "hard" ? { hardMs: 5, idleMs: 50 } : { hardMs: 50, idleMs: 5 },
+					},
+					true,
+					clock,
+				);
 				let persistenceCalls = 0;
 				const launched = value.launch(async () => {
 					persistenceCalls += 1;
@@ -240,9 +244,7 @@ describe("current External Connector robust supervision", () => {
 			it(`${segment} enforces its ${deadlineKind} deadline and force-terminates the contained process`, async () => {
 				const controller = new ControlledProcessController();
 				const value = supervisor(controller, {
-					[segment]: deadlineKind === "hard"
-						? { hardMs: 5, idleMs: 50 }
-						: { hardMs: 50, idleMs: 5 },
+					[segment]: deadlineKind === "hard" ? { hardMs: 5, idleMs: 50 } : { hardMs: 50, idleMs: 5 },
 				});
 				await value.launch(() => Promise.resolve());
 				await expect(value.run(segment, () => new Promise<never>(() => undefined))).rejects.toMatchObject({
@@ -255,6 +257,47 @@ describe("current External Connector robust supervision", () => {
 			});
 		}
 	}
+
+	it("honors cancel grace during an active start before exact forced containment", async () => {
+		const clock = new DeterministicClock();
+		const controller = new ControlledProcessController();
+		const value = supervisor(
+			controller,
+			{
+				start: { hardMs: 500, idleMs: 500 },
+				cancel: { hardMs: 50, idleMs: 50 },
+			},
+			true,
+			clock,
+		);
+		await value.launch(() => Promise.resolve());
+		const cancellation = new AbortController();
+		const running = value.run(
+			"start",
+			() => new Promise<never>(() => undefined),
+			undefined,
+			"opaque",
+			undefined,
+			cancellation.signal,
+		);
+		await drainPromiseJobs();
+
+		cancellation.abort();
+		await drainPromiseJobs();
+		clock.advanceBy(49);
+		await drainPromiseJobs();
+		expect(controller.lastHandle?.forceCalls).toBe(0);
+		clock.advanceBy(1);
+		await drainPromiseJobs();
+
+		await expect(running).rejects.toMatchObject({
+			code: "side_effect_unknown",
+			segment: "start",
+			forcedTermination: true,
+		});
+		expect(controller.lastHandle?.forceCalls).toBe(1);
+		expect(value.snapshot.cleaned).toBe(true);
+	});
 
 	it("event idle deadline resets only on bounded event progress", async () => {
 		const controller = new ControlledProcessController();
@@ -280,17 +323,25 @@ describe("current External Connector robust supervision", () => {
 				yield event("progress", { sequence });
 			}
 		}
-		await expect(value.consumeEvents(() => progressingEvents(), driverHandle)).rejects.toBeInstanceOf(ExternalConnectorSupervisorError);
+		await expect(value.consumeEvents(() => progressingEvents(), driverHandle)).rejects.toBeInstanceOf(
+			ExternalConnectorSupervisorError,
+		);
 		expect(controller.lastHandle?.forceCalls).toBe(1);
 	});
 
 	it("lets a receipt run longer than the 30 second idle window while valid events remain active", async () => {
 		const clock = new DeterministicClock();
 		const controller = new ControlledProcessController();
-		const value = supervisor(controller, {
-			event: { hardMs: 120_000, idleMs: 30_000 },
-			receipt: { hardMs: 120_000, idleMs: 30_000 },
-		}, true, clock, { maxEvents: 4, maxEventsPerWindow: 4 });
+		const value = supervisor(
+			controller,
+			{
+				event: { hardMs: 120_000, idleMs: 30_000 },
+				receipt: { hardMs: 120_000, idleMs: 30_000 },
+			},
+			true,
+			clock,
+			{ maxEvents: 4, maxEventsPerWindow: 4 },
+		);
 		await value.launch(() => Promise.resolve());
 		const heartbeat = gate<void>();
 		const progress = gate<void>();
@@ -333,10 +384,7 @@ describe("current External Connector robust supervision", () => {
 		});
 		await drainPromiseJobs();
 
-		await expect(Promise.all([observed, evidence])).resolves.toMatchObject([
-			undefined,
-			{ status: "succeeded" },
-		]);
+		await expect(Promise.all([observed, evidence])).resolves.toMatchObject([undefined, { status: "succeeded" }]);
 		expect(value.snapshot.eventCount).toBe(3);
 		expect(controller.lastHandle?.forceCalls).toBe(0);
 		await value.dispose();
@@ -345,22 +393,22 @@ describe("current External Connector robust supervision", () => {
 	it("terminates a stalled receipt and event stream after supervised activity stops", async () => {
 		const clock = new DeterministicClock();
 		const controller = new ControlledProcessController();
-		const value = supervisor(controller, {
-			event: { hardMs: 120_000, idleMs: 30_000 },
-			receipt: { hardMs: 120_000, idleMs: 30_000 },
-		}, true, clock);
+		const value = supervisor(
+			controller,
+			{
+				event: { hardMs: 120_000, idleMs: 30_000 },
+				receipt: { hardMs: 120_000, idleMs: 30_000 },
+			},
+			true,
+			clock,
+		);
 		await value.launch(() => Promise.resolve());
 		async function* stalledEvents(): AsyncGenerator<unknown> {
 			yield event("started");
 			await new Promise<never>(() => undefined);
 		}
 		const observed = value.consumeEvents(() => stalledEvents(), driverHandle);
-		const evidence = value.run(
-			"receipt",
-			() => new Promise<never>(() => undefined),
-			undefined,
-			"terminal_evidence",
-		);
+		const evidence = value.run("receipt", () => new Promise<never>(() => undefined), undefined, "terminal_evidence");
 		await drainPromiseJobs();
 
 		clock.advanceBy(30_000);
@@ -373,7 +421,10 @@ describe("current External Connector robust supervision", () => {
 	});
 
 	it("dispose enforces both deadline bounds when force termination cannot be confirmed", async () => {
-		for (const deadline of [{ hardMs: 5, idleMs: 50 }, { hardMs: 50, idleMs: 5 }]) {
+		for (const deadline of [
+			{ hardMs: 5, idleMs: 50 },
+			{ hardMs: 50, idleMs: 5 },
+		]) {
 			const controller = new ControlledProcessController();
 			const value = supervisor(controller, { dispose: deadline });
 			await value.launch(() => Promise.resolve());
@@ -391,18 +442,36 @@ describe("current External Connector robust supervision", () => {
 			[event("started"), event("progress", { sequence: 1 }), event("progress", { sequence: 2 })],
 			[
 				event("started"),
-				event("artifact", { artifact: {
-					schemaVersion: 1,
-					artifactId: "artifact-large",
-					mediaType: "application/octet-stream",
-					digest: `sha256:${"a".repeat(64)}`,
-					producer: "x".repeat(600),
-				} }),
+				event("artifact", {
+					artifact: {
+						schemaVersion: 1,
+						artifactId: "artifact-large",
+						mediaType: "application/octet-stream",
+						digest: `sha256:${"a".repeat(64)}`,
+						producer: "x".repeat(600),
+					},
+				}),
 			],
 			[
 				event("started"),
-				event("artifact", { artifact: { schemaVersion: 1, artifactId: "artifact-1", mediaType: "text/plain", digest: `sha256:${"b".repeat(64)}`, sizeBytes: 1 } }),
-				event("artifact", { artifact: { schemaVersion: 1, artifactId: "artifact-2", mediaType: "text/plain", digest: `sha256:${"c".repeat(64)}`, sizeBytes: 1 } }),
+				event("artifact", {
+					artifact: {
+						schemaVersion: 1,
+						artifactId: "artifact-1",
+						mediaType: "text/plain",
+						digest: `sha256:${"b".repeat(64)}`,
+						sizeBytes: 1,
+					},
+				}),
+				event("artifact", {
+					artifact: {
+						schemaVersion: 1,
+						artifactId: "artifact-2",
+						mediaType: "text/plain",
+						digest: `sha256:${"c".repeat(64)}`,
+						sizeBytes: 1,
+					},
+				}),
 			],
 		]) {
 			const controller = new ControlledProcessController();
@@ -423,17 +492,28 @@ describe("current External Connector robust supervision", () => {
 		for (const testCase of [
 			{ events: [event("progress", { sequence: 1 })], artifactsAllowed: true },
 			{ events: [event("started"), event("started")], artifactsAllowed: true },
-			{ events: [event("started"), event("progress", { sequence: 2 }), event("progress", { sequence: 1 })], artifactsAllowed: true },
-			{ events: [event("started"), event("heartbeat", { sequence: 2 }), event("heartbeat", { sequence: 1 })], artifactsAllowed: true },
+			{
+				events: [event("started"), event("progress", { sequence: 2 }), event("progress", { sequence: 1 })],
+				artifactsAllowed: true,
+			},
+			{
+				events: [event("started"), event("heartbeat", { sequence: 2 }), event("heartbeat", { sequence: 1 })],
+				artifactsAllowed: true,
+			},
 			{ events: [{ ...event("started"), externalSessionId: "different-session" }], artifactsAllowed: true },
 			{ events: [{ ...event("started"), unknown: true }], artifactsAllowed: true },
 			{
-				events: [event("started"), event("artifact", { artifact: {
-					schemaVersion: 1,
-					artifactId: "artifact-1",
-					mediaType: "text/plain",
-					digest: `sha256:${"d".repeat(64)}`,
-				} })],
+				events: [
+					event("started"),
+					event("artifact", {
+						artifact: {
+							schemaVersion: 1,
+							artifactId: "artifact-1",
+							mediaType: "text/plain",
+							digest: `sha256:${"d".repeat(64)}`,
+						},
+					}),
+				],
 				artifactsAllowed: false,
 			},
 		]) {
@@ -457,9 +537,15 @@ describe("current External Connector robust supervision", () => {
 		const operationSupervisor = supervisor(operationController);
 		await operationSupervisor.launch(() => Promise.resolve());
 		let operationCalls = 0;
-		await expect(operationSupervisor.run("start", async () => {
-			operationCalls += 1;
-		}, signal)).rejects.toBeInstanceOf(ExternalConnectorSupervisorError);
+		await expect(
+			operationSupervisor.run(
+				"start",
+				async () => {
+					operationCalls += 1;
+				},
+				signal,
+			),
+		).rejects.toBeInstanceOf(ExternalConnectorSupervisorError);
 		expect(operationCalls).toBe(0);
 
 		const eventController = new ControlledProcessController();
@@ -467,15 +553,21 @@ describe("current External Connector robust supervision", () => {
 		await eventSupervisor.launch(() => Promise.resolve());
 		let eventFactoryCalls = 0;
 		let iteratorCalls = 0;
-		await expect(eventSupervisor.consumeEvents(() => {
-			eventFactoryCalls += 1;
-			return {
-				[Symbol.asyncIterator]: () => {
-					iteratorCalls += 1;
-					return { next: async () => ({ done: true, value: undefined }) };
+		await expect(
+			eventSupervisor.consumeEvents(
+				() => {
+					eventFactoryCalls += 1;
+					return {
+						[Symbol.asyncIterator]: () => {
+							iteratorCalls += 1;
+							return { next: async () => ({ done: true, value: undefined }) };
+						},
+					};
 				},
-			};
-		}, driverHandle, signal)).rejects.toBeInstanceOf(ExternalConnectorSupervisorError);
+				driverHandle,
+				signal,
+			),
+		).rejects.toBeInstanceOf(ExternalConnectorSupervisorError);
 		expect(eventFactoryCalls).toBe(0);
 		expect(iteratorCalls).toBe(0);
 	});
@@ -526,9 +618,8 @@ describe("current External Connector robust supervision", () => {
 				...controller.identity,
 				startToken: "reused-pid-start-token",
 			});
-			controller.reattachResult = status === "ambiguous"
-				? { status: "ambiguous" }
-				: { status: "attached", handle: unrelated };
+			controller.reattachResult =
+				status === "ambiguous" ? { status: "ambiguous" } : { status: "attached", handle: unrelated };
 			const restarted = supervisor(controller);
 			await expect(restarted.recoverAndReap(state)).rejects.toBeInstanceOf(ExternalConnectorSupervisorError);
 			expect(restarted.snapshot.quarantined).toBe(true);
@@ -592,10 +683,12 @@ describe("current External Connector robust supervision", () => {
 				schemaVersion: 1,
 				attempts: { "attempt-1": state },
 			});
-			await expect(restarted.write("attempt-1", {
-				...state,
-				processIdentity: { ...state.processIdentity, startToken: "different-start" },
-			})).rejects.toThrow("identity conflict");
+			await expect(
+				restarted.write("attempt-1", {
+					...state,
+					processIdentity: { ...state.processIdentity, startToken: "different-start" },
+				}),
+			).rejects.toThrow("identity conflict");
 			await restarted.delete("attempt-1");
 			expect(await restarted.read("attempt-1")).toBeUndefined();
 			expect(await restarted.list()).toEqual([]);

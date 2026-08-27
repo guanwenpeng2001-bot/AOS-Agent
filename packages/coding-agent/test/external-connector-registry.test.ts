@@ -138,12 +138,14 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 	readonly #emitToolGatewayRequest: boolean;
 	#spawnedRequest: ExternalConnectorDriverSpawnRequest | undefined;
 
-	constructor(options: {
-		readonly emitToolGatewayRequest?: boolean;
-		readonly readHangs?: boolean;
-		readonly returnsCancelEvidence?: boolean;
-		readonly throwOnDispose?: boolean;
-	} = {}) {
+	constructor(
+		options: {
+			readonly emitToolGatewayRequest?: boolean;
+			readonly readHangs?: boolean;
+			readonly returnsCancelEvidence?: boolean;
+			readonly throwOnDispose?: boolean;
+		} = {},
+	) {
 		this.#throwOnDispose = options.throwOnDispose ?? false;
 		this.#readHangs = options.readHangs ?? false;
 		this.#returnsCancelEvidence = options.returnsCancelEvidence ?? false;
@@ -229,19 +231,19 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 		this.writes.push(request);
 	}
 	async heartbeat(): Promise<void> {}
-	async cancel(
-		handle: ExternalConnectorDriverHandle,
-	): Promise<ExternalConnectorTerminalEvidence | undefined> {
+	async cancel(handle: ExternalConnectorDriverHandle): Promise<ExternalConnectorTerminalEvidence | undefined> {
 		this.cancelCalls += 1;
-		return this.#returnsCancelEvidence ? {
-			externalSessionId: handle.externalSessionId,
-			externalTurnId: handle.externalTurnId,
-			operationNonce: handle.operationNonce,
-			status: "cancelled",
-			artifacts: [],
-			sideEffectState: "none",
-			producedAt: NOW,
-		} : undefined;
+		return this.#returnsCancelEvidence
+			? {
+					externalSessionId: handle.externalSessionId,
+					externalTurnId: handle.externalTurnId,
+					operationNonce: handle.operationNonce,
+					status: "cancelled",
+					artifacts: [],
+					sideEffectState: "none",
+					producedAt: NOW,
+				}
+			: undefined;
 	}
 
 	async dispose(): Promise<void> {
@@ -259,21 +261,23 @@ interface SupportedConnectorFixture {
 	readonly t5: SessionT5Ledger;
 }
 
-function createSupportedConnector(options: {
-	readonly providerId?: string;
-	readonly toolGateway?: boolean;
-	readonly modelAccess?: "agent_owned" | "aos_gateway";
-	readonly driver?: ThirdPartyZetaDriver;
-	readonly capabilityProbe?: (
-		snapshot: ConnectorCapabilitySnapshot,
-		options?: FoundationProviderExecutionOptions,
-	) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
-	readonly supervisionDeadlines?: {
-		readonly event?: { readonly hardMs: number; readonly idleMs: number };
-		readonly receipt?: { readonly hardMs: number; readonly idleMs: number };
-		readonly dispose?: { readonly hardMs: number; readonly idleMs: number };
-	};
-} = {}): SupportedConnectorFixture {
+function createSupportedConnector(
+	options: {
+		readonly providerId?: string;
+		readonly toolGateway?: boolean;
+		readonly modelAccess?: "agent_owned" | "aos_gateway";
+		readonly driver?: ThirdPartyZetaDriver;
+		readonly capabilityProbe?: (
+			snapshot: ConnectorCapabilitySnapshot,
+			options?: FoundationProviderExecutionOptions,
+		) => Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>>;
+		readonly supervisionDeadlines?: {
+			readonly event?: { readonly hardMs: number; readonly idleMs: number };
+			readonly receipt?: { readonly hardMs: number; readonly idleMs: number };
+			readonly dispose?: { readonly hardMs: number; readonly idleMs: number };
+		};
+	} = {},
+): SupportedConnectorFixture {
 	supervisedFixtureId += 1;
 	const fixtureId = supervisedFixtureId;
 	const snapshot = capabilitySnapshot(options);
@@ -287,18 +291,22 @@ function createSupportedConnector(options: {
 	const supervision = createExternalConnectorTestSupervision();
 	const driver = options.driver ?? new ThirdPartyZetaDriver();
 	const capabilityProbe = options.capabilityProbe;
-	const supervisionOptions = options.supervisionDeadlines === undefined
-		? supervision.options
-		: {
-			...supervision.options,
-			deadlines: { ...supervision.options.deadlines, ...options.supervisionDeadlines },
-		};
+	const supervisionOptions =
+		options.supervisionDeadlines === undefined
+			? supervision.options
+			: {
+					...supervision.options,
+					deadlines: { ...supervision.options.deadlines, ...options.supervisionDeadlines },
+				};
 	const connector = createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,
 		capability: snapshot,
 		...(capabilityProbe === undefined
 			? {}
-			: { capabilityProbe: (probeOptions?: FoundationProviderExecutionOptions) => capabilityProbe(snapshot, probeOptions) }),
+			: {
+					capabilityProbe: (probeOptions?: FoundationProviderExecutionOptions) =>
+						capabilityProbe(snapshot, probeOptions),
+				}),
 		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
 		driver,
 		supervision: supervisionOptions,
@@ -466,28 +474,33 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
 		const runId = "run-zeta-resume-unsupported";
 		const message = `Execute supervised third-party connector run ${runId}`;
-		await expect(executeExternalConnectorProductRun(productInput(fixture, registry, runId)))
-			.resolves.toMatchObject({ runReceipt: { terminalStatus: "completed" } });
+		await expect(executeExternalConnectorProductRun(productInput(fixture, registry, runId))).resolves.toMatchObject({
+			runReceipt: { terminalStatus: "completed" },
+		});
 		expect(fixture.driver.spawnCalls).toBe(1);
-		expect(await fixture.session.findFoundationRecords({
-			objectType: "run_receipt",
-			objectId: runId,
-			includePruned: true,
-		})).toHaveLength(1);
+		expect(
+			await fixture.session.findFoundationRecords({
+				objectType: "run_receipt",
+				objectId: runId,
+				includePruned: true,
+			}),
+		).toHaveLength(1);
 
-		await expect(preflightExternalConnectorProductRecovery({
-			session: fixture.session,
-			writer: fixture.t5.writer,
-			registry,
-			runId,
-			providerId: fixture.snapshot.providerId,
-			selection: selection(fixture.snapshot),
-			expectedCanonicalInput: {
-				schemaVersion: 1,
-				text: message,
-				artifacts: [],
-			},
-		})).rejects.toMatchObject({
+		await expect(
+			preflightExternalConnectorProductRecovery({
+				session: fixture.session,
+				writer: fixture.t5.writer,
+				registry,
+				runId,
+				providerId: fixture.snapshot.providerId,
+				selection: selection(fixture.snapshot),
+				expectedCanonicalInput: {
+					schemaVersion: 1,
+					text: message,
+					artifacts: [],
+				},
+			}),
+		).rejects.toMatchObject({
 			code: "external_resume_unsupported",
 			message: "The selected External Connector does not support resume.",
 			retryable: false,
@@ -637,17 +650,19 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				operationId: runId,
 			},
 		});
-		expect(execution.toolGatewayExchanges).toEqual([{
-			request: gateway.requests[0],
-			result: {
-				schemaVersion: 1,
-				toolCallId: `tool-call-${runId}`,
-				toolName: "workspace.read",
-				ok: true,
-				sideEffectState: "none",
-				toolReceiptRef: `tool-receipt-tool-call-${runId}`,
+		expect(execution.toolGatewayExchanges).toEqual([
+			{
+				request: gateway.requests[0],
+				result: {
+					schemaVersion: 1,
+					toolCallId: `tool-call-${runId}`,
+					toolName: "workspace.read",
+					ok: true,
+					sideEffectState: "none",
+					toolReceiptRef: `tool-receipt-tool-call-${runId}`,
+				},
 			},
-		}]);
+		]);
 		expect(enabled.driver.spawnCalls).toBe(1);
 		expect(enabled.driver.writes).toEqual([
 			{
@@ -695,6 +710,43 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		});
 		expect(fixture.probeCalls()).toBe(3);
 		expect(fixture.driver.spawnCalls).toBe(0);
+		await persisted.settlement.release();
+		await registry.dispose();
+	});
+
+	it("keeps an aborted selected launch unknown when exact cleanup cannot be proven", async () => {
+		const fixture = createSupportedConnector();
+		fixture.supervision.processController.forceExits = false;
+		let markLaunchStarted: (() => void) | undefined;
+		let releaseLaunch: (() => void) | undefined;
+		const launchStarted = new Promise<void>((resolve) => {
+			markLaunchStarted = resolve;
+		});
+		fixture.supervision.processController.launchGate = new Promise<void>((resolve) => {
+			releaseLaunch = resolve;
+		});
+		fixture.supervision.processController.onLaunch = () => markLaunchStarted?.();
+		const registry = createExternalConnectorRegistry();
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-aborted-launch");
+		const abort = new AbortController();
+		const running = persisted.connector.runAttempt(persisted.attempt, {
+			correlation: persisted.correlation,
+			signal: abort.signal,
+		});
+		await launchStarted;
+		abort.abort();
+
+		await expect(running).resolves.toMatchObject({
+			ok: false,
+			error: { code: "side_effect_unknown" },
+		});
+		releaseLaunch?.();
+		await expect.poll(() => fixture.supervision.processController.forceCalls).toBe(1);
+		await expect.poll(async () => fixture.supervision.privateStateStore.list()).toHaveLength(1);
+
+		fixture.supervision.processController.resolveExits();
+		await fixture.supervision.privateStateStore.delete(persisted.attempt.attemptId);
 		await persisted.settlement.release();
 		await registry.dispose();
 	});
@@ -759,11 +811,16 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 	it("bounds hanging capability probes and aborts the probe operation", async () => {
 		let abortObserved = false;
 		const fixture = createSupportedConnector({
-			capabilityProbe: async (_snapshot, options) => new Promise<never>(() => {
-				options?.signal?.addEventListener("abort", () => {
-					abortObserved = true;
-				}, { once: true });
-			}),
+			capabilityProbe: async (_snapshot, options) =>
+				new Promise<never>(() => {
+					options?.signal?.addEventListener(
+						"abort",
+						() => {
+							abortObserved = true;
+						},
+						{ once: true },
+					);
+				}),
 		});
 		const registry = createExternalConnectorRegistry({
 			capabilityProbeDeadline: { hardMs: 50, idleMs: 10 },
@@ -789,9 +846,13 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				probeCalls += 1;
 				if (probeCalls < 4) return Result.ok(snapshot);
 				return new Promise<never>(() => {
-					options?.signal?.addEventListener("abort", () => {
-						abortObserved = true;
-					}, { once: true });
+					options?.signal?.addEventListener(
+						"abort",
+						() => {
+							abortObserved = true;
+						},
+						{ once: true },
+					);
 				});
 			},
 		});

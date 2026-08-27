@@ -376,10 +376,14 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		if (this.readFailure) throw new Error("injected read failure");
 		if (this.readHangs) {
 			await new Promise<never>((_resolve, reject) => {
-				options?.signal?.addEventListener("abort", () => {
-					this.readAbortObserved = true;
-					reject(new Error("read aborted"));
-				}, { once: true });
+				options?.signal?.addEventListener(
+					"abort",
+					() => {
+						this.readAbortObserved = true;
+						reject(new Error("read aborted"));
+					},
+					{ once: true },
+				);
 			});
 		}
 		return this.evidence;
@@ -429,11 +433,7 @@ async function fixture(
 	options: { resume?: boolean; capabilityRevision?: number; toolGateway?: boolean } = {},
 ): Promise<Fixture> {
 	const resolvedBinding = binding();
-	const snapshot = capability(
-		options.resume ?? true,
-		options.capabilityRevision ?? 1,
-		options.toolGateway ?? false,
-	);
+	const snapshot = capability(options.resume ?? true, options.capabilityRevision ?? 1, options.toolGateway ?? false);
 	const store = new FakeStore();
 	store.bindings.set(resolvedBinding.bindingId, resolvedBinding);
 	const driver = new FakeDriver();
@@ -1084,6 +1084,42 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		}
 	});
 
+	it("honors cancel grace while driver start is active before exact forced containment", async () => {
+		vi.useFakeTimers();
+		try {
+			const value = await fixture();
+			persistAttempt(value);
+			let markSpawnStarted: (() => void) | undefined;
+			const spawnStarted = new Promise<void>((resolve) => {
+				markSpawnStarted = resolve;
+			});
+			value.driver.onSpawn = () => markSpawnStarted?.();
+			value.driver.spawnGate = new Promise<never>(() => undefined);
+			const running = value.connector.runAttempt(value.attempt, { correlation });
+			await spawnStarted;
+
+			const cancelled = value.connector.cancelAttempt(value.attempt.attemptId);
+			for (let index = 0; index < 8; index += 1) await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(999);
+			expect(value.supervision.processController.forceCalls).toBe(0);
+			await vi.advanceTimersByTimeAsync(1);
+
+			await expect(cancelled).resolves.toMatchObject({ ok: true });
+			await expect(running).resolves.toMatchObject({
+				ok: true,
+				value: { status: "failed", sideEffectState: "unknown" },
+			});
+			expect(value.supervision.processController.forceCalls).toBe(1);
+			expect(value.store.receipts.get(value.attempt.attemptId)).toMatchObject({
+				status: "failed",
+				sideEffectState: "unknown",
+			});
+			await value.connector.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("cancels idempotently after persisting cancelling", async () => {
 		const value = await fixture();
 		persistAttempt(value);
@@ -1206,6 +1242,41 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.store.operations.get(value.attempt.attemptId)?.status).toBe("reconcile_required");
 	});
 
+	it("persists unknown state when an aborted non-cooperative launch cannot be cleaned", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.supervision.processController.forceExits = false;
+		let markLaunchStarted: (() => void) | undefined;
+		let releaseLaunch: (() => void) | undefined;
+		const launchStarted = new Promise<void>((resolve) => {
+			markLaunchStarted = resolve;
+		});
+		value.supervision.processController.launchGate = new Promise<void>((resolve) => {
+			releaseLaunch = resolve;
+		});
+		value.supervision.processController.onLaunch = () => markLaunchStarted?.();
+		const abort = new AbortController();
+		const running = value.connector.runAttempt(value.attempt, { correlation, signal: abort.signal });
+		await launchStarted;
+		abort.abort();
+
+		await expect(running).resolves.toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		expect(value.store.receipts.has(value.attempt.attemptId)).toBe(false);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "start_outcome_unknown",
+		});
+
+		releaseLaunch?.();
+		await expect.poll(() => value.supervision.processController.forceCalls).toBe(1);
+		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toMatchObject({
+			reference: { operationNonce: "operation-nonce-1" },
+			processIdentity: { pid: 20_000, startToken: "start-20000" },
+		});
+		value.supervision.processController.resolveExits();
+		await value.connector.dispose();
+	});
+
 	it("never launches a replacement supervisor during resume, reconcile, or cancellation recovery", async () => {
 		for (const recovery of ["resume", "reconcile", "cancel"] as const) {
 			const value = await fixture();
@@ -1309,6 +1380,29 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 			expect(value.supervision.processController.launchCalls).toBe(0);
 			expect(restarted.driver.calls.spawn).toBe(0);
 		}
+	});
+
+	it("startup reattaches a mapped running operation for resume instead of reaping it", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
+		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
+		const restarted = restartedConnector(value);
+
+		const recovered = await restarted.connector.recoverPrivateSupervisorState();
+
+		expect(recovered).toEqual([{ attemptId: value.attempt.attemptId, status: "reattached" }]);
+		expect(value.supervision.processController.forceCalls).toBe(0);
+		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeDefined();
+
+		const resumed = await restarted.connector.resumeAttempt(value.attempt, { correlation });
+		expect(resumed).toMatchObject({ ok: true, value: { status: "succeeded" } });
+		expect(value.supervision.processController.launchCalls).toBe(0);
+		expect(restarted.driver.calls).toMatchObject({ spawn: 0, connect: 1, read: 1 });
+		expect(value.supervision.processController.forceCalls).toBe(1);
+		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
+		await restarted.connector.dispose();
 	});
 
 	it("startup quarantines not-found, PID-reused, and ambiguous identities without killing", async () => {
