@@ -206,43 +206,20 @@ export function createExternalConnectorTestSupervision() {
 	};
 }
 
-/** Registry-only adapter for legacy composition fixtures. Lifecycle tests must use a real fake driver. */
-export function createExternalConnectorTestRegistrationRuntime(
-	delegate: ExternalAgentConnector,
+/** Host-supervised runtime for composition fixtures that only exercise registration and discovery. */
+export function createExternalConnectorTestRuntime(
 	snapshot: ConnectorCapabilitySnapshot,
 ): ExternalAgentConnector {
 	registrationRuntimeId += 1;
 	const fixtureId = registrationRuntimeId;
 	const session = new Session(new InMemorySessionStorage({ id: `connector-registry-${fixtureId}`, createdAt: fixtureId }));
 	const t5 = new SessionT5Ledger(session, { ownerId: `connector-registry-${fixtureId}` });
-	const runtime = createDurableExternalAgentConnector({
-		providerId: delegate.providerId,
+	return createDurableExternalAgentConnector({
+		providerId: snapshot.providerId,
 		capability: snapshot,
 		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
 		driver: new RegistrationOnlyDriver(),
 		supervision: createExternalConnectorTestSupervision().options,
 		operationNonce: () => `connector-registry-nonce-${fixtureId}`,
 	});
-	const capabilities: ExternalAgentConnector["capabilities"] = () => delegate.capabilities();
-	const probeCapabilities: ExternalAgentConnector["probeCapabilities"] = () => delegate.probeCapabilities();
-	const createAttempt: ExternalAgentConnector["createAttempt"] = (dispatch, binding, context) =>
-		delegate.createAttempt(dispatch, binding, context);
-	const runAttempt: ExternalAgentConnector["runAttempt"] = (attempt, options) => delegate.runAttempt(attempt, options);
-	const resumeAttempt: ExternalAgentConnector["resumeAttempt"] = (attempt, options) => delegate.resumeAttempt(attempt, options);
-	const reconcileAttempt: ExternalAgentConnector["reconcileAttempt"] = (attempt, options) =>
-		delegate.reconcileAttempt(attempt, options);
-	const cancelAttempt: ExternalAgentConnector["cancelAttempt"] = (attemptId) => delegate.cancelAttempt(attemptId);
-	const dispose: ExternalAgentConnector["dispose"] = () => delegate.dispose();
-	Object.defineProperties(runtime, {
-		providerId: { configurable: true, get: () => delegate.providerId },
-		capabilities: { configurable: true, value: capabilities },
-		probeCapabilities: { configurable: true, value: probeCapabilities },
-		createAttempt: { configurable: true, value: createAttempt },
-		runAttempt: { configurable: true, value: runAttempt },
-		resumeAttempt: { configurable: true, value: resumeAttempt },
-		reconcileAttempt: { configurable: true, value: reconcileAttempt },
-		cancelAttempt: { configurable: true, value: cancelAttempt },
-		dispose: { configurable: true, value: dispose },
-	});
-	return runtime;
 }

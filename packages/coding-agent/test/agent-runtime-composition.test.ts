@@ -20,7 +20,6 @@ import {
 	SessionT5Ledger,
 	type AgentBinding,
 	type ArtifactStoreProvider,
-	type ExternalAgentConnector,
 	type ModelProfile,
 	type QuotaProvider,
 	type RevisionReference,
@@ -64,7 +63,7 @@ import { createTaskCredentialTestProvider } from "../src/core/task-credential-pr
 import { TaskGraphStore } from "../src/core/task-graph.ts";
 import { createCodingAgentHarness } from "../src/server/create-harness.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
-import { createExternalConnectorTestRegistrationRuntime } from "./external-connector-test-supervision.ts";
+import { createExternalConnectorTestRuntime } from "./external-connector-test-supervision.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
@@ -347,20 +346,6 @@ function createTestExternalConnectorRegistry(sessionId: string): ExternalConnect
 		artifacts: false,
 		images: false,
 	});
-	const unsupported = new FoundationError("unsupported_feature", "Composition-only connector fixture");
-	const connector: ExternalAgentConnector = {
-		schemaVersion: 1,
-		providerId: snapshot.providerId,
-		providerClass: "external_connector",
-		capabilities: async () => [],
-		dispose: async () => {},
-		probeCapabilities: async () => Result.ok(snapshot),
-		createAttempt: async () => Result.err(unsupported),
-		runAttempt: async () => Result.err(unsupported),
-		cancelAttempt: async () => Result.err(unsupported),
-		resumeAttempt: async () => Result.err(unsupported),
-		reconcileAttempt: async () => Result.err(unsupported),
-	};
 	const registry = createExternalConnectorRegistry();
 	const registered = registry.registerPrepared({
 		descriptor: {
@@ -370,7 +355,7 @@ function createTestExternalConnectorRegistry(sessionId: string): ExternalConnect
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},
-		connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
+		connector: createExternalConnectorTestRuntime(snapshot),
 		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;

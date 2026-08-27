@@ -5,20 +5,11 @@ import { join } from "node:path";
 import {
 	InMemorySessionStorage,
 	LayeredResultSettlement,
-	FoundationError,
-	Result,
 	Session,
 	SessionLedger,
 	SessionT5Ledger,
-	createAttempt,
 	createConnectorCapabilitySnapshot,
-	validateAttemptReceiptForProvider,
 	type AgentBinding,
-	type Attempt,
-	type Dispatch,
-	type ExternalAgentConnector,
-	type FoundationProviderExecutionOptions,
-	type TaskExecutorAttemptContext,
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import { fauxAssistantMessage, registerFauxProvider } from "@aos-agent/ai/compat";
@@ -66,7 +57,7 @@ import {
 	LINE13_T0_BASE_SHA,
 } from "../support/line13-known-gaps.ts";
 import {
-	createExternalConnectorTestRegistrationRuntime,
+	createExternalConnectorTestRuntime,
 	createExternalConnectorTestSupervision,
 } from "../external-connector-test-supervision.ts";
 
@@ -341,20 +332,6 @@ function createCompositionConnectorRegistry(): ExternalConnectorRegistry {
 		artifacts: false,
 		images: false,
 	});
-	const unsupported = new FoundationError("unsupported_feature", "composition fixture is discovery-only");
-	const connector: ExternalAgentConnector = {
-		schemaVersion: 1,
-		providerId: snapshot.providerId,
-		providerClass: "external_connector",
-		capabilities: async () => [],
-		dispose: async () => {},
-		probeCapabilities: async () => Result.ok(snapshot),
-		createAttempt: async () => Result.err(unsupported),
-		runAttempt: async () => Result.err(unsupported),
-		cancelAttempt: async () => Result.err(unsupported),
-		resumeAttempt: async () => Result.err(unsupported),
-		reconcileAttempt: async () => Result.err(unsupported),
-	};
 	const registry = createExternalConnectorRegistry();
 	const registered = registry.registerPrepared({
 		descriptor: {
@@ -364,7 +341,7 @@ function createCompositionConnectorRegistry(): ExternalConnectorRegistry {
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},
-		connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
+		connector: createExternalConnectorTestRuntime(snapshot),
 		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;
@@ -661,51 +638,15 @@ async function createCurrentConnectorFixture(toolGateway = false) {
 	});
 	let toolGatewayCalls = 0;
 	const invokeToolGateway = (): void => { toolGatewayCalls += 1; };
-	const connector: ExternalAgentConnector = {
-		schemaVersion: 1,
+	const connector = createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,
-		providerClass: "external_connector",
-		capabilities: async () => [{ schemaVersion: 1, id: "line13.current", version: 1 }],
-		dispose: async () => {},
-		probeCapabilities: async () => Result.ok(snapshot),
-		createAttempt: async (dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) => {
-			if (context === undefined) return Result.err(new FoundationError("binding_epoch_mismatch", "fixture requires epoch"));
-			return createAttempt({
-				attemptId: context.initialBindingEpoch.attemptId,
-				dispatch,
-				providerId: snapshot.providerId,
-				providerClass: "external_connector",
-				initialBindingEpoch: context.initialBindingEpoch,
-			});
-		},
-		runAttempt: async (attempt: Attempt, options?: FoundationProviderExecutionOptions) => {
-			const correlation = options?.correlation;
-			if (correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "fixture requires correlation"));
-			return validateAttemptReceiptForProvider({
-				schemaVersion: 1,
-				attemptReceiptId: `attempt_receipt_${attempt.attemptId}`,
-				taskId: attempt.taskId,
-				dispatchId: attempt.dispatchId,
-				attemptId: attempt.attemptId,
-				providerId: snapshot.providerId,
-				bindingId: attempt.bindingId,
-				bindingEpochIds: attempt.bindingEpochIds,
-				status: "succeeded",
-				workerReceiptRefs: [],
-				artifacts: [],
-				provenance: {
-					producerKind: "external_connector",
-					providerId: snapshot.providerId,
-					producedAt: "2026-08-27T00:00:00.000Z",
-					correlation: { ...correlation, attemptReceiptId: `attempt_receipt_${attempt.attemptId}` },
-				},
-				sideEffectState: "none",
-			}, { providerId: snapshot.providerId, providerClass: "external_connector" });
-		},
-		cancelAttempt: async () => Result.ok(undefined),
-		resumeAttempt: async () => Result.err(new FoundationError("unsupported_feature", "resume disabled")),
-		reconcileAttempt: async (attempt, options) => connector.runAttempt(attempt, options),
-	};
+		capability: snapshot,
+		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
+		driver: new Line13CurrentDriver(),
+		supervision: createExternalConnectorTestSupervision().options,
+		now: () => NOW,
+		operationNonce: () => `line13-current-operation-${toolGateway}`,
+	});
 	const registry = createExternalConnectorRegistry();
 	const descriptor = {
 		schemaVersion: 1 as const,
@@ -716,7 +657,7 @@ async function createCurrentConnectorFixture(toolGateway = false) {
 	};
 	const registered = await registry.register({
 		descriptor,
-		connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
+		connector,
 		trusted: true,
 		...(toolGateway ? {
 			capabilityEvidence: {

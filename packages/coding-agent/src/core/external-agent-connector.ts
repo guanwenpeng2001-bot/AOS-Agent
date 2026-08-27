@@ -91,11 +91,162 @@ const EXTERNAL_CONNECTOR_CAPABILITIES: readonly FoundationProviderCapability[] =
 	Object.freeze({ schemaVersion: 1, id: "external_connector.lifecycle", version: 1 }),
 ]);
 
-const HOST_SUPERVISED_EXTERNAL_CONNECTORS = new WeakSet<object>();
+export interface HostSupervisedExternalAgentConnectorImplementation {
+	readonly schemaVersion: ExternalAgentConnector["schemaVersion"];
+	readonly providerId: ExternalAgentConnector["providerId"];
+	readonly providerClass: ExternalAgentConnector["providerClass"];
+	readonly preflightModelProjection: (
+		projection: ExternalResolvedModelProjection,
+	) => ExternalModelTranslationResult;
+	readonly capabilities: ExternalAgentConnector["capabilities"];
+	readonly dispose: ExternalAgentConnector["dispose"];
+	readonly probeCapabilities: ExternalAgentConnector["probeCapabilities"];
+	readonly createAttempt: ExternalAgentConnector["createAttempt"];
+	readonly runAttempt: ExternalAgentConnector["runAttempt"];
+	readonly cancelAttempt: ExternalAgentConnector["cancelAttempt"];
+	readonly resumeAttempt: ExternalAgentConnector["resumeAttempt"];
+	readonly reconcileAttempt: ExternalAgentConnector["reconcileAttempt"];
+}
+
+type HostSupervisedExternalAgentConnectorProperty = keyof HostSupervisedExternalAgentConnectorImplementation;
+
+interface CapturedExternalConnectorProperty {
+	readonly key: HostSupervisedExternalAgentConnectorProperty;
+	readonly owner: object;
+	readonly descriptor: Readonly<PropertyDescriptor>;
+}
+
+interface HostSupervisedExternalAgentConnectorProof {
+	readonly prototype: object | null;
+	readonly properties: readonly CapturedExternalConnectorProperty[];
+	readonly implementation: HostSupervisedExternalAgentConnectorImplementation;
+}
+
+const HOST_SUPERVISED_EXTERNAL_CONNECTOR_PROPERTIES = Object.freeze([
+	"schemaVersion",
+	"providerId",
+	"providerClass",
+	"preflightModelProjection",
+	"capabilities",
+	"dispose",
+	"probeCapabilities",
+	"createAttempt",
+	"runAttempt",
+	"cancelAttempt",
+	"resumeAttempt",
+	"reconcileAttempt",
+] satisfies readonly HostSupervisedExternalAgentConnectorProperty[]);
+const HOST_SUPERVISED_EXTERNAL_CONNECTORS = new WeakMap<object, HostSupervisedExternalAgentConnectorProof>();
+
+function resolveExternalConnectorProperty(
+	value: object,
+	key: HostSupervisedExternalAgentConnectorProperty,
+): Omit<CapturedExternalConnectorProperty, "key"> | undefined {
+	let owner: object | null = value;
+	while (owner !== null) {
+		const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+		if (descriptor !== undefined) return { owner, descriptor };
+		owner = Object.getPrototypeOf(owner) as object | null;
+	}
+	return undefined;
+}
+
+function sameExternalConnectorProperty(
+	value: object,
+	captured: CapturedExternalConnectorProperty,
+): boolean {
+	const current = resolveExternalConnectorProperty(value, captured.key);
+	if (current === undefined || current.owner !== captured.owner) return false;
+	const left = current.descriptor;
+	const right = captured.descriptor;
+	return (
+		left.configurable === right.configurable &&
+		left.enumerable === right.enumerable &&
+		left.writable === right.writable &&
+		left.get === right.get &&
+		left.set === right.set &&
+		Object.is(left.value, right.value)
+	);
+}
+
+function captureHostSupervisedExternalAgentConnector(
+	connector: DurableExternalAgentConnector,
+	methods: Pick<
+		HostSupervisedExternalAgentConnectorImplementation,
+		| "capabilities"
+		| "preflightModelProjection"
+		| "dispose"
+		| "probeCapabilities"
+		| "createAttempt"
+		| "runAttempt"
+		| "cancelAttempt"
+		| "resumeAttempt"
+		| "reconcileAttempt"
+	>,
+): HostSupervisedExternalAgentConnectorProof {
+	if (
+		connector.preflightModelProjection !== methods.preflightModelProjection ||
+		connector.capabilities !== methods.capabilities ||
+		connector.dispose !== methods.dispose ||
+		connector.probeCapabilities !== methods.probeCapabilities ||
+		connector.createAttempt !== methods.createAttempt ||
+		connector.runAttempt !== methods.runAttempt ||
+		connector.cancelAttempt !== methods.cancelAttempt ||
+		connector.resumeAttempt !== methods.resumeAttempt ||
+		connector.reconcileAttempt !== methods.reconcileAttempt
+	) {
+		throw new Error("Host-supervised external connector implementation changed before construction.");
+	}
+	const properties = HOST_SUPERVISED_EXTERNAL_CONNECTOR_PROPERTIES.map((key) => {
+		const resolved = resolveExternalConnectorProperty(connector, key);
+		if (resolved === undefined) {
+			throw new Error(`Host-supervised external connector property ${key} is unavailable.`);
+		}
+		return Object.freeze({
+			key,
+			owner: resolved.owner,
+			descriptor: Object.freeze({ ...resolved.descriptor }),
+		});
+	});
+	return Object.freeze({
+		prototype: Object.getPrototypeOf(connector) as object | null,
+		properties: Object.freeze(properties),
+		implementation: Object.freeze({
+			schemaVersion: connector.schemaVersion,
+			providerId: connector.providerId,
+			providerClass: connector.providerClass,
+			preflightModelProjection: methods.preflightModelProjection,
+			capabilities: methods.capabilities,
+			dispose: methods.dispose,
+			probeCapabilities: methods.probeCapabilities,
+			createAttempt: methods.createAttempt,
+			runAttempt: methods.runAttempt,
+			cancelAttempt: methods.cancelAttempt,
+			resumeAttempt: methods.resumeAttempt,
+			reconcileAttempt: methods.reconcileAttempt,
+		}),
+	});
+}
+
+/** @internal Exact runtime proof minted only by the Host-supervised durable connector factory. */
+export function getHostSupervisedExternalAgentConnectorImplementation(
+	value: unknown,
+): HostSupervisedExternalAgentConnectorImplementation | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const proof = HOST_SUPERVISED_EXTERNAL_CONNECTORS.get(value);
+	if (
+		proof === undefined ||
+		Object.getPrototypeOf(value) !== proof.prototype ||
+		!proof.properties.every((property) => sameExternalConnectorProperty(value, property))
+	) {
+		return undefined;
+	}
+	return proof.implementation;
+}
 
 /** @internal Runtime proof minted only by the Host-supervised durable connector factory. */
 export function isHostSupervisedExternalAgentConnector(value: unknown): value is ExternalAgentConnector {
-	return typeof value === "object" && value !== null && HOST_SUPERVISED_EXTERNAL_CONNECTORS.has(value as object);
+	return getHostSupervisedExternalAgentConnectorImplementation(value) !== undefined;
 }
 
 export function externalConnectorAttemptId(providerId: string, dispatchId: string): string {
@@ -1478,10 +1629,25 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	}
 }
 
+const DURABLE_EXTERNAL_AGENT_CONNECTOR_METHODS = Object.freeze({
+	preflightModelProjection: DurableExternalAgentConnector.prototype.preflightModelProjection,
+	capabilities: DurableExternalAgentConnector.prototype.capabilities,
+	dispose: DurableExternalAgentConnector.prototype.dispose,
+	probeCapabilities: DurableExternalAgentConnector.prototype.probeCapabilities,
+	createAttempt: DurableExternalAgentConnector.prototype.createAttempt,
+	runAttempt: DurableExternalAgentConnector.prototype.runAttempt,
+	cancelAttempt: DurableExternalAgentConnector.prototype.cancelAttempt,
+	resumeAttempt: DurableExternalAgentConnector.prototype.resumeAttempt,
+	reconcileAttempt: DurableExternalAgentConnector.prototype.reconcileAttempt,
+});
+
 export function createDurableExternalAgentConnector(
 	options: ExternalAgentConnectorRuntimeOptions,
 ): DurableExternalAgentConnector {
 	const connector = new DurableExternalAgentConnector(options);
-	HOST_SUPERVISED_EXTERNAL_CONNECTORS.add(connector);
+	HOST_SUPERVISED_EXTERNAL_CONNECTORS.set(
+		connector,
+		captureHostSupervisedExternalAgentConnector(connector, DURABLE_EXTERNAL_AGENT_CONNECTOR_METHODS),
+	);
 	return connector;
 }

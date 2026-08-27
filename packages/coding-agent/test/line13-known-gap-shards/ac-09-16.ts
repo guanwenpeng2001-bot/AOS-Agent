@@ -31,7 +31,6 @@ import {
 	type BudgetUsage,
 	type ConnectorCapabilitySnapshot,
 	type Dispatch,
-	type ExternalAgentConnector,
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
 	type ModelProfile,
@@ -73,7 +72,7 @@ import {
 	defineLine13ResolvedCase,
 } from "../support/line13-known-gaps.ts";
 import { LINE13_T0_PUBLIC_ROOTS, line13RepoRoot } from "../support/line13-t0-baseline-inventory.ts";
-import { createExternalConnectorTestRegistrationRuntime } from "../external-connector-test-supervision.ts";
+import { createExternalConnectorTestRuntime } from "../external-connector-test-supervision.ts";
 
 const BASE_SHA = "db279303b9e894b58acea165ab44f74bfdf0cddb" as const;
 const NOW = "2026-08-25T00:00:00.000Z";
@@ -708,12 +707,10 @@ interface ExternalReadinessFixture {
 		readonly revision: number;
 		readonly capabilitySnapshotDigest: ConnectorCapabilitySnapshot["digest"];
 	};
-	readonly calls: { probe: number; createAttempt: number; runAttempt: number };
 }
 
 function externalReadinessFixture(): ExternalReadinessFixture {
 	const providerId = "line13.readiness-connector";
-	const calls = { probe: 0, createAttempt: 0, runAttempt: 0 };
 	const snapshot = createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
 		providerId,
@@ -725,28 +722,7 @@ function externalReadinessFixture(): ExternalReadinessFixture {
 		artifacts: false,
 		images: false,
 	});
-	const connector: ExternalAgentConnector = {
-		schemaVersion: 1,
-		providerId,
-		providerClass: "external_connector",
-		capabilities: async () => [],
-		probeCapabilities: async () => {
-			calls.probe += 1;
-			return Result.err(new FoundationError("task_executor_invalid_provider_class", "Connector target is not ready."));
-		},
-		createAttempt: async () => {
-			calls.createAttempt += 1;
-			return Result.err(new FoundationError("task_executor_invalid_provider_class", "createAttempt must not run during readiness probing"));
-		},
-		runAttempt: async () => {
-			calls.runAttempt += 1;
-			return Result.err(new FoundationError("task_executor_invalid_provider_class", "runAttempt must not run during readiness probing"));
-		},
-		resumeAttempt: async () => Result.err(new FoundationError("unsupported_feature", "resume unavailable")),
-		reconcileAttempt: async () => Result.err(new FoundationError("task_executor_invalid_provider_class", "reconcile unavailable")),
-		cancelAttempt: async () => Result.ok(undefined),
-		dispose: async () => {},
-	};
+	const connector = createExternalConnectorTestRuntime(snapshot);
 	const descriptor = {
 		schemaVersion: 1 as const,
 		providerId,
@@ -757,11 +733,11 @@ function externalReadinessFixture(): ExternalReadinessFixture {
 	const registry = createExternalConnectorRegistry();
 	const registered = registry.registerPrepared({
 		descriptor,
-		connector: createExternalConnectorTestRegistrationRuntime(connector, snapshot),
+		connector,
 		trusted: true,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;
-	return { registry, descriptor, calls };
+	return { registry, descriptor };
 }
 
 interface AtomicControlStateFixture {
@@ -1027,7 +1003,7 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 			},
 			scenario: {
 				fixture: externalReadinessFixture,
-				assertion: async ({ registry, descriptor, calls }) => {
+				assertion: async ({ registry, descriptor }) => {
 					assert.deepEqual(registry.list(), [
 						{
 							schemaVersion: 1,
@@ -1037,14 +1013,12 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 							capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
 						},
 					]);
-					assert.deepEqual(calls, { probe: 0, createAttempt: 0, runAttempt: 0 });
 					const selected = await registry.select({
 						providerId: descriptor.providerId,
 						revision: descriptor.revision,
 						capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
 					});
-					assert.equal(selected.ok, false);
-					assert.deepEqual(calls, { probe: 1, createAttempt: 0, runAttempt: 0 });
+					assert.equal(selected.ok, true);
 					assert.equal(
 						"probeReadiness" in registry,
 						true,

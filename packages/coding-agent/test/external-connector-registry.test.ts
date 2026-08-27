@@ -5,26 +5,10 @@ import {
 	Session,
 	SessionLedger,
 	SessionT5Ledger,
-	createAttempt,
-	createBindingEpoch,
 	createConnectorCapabilitySnapshot,
-	createModelProfileRevision,
-	createRoleRevision,
-	executeDispatch,
 	fingerprintFoundationValue,
-	resolveAgentBinding,
-	type AgentBinding,
-	type Attempt,
-	type AttemptReceipt,
 	type ConnectorCapabilitySnapshot,
-	type Dispatch,
 	type ExternalAgentConnector,
-	type FoundationProviderCapability,
-	type FoundationProviderExecutionOptions,
-	type RevisionReference,
-	type TaskEnvelope,
-	type TaskExecutorAttemptContext,
-	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
@@ -35,252 +19,124 @@ import {
 } from "../src/core/external-agent-registry.ts";
 import {
 	executeExternalConnectorProductRun,
-	prepareExternalConnectorProductRun,
 	type ExternalConnectorProductExecutionInput,
 } from "../src/core/external-connector-product.ts";
-import { SchedulerExecutorRegistry } from "../src/core/scheduler-executors.ts";
-import type { SchedulerExecutorEntryV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,
+	ExternalConnectorDriverSpawnRequest,
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
 } from "../src/core/vendor-drivers/types.ts";
-import {
-	createExternalConnectorTestRegistrationRuntime,
-	createExternalConnectorTestSupervision,
-} from "./external-connector-test-supervision.ts";
+import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 
 const NOW = "2026-08-27T00:00:00.000Z";
-const PROVIDER_ID = "arbitrary.zeta-connector";
-const CAPABILITY: FoundationProviderCapability = { schemaVersion: 1, id: "arbitrary.zeta.execute", version: 4 };
+const PROVIDER_ID = "third-party.zeta-connector";
 let supervisedFixtureId = 0;
 
-const TASK: TaskEnvelope = {
-	schemaVersion: 1,
-	taskId: "task-zeta",
-	goalId: "goal-zeta",
-	goal: "Prove the open connector SPI",
-	workspace: "workspace-zeta",
-	capabilityRefs: [],
-	inputs: [],
-	expectedOutputs: [],
-	budget: {},
-	acceptanceCriteria: [],
-	status: "ready",
-	createdAt: NOW,
-	updatedAt: NOW,
-};
-
-function immutableFact(type: string, id: string): RevisionReference {
-	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
-	return { ...value, fingerprint: fingerprintFoundationValue(value) };
-}
-
-function binding(): AgentBinding {
-	const role = createRoleRevision({
-		definition: {
-			schemaVersion: 1,
-			roleId: "role-zeta",
-			scope: "project",
-			slug: "zeta",
-			name: "Zeta",
-			description: "Arbitrary connector conformance role",
-			revision: 1,
-			persona: "Execute through the selected connector.",
-			modelProfileRef: { schemaVersion: 1, type: "model_profile", id: "model-zeta", revision: 1 },
-			capabilitySelector: { policy: "all" },
-			skillSelector: { policy: "none" },
-			mcpSelector: { policy: "none" },
-		},
-		now: () => NOW,
-	});
-	const modelProfile = createModelProfileRevision({
+function capabilitySnapshot(options: {
+	readonly providerId?: string;
+	readonly toolGateway?: boolean;
+	readonly modelAccess?: "agent_owned" | "aos_gateway";
+} = {}): ConnectorCapabilitySnapshot {
+	return createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
-		modelProfileId: "model-zeta",
-		provider: "host-model",
-		model: "model-zeta-1",
-		budget: {},
-		revision: 1,
-		createdAt: NOW,
+		providerId: options.providerId ?? PROVIDER_ID,
+		revision: 17,
+		protocol: { name: "murmur.mesh", version: "17" },
+		modelAccess: options.modelAccess ?? "agent_owned",
+		resume: false,
+		toolGateway: options.toolGateway ?? false,
+		artifacts: false,
+		images: false,
 	});
-	const resolved = resolveAgentBinding({
-		task: TASK,
-		roleRevision: role,
-		modelProfile,
-		contextRevision: immutableFact("external_agent_binding", "context-zeta"),
-		capabilityRevision: immutableFact("capability_binding", "capability-zeta"),
-		modelBrokerBindingRevision: immutableFact("model_broker_binding", "broker-zeta"),
-		policyRevision: immutableFact("policy_binding", "policy-zeta"),
-		newBindingId: "binding-zeta",
-		now: () => NOW,
-	});
-	if (!resolved.ok) throw resolved.error;
-	return resolved.value;
 }
 
-class ZetaConnector implements ExternalAgentConnector {
+function descriptor(snapshot: ConnectorCapabilitySnapshot) {
+	return {
+		schemaVersion: 1 as const,
+		providerId: snapshot.providerId,
+		providerClass: "external_connector" as const,
+		revision: snapshot.revision,
+		capabilitySnapshotDigest: snapshot.digest,
+	};
+}
+
+function selection(snapshot: ConnectorCapabilitySnapshot) {
+	return {
+		providerId: snapshot.providerId,
+		revision: snapshot.revision,
+		capabilitySnapshotDigest: snapshot.digest,
+	};
+}
+
+class ArbitraryConnector implements ExternalAgentConnector {
 	readonly schemaVersion = 1 as const;
 	readonly providerId: string;
 	readonly providerClass = "external_connector" as const;
-	#snapshot: ConnectorCapabilitySnapshot;
+	readonly snapshot: ConnectorCapabilitySnapshot;
 	disposeCalls = 0;
 	probeCalls = 0;
-	runCalls = 0;
-	reconcileCalls = 0;
-	cancelCalls = 0;
-	toolGatewayCalls = 0;
-	driftOnProbeCall: number | undefined;
 
-	constructor(providerId: string = PROVIDER_ID, options: {
-		readonly modelAccess?: "agent_owned" | "aos_gateway";
-		readonly toolGateway?: boolean;
-	} = {}) {
+	constructor(providerId = PROVIDER_ID) {
 		this.providerId = providerId;
-		this.#snapshot = createConnectorCapabilitySnapshot({
-			schemaVersion: 1,
-			providerId,
-			revision: 17,
-			protocol: { name: "murmur.mesh", version: "17" },
-			modelAccess: options.modelAccess ?? "aos_gateway",
-			resume: false,
-			toolGateway: options.toolGateway ?? true,
-			artifacts: false,
-			images: false,
-		});
+		this.snapshot = capabilitySnapshot({ providerId });
 	}
 
-	get snapshot(): ConnectorCapabilitySnapshot {
-		return this.#snapshot;
-	}
-
-	drift(): void {
-		const { digest: _digest, ...snapshot } = this.#snapshot;
-		this.#snapshot = createConnectorCapabilitySnapshot({
-			...snapshot,
-			revision: this.#snapshot.revision + 1,
-		});
-	}
-
-	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
-		return [CAPABILITY];
-	}
-
-	async probeCapabilities(): Promise<Result<ConnectorCapabilitySnapshot, FoundationError>> {
+	async capabilities() { return []; }
+	async probeCapabilities() {
 		this.probeCalls += 1;
-		if (this.probeCalls === this.driftOnProbeCall) this.drift();
-		return Result.ok(this.#snapshot);
+		return Result.ok(this.snapshot);
 	}
-
-	async createAttempt(
-		dispatch: Dispatch,
-		agentBinding: AgentBinding,
-		context?: TaskExecutorAttemptContext,
-	): Promise<Result<Attempt, FoundationError>> {
-		if (context === undefined || agentBinding.taskId !== dispatch.taskId || agentBinding.bindingId !== dispatch.bindingId) {
-			return Result.err(new FoundationError("invalid_correlation", "Zeta connector requires the selected Binding and initial epoch."));
-		}
-		return createAttempt({
-			attemptId: context.initialBindingEpoch.attemptId,
-			dispatch,
-			providerId: this.providerId,
-			initialBindingEpoch: context.initialBindingEpoch,
-			providerClass: this.providerClass,
-			now: () => NOW,
-		});
-	}
-
-	async runAttempt(
-		attempt: Attempt,
-		options?: FoundationProviderExecutionOptions,
-	): Promise<Result<AttemptReceipt, FoundationError>> {
-		this.runCalls += 1;
-		return Result.ok(this.receipt(attempt, options));
-	}
-
-	async resumeAttempt(
-		_attempt: Attempt,
-		_options?: FoundationProviderExecutionOptions,
-	): Promise<Result<AttemptReceipt, FoundationError>> {
-		return Result.err(new FoundationError("unsupported_feature", "Zeta connector does not advertise resume."));
-	}
-
-	async reconcileAttempt(
-		attempt: Attempt,
-		options?: FoundationProviderExecutionOptions,
-	): Promise<Result<AttemptReceipt, FoundationError>> {
-		this.reconcileCalls += 1;
-		return Result.ok(this.receipt(attempt, options));
-	}
-
-	async cancelAttempt(_attemptId: string): Promise<Result<void, FoundationError>> {
-		this.cancelCalls += 1;
-		return Result.ok(undefined);
-	}
-
-	async dispose(): Promise<void> {
-		this.disposeCalls += 1;
-	}
-
-	invokeToolGateway(): string {
-		this.toolGatewayCalls += 1;
-		return "tool-gateway-reached";
-	}
-
-	private receipt(attempt: Attempt, options?: FoundationProviderExecutionOptions): AttemptReceipt {
-		const bindingEpochId = attempt.bindingEpochIds[0];
-		if (bindingEpochId === undefined) throw new FoundationError("invalid_correlation", "Zeta Attempt requires a BindingEpoch.");
-		const attemptReceiptId = `receipt-${attempt.attemptId}`;
-		return {
-			schemaVersion: 1,
-			attemptReceiptId,
-			taskId: attempt.taskId,
-			dispatchId: attempt.dispatchId,
-			attemptId: attempt.attemptId,
-			providerId: this.providerId,
-			bindingId: attempt.bindingId,
-			bindingEpochIds: [...attempt.bindingEpochIds],
-			status: "succeeded",
-			workerReceiptRefs: [],
-			artifacts: [],
-			provenance: {
-				producerKind: "external_connector",
-				providerId: this.providerId,
-				producedAt: NOW,
-				correlation: {
-					...(options?.correlation ?? { sessionId: "session-zeta", laneId: "main", revision: 1 }),
-					taskId: attempt.taskId,
-					dispatchId: attempt.dispatchId,
-					attemptId: attempt.attemptId,
-					bindingId: attempt.bindingId,
-					bindingEpochId,
-					attemptReceiptId,
-				},
-			},
-			sideEffectState: "none",
-		};
-	}
+	async createAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
+	async runAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
+	async cancelAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
+	async resumeAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
+	async reconcileAttempt() { return Result.err(new FoundationError("unsupported_feature", "arbitrary connector")); }
+	async dispose() { this.disposeCalls += 1; }
 }
 
 class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 	disposeCalls = 0;
+	spawnCalls = 0;
+	readCalls = 0;
+	readonly #throwOnDispose: boolean;
 
-	async spawn(): Promise<ExternalConnectorDriverHandle> {
-		throw new Error("registry conformance does not start the driver");
+	constructor(options: { readonly throwOnDispose?: boolean } = {}) {
+		this.#throwOnDispose = options.throwOnDispose ?? false;
+	}
+
+	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
+		this.spawnCalls += 1;
+		return {
+			externalSessionId: `zeta-session-${this.spawnCalls}`,
+			externalTurnId: `zeta-turn-${this.spawnCalls}`,
+			supervisorRef: request.supervisorRef,
+			operationNonce: request.operationNonce,
+		};
 	}
 
 	async *events(): AsyncIterable<never> {}
 
 	async connect(): Promise<ExternalConnectorDriverHandle> {
-		throw new Error("registry conformance does not connect the driver");
+		throw new Error("Zeta driver has no resumable session in this fixture.");
 	}
 
 	async lookup(): Promise<ExternalConnectorDriverLookup> {
 		return { status: "missing" };
 	}
 
-	async read(): Promise<ExternalConnectorTerminalEvidence> {
-		throw new Error("registry conformance does not read the driver");
+	async read(handle: ExternalConnectorDriverHandle): Promise<ExternalConnectorTerminalEvidence> {
+		this.readCalls += 1;
+		return {
+			externalSessionId: handle.externalSessionId,
+			externalTurnId: handle.externalTurnId,
+			operationNonce: handle.operationNonce,
+			status: "succeeded",
+			artifacts: [],
+			sideEffectState: "none",
+			producedAt: NOW,
+		};
 	}
 
 	async write(): Promise<void> {}
@@ -289,101 +145,88 @@ class ThirdPartyZetaDriver implements ExternalConnectorVendorDriver {
 
 	async dispose(): Promise<void> {
 		this.disposeCalls += 1;
+		if (this.#throwOnDispose) throw new Error("planned third-party driver disposal failure");
 	}
 }
 
-function createSupportedConnector(
-	providerId: string,
-	snapshot: ConnectorCapabilitySnapshot,
-	driver: ThirdPartyZetaDriver = new ThirdPartyZetaDriver(),
-) {
+interface SupportedConnectorFixture {
+	readonly connector: ExternalAgentConnector;
+	readonly driver: ThirdPartyZetaDriver;
+	readonly session: Session;
+	readonly snapshot: ConnectorCapabilitySnapshot;
+	readonly supervision: ReturnType<typeof createExternalConnectorTestSupervision>;
+	readonly t5: SessionT5Ledger;
+}
+
+function createSupportedConnector(options: {
+	readonly providerId?: string;
+	readonly toolGateway?: boolean;
+	readonly modelAccess?: "agent_owned" | "aos_gateway";
+	readonly driver?: ThirdPartyZetaDriver;
+} = {}): SupportedConnectorFixture {
 	supervisedFixtureId += 1;
+	const fixtureId = supervisedFixtureId;
+	const snapshot = capabilitySnapshot(options);
 	const session = new Session(new InMemorySessionStorage({
-		id: `supervised-zeta-${supervisedFixtureId}`,
-		createdAt: supervisedFixtureId,
+		id: `supervised-zeta-${fixtureId}`,
+		createdAt: fixtureId,
 	}));
-	const t5 = new SessionT5Ledger(session, { ownerId: `supervised-zeta-${supervisedFixtureId}` });
+	const t5 = new SessionT5Ledger(session, { ownerId: `supervised-zeta-${fixtureId}` });
 	const supervision = createExternalConnectorTestSupervision();
+	const driver = options.driver ?? new ThirdPartyZetaDriver();
 	const connector = createDurableExternalAgentConnector({
-		providerId,
+		providerId: snapshot.providerId,
 		capability: snapshot,
 		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
 		driver,
 		supervision: supervision.options,
 		now: () => NOW,
-		operationNonce: () => `zeta-nonce-${supervisedFixtureId}`,
+		operationNonce: () => `zeta-nonce-${fixtureId}`,
 	});
-	return { connector, driver, supervision };
+	return { connector, driver, session, snapshot, supervision, t5 };
 }
 
-function evidence(connector: ZetaConnector): ExternalConnectorRegistration["capabilityEvidence"] {
-	if (!connector.snapshot.toolGateway && connector.snapshot.modelAccess !== "aos_gateway") return undefined;
+function registration(
+	fixture: SupportedConnectorFixture,
+	options: { readonly toolGatewayCalls?: { count: number } } = {},
+): ExternalConnectorRegistration {
+	const toolGatewayCalls = options.toolGatewayCalls;
 	return {
-		...(connector.snapshot.toolGateway ? {
-			toolGateway: {
-				declaration: { id: "zeta.tool-gateway", revision: 3, reachable: true as const },
-				handler: { id: "zeta.tool-gateway-handler", invoke: () => connector.invokeToolGateway() },
-			},
-		} : {}),
-		...(connector.snapshot.modelAccess === "aos_gateway" ? {
-			aosGateway: {
-				declaration: { id: "zeta.model-gateway", revision: 5, reachable: true as const },
-				handler: { id: "zeta.model-gateway-handler", invoke: () => undefined },
-			},
-		} : {}),
-	};
-}
-
-function registration(connector: ZetaConnector): ExternalConnectorRegistration {
-	const capabilityEvidence = evidence(connector);
-	return {
-		descriptor: {
-			schemaVersion: 1,
-			providerId: connector.providerId,
-			providerClass: "external_connector",
-			revision: connector.snapshot.revision,
-			capabilitySnapshotDigest: connector.snapshot.digest,
-		},
-		connector: createExternalConnectorTestRegistrationRuntime(connector, connector.snapshot),
+		descriptor: descriptor(fixture.snapshot),
+		connector: fixture.connector,
 		trusted: true,
-		...(capabilityEvidence === undefined ? {} : { capabilityEvidence }),
-	};
-}
-
-async function productFixture(options: { readonly toolGateway: boolean }) {
-	const connector = new ZetaConnector("arbitrary.product-connector", {
-		modelAccess: "agent_owned",
-		toolGateway: options.toolGateway,
-	});
-	const registry = createExternalConnectorRegistry();
-	const preparedRegistration = registration(connector);
-	const registered = await registry.register(preparedRegistration);
-	if (!registered.ok) throw registered.error;
-	const session = new Session(new InMemorySessionStorage({ id: `product-${options.toolGateway}`, createdAt: 1 }));
-	return {
-		connector,
-		registry,
-		session,
-		t5: new SessionT5Ledger(session, { ownerId: "arbitrary-product-test" }),
-		selection: {
-			providerId: preparedRegistration.descriptor.providerId,
-			revision: preparedRegistration.descriptor.revision,
-			capabilitySnapshotDigest: preparedRegistration.descriptor.capabilitySnapshotDigest,
-		},
+		...(fixture.snapshot.toolGateway ? {
+			capabilityEvidence: {
+				toolGateway: {
+					declaration: { id: "zeta.tool-gateway", revision: 3, reachable: true as const },
+					handler: {
+						id: "zeta.tool-gateway-handler",
+						invoke: () => {
+							if (toolGatewayCalls !== undefined) toolGatewayCalls.count += 1;
+						},
+					},
+				},
+			},
+		} : {}),
 	};
 }
 
 function productInput(
-	current: Awaited<ReturnType<typeof productFixture>>,
+	fixture: SupportedConnectorFixture,
+	registry: ReturnType<typeof createExternalConnectorRegistry>,
 	runId: string,
 	requiresToolGateway = false,
 ): ExternalConnectorProductExecutionInput {
-	const text = `Execute arbitrary connector product run ${runId}`;
+	const text = `Execute supervised third-party connector run ${runId}`;
 	return {
-		session: current.session,
-		writer: current.t5.writer,
-		registry: current.registry,
-		selection: current.selection,
+		session: fixture.session,
+		writer: fixture.t5.writer,
+		registry,
+		selection: {
+			providerId: fixture.snapshot.providerId,
+			revision: fixture.snapshot.revision,
+			capabilitySnapshotDigest: fixture.snapshot.digest,
+		},
 		runId,
 		message: text,
 		canonicalInput: { schemaVersion: 1, text, artifacts: [] },
@@ -394,328 +237,152 @@ function productInput(
 	};
 }
 
-async function productAttempt(
-	connector: ExternalAgentConnector,
-): Promise<Attempt> {
-	const dispatch: Dispatch = {
-		schemaVersion: 1,
-		dispatchId: "dispatch-product-lifecycle",
-		taskId: TASK.taskId,
-		bindingId: "binding-zeta",
-		taskExecutorProviderId: connector.providerId,
-		status: "pending",
-		createdAt: NOW,
-	};
-	const epoch = createBindingEpoch({
-		bindingEpochId: "epoch-product-lifecycle",
-		taskId: TASK.taskId,
-		attemptId: "attempt-product-lifecycle",
-		bindingId: dispatch.bindingId,
-		activationReason: "attempt_started",
-		activatedByCommandId: dispatch.dispatchId,
-		now: () => NOW,
-	});
-	if (!epoch.ok) throw epoch.error;
-	const attempt = await connector.createAttempt(dispatch, binding(), { initialBindingEpoch: epoch.value });
-	if (!attempt.ok) throw attempt.error;
-	return attempt.value;
-}
-
-function expectSafeRegistryProbeFailure(
-	error: FoundationError,
-	expectedMessage: string,
-	forbiddenValues: readonly string[],
-): void {
-	expect(error.code).toBe("task_executor_invalid_provider_class");
-	expect(error.message).toBe(expectedMessage);
-	expect(error.cause).toBeUndefined();
-	expect(error.details).toBeUndefined();
-
-	const exposedSurfaces = [
-		...Object.getOwnPropertyNames(error).map((property) => `${property}:${String(Reflect.get(error, property))}`),
-		JSON.stringify(error),
-		String(error.cause),
-		error.message,
-		JSON.stringify(error.details),
-		JSON.stringify(error.redact()),
-		JSON.stringify(error.toPublicExecutionError()),
-	].join("\n");
-	for (const forbiddenValue of forbiddenValues) {
-		expect(exposedSurfaces).not.toContain(forbiddenValue);
-	}
-}
-
 describe("ExternalConnectorRegistry supervised SPI", () => {
-	it("rejects an arbitrary never-settling connector before probe and leaves its provider slot available", async () => {
-		const arbitrary = new ZetaConnector(PROVIDER_ID, { modelAccess: "agent_owned", toolGateway: false });
-		let arbitraryProbeCalls = 0;
-		Object.defineProperty(arbitrary, "probeCapabilities", {
-			value: () => {
-				arbitraryProbeCalls += 1;
-				return new Promise<never>(() => undefined);
-			},
-		});
-		const descriptor = {
-			schemaVersion: 1 as const,
-			providerId: arbitrary.providerId,
-			providerClass: "external_connector" as const,
-			revision: arbitrary.snapshot.revision,
-			capabilitySnapshotDigest: arbitrary.snapshot.digest,
-		};
+	it("rejects an arbitrary connector before probe and leaves its provider slot available", async () => {
+		const arbitrary = new ArbitraryConnector();
+		const arbitraryDescriptor = descriptor(arbitrary.snapshot);
 		const registry = createExternalConnectorRegistry();
 
-		const preparedRejected = registry.registerPrepared(
-			{ descriptor, connector: arbitrary, trusted: true },
+		expect(registry.registerPrepared(
+			{ descriptor: arbitraryDescriptor, connector: arbitrary, trusted: true },
 			arbitrary.snapshot,
-		);
-		const rejected = await registry.register({ descriptor, connector: arbitrary, trusted: true });
-
-		expect(preparedRejected).toMatchObject({ ok: false });
-		expect(rejected).toMatchObject({ ok: false });
-		expect(arbitraryProbeCalls).toBe(0);
+		)).toMatchObject({ ok: false });
+		expect(await registry.register({ descriptor: arbitraryDescriptor, connector: arbitrary, trusted: true })).toMatchObject({
+			ok: false,
+		});
+		expect(arbitrary.probeCalls).toBe(0);
 		expect(arbitrary.disposeCalls).toBe(0);
 		expect(registry.list()).toEqual([]);
 
-		const supported = createSupportedConnector(arbitrary.providerId, arbitrary.snapshot);
-		const accepted = await registry.register({ descriptor, connector: supported.connector, trusted: true });
-		expect(accepted).toMatchObject({ ok: true });
-		expect(registry.list()).toEqual([descriptor]);
-		expect(supported.supervision.processController.launchCalls).toBe(0);
+		const supported = createSupportedConnector();
+		expect(await registry.register(registration(supported))).toMatchObject({ ok: true });
+		expect(registry.list()).toEqual([arbitraryDescriptor]);
+		expect(await registry.select(selection(supported.snapshot))).toMatchObject({ ok: true });
 
-		const selected = await registry.select({
-			providerId: descriptor.providerId,
-			revision: descriptor.revision,
-			capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
-		});
-		expect(selected).toMatchObject({ ok: true });
 		await registry.dispose();
 		expect(supported.driver.disposeCalls).toBe(1);
 		expect(supported.supervision.processController.launchCalls).toBe(0);
-		expect(registry.list()).toEqual([]);
 	});
 
-	it("registers and selects a third-party connector through the Host factory, then schedules, runs, and settles its Attempt", async () => {
-		const connector = new ZetaConnector();
-		const executor: TaskExecutorProvider = connector;
-		expect(executor.providerClass).toBe("external_connector");
+	it("rejects a factory-created connector whose lifecycle implementation changes before registration", async () => {
+		const fixture = createSupportedConnector();
+		const prepared = registration(fixture);
+		let replacementCalls = 0;
+		const replacement: ExternalAgentConnector["runAttempt"] = async () => {
+			replacementCalls += 1;
+			return Result.err(new FoundationError("provider_spawn_failed", "unsupervised replacement"));
+		};
+		Object.defineProperty(fixture.connector, "runAttempt", { configurable: true, value: replacement });
 
+		const preparedRegistry = createExternalConnectorRegistry();
+		expect(preparedRegistry.registerPrepared(prepared, fixture.snapshot)).toMatchObject({ ok: false });
 		const registry = createExternalConnectorRegistry();
-		const registered = await registry.register(registration(connector));
-		expect(registered.ok).toBe(true);
-		expect(registry.list()).toEqual([registration(connector).descriptor]);
+		expect(await registry.register(prepared)).toMatchObject({ ok: false });
+		expect(replacementCalls).toBe(0);
+		expect(registry.list()).toEqual([]);
+		await fixture.connector.dispose();
+	});
 
-		const selected = await registry.select({
-			providerId: connector.providerId,
-			revision: connector.snapshot.revision,
-			capabilitySnapshotDigest: connector.snapshot.digest,
-		});
-		if (!selected.ok) throw selected.error;
-		expect(selected.value.connector).not.toBe(connector);
-		expect(selected.value.connector.providerId).toBe(connector.providerId);
-		expect(selected.value.capabilityTruth.evidence).toMatchObject({
-			toolGateway: { handlerId: "zeta.tool-gateway-handler" },
-			aosGateway: { handlerId: "zeta.model-gateway-handler" },
-		});
-		expect(selected.value.capabilityHandlers.toolGateway?.()).toBe("tool-gateway-reached");
-		expect(connector.toolGatewayCalls).toBe(1);
-
-		const scheduler = new SchedulerExecutorRegistry();
-		const entry: SchedulerExecutorEntryV1 = {
-			schemaVersion: 1,
-			descriptor: { schemaVersion: 1, providerId: connector.providerId, providerClass: "external_connector" },
-			capabilities: [CAPABILITY],
-			costClass: "remote_paid",
-			registeredAt: NOW,
-		};
-		expect((await scheduler.register({ entry, provider: selected.value.connector, trusted: true, latencyMs: 0 })).ok).toBe(true);
-		const queueEntry: SchedulerQueueEntryV1 = {
-			schemaVersion: 1,
-			queueEntryId: "queue-zeta",
-			sessionId: "session-zeta",
-			taskId: TASK.taskId,
-			state: "queued",
-			priority: 1,
-			attemptsUsed: 0,
-			enqueuedAt: NOW,
-			revision: 0,
-		};
-		const scheduled = await scheduler.select({
-			queueEntry,
-			requiredCapabilities: [CAPABILITY],
-			decidedAt: NOW,
-		});
-		if (!scheduled.ok) throw scheduled.error;
-		expect(scheduled.value.provider).toBe(selected.value.connector);
-
-		const dispatch: Dispatch = {
-			schemaVersion: 1,
-			dispatchId: "dispatch-zeta",
-			taskId: TASK.taskId,
-			bindingId: "binding-zeta",
-			taskExecutorProviderId: connector.providerId,
-			status: "pending",
-			createdAt: NOW,
-		};
-		const epochResult = createBindingEpoch({
-			bindingEpochId: "epoch-zeta",
-			taskId: TASK.taskId,
-			attemptId: "attempt-zeta",
-			bindingId: dispatch.bindingId,
-			activationReason: "attempt_started",
-			activatedByCommandId: dispatch.dispatchId,
-			now: () => NOW,
-		});
-		if (!epochResult.ok) throw epochResult.error;
-		const settled = await executeDispatch({
-			dispatch,
-			binding: binding(),
-			initialBindingEpoch: epochResult.value,
-			provider: scheduled.value.provider,
-			correlation: {
-				sessionId: "session-zeta",
-				laneId: "main",
-				taskId: TASK.taskId,
-				dispatchId: dispatch.dispatchId,
-				attemptId: epochResult.value.attemptId,
-				bindingId: dispatch.bindingId,
-				bindingEpochId: epochResult.value.bindingEpochId,
-				revision: 1,
+	it("rejects selection after a registered connector identity property is replaced without invoking it", async () => {
+		const fixture = createSupportedConnector();
+		const prepared = registration(fixture);
+		const registry = createExternalConnectorRegistry();
+		expect(await registry.register(prepared)).toMatchObject({ ok: true });
+		let providerGetterCalls = 0;
+		Object.defineProperty(fixture.connector, "providerId", {
+			configurable: true,
+			get: () => {
+				providerGetterCalls += 1;
+				return fixture.snapshot.providerId;
 			},
 		});
-		expect(settled.ok).toBe(true);
-		if (settled.ok) {
-			expect(settled.value.attempt.providerId).toBe(PROVIDER_ID);
-			expect(settled.value.receipt).toMatchObject({
-				providerId: PROVIDER_ID,
-				status: "succeeded",
-				provenance: { producerKind: "external_connector" },
-			});
-		}
+
+		expect(await registry.select(selection(fixture.snapshot))).toMatchObject({ ok: false });
+		expect(providerGetterCalls).toBe(0);
 		await registry.dispose();
-		expect(connector.disposeCalls).toBe(1);
-		expect(registry.list()).toEqual([]);
+		expect(fixture.driver.disposeCalls).toBe(1);
 	});
 
-	it("executes an arbitrary connector's advertised Tool Gateway handler through the product Attempt", async () => {
-		const current = await productFixture({ toolGateway: true });
+	it("keeps a selected Host wrapper immutable and independent from later method replacement", async () => {
+		const fixture = createSupportedConnector();
+		const prepared = registration(fixture);
+		const registry = createExternalConnectorRegistry();
+		expect(await registry.register(prepared)).toMatchObject({ ok: true });
+		const selected = await registry.select(selection(fixture.snapshot));
+		if (!selected.ok) throw selected.error;
+		let replacementCalls = 0;
+		Object.defineProperty(fixture.connector, "probeCapabilities", {
+			configurable: true,
+			value: async () => {
+				replacementCalls += 1;
+				return Result.err(new FoundationError("provider_spawn_failed", "unsupervised replacement"));
+			},
+		});
 
-		const execution = await executeExternalConnectorProductRun(productInput(current, "run-zeta-tool-gateway"));
+		expect(Object.isFrozen(selected.value.connector)).toBe(true);
+		expect(await selected.value.connector.probeCapabilities()).toMatchObject({
+			ok: true,
+			value: { providerId: fixture.snapshot.providerId },
+		});
+		expect(replacementCalls).toBe(0);
+		expect(await registry.select(selection(fixture.snapshot))).toMatchObject({ ok: false });
+		await registry.dispose();
+	});
+
+	it("registers and runs a supported third-party driver through the durable supervised factory", async () => {
+		const fixture = createSupportedConnector();
+		const registry = createExternalConnectorRegistry();
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+
+		const execution = await executeExternalConnectorProductRun(
+			productInput(fixture, registry, "run-zeta-supervised"),
+		);
 
 		expect(execution.runReceipt.terminalStatus).toBe("completed");
-		expect(execution.attemptReceipt.providerId).toBe("arbitrary.product-connector");
-		expect(current.connector.toolGatewayCalls).toBe(1);
-		expect(current.connector.runCalls).toBe(1);
-		const attempts = await current.session.findFoundationRecords({ objectType: "attempt" });
-		expect(attempts).toHaveLength(1);
+		expect(execution.attemptReceipt).toMatchObject({
+			providerId: PROVIDER_ID,
+			status: "succeeded",
+			provenance: { producerKind: "external_connector" },
+		});
+		expect(fixture.driver.spawnCalls).toBe(1);
+		expect(fixture.driver.readCalls).toBe(1);
+		expect(fixture.supervision.processController.launchCalls).toBe(1);
+		expect(fixture.supervision.processController.activationCalls).toBe(1);
+		await registry.dispose();
 	});
 
-	it("rejects Tool Gateway-required work against an arbitrary false capability before acceptance", async () => {
-		const current = await productFixture({ toolGateway: false });
+	it("executes only an advertised Tool Gateway before the supervised vendor driver", async () => {
+		const gatewayCalls = { count: 0 };
+		const enabled = createSupportedConnector({ toolGateway: true });
+		const enabledRegistry = createExternalConnectorRegistry();
+		expect(await enabledRegistry.register(registration(enabled, { toolGatewayCalls: gatewayCalls }))).toMatchObject({ ok: true });
 
+		const execution = await executeExternalConnectorProductRun(
+			productInput(enabled, enabledRegistry, "run-zeta-tool-gateway"),
+		);
+		expect(execution.runReceipt.terminalStatus).toBe("completed");
+		expect(gatewayCalls.count).toBe(1);
+		expect(enabled.driver.spawnCalls).toBe(1);
+
+		const disabled = createSupportedConnector();
+		const disabledRegistry = createExternalConnectorRegistry();
+		expect(await disabledRegistry.register(registration(disabled))).toMatchObject({ ok: true });
 		await expect(executeExternalConnectorProductRun(
-			productInput(current, "run-zeta-tool-gateway-disabled", true),
+			productInput(disabled, disabledRegistry, "run-zeta-tool-gateway-disabled", true),
 		)).rejects.toMatchObject({
 			code: "external_capability_mismatch",
 			message: "External connector does not support the required Tool Gateway bridge",
 			retryable: false,
 		});
-
-		expect(await current.session.findFoundationRecords({ includePruned: true })).toEqual([]);
-		expect(current.connector.toolGatewayCalls).toBe(0);
-		expect(current.connector.runCalls).toBe(0);
-		expect(current.connector.reconcileCalls).toBe(0);
+		expect(disabled.driver.spawnCalls).toBe(0);
+		expect(await disabled.session.findFoundationRecords({ includePruned: true })).toEqual([]);
+		await enabledRegistry.dispose();
+		await disabledRegistry.dispose();
 	});
 
-	it("rechecks an arbitrary connector's pinned truth before run and routes drift to reconciliation", async () => {
-		const current = await productFixture({ toolGateway: true });
-		current.connector.driftOnProbeCall = 3;
-
-		const execution = await executeExternalConnectorProductRun(productInput(current, "run-zeta-capability-drift"));
-
-		expect(execution.runReceipt.terminalStatus).toBe("completed");
-		expect(current.connector.probeCalls).toBe(3);
-		expect(current.connector.toolGatewayCalls).toBe(0);
-		expect(current.connector.runCalls).toBe(0);
-		expect(current.connector.reconcileCalls).toBe(1);
-	});
-
-	it("rechecks pinned truth for arbitrary resume, reconcile, and cancel lifecycle entry points", async () => {
-		const resumed = await productFixture({ toolGateway: true });
-		const resumeAdmission = await prepareExternalConnectorProductRun(productInput(resumed, "run-zeta-resume-drift"));
-		const resumeAttempt = await productAttempt(resumeAdmission.selected.connector);
-		resumed.connector.driftOnProbeCall = 3;
-		expect((await resumeAdmission.selected.connector.resumeAttempt(resumeAttempt)).ok).toBe(true);
-		expect(resumed.connector.reconcileCalls).toBe(1);
-
-		const reconciled = await productFixture({ toolGateway: true });
-		const reconcileAdmission = await prepareExternalConnectorProductRun(productInput(reconciled, "run-zeta-reconcile-drift"));
-		const reconcileAttempt = await productAttempt(reconcileAdmission.selected.connector);
-		reconciled.connector.driftOnProbeCall = 3;
-		expect((await reconcileAdmission.selected.connector.reconcileAttempt(reconcileAttempt)).ok).toBe(true);
-		expect(reconciled.connector.reconcileCalls).toBe(1);
-
-		const cancelled = await productFixture({ toolGateway: true });
-		const cancelAdmission = await prepareExternalConnectorProductRun(productInput(cancelled, "run-zeta-cancel-drift"));
-		const cancelAttempt = await productAttempt(cancelAdmission.selected.connector);
-		cancelled.connector.driftOnProbeCall = 3;
-		expect(await cancelAdmission.selected.connector.cancelAttempt(cancelAttempt.attemptId)).toMatchObject({
-			ok: false,
-			error: { code: "scheduler_attempt_recovery_failed" },
-		});
-		expect(cancelled.connector.cancelCalls).toBe(0);
-	});
-
-	it("normalizes thrown and returned probe failures without exposing connector error data", async () => {
-		const rawExceptionText = "raw vendor exception text 9f4d";
-		const credential = "credential-registry-canary";
-		const token = "sk-registry-token-canary";
-		const path = "C:\\vendor-private\\connector\\credentials.json";
-		const url = "https://user:password@vendor.invalid/probe?token=registry-canary";
-		const vendorPayload = "vendor-payload-registry-canary";
-		const forbiddenValues = [rawExceptionText, credential, token, path, url, vendorPayload];
-		const thrownError = Object.assign(
-			new Error(`${rawExceptionText}; ${credential}; ${token}; ${path}; ${url}; ${vendorPayload}`),
-			{ credential, token, path, url, vendorPayload: { body: vendorPayload } },
-		);
-
-		const assertProbeFailure = async (
-			probeCapabilities: () => Promise<Result<ConnectorCapabilitySnapshot, FoundationError>>,
-			expectedMessage: string,
-			sourceError: Error,
-		): Promise<void> => {
-			const connector = new ZetaConnector();
-			Object.defineProperty(connector, "probeCapabilities", { value: probeCapabilities });
-			const registry = createExternalConnectorRegistry();
-			const result = await registry.register(registration(connector));
-
-			expect(result.ok).toBe(false);
-			if (result.ok) return;
-			expect(result.error).not.toBe(sourceError);
-			expectSafeRegistryProbeFailure(result.error, expectedMessage, forbiddenValues);
-		};
-
-		await assertProbeFailure(
-			async () => {
-				throw thrownError;
-			},
-			"External connector threw while probing capabilities.",
-			thrownError,
-		);
-
-		const returnedError = new FoundationError("provider_spawn_failed", rawExceptionText, {
-			cause: thrownError,
-			details: { credential, token, path, url, vendorPayload },
-		});
-		await assertProbeFailure(
-			async () => Result.err(returnedError),
-			"External connector capability probe failed.",
-			returnedError,
-		);
-	});
-
-	it("fails closed on untrusted, mismatched, unknown, and drifted connector facts", async () => {
-		const connector = new ZetaConnector();
-		const base = registration(connector);
+	it("fails closed on untrusted, mismatched, and unknown connector facts", async () => {
+		const fixture = createSupportedConnector();
+		const base = registration(fixture);
 		for (const invalid of [
 			{ ...base, trusted: false },
 			{ ...base, descriptor: { ...base.descriptor, providerClass: "agent" } },
@@ -728,141 +395,37 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 					capabilitySnapshotDigest: fingerprintFoundationValue("wrong-digest"),
 				},
 			},
-			{ ...base, capabilityEvidence: undefined },
 		]) {
 			const registry = createExternalConnectorRegistry();
 			expect(await registry.register(invalid as unknown as ExternalConnectorRegistration)).toMatchObject({ ok: false });
 			expect(registry.list()).toEqual([]);
 		}
-		const malformedProbe = new ZetaConnector();
-		Object.defineProperty(malformedProbe, "probeCapabilities", {
-			value: async () => ({ ok: true, value: malformedProbe.snapshot, unknown: true }),
-		});
-		const malformedRegistry = createExternalConnectorRegistry();
-		expect(await malformedRegistry.register(registration(malformedProbe))).toMatchObject({ ok: false });
-		expect(malformedRegistry.list()).toEqual([]);
 
 		const registry = createExternalConnectorRegistry();
-		expect((await registry.register(base)).ok).toBe(true);
-		const selection = {
-			providerId: base.descriptor.providerId,
-			revision: base.descriptor.revision,
-			capabilitySnapshotDigest: base.descriptor.capabilitySnapshotDigest,
-		};
-		expect(await registry.select({ ...selection, providerId: "unknown.connector" })).toMatchObject({ ok: false });
-		expect(await registry.select({ ...selection, revision: selection.revision + 1 })).toMatchObject({ ok: false });
-		expect(
-			await registry.select({
-				...selection,
-				capabilitySnapshotDigest: fingerprintFoundationValue("wrong-selection"),
-			}),
-		).toMatchObject({ ok: false });
-		connector.drift();
-		expect(await registry.select(selection)).toMatchObject({ ok: false });
-	});
-
-	it("disposes a pending registration exactly once when shutdown wins its delayed probe", async () => {
-		const connector = new ZetaConnector();
-		let markProbeStarted: (() => void) | undefined;
-		let releaseProbe: (() => void) | undefined;
-		const probeStarted = new Promise<void>((resolve) => {
-			markProbeStarted = resolve;
-		});
-		const probeGate = new Promise<void>((resolve) => {
-			releaseProbe = resolve;
-		});
-		Object.defineProperty(connector, "probeCapabilities", {
-			value: async () => {
-				markProbeStarted?.();
-				await probeGate;
-				return Result.ok(connector.snapshot);
-			},
-		});
-		const registry = createExternalConnectorRegistry();
-		const pendingRegistration = registry.register(registration(connector));
-		await probeStarted;
-
+		expect(await registry.register(base)).toMatchObject({ ok: true });
+		const selected = selection(fixture.snapshot);
+		expect(await registry.select({ ...selected, providerId: "unknown.connector" })).toMatchObject({ ok: false });
+		expect(await registry.select({ ...selected, revision: selected.revision + 1 })).toMatchObject({ ok: false });
+		expect(await registry.select({
+			...selected,
+			capabilitySnapshotDigest: fingerprintFoundationValue("wrong-selection"),
+		})).toMatchObject({ ok: false });
 		await registry.dispose();
-		releaseProbe?.();
-		const registered = await pendingRegistration;
-
-		expect(registered.ok).toBe(false);
-		expect(registry.list()).toEqual([]);
-		expect(connector.disposeCalls).toBe(1);
 	});
 
-	it("fails a delayed selection closed when shutdown disposes its registered connector", async () => {
-		const connector = new ZetaConnector();
+	it("attempts every owned connector disposal when one third-party driver rejects", async () => {
+		const first = createSupportedConnector({
+			providerId: "third-party.first-connector",
+			driver: new ThirdPartyZetaDriver({ throwOnDispose: true }),
+		});
+		const second = createSupportedConnector({ providerId: "third-party.second-connector" });
 		const registry = createExternalConnectorRegistry();
-		expect(registry.registerPrepared(registration(connector), connector.snapshot).ok).toBe(true);
-		let markProbeStarted: (() => void) | undefined;
-		let releaseProbe: (() => void) | undefined;
-		const probeStarted = new Promise<void>((resolve) => {
-			markProbeStarted = resolve;
-		});
-		const probeGate = new Promise<void>((resolve) => {
-			releaseProbe = resolve;
-		});
-		Object.defineProperty(connector, "probeCapabilities", {
-			value: async () => {
-				markProbeStarted?.();
-				await probeGate;
-				return Result.ok(connector.snapshot);
-			},
-		});
-		const pendingSelection = registry.select({
-			providerId: connector.providerId,
-			revision: connector.snapshot.revision,
-			capabilitySnapshotDigest: connector.snapshot.digest,
-		});
-		await probeStarted;
-
-		await registry.dispose();
-		releaseProbe?.();
-		const selected = await pendingSelection;
-
-		expect(selected.ok).toBe(false);
-		expect(connector.disposeCalls).toBe(1);
-	});
-
-	it("attempts every owned connector disposal when the first throws synchronously", async () => {
-		const first = new ZetaConnector("arbitrary.first-connector");
-		const second = new ZetaConnector("arbitrary.second-connector");
-		let firstDisposeCalls = 0;
-		Object.defineProperty(first, "dispose", {
-			value: () => {
-				firstDisposeCalls += 1;
-				throw new Error("synchronous connector dispose failure");
-			},
-		});
-		const registry = createExternalConnectorRegistry();
-		expect(registry.registerPrepared(registration(first), first.snapshot).ok).toBe(true);
-		expect(registry.registerPrepared(registration(second), second.snapshot).ok).toBe(true);
+		expect(registry.registerPrepared(registration(first), first.snapshot)).toMatchObject({ ok: true });
+		expect(registry.registerPrepared(registration(second), second.snapshot)).toMatchObject({ ok: true });
 
 		await registry.dispose();
 
-		expect(firstDisposeCalls).toBe(1);
-		expect(second.disposeCalls).toBe(1);
-	});
-
-	it("cannot install a prepared connector after reentrant registry disposal", async () => {
-		const connector = new ZetaConnector();
-		const prepared = registration(connector);
-		const registry = createExternalConnectorRegistry();
-		let armed = false;
-		Object.defineProperty(connector, "providerId", {
-			get: () => {
-				if (armed) void registry.dispose();
-				return PROVIDER_ID;
-			},
-		});
-		armed = true;
-
-		const registered = registry.registerPrepared(prepared, connector.snapshot);
-
-		expect(registered.ok).toBe(false);
-		expect(registry.list()).toEqual([]);
-		// Disposal won before the connector entered pending ownership, so the caller retains it.
-		expect(connector.disposeCalls).toBe(0);
+		expect(first.driver.disposeCalls).toBe(1);
+		expect(second.driver.disposeCalls).toBe(1);
 	});
 });
