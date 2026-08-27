@@ -2,17 +2,20 @@
 
 import {
 	canonicalFoundationJson,
+	cloneDeepFrozen,
 	FoundationError,
 	type SessionLedger,
 	validateAttempt,
 	validateAttemptReceiptForProvider,
 	validateExecutionCorrelation,
 	validateImmutableAgentBinding,
+	validateToolGatewayRequest,
 	type AgentBinding,
 	type Attempt,
 	type AttemptReceipt,
 	type ExecutionCorrelation,
 	type Fingerprint,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import {
 	cloneCanonicalExternalConnectorMapping,
@@ -81,6 +84,7 @@ export interface ExternalConnectorExecutionInput {
 	readonly taskId: string;
 	readonly requestFingerprint: CanonicalExternalAgentRequestFingerprint;
 	readonly input: CanonicalExternalAgentInput;
+	readonly toolGatewayRequest?: ToolGatewayRequest;
 	readonly modelProjection?: ExternalResolvedModelProjection;
 	readonly modelTranslation?: ExternalTranslatedModelProjection;
 }
@@ -401,15 +405,20 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		const modelTranslation = record.modelTranslation === undefined
 			? undefined
 			: isExternalTranslatedModelProjection(record.modelTranslation) ? record.modelTranslation : null;
+		const toolGatewayRequest = record.toolGatewayRequest === undefined
+			? undefined
+			: validateToolGatewayRequest(record.toolGatewayRequest);
 		if (
 			!checked.ok ||
+			(toolGatewayRequest !== undefined && !toolGatewayRequest.ok) ||
+			(toolGatewayRequest?.ok && toolGatewayRequest.value.context.taskId !== taskId) ||
 			modelProjection === null ||
 			modelTranslation === null ||
 			(modelProjection === undefined) !== (modelTranslation === undefined) ||
 			(modelProjection !== undefined && modelTranslation !== undefined &&
 				modelProjection.bindingDigest.value !== modelTranslation.sourceBindingDigest.value) ||
 			Reflect.ownKeys(record).some(
-				(key) => typeof key !== "string" || !["schemaVersion", "taskId", "requestFingerprint", "input", "modelProjection", "modelTranslation"].includes(key),
+				(key) => typeof key !== "string" || !["schemaVersion", "taskId", "requestFingerprint", "input", "toolGatewayRequest", "modelProjection", "modelTranslation"].includes(key),
 			) ||
 			record.schemaVersion !== 1 ||
 			record.taskId !== taskId ||
@@ -425,6 +434,9 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			taskId,
 			requestFingerprint: record.requestFingerprint as CanonicalExternalAgentRequestFingerprint,
 			input: checked.value,
+			...(toolGatewayRequest === undefined || !toolGatewayRequest.ok
+				? {}
+				: { toolGatewayRequest: cloneDeepFrozen(toolGatewayRequest.value) }),
 			...(modelProjection === undefined ? {} : { modelProjection }),
 			...(modelTranslation === undefined ? {} : { modelTranslation }),
 		});

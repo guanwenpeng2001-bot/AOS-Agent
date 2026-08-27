@@ -215,6 +215,21 @@ describe("canonical External Agent input", () => {
 			"external_binding_invalid",
 			"reference_mismatch",
 		);
+		expectValidationError(
+			{ ...validInput(), artifacts: [{ ...imageArtifact(), mediaType: "image/svg+xml" }] },
+			"external_binding_invalid",
+			"input_invalid",
+		);
+		expectValidationError(
+			{ ...validInput(), artifacts: [{ ...workspaceFileArtifact(), mediaType: "application/x-secret" }] },
+			"external_binding_invalid",
+			"input_invalid",
+		);
+		expectValidationError(
+			{ ...validInput(), artifacts: [{ ...workspaceFileArtifact(), kind: "directory" }] },
+			"external_binding_invalid",
+			"input_invalid",
+		);
 	});
 
 	it("parses invalid JSON into one stable, redacted error", () => {

@@ -38,7 +38,9 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import {
+	type CanonicalExternalAgentArtifactReference,
 	type CanonicalExternalAgentInput,
+	type ExternalAgentArtifactInspection,
 	gateCanonicalExternalAgentInputBeforeAcceptance,
 } from "../../core/external-agent-input.ts";
 import {
@@ -54,6 +56,7 @@ import {
 	prepareExternalConnectorProductRun,
 	recoverExternalConnectorProductRun,
 	type ExternalConnectorProductAdmission,
+	type ExternalConnectorToolGatewayRequestInput,
 } from "../../core/external-connector-product.ts";
 import type { ExternalModelFallbackDecision } from "../../core/external-model-projection.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
@@ -246,6 +249,13 @@ export interface RpcHostControllerOptions {
 	output?: RpcHostOutputSink | RpcOutputSink;
 	/** Called after the runtime has been disposed by an internal shutdown request. */
 	onShutdown?: () => void;
+	/** Trusted Host-only authority for dereferencing canonical External Connector artifacts. */
+	externalArtifactAuthority?: {
+		readonly workspaceId: string;
+		inspectArtifact(
+			reference: CanonicalExternalAgentArtifactReference,
+		): ExternalAgentArtifactInspection | Promise<ExternalAgentArtifactInspection>;
+	};
 }
 
 /** Minimal authoritative Worker registry seam supplied by Host composition. */
@@ -717,6 +727,7 @@ export class RpcHostController {
 	private readonly runtimeHost: AgentSessionRuntime;
 	private outputSink: RpcHostOutputSink | undefined;
 	private readonly onShutdown?: () => void;
+	private readonly externalArtifactAuthority?: NonNullable<RpcHostControllerOptions["externalArtifactAuthority"]>;
 	private commandHandler?: (
 		command: RpcCommand,
 	) => Promise<
@@ -741,6 +752,26 @@ export class RpcHostController {
 		this.runtimeHost = runtimeHost;
 		this.outputSink = options.output === undefined ? undefined : adaptOutputSink(options.output);
 		this.onShutdown = options.onShutdown;
+		this.externalArtifactAuthority = options.externalArtifactAuthority;
+	}
+
+	private inspectExternalArtifact(
+		reference: CanonicalExternalAgentArtifactReference,
+	): ExternalAgentArtifactInspection | Promise<ExternalAgentArtifactInspection> {
+		const authority = this.externalArtifactAuthority;
+		if (authority === undefined) throw new Error("RPC has no trusted artifact reference authority");
+		if (reference.readHandle.kind === "workspace_relative" && reference.readHandle.workspaceId !== authority.workspaceId) {
+			return {
+				artifactId: reference.artifactId,
+				ref: reference.readHandle.ref,
+				digest: reference.digest,
+				mediaType: reference.mediaType,
+				sizeBytes: reference.sizeBytes,
+				trusted: true,
+				workspaceContained: false,
+			};
+		}
+		return authority.inspectArtifact(reference);
 	}
 
 	/**
@@ -1669,10 +1700,17 @@ export class RpcHostController {
 			"deadlineAt",
 			"images",
 			"externalConnector",
+			"artifacts",
+			"toolGatewayRequest",
 			"capabilityProfile",
 			"policyProfile",
 			"modelRoute",
 			"modelRole",
+		]);
+		const EXTERNAL_RUN_RESUME_KEYS = new Set([
+			...EXTERNAL_RUN_START_KEYS,
+			"sessionPath",
+			"sourceRunId",
 		]);
 
 		const slashRunInputError = (
@@ -1991,28 +2029,37 @@ export class RpcHostController {
 				modelRoute?: ModelRouteSelection;
 				modelRole?: ModelRoleSelection;
 				externalConnector?: ExternalConnectorSelection;
+				artifacts?: readonly CanonicalExternalAgentArtifactReference[];
+				toolGatewayRequest?: ExternalConnectorToolGatewayRequestInput;
 				deadlineAt?: string;
 			},
 		): RunRequestIdentity | undefined => {
 			if (clientRequestId === undefined) return undefined;
 			const identityScope = input.targetSessionId ?? sessionId;
+			const baseFingerprint = createRunRequestFingerprint({
+				command,
+				sessionId: identityScope,
+				targetSessionId: input.targetSessionId,
+				sourceRunId: input.sourceRunId,
+				message: input.message,
+				images: input.images,
+				capabilityProfile: input.capabilityProfile,
+				policyProfile: input.policyProfile,
+				modelRoute: input.modelRoute,
+				modelRole: input.modelRole,
+				externalConnector: input.externalConnector,
+				deadlineAt: input.deadlineAt,
+			});
 			return {
 				scopeSessionId: identityScope,
 				clientRequestId,
-				fingerprint: createRunRequestFingerprint({
-					command,
-					sessionId: identityScope,
-					targetSessionId: input.targetSessionId,
-					sourceRunId: input.sourceRunId,
-					message: input.message,
-					images: input.images,
-					capabilityProfile: input.capabilityProfile,
-					policyProfile: input.policyProfile,
-					modelRoute: input.modelRoute,
-					modelRole: input.modelRole,
-					externalConnector: input.externalConnector,
-					deadlineAt: input.deadlineAt,
-				}),
+				fingerprint: input.externalConnector === undefined
+					? baseFingerprint
+					: fingerprintFoundationValue({
+						baseFingerprint,
+						artifacts: input.artifacts ?? [],
+						...(input.toolGatewayRequest === undefined ? {} : { toolGatewayRequest: input.toolGatewayRequest }),
+					}).value,
 				key: `${identityScope}\u0000${clientRequestId}`,
 			};
 		};
@@ -2310,6 +2357,8 @@ export class RpcHostController {
 			commandType: "run.start" | "run.resume",
 			message: string,
 			images: ImageContent[] | undefined,
+			artifacts: readonly CanonicalExternalAgentArtifactReference[] | undefined,
+			toolGatewayRequest: ExternalConnectorToolGatewayRequestInput | undefined,
 			attempt: number,
 			sourceRunId: string | undefined,
 			capabilityProfile: string | undefined,
@@ -2398,6 +2447,8 @@ export class RpcHostController {
 					modelRoute,
 					modelRole,
 					externalConnector,
+					artifacts,
+					toolGatewayRequest,
 					deadlineAt,
 				});
 			let requestClaim: RunRequestIdentity | undefined;
@@ -2572,16 +2623,14 @@ export class RpcHostController {
 				const canonicalInput: CanonicalExternalAgentInput = {
 					schemaVersion: 1,
 					text: message,
-					artifacts: [],
+					artifacts: artifacts ?? [],
 				};
 				const admitted = await gateCanonicalExternalAgentInputBeforeAcceptance(canonicalInput, {
 					capabilities: {
 						artifacts: selected.value.capabilitySnapshot.artifacts,
 						images: selected.value.capabilitySnapshot.images,
 					},
-					inspectArtifact: () => {
-						throw new Error("RPC has no trusted artifact reference authority");
-					},
+					inspectArtifact: (reference) => hostController.inspectExternalArtifact(reference),
 				});
 				if (externalStartWasTornDown()) return abandonExternalStart();
 				if (!admitted.ok) {
@@ -2815,11 +2864,10 @@ export class RpcHostController {
 						message,
 						canonicalInput: externalCanonicalInput,
 						inputAdmission: {
-							inspectArtifact: () => {
-								throw new Error("RPC has no trusted artifact reference authority");
-							},
+							inspectArtifact: (reference) => hostController.inspectExternalArtifact(reference),
 						},
 						workspace: runBinding.session.cwd,
+						...(toolGatewayRequest === undefined ? {} : { toolGatewayRequest }),
 						...(gatewayModelRoute === undefined ? {} : { gatewayModelRoute }),
 					});
 				} catch (err) {
@@ -4816,6 +4864,13 @@ export class RpcHostController {
 				}
 
 				case "run.start": {
+					if (command.externalConnector === undefined && (command.artifacts !== undefined || command.toolGatewayRequest !== undefined)) {
+						return automationError(
+							id,
+							"run.start",
+							createAutomationError("external_binding_invalid", "Canonical external resources require an External Connector selection.", false),
+						);
+					}
 					if (
 						command.externalConnector !== undefined &&
 						!Object.keys(command).every((key) => EXTERNAL_RUN_START_KEYS.has(key))
@@ -4825,7 +4880,7 @@ export class RpcHostController {
 							"run.start",
 							createAutomationError(
 								"external_binding_invalid",
-								"RPC External Connector input supports canonical text only; artifact and image references are unavailable.",
+								"RPC External Connector input contains an unsupported field.",
 								false,
 							),
 						);
@@ -4839,6 +4894,8 @@ export class RpcHostController {
 							"run.start",
 							command.message,
 							command.images,
+							command.artifacts,
+							command.toolGatewayRequest,
 							1,
 							undefined,
 							command.capabilityProfile,
@@ -4959,6 +5016,20 @@ export class RpcHostController {
 							const requestEpoch = transportEpoch;
 							const inputError = slashRunInputError(id, "run.resume", command.message);
 							if (inputError !== undefined) return inputError;
+							if (command.externalConnector === undefined && (command.artifacts !== undefined || command.toolGatewayRequest !== undefined)) {
+								return automationError(
+									id,
+									"run.resume",
+									createAutomationError("external_binding_invalid", "Canonical external resources require an External Connector selection.", false),
+								);
+							}
+							if (command.externalConnector !== undefined && !Object.keys(command).every((key) => EXTERNAL_RUN_RESUME_KEYS.has(key))) {
+								return automationError(
+									id,
+									"run.resume",
+									createAutomationError("external_binding_invalid", "RPC External Connector input contains an unsupported field.", false),
+								);
+							}
 							if (
 								command.externalConnector !== undefined &&
 								!isExternalConnectorSelection(command.externalConnector)
@@ -5080,6 +5151,8 @@ export class RpcHostController {
 							const resumeIdentity = requestIdentity(command.clientRequestId, "run.resume", targetSessionId, {
 								message: command.message,
 								images: command.images,
+								artifacts: command.artifacts,
+								toolGatewayRequest: command.toolGatewayRequest,
 								targetSessionId,
 								sourceRunId: command.sourceRunId,
 								capabilityProfile: command.capabilityProfile,
@@ -5312,13 +5385,12 @@ export class RpcHostController {
 									expectedText: command.message,
 									signal: recoveryController.signal,
 									reconstruction: {
-										canonicalInput: { schemaVersion: 1, text: command.message, artifacts: [] },
+										canonicalInput: { schemaVersion: 1, text: command.message, artifacts: command.artifacts ?? [] },
 										inputAdmission: {
-											inspectArtifact: () => {
-												throw new Error("RPC has no trusted artifact reference authority");
-											},
+											inspectArtifact: (reference) => hostController.inspectExternalArtifact(reference),
 										},
 										workspace: recoveryBinding.session.cwd,
+										...(command.toolGatewayRequest === undefined ? {} : { toolGatewayRequest: command.toolGatewayRequest }),
 										...(sourceRun.record.startedAt === undefined
 											? {}
 											: { acceptedAt: sourceRun.record.startedAt }),
@@ -5378,6 +5450,8 @@ export class RpcHostController {
 								"run.resume",
 								command.message,
 								command.images,
+								command.artifacts,
+								command.toolGatewayRequest,
 								sourceRun.record.attempt + 1,
 								command.sourceRunId,
 								command.capabilityProfile,

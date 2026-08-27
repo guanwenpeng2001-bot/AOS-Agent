@@ -24,6 +24,8 @@ import {
 	type TaskEnvelope,
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
+	type ToolExecutionResult,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
@@ -32,6 +34,7 @@ import {
 } from "../src/core/external-agent-registry.ts";
 import {
 	executeExternalConnectorProductRun,
+	externalConnectorProductIdentity,
 	prepareExternalConnectorProductRun,
 	type ExternalConnectorProductExecutionInput,
 } from "../src/core/external-connector-product.ts";
@@ -116,6 +119,7 @@ class ZetaConnector implements ExternalAgentConnector {
 	reconcileCalls = 0;
 	cancelCalls = 0;
 	toolGatewayCalls = 0;
+	readonly toolGatewayRequests: ToolGatewayRequest[] = [];
 	driftOnProbeCall: number | undefined;
 
 	constructor(providerId: string = PROVIDER_ID, options: {
@@ -208,9 +212,17 @@ class ZetaConnector implements ExternalAgentConnector {
 		this.disposeCalls += 1;
 	}
 
-	invokeToolGateway(): string {
+	invokeToolGateway(request: ToolGatewayRequest): Result<ToolExecutionResult, FoundationError> {
 		this.toolGatewayCalls += 1;
-		return "tool-gateway-reached";
+		this.toolGatewayRequests.push(request);
+		return Result.ok({
+			schemaVersion: 1,
+			toolCallId: request.toolCallId,
+			toolName: request.toolName,
+			ok: true,
+			sideEffectState: "none",
+			toolReceiptRef: `tool-receipt-${request.toolCallId}`,
+		});
 	}
 
 	private receipt(attempt: Attempt, options?: FoundationProviderExecutionOptions): AttemptReceipt {
@@ -254,7 +266,7 @@ function evidence(connector: ZetaConnector): ExternalConnectorRegistration["capa
 		...(connector.snapshot.toolGateway ? {
 			toolGateway: {
 				declaration: { id: "zeta.tool-gateway", revision: 3, reachable: true as const },
-				handler: { id: "zeta.tool-gateway-handler", invoke: () => connector.invokeToolGateway() },
+				handler: { id: "zeta.tool-gateway-handler", invoke: (request: ToolGatewayRequest) => connector.invokeToolGateway(request) },
 			},
 		} : {}),
 		...(connector.snapshot.modelAccess === "aos_gateway" ? {
@@ -308,7 +320,7 @@ async function productFixture(options: { readonly toolGateway: boolean }) {
 function productInput(
 	current: Awaited<ReturnType<typeof productFixture>>,
 	runId: string,
-	requiresToolGateway = false,
+	includeToolGatewayRequest = false,
 ): ExternalConnectorProductExecutionInput {
 	const text = `Execute arbitrary connector product run ${runId}`;
 	return {
@@ -321,7 +333,16 @@ function productInput(
 		canonicalInput: { schemaVersion: 1, text, artifacts: [] },
 		inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 		workspace: "workspace-zeta",
-		...(requiresToolGateway ? { requiresToolGateway: true } : {}),
+		...(includeToolGatewayRequest ? {
+			toolGatewayRequest: {
+				schemaVersion: 1,
+				toolCallId: `tool-call-${runId}`,
+				toolName: "workspace.read",
+				namespace: "workspace",
+				originalArguments: { path: "docs/input.txt" },
+				idempotencyKey: `gateway-${runId}`,
+			},
+		} : {}),
 		now: () => NOW,
 	};
 }
@@ -400,8 +421,7 @@ describe("ExternalConnectorRegistry open SPI", () => {
 			toolGateway: { handlerId: "zeta.tool-gateway-handler" },
 			aosGateway: { handlerId: "zeta.model-gateway-handler" },
 		});
-		expect(selected.value.capabilityHandlers.toolGateway?.()).toBe("tool-gateway-reached");
-		expect(connector.toolGatewayCalls).toBe(1);
+		expect(connector.toolGatewayCalls).toBe(0);
 
 		const scheduler = new SchedulerExecutorRegistry();
 		const entry: SchedulerExecutorEntryV1 = {
@@ -475,6 +495,7 @@ describe("ExternalConnectorRegistry open SPI", () => {
 				provenance: { producerKind: "external_connector" },
 			});
 		}
+		expect(connector.toolGatewayCalls).toBe(0);
 		await registry.dispose();
 		expect(connector.disposeCalls).toBe(1);
 		expect(registry.list()).toEqual([]);
@@ -483,14 +504,48 @@ describe("ExternalConnectorRegistry open SPI", () => {
 	it("executes an arbitrary connector's advertised Tool Gateway handler through the product Attempt", async () => {
 		const current = await productFixture({ toolGateway: true });
 
-		const execution = await executeExternalConnectorProductRun(productInput(current, "run-zeta-tool-gateway"));
+		const runId = "run-zeta-tool-gateway";
+		const execution = await executeExternalConnectorProductRun(productInput(current, runId, true));
+		const identity = externalConnectorProductIdentity(runId, current.connector.providerId);
+		const expectedRequest: ToolGatewayRequest = {
+			schemaVersion: 1,
+			toolCallId: `tool-call-${runId}`,
+			toolName: "workspace.read",
+			namespace: "workspace",
+			originalArguments: { path: "docs/input.txt" },
+			idempotencyKey: `gateway-${runId}`,
+			context: {
+				schemaVersion: 1,
+				bindingId: identity.bindingId,
+				bindingEpochId: identity.bindingEpochId,
+				taskId: identity.taskId,
+				dispatchId: identity.dispatchId,
+				providerId: current.connector.providerId,
+				attemptId: identity.attemptId,
+				operationId: runId,
+			},
+		};
+		const expectedResult: ToolExecutionResult = {
+			schemaVersion: 1,
+			toolCallId: `tool-call-${runId}`,
+			toolName: "workspace.read",
+			ok: true,
+			sideEffectState: "none",
+			toolReceiptRef: `tool-receipt-tool-call-${runId}`,
+		};
 
 		expect(execution.runReceipt.terminalStatus).toBe("completed");
 		expect(execution.attemptReceipt.providerId).toBe("arbitrary.product-connector");
+		expect(execution.toolGatewayExchange).toEqual({ request: expectedRequest, result: expectedResult });
+		expect(Object.isFrozen(execution.toolGatewayExchange)).toBe(true);
+		expect(current.connector.toolGatewayRequests).toEqual([expectedRequest]);
 		expect(current.connector.toolGatewayCalls).toBe(1);
 		expect(current.connector.runCalls).toBe(1);
 		const attempts = await current.session.findFoundationRecords({ objectType: "attempt" });
 		expect(attempts).toHaveLength(1);
+		expect(await current.session.findFoundationRecords({ objectType: "attempt_receipt" })).toHaveLength(1);
+		expect(await current.session.findFoundationRecords({ objectType: "task_result" })).toHaveLength(1);
+		expect(await current.session.findFoundationRecords({ objectType: "run_receipt" })).toHaveLength(1);
 	});
 
 	it("rejects Tool Gateway-required work against an arbitrary false capability before acceptance", async () => {

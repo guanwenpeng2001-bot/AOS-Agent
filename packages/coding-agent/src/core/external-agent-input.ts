@@ -197,6 +197,17 @@ const INSPECTION_KEYS = new Set([
 const UNSAFE_REFERENCE_KEYS = new Set(["bytes", "content", "data", "raw", "url", "uri", "absolutePath", "targetPath"]);
 const SAFE_OPAQUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/;
 const SAFE_MEDIA_TYPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
+const SUPPORTED_MEDIA_TYPES = new Set([
+	"application/json",
+	"application/octet-stream",
+	"application/pdf",
+	"image/gif",
+	"image/jpeg",
+	"image/png",
+	"image/webp",
+	"text/markdown",
+	"text/plain",
+]);
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 
 function inputError(reasonCode: ExternalAgentInputReasonCode): ExternalAgentInputError {
@@ -230,7 +241,7 @@ function isSafeOpaqueId(value: unknown): value is string {
 }
 
 function isSafeMediaType(value: unknown): value is string {
-	return typeof value === "string" && SAFE_MEDIA_TYPE_PATTERN.test(value);
+	return typeof value === "string" && SAFE_MEDIA_TYPE_PATTERN.test(value) && SUPPORTED_MEDIA_TYPES.has(value);
 }
 
 function isCanonicalWorkspaceRelativePath(value: unknown): value is string {

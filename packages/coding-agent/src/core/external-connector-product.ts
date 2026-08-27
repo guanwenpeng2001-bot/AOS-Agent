@@ -1,5 +1,6 @@
 import {
 	canonicalFoundationJson,
+	cloneDeepFrozen,
 	createGoalStore,
 	createHostTerminalGateAuthority,
 	createModelProfileRevision,
@@ -16,6 +17,7 @@ import {
 	validateDispatch,
 	validateTaskEnvelope,
 	validateTaskResult,
+	validateToolGatewayRequest,
 	type AgentBinding,
 	type AttemptReceipt,
 	type BindingEpoch,
@@ -29,6 +31,8 @@ import {
 	type SessionLedgerWriter,
 	type TaskEnvelope,
 	type TaskResult,
+	type ToolExecutionResult,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import {
 	gateCanonicalExternalAgentInputBeforeAcceptance,
@@ -66,8 +70,8 @@ export interface ExternalConnectorProductExecutionInput {
 	readonly inputAdmission: Pick<ExternalAgentInputAdmissionOptions, "inspectArtifact">;
 	readonly workspace: string;
 	readonly signal?: AbortSignal;
-	/** True when this accepted work requires the Connector's advertised Tool Gateway bridge. */
-	readonly requiresToolGateway?: boolean;
+	/** Request material supplied by the caller; the Host supplies immutable execution context. */
+	readonly toolGatewayRequest?: ExternalConnectorToolGatewayRequestInput;
 	readonly gatewayModelRoute?: {
 		readonly provider: string;
 		readonly model: string;
@@ -87,6 +91,14 @@ export interface ExternalConnectorProductExecution {
 	readonly attemptReceipt: AttemptReceipt;
 	readonly taskResult: TaskResult;
 	readonly runReceipt: RunReceipt;
+	readonly toolGatewayExchange?: ExternalConnectorToolGatewayExchange;
+}
+
+export type ExternalConnectorToolGatewayRequestInput = Omit<ToolGatewayRequest, "context">;
+
+export interface ExternalConnectorToolGatewayExchange {
+	readonly request: ToolGatewayRequest;
+	readonly result: ToolExecutionResult;
 }
 
 export interface ExternalConnectorProductRecoveryInput {
@@ -109,7 +121,7 @@ export interface ExternalConnectorProductRecoveryInput {
 		readonly inputAdmission: Pick<ExternalAgentInputAdmissionOptions, "inspectArtifact">;
 		readonly workspace: string;
 		readonly acceptedAt?: string;
-		readonly requiresToolGateway?: boolean;
+		readonly toolGatewayRequest?: ExternalConnectorToolGatewayRequestInput;
 		readonly gatewayModelRoute?: ExternalConnectorProductExecutionInput["gatewayModelRoute"];
 	};
 }
@@ -136,6 +148,7 @@ export interface PreparedExternalConnectorProductRun {
 	readonly dispatch: Dispatch;
 	readonly initialBindingEpoch: BindingEpoch;
 	readonly correlation: ExecutionCorrelation;
+	readonly toolGatewayRequest?: ToolGatewayRequest;
 }
 
 interface PersistedExternalConnectorProductRun {
@@ -163,6 +176,7 @@ export interface ExternalConnectorProductAdmission {
 	};
 	readonly modelProjection?: ExternalResolvedModelProjection;
 	readonly modelTranslation?: ExternalTranslatedModelProjection;
+	readonly toolGatewayRequest?: ToolGatewayRequest;
 }
 
 interface ExternalConnectorModelProjectionPreflight {
@@ -259,6 +273,49 @@ function modelRouteFor(selection: ExternalConnectorResolvedSelection, input: Ext
 	};
 }
 
+const TOOL_GATEWAY_REQUEST_INPUT_KEYS = new Set([
+	"schemaVersion",
+	"toolCallId",
+	"toolName",
+	"namespace",
+	"originalArguments",
+	"idempotencyKey",
+	"deadlineAt",
+]);
+
+function materializeToolGatewayRequest(
+	value: ExternalConnectorToolGatewayRequestInput,
+	input: ExternalConnectorProductExecutionInput,
+	selection: ExternalConnectorResolvedSelection,
+): ToolGatewayRequest {
+	if (
+		value === null ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Reflect.ownKeys(value).some((key) => typeof key !== "string" || !TOOL_GATEWAY_REQUEST_INPUT_KEYS.has(key))
+	) {
+		throw new ExternalConnectorProductError("external_binding_invalid", "External Connector Tool Gateway request is invalid.");
+	}
+	const identity = externalConnectorProductIdentity(input.runId, selection.descriptor.providerId);
+	const checked = validateToolGatewayRequest({
+		...value,
+		context: {
+			schemaVersion: 1,
+			bindingId: identity.bindingId,
+			bindingEpochId: identity.bindingEpochId,
+			taskId: identity.taskId,
+			dispatchId: identity.dispatchId,
+			providerId: selection.descriptor.providerId,
+			attemptId: identity.attemptId,
+			operationId: input.runId,
+		},
+	});
+	if (!checked.ok) {
+		throw new ExternalConnectorProductError("external_binding_invalid", "External Connector Tool Gateway request is invalid.");
+	}
+	return cloneDeepFrozen(checked.value);
+}
+
 /** Read-only pre-accept input, model-route, and driver-translation admission. */
 export async function prepareExternalConnectorProductRun(
 	input: ExternalConnectorProductExecutionInput,
@@ -271,7 +328,7 @@ export async function prepareExternalConnectorProductRun(
 	}
 	const selected = await input.registry.select(input.selection);
 	if (!selected.ok) throw selected.error;
-	if (input.requiresToolGateway === true && !selected.value.capabilityTruth.capabilities.toolGateway) {
+	if (input.toolGatewayRequest !== undefined && !selected.value.capabilityTruth.capabilities.toolGateway) {
 		throw new ExternalConnectorProductError(
 			"external_capability_mismatch",
 			"External connector does not support the required Tool Gateway bridge",
@@ -285,6 +342,9 @@ export async function prepareExternalConnectorProductRun(
 		inspectArtifact: input.inputAdmission.inspectArtifact,
 	});
 	if (!admitted.ok) throw admitted.error;
+	const toolGatewayRequest = input.toolGatewayRequest === undefined
+		? undefined
+		: materializeToolGatewayRequest(input.toolGatewayRequest, input, selected.value);
 	const route = modelRouteFor(selected.value, input);
 	let modelProjection: ExternalResolvedModelProjection | undefined;
 	let modelTranslation: ExternalTranslatedModelProjection | undefined;
@@ -322,6 +382,7 @@ export async function prepareExternalConnectorProductRun(
 		admittedInput: admitted.input,
 		requestFingerprint: admitted.requestFingerprint,
 		route,
+		...(toolGatewayRequest === undefined ? {} : { toolGatewayRequest }),
 		...(modelProjection === undefined ? {} : { modelProjection }),
 		...(modelTranslation === undefined ? {} : { modelTranslation }),
 	};
@@ -331,7 +392,7 @@ export async function prepareExternalConnectorProductRun(
 export async function persistExternalConnectorProductRunAfterAcceptance(
 	admission: ExternalConnectorProductAdmission,
 ): Promise<PreparedExternalConnectorProductRun> {
-	const { input, selected, admittedInput, requestFingerprint, route, modelProjection, modelTranslation } = admission;
+	const { input, selected, admittedInput, requestFingerprint, route, modelProjection, modelTranslation, toolGatewayRequest } = admission;
 	const timestamp = (input.now ?? (() => new Date().toISOString()))();
 	const identityToken = token(input.runId, selected.descriptor.providerId);
 	const identity = externalConnectorProductIdentity(input.runId, selected.descriptor.providerId);
@@ -478,6 +539,7 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 			taskId: persistedTask.value.taskId,
 			requestFingerprint,
 			input: admittedInput,
+			...(toolGatewayRequest === undefined ? {} : { toolGatewayRequest }),
 			...(modelProjection === undefined ? {} : { modelProjection }),
 			...(modelTranslation === undefined ? {} : { modelTranslation }),
 		};
@@ -533,6 +595,7 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 		dispatch,
 		initialBindingEpoch: epoch,
 		correlation,
+		...(toolGatewayRequest === undefined ? {} : { toolGatewayRequest }),
 	};
 }
 
@@ -540,12 +603,21 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 export async function executePreparedExternalConnectorProductRun(
 	prepared: PreparedExternalConnectorProductRun,
 ): Promise<ExternalConnectorProductExecution> {
-	const { input, selected, timestamp, task, binding, dispatch, initialBindingEpoch: epoch, correlation } = prepared;
+	const { input, selected, timestamp, task, binding, dispatch, initialBindingEpoch: epoch, correlation, toolGatewayRequest } = prepared;
 	const settlement = new LayeredResultSettlement(input.session, {
 		ownerId: `external-connector:${binding.bindingId}`,
 		...(input.writer === undefined ? {} : { writer: input.writer }),
 	});
 	try {
+		let toolGatewayExchange: ExternalConnectorToolGatewayExchange | undefined;
+		if (toolGatewayRequest !== undefined) {
+			const gatewayResult = await selected.executeToolGateway(
+				toolGatewayRequest,
+				input.signal === undefined ? undefined : { signal: input.signal },
+			);
+			if (!gatewayResult.ok) throw gatewayResult.error;
+			toolGatewayExchange = cloneDeepFrozen({ request: toolGatewayRequest, result: gatewayResult.value });
+		}
 		const executed = await settlement.executeDispatch({
 			provider: selected.connector,
 			dispatch,
@@ -555,7 +627,7 @@ export async function executePreparedExternalConnectorProductRun(
 			...(input.signal === undefined ? {} : { signal: input.signal }),
 		});
 		if (!executed.ok) throw executed.error;
-		return await settleExternalConnectorProductRun(
+		const execution = await settleExternalConnectorProductRun(
 			settlement,
 			{
 				task,
@@ -568,6 +640,9 @@ export async function executePreparedExternalConnectorProductRun(
 			},
 			input.runId,
 		);
+		return toolGatewayExchange === undefined
+			? execution
+			: Object.freeze({ ...execution, toolGatewayExchange });
 	} finally {
 		await settlement.release();
 	}
@@ -733,6 +808,19 @@ export async function recoverExternalConnectorProductRun(
 						},
 					},
 					workspace: durableTask.workspace,
+					...(durableExecutionInput.toolGatewayRequest === undefined
+						? {}
+						: {
+							toolGatewayRequest: {
+								schemaVersion: 1,
+								toolCallId: durableExecutionInput.toolGatewayRequest.toolCallId,
+								toolName: durableExecutionInput.toolGatewayRequest.toolName,
+								originalArguments: durableExecutionInput.toolGatewayRequest.originalArguments,
+								...(durableExecutionInput.toolGatewayRequest.namespace === undefined ? {} : { namespace: durableExecutionInput.toolGatewayRequest.namespace }),
+								...(durableExecutionInput.toolGatewayRequest.idempotencyKey === undefined ? {} : { idempotencyKey: durableExecutionInput.toolGatewayRequest.idempotencyKey }),
+								...(durableExecutionInput.toolGatewayRequest.deadlineAt === undefined ? {} : { deadlineAt: durableExecutionInput.toolGatewayRequest.deadlineAt }),
+							},
+						}),
 					...(input.signal === undefined ? {} : { signal: input.signal }),
 				},
 				selected: selected.value,
@@ -754,6 +842,9 @@ export async function recoverExternalConnectorProductRun(
 					providerId: selected.value.connector.providerId,
 					revision: 0,
 				},
+				...(durableExecutionInput.toolGatewayRequest === undefined
+					? {}
+					: { toolGatewayRequest: durableExecutionInput.toolGatewayRequest }),
 			};
 		} else {
 			const reconstruction = input.reconstruction;
@@ -771,9 +862,9 @@ export async function recoverExternalConnectorProductRun(
 				inputAdmission: reconstruction.inputAdmission,
 				workspace: reconstruction.workspace,
 				...(input.signal === undefined ? {} : { signal: input.signal }),
-				...(reconstruction.requiresToolGateway === undefined
+				...(reconstruction.toolGatewayRequest === undefined
 					? {}
-					: { requiresToolGateway: reconstruction.requiresToolGateway }),
+					: { toolGatewayRequest: reconstruction.toolGatewayRequest }),
 				...(reconstruction.gatewayModelRoute === undefined
 					? {}
 					: { gatewayModelRoute: reconstruction.gatewayModelRoute }),

@@ -6,12 +6,17 @@ import { join } from "node:path";
 import type { Writable } from "node:stream";
 import {
 	Agent,
+	Result,
 	LayeredResultSettlement,
 	SessionLedger,
 	createConnectorCapabilitySnapshot,
 	fingerprintFoundationValue,
 	type ConnectorCapabilitySnapshot,
+	type ArtifactDigest,
+	type FoundationError,
 	type FoundationJsonValue,
+	type ToolExecutionResult,
+	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +32,10 @@ import { CapabilityError, type CapabilityBinding } from "../src/core/capability-
 import type { PreparedSessionScopeRebind } from "../src/core/current-session-scope.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import type {
+	CanonicalExternalAgentArtifactReference,
+	ExternalAgentArtifactInspection,
+} from "../src/core/external-agent-input.ts";
 import { createExternalConnectorRegistry } from "../src/index.ts";
 import {
 	SessionExternalConnectorDurableStore,
@@ -48,7 +57,12 @@ import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcClient, type RpcRunStreamEvent } from "../src/modes/rpc/rpc-client.ts";
-import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
+import {
+	RpcHostController,
+	type RpcHostControllerOptions,
+	type RpcHostOutputRecord,
+	type RpcHostOutputSink,
+} from "../src/modes/rpc/rpc-host.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 import {
 	createRpcTransport,
@@ -237,6 +251,55 @@ const OPAQUE_SOURCE_ID = `source:${"s".repeat(43)}`;
 const OPAQUE_BINDING_ID = `binding:${"b".repeat(43)}`;
 const OPAQUE_APPROVAL_BINDING_ID = `binding:${"a".repeat(43)}`;
 const OPAQUE_REVISION_ID = `rev:${"r".repeat(43)}`;
+const RPC_IMAGE_ID = "4".repeat(64);
+const RPC_FILE_ID = "5".repeat(64);
+
+function rpcDigest(id: string): ArtifactDigest {
+	return `sha256:${id}`;
+}
+
+function rpcImageArtifact(): CanonicalExternalAgentArtifactReference {
+	return {
+		schemaVersion: 1,
+		artifactId: RPC_IMAGE_ID,
+		kind: "image",
+		digest: rpcDigest(RPC_IMAGE_ID),
+		mediaType: "image/png",
+		sizeBytes: 4,
+		provenance: { source: "artifact_store", producer: "rpc-host", trust: "trusted" },
+		readHandle: { kind: "artifact_store", ref: RPC_IMAGE_ID },
+	};
+}
+
+function rpcWorkspaceArtifact(): CanonicalExternalAgentArtifactReference {
+	return {
+		schemaVersion: 1,
+		artifactId: RPC_FILE_ID,
+		kind: "file",
+		digest: rpcDigest(RPC_FILE_ID),
+		mediaType: "text/plain",
+		sizeBytes: 9,
+		provenance: { source: "workspace", producer: "rpc-host", trust: "trusted" },
+		readHandle: {
+			kind: "workspace_relative",
+			workspaceId: "rpc-workspace",
+			relativePath: "docs/evidence.txt",
+			ref: "rpc-workspace-file",
+		},
+	};
+}
+
+function rpcArtifactInspection(reference: CanonicalExternalAgentArtifactReference): ExternalAgentArtifactInspection {
+	return {
+		artifactId: reference.artifactId,
+		ref: reference.readHandle.ref,
+		digest: reference.digest,
+		mediaType: reference.mediaType,
+		sizeBytes: reference.sizeBytes,
+		trusted: true,
+		workspaceContained: true,
+	};
+}
 
 /** Metadata-only opaque binding injected via getActiveCapabilityBinding spies. */
 const BINDING: CapabilityBinding = {
@@ -496,6 +559,8 @@ interface RpcExternalConnectorFixture {
 	readonly registry: ReturnType<typeof createExternalConnectorRegistry>;
 	readonly snapshot: ConnectorCapabilitySnapshot;
 	readonly supervision: RpcExternalConnectorSupervision;
+	readonly toolGatewayRequests: readonly ToolGatewayRequest[];
+	readonly toolGatewayResults: readonly ToolExecutionResult[];
 	readonly selection: {
 		readonly providerId: string;
 		readonly revision: number;
@@ -515,6 +580,9 @@ async function installRpcExternalConnector(
 		readonly cooperativeCancel?: boolean;
 		readonly resume?: boolean;
 		readonly lookupResult?: ExternalConnectorDriverLookup;
+		readonly toolGateway?: boolean;
+		readonly artifacts?: boolean;
+		readonly images?: boolean;
 		readonly supervision?: RpcExternalConnectorSupervision;
 		readonly supervisionDeadlines?: ReturnType<typeof createExternalConnectorTestSupervision>["options"]["deadlines"];
 		readonly supervisionLimits?: {
@@ -535,9 +603,9 @@ async function installRpcExternalConnector(
 		protocol: { name: "rpc-current-fixture", version: "1" },
 		modelAccess: options.modelAccess,
 		resume: options.resume ?? false,
-		toolGateway: false,
-		artifacts: false,
-		images: false,
+		toolGateway: options.toolGateway ?? false,
+		artifacts: options.artifacts ?? false,
+		images: options.images ?? false,
 	});
 	const canonicalStore = new SessionExternalConnectorDurableStore(new SessionLedger(
 		getAgentCanonicalSession(runtimeHost.session),
@@ -585,6 +653,8 @@ async function installRpcExternalConnector(
 		operationNonce: () => "rpc-operation-nonce",
 	});
 	const registry = createExternalConnectorRegistry();
+	const toolGatewayRequests: ToolGatewayRequest[] = [];
+	const toolGatewayResults: ToolExecutionResult[] = [];
 	const descriptor = {
 		schemaVersion: 1 as const,
 		providerId,
@@ -596,7 +666,7 @@ async function installRpcExternalConnector(
 		descriptor,
 		connector,
 		trusted: true,
-		...(options.modelAccess === "aos_gateway" || options.resume === true
+		...(options.modelAccess === "aos_gateway" || options.resume === true || options.toolGateway === true || options.artifacts === true || options.images === true
 			? {
 					capabilityEvidence: {
 						...(options.resume === true
@@ -615,6 +685,45 @@ async function installRpcExternalConnector(
 									},
 								}
 							: {}),
+						...(options.toolGateway === true
+							? {
+									toolGateway: {
+										declaration: { id: "rpc.tool-gateway", revision: 1, reachable: true as const },
+										handler: {
+											id: "rpc.tool-gateway.handler",
+											invoke: (request: ToolGatewayRequest): Result<ToolExecutionResult, FoundationError> => {
+												toolGatewayRequests.push(request);
+												const result: ToolExecutionResult = {
+													schemaVersion: 1,
+													toolCallId: request.toolCallId,
+													toolName: request.toolName,
+													ok: true,
+													sideEffectState: "none",
+													toolReceiptRef: `rpc-tool-receipt-${request.toolCallId}`,
+												};
+												toolGatewayResults.push(result);
+												return Result.ok(result);
+											},
+										},
+									},
+								}
+							: {}),
+						...(options.artifacts === true
+							? {
+									artifacts: {
+										declaration: { id: "rpc.artifacts", revision: 1, reachable: true as const },
+										handler: { id: "rpc.artifacts.handler", invoke: () => undefined },
+									},
+								}
+							: {}),
+						...(options.images === true
+							? {
+									images: {
+										declaration: { id: "rpc.images", revision: 1, reachable: true as const },
+										handler: { id: "rpc.images.handler", invoke: () => undefined },
+									},
+								}
+							: {}),
 					},
 				}
 			: {}),
@@ -628,6 +737,8 @@ async function installRpcExternalConnector(
 		registry,
 		snapshot,
 		supervision,
+		toolGatewayRequests,
+		toolGatewayResults,
 		selection: {
 			providerId,
 			revision: snapshot.revision,
@@ -871,6 +982,7 @@ async function createRuntimeHost(options: {
 	streamErrorMessage?: string;
 	customTools?: ToolDefinition[];
 	resourceLoader?: ResourceLoader;
+	externalArtifactAuthority?: NonNullable<RpcHostControllerOptions["externalArtifactAuthority"]>;
 }): Promise<{ runtimeHost: AgentSessionRuntime; cleanup: () => Promise<void> }> {
 	const tempDir = join(tmpdir(), `aos-rpc-automation-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
@@ -1034,6 +1146,7 @@ async function startInMemoryController(options: {
 	streamErrorMessage?: string;
 	customTools?: ToolDefinition[];
 	resourceLoader?: ResourceLoader;
+	externalArtifactAuthority?: NonNullable<RpcHostControllerOptions["externalArtifactAuthority"]>;
 }, outputSink?: RpcHostOutputSink): Promise<{
 	controller: RpcHostController;
 	runtimeHost: AgentSessionRuntime;
@@ -1044,6 +1157,7 @@ async function startInMemoryController(options: {
 	const records: RpcHostOutputRecord[] = [];
 	const controller = new RpcHostController(runtimeHost, {
 		output: outputSink ?? { publish: (record) => records.push(record) },
+		...(options.externalArtifactAuthority === undefined ? {} : { externalArtifactAuthority: options.externalArtifactAuthority }),
 	});
 	await controller.start();
 	return { controller, runtimeHost, records, cleanup };
@@ -1701,18 +1815,194 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
-	it("rejects raw and unavailable canonical RPC resources before acceptance or connector side effects", async () => {
-		const rejectedCommands: Array<{ readonly id: string; readonly extra: Record<string, unknown> }> = [
-			{ id: "external-raw-image", extra: { images: [{ type: "image", data: "AA==", mimeType: "image/png" }] } },
-			{ id: "external-unsupported-ref", extra: { artifactRefs: [{ artifactId: "1".repeat(64) }] } },
-			{ id: "external-oversize-ref", extra: { canonicalInput: { sizeBytes: 33 * 1024 * 1024 } } },
-			{ id: "external-untrusted-ref", extra: { canonicalInput: { trust: "untrusted" } } },
-			{ id: "external-workspace-escape", extra: { canonicalInput: { relativePath: "../escape" } } },
+	it("projects canonical RPC artifacts and one exact Tool Gateway exchange through product settlement", async () => {
+		const harness = await startInMemoryController({
+			withAuth: false,
+			responseDelayMs: 0,
+			externalArtifactAuthority: {
+				workspaceId: "rpc-workspace",
+				inspectArtifact: rpcArtifactInspection,
+			},
+		});
+		try {
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "none",
+				toolGateway: true,
+				artifacts: true,
+				images: true,
+			});
+			await harness.controller.handleCommand({ id: "external-canonical-init", type: "initialize", protocolVersion: 1 });
+			const artifacts = structuredClone([rpcImageArtifact(), rpcWorkspaceArtifact()]);
+			const gatewayArguments = { path: "docs/evidence.txt", mode: "metadata" };
+			await harness.controller.handleCommand({
+				id: "external-canonical-start",
+				type: "run.start",
+				message: "execute canonical RPC resources",
+				clientRequestId: "external-canonical-input-1",
+				externalConnector: fixture.selection,
+				artifacts,
+				toolGatewayRequest: {
+					schemaVersion: 1,
+					toolCallId: "rpc-tool-call",
+					toolName: "workspace.read",
+					namespace: "workspace",
+					originalArguments: gatewayArguments,
+					idempotencyKey: "rpc-tool-call-once",
+				},
+			});
+			await vi.waitFor(() => expect(harness.records).toContainEqual(expect.objectContaining({
+				type: "response",
+				id: "external-canonical-start",
+				success: true,
+			})));
+			const response = harness.records.find((record) => record.type === "response" && record.id === "external-canonical-start");
+			expect(response).toMatchObject({ success: true, data: { status: "accepted" } });
+			const runId = (response as { data: { runId: string } }).data.runId;
+			artifacts.length = 0;
+			gatewayArguments.path = "mutated-after-acceptance";
+			await vi.waitFor(() => expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed", runId })));
+
+			const identity = externalConnectorProductIdentity(runId, fixture.selection.providerId);
+			const expectedRequest: ToolGatewayRequest = {
+				schemaVersion: 1,
+				toolCallId: "rpc-tool-call",
+				toolName: "workspace.read",
+				namespace: "workspace",
+				originalArguments: { path: "docs/evidence.txt", mode: "metadata" },
+				idempotencyKey: "rpc-tool-call-once",
+				context: {
+					schemaVersion: 1,
+					bindingId: identity.bindingId,
+					bindingEpochId: identity.bindingEpochId,
+					taskId: identity.taskId,
+					dispatchId: identity.dispatchId,
+					providerId: fixture.selection.providerId,
+					attemptId: identity.attemptId,
+					operationId: runId,
+				},
+			};
+			expect(fixture.toolGatewayRequests).toEqual([expectedRequest]);
+			expect(fixture.toolGatewayResults).toEqual([{
+				schemaVersion: 1,
+				toolCallId: "rpc-tool-call",
+				toolName: "workspace.read",
+				ok: true,
+				sideEffectState: "none",
+				toolReceiptRef: "rpc-tool-receipt-rpc-tool-call",
+			}]);
+			expect(fixture.driver.spawnCalls).toBe(1);
+			expect(fixture.driver.spawnedRequest?.input).toEqual({
+				schemaVersion: 1,
+				text: "execute canonical RPC resources",
+				artifacts: [rpcImageArtifact(), rpcWorkspaceArtifact()],
+			});
+			expect(Object.isFrozen(fixture.driver.spawnedRequest?.input)).toBe(true);
+			expect(Object.isFrozen(fixture.driver.spawnedRequest?.input.artifacts)).toBe(true);
+			expect(Object.isFrozen(fixture.driver.spawnedRequest?.input.artifacts[0]?.readHandle)).toBe(true);
+
+			const session = getAgentCanonicalSession(harness.runtimeHost.session);
+			for (const objectType of ["attempt", "attempt_receipt", "task_result", "run_receipt"]) {
+				expect(await session.findFoundationRecords({ objectType })).toHaveLength(1);
+			}
+			const durableInputs = await session.findFoundationRecords({ objectType: "external_connector_execution_input" });
+			expect(durableInputs).toHaveLength(1);
+			expect(durableInputs[0]).toMatchObject({
+				kind: "fact",
+				payload: { input: { artifacts: [rpcImageArtifact(), rpcWorkspaceArtifact()] }, toolGatewayRequest: expectedRequest },
+			});
+			const replay = await harness.controller.dispatch({
+				id: "external-canonical-replay",
+				type: "audit.replay",
+				runId,
+				scope: "current-session",
+			});
+			expect(replay).toMatchObject({ success: true, data: { status: "complete", run: { status: "completed" } } });
+			const duplicate = await harness.controller.dispatch({
+				id: "external-canonical-duplicate",
+				type: "run.start",
+				message: "execute canonical RPC resources",
+				clientRequestId: "external-canonical-input-1",
+				externalConnector: fixture.selection,
+				artifacts: [rpcImageArtifact(), rpcWorkspaceArtifact()],
+				toolGatewayRequest: {
+					schemaVersion: 1,
+					toolCallId: "rpc-tool-call",
+					toolName: "workspace.read",
+					namespace: "workspace",
+					originalArguments: { path: "docs/evidence.txt", mode: "metadata" },
+					idempotencyKey: "rpc-tool-call-once",
+				},
+			});
+			expect(duplicate).toMatchObject({ success: true, data: { runId, idempotent: true } });
+			const conflict = await harness.controller.dispatch({
+				id: "external-canonical-conflict",
+				type: "run.start",
+				message: "execute canonical RPC resources",
+				clientRequestId: "external-canonical-input-1",
+				externalConnector: fixture.selection,
+				artifacts: [rpcImageArtifact(), rpcWorkspaceArtifact()],
+				toolGatewayRequest: {
+					schemaVersion: 1,
+					toolCallId: "rpc-tool-call",
+					toolName: "workspace.write",
+					namespace: "workspace",
+					originalArguments: { path: "docs/evidence.txt", mode: "metadata" },
+					idempotencyKey: "rpc-tool-call-once",
+				},
+			});
+			expect(conflict).toMatchObject({ success: false, error: { code: "client_request_conflict" } });
+			expect(fixture.toolGatewayRequests).toHaveLength(1);
+			expect(fixture.driver.spawnCalls).toBe(1);
+			const exposed = JSON.stringify({ records: harness.records, durableInputs });
+			expect(exposed).not.toContain("mutated-after-acceptance");
+			expect(exposed).not.toContain("data:image");
+			expect(exposed).not.toContain("https://");
+			expect(exposed).not.toContain("C:\\\\private");
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it("rejects raw, unsupported, oversized, untrusted, mismatched, and escaping RPC references before acceptance", async () => {
+		const rejectedCommands: Array<{
+			readonly id: string;
+			readonly extra: Record<string, unknown>;
+			readonly expectedCode: string;
+			readonly inspectArtifact?: (reference: CanonicalExternalAgentArtifactReference) => ExternalAgentArtifactInspection;
+		}> = [
+			{ id: "external-raw-image", extra: { images: [{ type: "image", data: "AA==", mimeType: "image/png" }] }, expectedCode: "external_binding_invalid" },
+			{ id: "external-raw-bytes", extra: { artifacts: [{ ...rpcImageArtifact(), bytes: [1, 2, 3] }] }, expectedCode: "external_binding_invalid" },
+			{ id: "external-data-url", extra: { artifacts: [{ ...rpcImageArtifact(), readHandle: { ...rpcImageArtifact().readHandle, url: "data:image/png;base64,AA==" } }] }, expectedCode: "external_binding_invalid" },
+			{ id: "external-network-url", extra: { artifacts: [{ ...rpcImageArtifact(), readHandle: { ...rpcImageArtifact().readHandle, url: "https://secret.invalid/image.png" } }] }, expectedCode: "external_binding_invalid" },
+			{ id: "external-absolute-path", extra: { artifacts: [{ ...rpcWorkspaceArtifact(), readHandle: { ...rpcWorkspaceArtifact().readHandle, relativePath: "C:\\private\\secret.txt" } }] }, expectedCode: "external_path_outside_workspace" },
+			{ id: "external-traversal", extra: { artifacts: [{ ...rpcWorkspaceArtifact(), readHandle: { ...rpcWorkspaceArtifact().readHandle, relativePath: "../secret.txt" } }] }, expectedCode: "external_path_outside_workspace" },
+			{ id: "external-unsupported-mime", extra: { artifacts: [{ ...rpcImageArtifact(), mediaType: "image/svg+xml" }] }, expectedCode: "external_binding_invalid" },
+			{ id: "external-unsupported-kind", extra: { artifacts: [{ ...rpcWorkspaceArtifact(), kind: "directory" }] }, expectedCode: "external_binding_invalid" },
+			{ id: "external-oversize", extra: { artifacts: [{ ...rpcImageArtifact(), sizeBytes: 33 * 1024 * 1024 }] }, expectedCode: "external_resource_limit_exceeded" },
+			{ id: "external-untrusted-provenance", extra: { artifacts: [{ ...rpcImageArtifact(), provenance: { ...rpcImageArtifact().provenance, trust: "untrusted" } }] }, expectedCode: "external_binding_invalid" },
+			{ id: "external-untrusted-inspection", extra: { artifacts: [rpcImageArtifact()] }, expectedCode: "external_binding_invalid", inspectArtifact: (reference) => ({ ...rpcArtifactInspection(reference), trusted: false }) },
+			{ id: "external-digest-mismatch", extra: { artifacts: [{ ...rpcImageArtifact(), digest: rpcDigest(RPC_FILE_ID) }] }, expectedCode: "external_binding_invalid" },
+			{ id: "external-authority-digest-mismatch", extra: { artifacts: [rpcImageArtifact()] }, expectedCode: "external_binding_invalid", inspectArtifact: (reference) => ({ ...rpcArtifactInspection(reference), digest: rpcDigest(RPC_FILE_ID) }) },
+			{ id: "external-authority-mismatch", extra: { artifacts: [rpcImageArtifact()] }, expectedCode: "external_binding_invalid", inspectArtifact: (reference) => ({ ...rpcArtifactInspection(reference), sizeBytes: reference.sizeBytes + 1 }) },
+			{ id: "external-workspace-escape", extra: { artifacts: [{ ...rpcWorkspaceArtifact(), readHandle: { ...rpcWorkspaceArtifact().readHandle, workspaceId: "other-workspace" } }] }, expectedCode: "external_path_outside_workspace" },
+			{ id: "external-untrusted-handle", extra: { artifacts: [{ ...rpcImageArtifact(), readHandle: { kind: "network", ref: "network-ref" } }] }, expectedCode: "external_binding_invalid" },
 		];
 		for (const rejected of rejectedCommands) {
-			const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+			const harness = await startInMemoryController({
+				withAuth: false,
+				responseDelayMs: 0,
+				externalArtifactAuthority: {
+					workspaceId: "rpc-workspace",
+					inspectArtifact: rejected.inspectArtifact ?? rpcArtifactInspection,
+				},
+			});
 			try {
-				const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "none" });
+				const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+					modelAccess: "none",
+					artifacts: true,
+					images: true,
+				});
 				await harness.controller.handleCommand({ id: `${rejected.id}-init`, type: "initialize", protocolVersion: 1 });
 				const response = await harness.controller.dispatch({
 					id: rejected.id,
@@ -1721,8 +2011,11 @@ describe("RPC Automation Host run lifecycle", () => {
 					externalConnector: fixture.selection,
 					...rejected.extra,
 				} as RpcCommand);
-				expect(response).toMatchObject({ success: false, error: { code: "external_binding_invalid" } });
-				for (const objectType of ["goal", "task", "attempt"]) {
+				expect(response).toMatchObject({ success: false, error: { code: rejected.expectedCode } });
+				for (const rawValue of ["AA==", "data:image", "secret.invalid", "C:\\private", "../secret.txt"]) {
+					expect(JSON.stringify(response)).not.toContain(rawValue);
+				}
+				for (const objectType of ["goal", "task", "attempt", "attempt_receipt", "run_receipt"]) {
 					expect(await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType })).toEqual([]);
 				}
 				expect(fixture.processController.launchCalls).toBe(0);
@@ -1731,6 +2024,31 @@ describe("RPC Automation Host run lifecycle", () => {
 				await harness.controller.shutdown();
 				await harness.cleanup();
 			}
+		}
+
+		const gatewayHarness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		try {
+			const fixture = await installRpcExternalConnector(gatewayHarness.runtimeHost, { modelAccess: "none" });
+			await gatewayHarness.controller.handleCommand({ id: "external-gateway-capability-init", type: "initialize", protocolVersion: 1 });
+			const response = await gatewayHarness.controller.dispatch({
+				id: "external-gateway-capability",
+				type: "run.start",
+				message: "reject unavailable Tool Gateway",
+				externalConnector: fixture.selection,
+				toolGatewayRequest: {
+					schemaVersion: 1,
+					toolCallId: "unavailable-tool-call",
+					toolName: "workspace.read",
+					originalArguments: {},
+				},
+			});
+			expect(response).toMatchObject({ success: false, error: { code: "external_capability_mismatch" } });
+			expect(fixture.processController.launchCalls).toBe(0);
+			expect(fixture.driver.spawnCalls).toBe(0);
+			expect(await getAgentCanonicalSession(gatewayHarness.runtimeHost.session).findFoundationRecords({ includePruned: true })).toEqual([]);
+		} finally {
+			await gatewayHarness.controller.shutdown();
+			await gatewayHarness.cleanup();
 		}
 	});
 
