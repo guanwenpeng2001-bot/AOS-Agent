@@ -47,8 +47,10 @@ import {
 import {
 	executePreparedExternalConnectorProductRun,
 	externalConnectorProductIdentity,
+	persistExternalConnectorProductAdmissionBeforeAcceptance,
 	persistExternalConnectorProductRunAfterAcceptance,
 	prepareExternalConnectorProductRun,
+	type ExternalConnectorProductExecutionInput,
 } from "../src/core/external-connector-product.ts";
 import { cloneCanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
 import type { ExternalModelSupportMatrix } from "../src/core/external-model-projection.ts";
@@ -433,6 +435,25 @@ function rpcExactModelSupportMatrix(unsupportedServiceTier = false): ExternalMod
 	};
 }
 
+function rpcDurableGatewayModelRoute(
+	effort = "medium",
+	serviceTier = "priority",
+): NonNullable<ExternalConnectorProductExecutionInput["gatewayModelRoute"]> {
+	return {
+		provider: DEFAULT_MODEL.provider,
+		model: DEFAULT_MODEL.id,
+		effort,
+		serviceTier,
+		fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+		bindingDigest: fingerprintFoundationValue({
+			provider: DEFAULT_MODEL.provider,
+			model: DEFAULT_MODEL.id,
+			effort,
+			serviceTier,
+		}),
+	};
+}
+
 class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 	spawnedRequest: ExternalConnectorDriverSpawnRequest | undefined;
 	spawnCalls = 0;
@@ -765,6 +786,7 @@ async function seedRpcExternalRecovery(
 	options: {
 		readonly artifacts?: readonly CanonicalExternalAgentArtifactReference[];
 		readonly toolGatewayRequest?: Omit<ToolGatewayRequest, "context">;
+		readonly gatewayModelRoute?: NonNullable<ExternalConnectorProductExecutionInput["gatewayModelRoute"]>;
 	} = {},
 ): Promise<void> {
 	const session = getAgentCanonicalSession(runtimeHost.session);
@@ -784,8 +806,12 @@ async function seedRpcExternalRecovery(
 		...(options.toolGatewayRequest === undefined
 			? {}
 			: { toolGatewayRequest: options.toolGatewayRequest }),
+		...(options.gatewayModelRoute === undefined
+			? {}
+			: { gatewayModelRoute: options.gatewayModelRoute }),
 		now: () => "2026-08-27T00:00:00.000Z",
 	});
+	await persistExternalConnectorProductAdmissionBeforeAcceptance(admission);
 	sessionLedger(runtimeHost.session).appendCustomEntry(RUN_LEDGER_CUSTOM_TYPE, {
 		schemaVersion: 1,
 		kind: "accepted",
@@ -2534,6 +2560,200 @@ describe("RPC Automation Host run lifecycle", () => {
 		}
 	});
 
+	it("recovers accepted-only AOS gateway execution from exact durable input, request, and model facts", async () => {
+		const harness = await startInMemoryController({
+			withAuth: true,
+			responseDelayMs: 0,
+			externalArtifactAuthority: {
+				workspaceId: "rpc-workspace",
+				inspectArtifact: rpcArtifactInspection,
+			},
+		});
+		try {
+			await harness.runtimeHost.session.prompt("persist accepted-only AOS gateway recovery session");
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, {
+				modelAccess: "aos_gateway",
+				toolGateway: true,
+				artifacts: true,
+				images: true,
+			});
+			await harness.controller.handleCommand({
+				id: "accepted-only-gateway-init",
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			const sourceRunId = "rpc-accepted-only-aos-gateway";
+			const message = "recover exact durable AOS gateway execution";
+			const artifacts = [rpcImageArtifact(), rpcWorkspaceArtifact()];
+			const gatewayRequest = {
+				schemaVersion: 1 as const,
+				toolCallId: "accepted-only-tool-call",
+				toolName: "workspace.read",
+				namespace: "workspace",
+				originalArguments: { path: "docs/evidence.txt", mode: "metadata" },
+				idempotencyKey: "accepted-only-tool-call-once",
+			};
+			const gatewayModelRoute = rpcDurableGatewayModelRoute();
+			await seedRpcExternalRecovery(
+				harness.runtimeHost,
+				fixture,
+				sourceRunId,
+				message,
+				"accepted_only",
+				{ artifacts, toolGatewayRequest: gatewayRequest, gatewayModelRoute },
+			);
+			const sessionPath = harness.runtimeHost.session.sessionFile;
+			expect(sessionPath).toBeTruthy();
+			const originalSwitch = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
+			expect(originalSwitch).toBeDefined();
+			let restoredFixture: RpcExternalConnectorFixture | undefined;
+			vi.spyOn(harness.runtimeHost, "switchSession").mockImplementation(async (path, options) => {
+				const result = await originalSwitch!(path, options);
+				restoredFixture = await installRpcExternalConnector(harness.runtimeHost, {
+					modelAccess: "aos_gateway",
+					toolGateway: true,
+					artifacts: true,
+					images: true,
+				});
+				return result;
+			});
+
+			const response = await harness.controller.dispatch({
+				id: "accepted-only-gateway-resume",
+				type: "run.resume",
+				sessionPath: sessionPath!,
+				sourceRunId,
+				message,
+				externalConnector: fixture.selection,
+				artifacts,
+				toolGatewayRequest: gatewayRequest,
+			});
+
+			expect(response).toMatchObject({
+				success: true,
+				data: { runId: sourceRunId, attempt: 1, status: "accepted" },
+			});
+			await vi.waitFor(() => expect(restoredFixture?.driver.spawnedRequest).toBeDefined());
+			await vi.waitFor(async () => {
+				const receipts = await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({
+					objectType: "run_receipt",
+				});
+				expect(
+					receipts.filter(
+						(record) => record.kind === "fact" && record.correlation.runId === sourceRunId,
+					),
+				).toHaveLength(1);
+			});
+			expect(restoredFixture?.driver.spawnedRequest?.input).toEqual({
+				schemaVersion: 1,
+				text: message,
+				artifacts,
+			});
+			expect(restoredFixture?.driver.spawnedRequest?.modelProjection).toEqual({
+				schemaVersion: 1,
+				provider: gatewayModelRoute.provider,
+				model: gatewayModelRoute.model,
+				effort: gatewayModelRoute.effort,
+				serviceTier: gatewayModelRoute.serviceTier,
+				fallbackDecision: gatewayModelRoute.fallbackDecision,
+				bindingDigest: gatewayModelRoute.bindingDigest,
+			});
+			const identity = externalConnectorProductIdentity(sourceRunId, fixture.selection.providerId);
+			expect(restoredFixture?.toolGatewayRequests).toEqual([{
+				...gatewayRequest,
+				context: {
+					schemaVersion: 1,
+					bindingId: identity.bindingId,
+					bindingEpochId: identity.bindingEpochId,
+					taskId: identity.taskId,
+					dispatchId: identity.dispatchId,
+					providerId: fixture.selection.providerId,
+					attemptId: identity.attemptId,
+					operationId: sourceRunId,
+				},
+			}]);
+			expect(fixture.driver.spawnCalls).toBe(0);
+			expect(fixture.toolGatewayRequests).toHaveLength(0);
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
+	it.each([
+		{ name: "canonical text", resumeMessage: "mismatched canonical text", modelRoute: undefined },
+		{
+			name: "gateway model projection",
+			resumeMessage: undefined,
+			modelRoute: {
+				candidates: [{
+					provider: DEFAULT_MODEL.provider,
+					id: DEFAULT_MODEL.id,
+					thinkingLevel: "low",
+					serviceTier: "standard",
+				}],
+			},
+		},
+	] as const)("rejects accepted-only AOS gateway recovery with mismatched $name before effects", async (testCase) => {
+		const harness = await startInMemoryController({ withAuth: true, responseDelayMs: 0 });
+		try {
+			await harness.runtimeHost.session.prompt("persist accepted-only AOS gateway mismatch session");
+			const fixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "aos_gateway" });
+			await harness.controller.handleCommand({
+				id: `accepted-only-${testCase.name}-init`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			const sourceRunId = `rpc-accepted-only-${testCase.name.replaceAll(" ", "-")}`;
+			const message = "preserve accepted-only canonical input and model projection";
+			await seedRpcExternalRecovery(
+				harness.runtimeHost,
+				fixture,
+				sourceRunId,
+				message,
+				"accepted_only",
+				{ gatewayModelRoute: rpcDurableGatewayModelRoute() },
+			);
+			const sessionPath = harness.runtimeHost.session.sessionFile;
+			expect(sessionPath).toBeTruthy();
+			const originalSwitch = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
+			expect(originalSwitch).toBeDefined();
+			let restoredFixture: RpcExternalConnectorFixture | undefined;
+			vi.spyOn(harness.runtimeHost, "switchSession").mockImplementation(async (path, options) => {
+				const result = await originalSwitch!(path, options);
+				restoredFixture = await installRpcExternalConnector(harness.runtimeHost, { modelAccess: "aos_gateway" });
+				return result;
+			});
+
+			const response = await harness.controller.dispatch({
+				id: `accepted-only-${testCase.name}-resume`,
+				type: "run.resume",
+				sessionPath: sessionPath!,
+				sourceRunId,
+				message: testCase.resumeMessage ?? message,
+				externalConnector: fixture.selection,
+				...(testCase.modelRoute === undefined ? {} : { modelRoute: testCase.modelRoute }),
+			});
+
+			expect(response).toMatchObject({
+				success: false,
+				error: { code: "external_binding_invalid", retryable: false },
+			});
+			expect(fixture.driver.spawnCalls).toBe(0);
+			expect(restoredFixture?.driver.spawnCalls).toBe(0);
+			for (const objectType of ["task", "attempt", "attempt_receipt", "run_receipt"]) {
+				expect(
+					(
+						await getAgentCanonicalSession(harness.runtimeHost.session).findFoundationRecords({ objectType })
+					).filter((record) => record.kind === "fact" && record.correlation.runId === sourceRunId),
+				).toEqual([]);
+			}
+		} finally {
+			await harness.controller.shutdown();
+			await harness.cleanup();
+		}
+	});
+
 	it.each([
 		{
 			name: "accepted-only",
@@ -2722,6 +2942,24 @@ describe("RPC Automation Host run lifecycle", () => {
 				testCase.cutpoint,
 				{ artifacts, toolGatewayRequest: gatewayRequest },
 			);
+			if (testCase.cutpoint === "gateway_after_result_before_dispatch") {
+				const identity = externalConnectorProductIdentity(sourceRunId, fixture.selection.providerId);
+				const cutpointRecords = await getAgentCanonicalSession(
+					harness.runtimeHost.session,
+				).findFoundationRecords({ includePruned: true, order: "oldestFirst" });
+				const attemptIndex = cutpointRecords.findIndex(
+					(record) => record.kind === "fact" && record.objectType === "attempt" && record.objectId === identity.attemptId,
+				);
+				const gatewayIndex = cutpointRecords.findIndex(
+					(record) =>
+						record.kind === "fact" &&
+						record.objectType === EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE &&
+						record.objectId === identity.attemptId,
+				);
+				expect(attemptIndex).toBeGreaterThanOrEqual(0);
+				expect(gatewayIndex).toBeGreaterThan(attemptIndex);
+				expect(fixture.driver.spawnCalls).toBe(0);
+			}
 			const sessionPath = harness.runtimeHost.session.sessionFile;
 			expect(sessionPath).toBeTruthy();
 			const originalSwitch = vi.mocked(harness.runtimeHost.switchSession).getMockImplementation();
