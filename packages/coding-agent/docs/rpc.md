@@ -2764,6 +2764,7 @@ Error codes:
 | `external_event_invalid` | The Connector emitted invalid or out-of-order supervised output | no |
 | `external_resource_limit_exceeded` | Connector input or supervised output exceeded a bounded resource limit | no |
 | `external_path_outside_workspace` | A Connector input or artifact reference resolves outside its trusted workspace | no |
+| `external_tool_route_denied` | Tool Gateway policy or route denied a Connector-originated tool request | no |
 | `external_terminal_ambiguous` | Vendor terminal lookup returned ambiguous state; operator reconciliation is required | no |
 | `side_effect_unknown` | An external effect may have occurred without conclusive durable evidence; automatic retry is forbidden | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { FOUNDATION_ERROR_CODES, FoundationError } from "@aos-agent/agent-core";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import * as publicApi from "../src/index.ts";
@@ -50,6 +51,11 @@ const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 	{
 		code: "external_path_outside_workspace",
 		meaning: "A Connector input or artifact reference resolves outside its trusted workspace",
+		retryable: "no",
+	},
+	{
+		code: "external_tool_route_denied",
+		meaning: "Tool Gateway policy or route denied a Connector-originated tool request",
 		retryable: "no",
 	},
 	{
@@ -120,31 +126,25 @@ function publicAutomationErrorCodes(): readonly string[] {
 	return literals.map((member) => member.value);
 }
 
-function publicAsyncReturnTypeName(exportName: string): string {
+function publicTypePropertyNames(exportName: string): readonly string[] {
 	const { checker, symbol } = inspectPublicEntrypoint();
 	const exported = checker.getExportsOfModule(symbol).find((entry) => entry.name === exportName);
 	if (exported === undefined) throw new Error(`${exportName} is not publicly exported`);
 	const declared = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
-	const declaration = declared.valueDeclaration ?? declared.declarations?.[0];
-	if (declaration === undefined) throw new Error(`${exportName} has no declaration`);
-	const type = checker.getTypeOfSymbolAtLocation(declared, declaration);
-	const signature = type.getCallSignatures()[0];
-	if (signature === undefined) throw new Error(`${exportName} is not callable`);
-	const returnType = checker.getReturnTypeOfSignature(signature);
-	return checker.typeToString(returnType);
+	return checker.getPropertiesOfType(checker.getDeclaredTypeOfSymbol(declared)).map((property) => property.name);
 }
 
 describe("External Connector public exports", () => {
 	it("exports only the current connector contract and safe input gates", () => {
 		expect(typeof publicApi.createExternalConnectorRegistry).toBe("function");
-		expect(typeof publicApi.createProductionExternalAgentConnector).toBe("function");
+		expect(typeof publicApi.createAgentRuntimeCompositionFactory).toBe("function");
 		expect(typeof publicApi.gateCanonicalExternalAgentInputBeforeAcceptance).toBe("function");
 		expect(typeof publicApi.projectExternalModelForExecution).toBe("function");
 	});
 
-	it("types the supported production factory as only the public connector", () => {
-		expect(publicAsyncReturnTypeName("createProductionExternalAgentConnector")).toBe(
-			"Promise<ExternalAgentConnector>",
+	it("keeps Tool Gateway consumer authority out of the public resolved selection", () => {
+		expect(publicTypePropertyNames("ExternalConnectorResolvedSelection")).not.toContain(
+			"bindToolGatewayConsumer",
 		);
 	});
 
@@ -176,6 +176,11 @@ describe("External Connector public exports", () => {
 			"ExternalConnectorBoundedSupervisor",
 			"ExternalConnectorVendorDriver",
 			"ExternalConnectorDriverHandle",
+			"createProductionExternalAgentConnector",
+			"createProductionExternalConnectorSupervision",
+			"ProductionExternalAgentConnectorRuntimeOptions",
+			"ProductionExternalConnectorSupervisionOptions",
+			"bindExternalConnectorToolGatewayConsumer",
 			"executeExternalConnectorProductRun",
 			"externalConnectorProductIdentity",
 			"ExternalConnectorProductExecution",
@@ -209,5 +214,15 @@ describe("External Connector public exports", () => {
 			.filter((row) => row.code?.startsWith("external_") || row.code === "side_effect_unknown");
 		expect(documentedRows).toEqual(CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS);
 		expect(rpcDocs).not.toMatch(/\bexternal_agent_[a-z0-9_]+\b/u);
+	});
+
+	it("publishes Tool Gateway denial through the Foundation error contract", () => {
+		expect(FOUNDATION_ERROR_CODES).toContain("external_tool_route_denied");
+		expect(
+			new FoundationError(
+				"external_tool_route_denied",
+				"External connector Tool Gateway policy or route denied the request.",
+			).category,
+		).toBe("permission");
 	});
 });

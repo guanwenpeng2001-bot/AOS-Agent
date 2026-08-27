@@ -18,6 +18,7 @@ export type ExternalConnectorSupervisorSegment = (typeof EXTERNAL_CONNECTOR_SUPE
 export type ExternalConnectorSupervisorErrorCode =
 	| "external_event_invalid"
 	| "external_resource_limit_exceeded"
+	| "external_tool_route_denied"
 	| "terminal_evidence_invalid"
 	| "tool_gateway_ambiguous"
 	| "tool_gateway_callback_failed"
@@ -1277,6 +1278,13 @@ export async function runExternalConnectorHostOperation<T>(
 
 export function externalConnectorSupervisorFailure(error: unknown): FoundationError {
 	if (error instanceof ExternalConnectorSupervisorError) {
+		if (error.code === "external_tool_route_denied") {
+			return new FoundationError(
+				"external_tool_route_denied",
+				"External connector Tool Gateway policy or route denied the request.",
+				{ details: { segment: error.segment } },
+			);
+		}
 		if (error.code === "external_event_invalid" || error.code === "external_resource_limit_exceeded") {
 			return new FoundationError(
 				error.code,

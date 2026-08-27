@@ -15,14 +15,21 @@ import type {
 	ExternalConnectorOperation,
 } from "../src/core/external-agent-operation.ts";
 import { ProductionExternalConnectorProcessController } from "../src/core/external-connector-process-controller.ts";
-import { createProductionExternalConnectorSupervision } from "../src/core/external-connector-production.ts";
+import {
+	createProductionExternalAgentConnector,
+	createProductionExternalConnectorSupervision,
+} from "../src/core/external-connector-production.ts";
 import { cloneCanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
 import {
 	ExternalConnectorBoundedSupervisor,
 	FileExternalConnectorSupervisorPrivateStateStore,
 	externalConnectorProcessContainment,
 } from "../src/core/external-connector-supervisor.ts";
-import { createExternalConnectorRegistry, createProductionExternalAgentConnector } from "../src/index.ts";
+import {
+	createAgentRuntimeCompositionFactory,
+	createExternalConnectorRegistry,
+	type AgentRuntimeCompositionContext,
+} from "../src/index.ts";
 import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/types.ts";
 
 const processOptions = {
@@ -85,6 +92,24 @@ describe("production External Connector composition", () => {
 		});
 		if (!registered.ok) throw registered.error;
 		expect(registered).toMatchObject({ ok: true });
+		const composition = createAgentRuntimeCompositionFactory({
+			externalConnectorRegistry: () => registry,
+		}).create({
+			session: Object.freeze({}),
+			harness: Object.freeze({}),
+			sessionId: "production-external-connector-composition",
+			models: Object.freeze({}),
+		} as unknown as AgentRuntimeCompositionContext);
+		expect(composition.externalConnectorRegistry).toBe(registry);
+		expect(composition.externalConnectorRegistry?.list()).toEqual([
+			{
+				schemaVersion: 1,
+				providerId: capability.providerId,
+				providerClass: "external_connector",
+				revision: capability.revision,
+				capabilitySnapshotDigest: capability.digest,
+			},
+		]);
 		await registry.dispose();
 	});
 

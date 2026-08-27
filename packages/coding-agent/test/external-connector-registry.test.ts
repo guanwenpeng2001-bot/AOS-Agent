@@ -322,6 +322,7 @@ function registration(
 		readonly toolGateway?: {
 			count: number;
 			readonly requests: ToolGatewayRequest[];
+			readonly denial?: "route" | "policy";
 		};
 	} = {},
 ): ExternalConnectorRegistration {
@@ -341,6 +342,24 @@ function registration(
 									if (toolGateway !== undefined) {
 										toolGateway.count += 1;
 										toolGateway.requests.push(request);
+										if (toolGateway.denial === "route") {
+											return Result.err(new FoundationError("invalid_identifier", "fixture route denied request"));
+										}
+										if (toolGateway.denial === "policy") {
+											return Result.ok({
+												schemaVersion: 1,
+												toolCallId: request.toolCallId,
+												toolName: request.toolName,
+												ok: false,
+												sideEffectState: "none",
+												error: {
+													code: "tool_guard_denied",
+													message: "fixture policy denied request",
+													category: "permission",
+													retryable: false,
+												},
+											});
+										}
 									}
 									const result: ToolExecutionResult = {
 										schemaVersion: 1,
@@ -595,6 +614,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		});
 
 		expect(Object.isFrozen(selected.value.connector)).toBe(true);
+		expect("bindToolGatewayConsumer" in selected.value).toBe(false);
 		expect(await selected.value.connector.probeCapabilities()).toMatchObject({
 			ok: true,
 			value: { providerId: fixture.snapshot.providerId },
@@ -690,6 +710,66 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		await enabledRegistry.dispose();
 		await disabledRegistry.dispose();
 	});
+
+	it.each(["route", "policy"] as const)(
+		"projects Tool Gateway %s denial without collapsing it to unknown side effect",
+		async (kind) => {
+			const gateway = { count: 0, requests: [] as ToolGatewayRequest[], denial: kind };
+			const fixture = createSupportedConnector({
+				toolGateway: true,
+				driver: new ThirdPartyZetaDriver({ emitToolGatewayRequest: true }),
+			});
+			const registry = createExternalConnectorRegistry();
+			expect(await registry.register(registration(fixture, { toolGateway: gateway }))).toMatchObject({
+				ok: true,
+			});
+
+			const execution = await executeExternalConnectorProductRun(
+				productInput(fixture, registry, `run-zeta-tool-gateway-${kind}-denied`),
+			);
+
+				expect(execution).toMatchObject({
+					runReceipt: {
+						terminalStatus: "failed",
+						terminalError: {
+						code: "external_tool_route_denied",
+						category: "permission",
+						retryable: false,
+					},
+				},
+				attemptReceipt: {
+					status: "failed",
+					sideEffectState: "none",
+					error: {
+						code: "external_tool_route_denied",
+						category: "permission",
+						retryable: false,
+					},
+				},
+			});
+			expect(gateway.count).toBe(1);
+			expect(execution.toolGatewayExchanges).toEqual([
+				{
+					request: gateway.requests[0],
+					result: {
+						schemaVersion: 1,
+						toolCallId: `tool-call-run-zeta-tool-gateway-${kind}-denied`,
+						toolName: "workspace.read",
+						ok: false,
+						sideEffectState: "none",
+						error: {
+							code: "external_tool_route_denied",
+							message: "External connector Tool Gateway policy or route denied the request.",
+							category: "permission",
+							retryable: false,
+						},
+					},
+				},
+			]);
+			expect(fixture.driver.writes).toEqual([]);
+			await registry.dispose();
+		},
+	);
 
 	it("rechecks pinned truth before run and routes drift to supervised reconciliation", async () => {
 		const fixture = createDriftingConnector();

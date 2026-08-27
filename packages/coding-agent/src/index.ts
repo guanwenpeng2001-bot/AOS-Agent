@@ -611,9 +611,6 @@ export {
 	type ExternalConnectorResolvedSelection,
 	type ExternalConnectorSelection,
 } from "./core/external-agent-registry.ts";
-// Supported Host construction path. Raw connector construction and Host-proof
-// inspection remain private so structural connectors cannot mint registry trust.
-export { createProductionExternalAgentConnector } from "./core/external-connector-production.ts";
 export {
 	CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS,
 	CANONICAL_EXTERNAL_AGENT_INPUT_SCHEMA_VERSION,

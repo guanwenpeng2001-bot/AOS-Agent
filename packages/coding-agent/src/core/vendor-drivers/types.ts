@@ -183,6 +183,10 @@ const EXTERNAL_CONNECTOR_TERMINAL_ERRORS = Object.freeze({
 		message: "External connector exceeded a supervised resource limit.",
 		category: "side_effect_unknown",
 	},
+	external_tool_route_denied: {
+		message: "External connector Tool Gateway policy or route denied the request.",
+		category: "permission",
+	},
 	run_deadline_exceeded: {
 		message: "External connector run deadline was exceeded.",
 		category: "deadline",

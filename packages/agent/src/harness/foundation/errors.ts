@@ -40,6 +40,7 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"external_protocol_unsupported",
 	"external_resource_limit_exceeded",
 	"external_resume_unsupported",
+	"external_tool_route_denied",
 	"external_terminal_ambiguous",
 	"side_effect_unknown",
 	"role_not_found",
@@ -185,6 +186,7 @@ export function foundationErrorCategory(code: FoundationErrorCode): FoundationEr
 	if (code.includes("cursor") || code.startsWith("session_writer") || code.startsWith("binding_epoch")) return "concurrency";
 	if (code.endsWith("_not_found")) return "not_found";
 	if (code.endsWith("_conflict")) return "conflict";
+	if (code === "external_tool_route_denied") return "permission";
 	if (code.includes("budget") || code.includes("quota") || code.includes("not_authorized")) return "permission";
 	if (code.startsWith("external_") || code.includes("provider") || code.includes("side_effect") || code.includes("service_") || code.includes("plugin_")) return "provider";
 	if (code === "scheduler_lease_lost" || code === "scheduler_claim_expired") return "concurrency";

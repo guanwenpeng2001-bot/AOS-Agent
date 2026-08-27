@@ -47,10 +47,11 @@ import {
 	type ExternalResolvedModelProjection,
 	type ExternalTranslatedModelProjection,
 } from "./external-model-projection.ts";
-import type {
-	ExternalConnectorRegistry,
-	ExternalConnectorResolvedSelection,
-	ExternalConnectorSelection,
+import {
+	bindExternalConnectorToolGatewayConsumer,
+	type ExternalConnectorRegistry,
+	type ExternalConnectorResolvedSelection,
+	type ExternalConnectorSelection,
 } from "./external-agent-registry.ts";
 import {
 	EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE,
@@ -682,7 +683,7 @@ export async function executePreparedExternalConnectorProductRun(
 	});
 	let releaseToolGatewayConsumer: (() => void) | undefined;
 	try {
-		releaseToolGatewayConsumer = selected.bindToolGatewayConsumer(epoch.attemptId);
+		releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(selected, epoch.attemptId);
 		const started = await settlement.startDispatch({
 			provider: selected.connector,
 			dispatch,
@@ -1051,7 +1052,10 @@ export async function recoverExternalConnectorProductRun(
 		});
 		let releaseToolGatewayConsumer: (() => void) | undefined;
 		try {
-			releaseToolGatewayConsumer = prepared.selected.bindToolGatewayConsumer(identity.attemptId);
+			releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(
+				prepared.selected,
+				identity.attemptId,
+			);
 			const started = await settlement.startDispatch({
 				provider: prepared.selected.connector,
 				dispatch: prepared.dispatch,

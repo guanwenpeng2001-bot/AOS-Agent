@@ -322,14 +322,24 @@ function supervisedFailureEvidence(
 	let code:
 		| "external_event_invalid"
 		| "external_resource_limit_exceeded"
+		| "external_tool_route_denied"
 		| "run_deadline_exceeded"
 		| "side_effect_unknown";
 	let message: string;
-	let category: "side_effect_unknown" | "deadline";
+	let category: "side_effect_unknown" | "deadline" | "permission";
+	let sideEffectState: "none" | "unknown" = "unknown";
 	if (isDeadlineAbort(sourceSignal)) {
 		code = "run_deadline_exceeded";
 		message = "External connector run deadline was exceeded.";
 		category = "deadline";
+	} else if (
+		error instanceof ExternalConnectorSupervisorError &&
+		error.code === "external_tool_route_denied"
+	) {
+		code = "external_tool_route_denied";
+		message = "External connector Tool Gateway policy or route denied the request.";
+		category = "permission";
+		sideEffectState = "none";
 	} else if (
 		error instanceof ExternalConnectorSupervisorError &&
 		(error.code === "tool_gateway_ambiguous" || error.code === "tool_gateway_callback_failed")
@@ -360,7 +370,7 @@ function supervisedFailureEvidence(
 		status: "failed",
 		artifacts: [],
 		error: { code, message, category, retryable: false },
-		sideEffectState: "unknown",
+		sideEffectState,
 		producedAt: now(),
 	};
 }
@@ -1756,7 +1766,12 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					}
 				} else {
 					const gatewayResult = await consumer(request, { signal });
-					if (!gatewayResult.ok) throw gatewayResult.error;
+					if (!gatewayResult.ok) {
+						if (gatewayResult.error.code === "external_tool_route_denied") {
+							throw new ExternalConnectorSupervisorError("external_tool_route_denied", "event", false);
+						}
+						throw gatewayResult.error;
+					}
 					const terminal: ExternalConnectorToolGatewayTerminal = {
 						schemaVersion: 1,
 						type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
@@ -1781,6 +1796,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			const terminal = execution?.terminal;
 			if (terminal === undefined) {
 				throw new ExternalConnectorSupervisorError("tool_gateway_ambiguous", "event", false);
+			}
+			if (!terminal.result.ok && terminal.result.error?.code === "external_tool_route_denied") {
+				throw new ExternalConnectorSupervisorError("external_tool_route_denied", "event", false);
 			}
 			try {
 				await this.#driver.write(

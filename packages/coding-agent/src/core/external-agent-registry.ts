@@ -67,9 +67,14 @@ export interface ExternalConnectorResolvedSelection {
 	readonly connector: ExternalAgentConnector;
 	readonly capabilitySnapshot: ConnectorCapabilitySnapshot;
 	readonly capabilityTruth: ExternalCapabilityTruthSnapshot;
-	/** @internal Bind this Host selection as the consumer authority for one durable Attempt. */
-	bindToolGatewayConsumer(attemptId: string): () => void;
 }
+
+type ExternalConnectorToolGatewayConsumerBinder = (attemptId: string) => () => void;
+
+const externalConnectorToolGatewayConsumerBinders = new WeakMap<
+	ExternalConnectorResolvedSelection,
+	ExternalConnectorToolGatewayConsumerBinder
+>();
 
 export interface ExternalConnectorRegistry {
 	register(
@@ -128,6 +133,49 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 function connectorRegistryError(message: string): FoundationError {
 	return new FoundationError("task_executor_invalid_provider_class", message);
+}
+
+const EXTERNAL_CONNECTOR_TOOL_GATEWAY_ROUTE_DENIAL_CODES: ReadonlySet<string> = new Set([
+	"external_tool_route_denied",
+	"invalid_identifier",
+	"tool_guard_denied",
+	"tool_pre_hook_denied",
+	"transport_not_authorized",
+]);
+
+const EXTERNAL_CONNECTOR_TOOL_GATEWAY_POLICY_DENIAL_CODES: ReadonlySet<string> = new Set([
+	"external_tool_route_denied",
+	"tool_guard_denied",
+	"tool_pre_hook_denied",
+	"transport_not_authorized",
+]);
+
+function externalConnectorToolGatewayDeniedResult(request: ToolGatewayRequest): ToolExecutionResult {
+	return cloneDeepFrozen({
+		schemaVersion: 1,
+		toolCallId: request.toolCallId,
+		toolName: request.toolName,
+		ok: false,
+		sideEffectState: "none",
+		error: {
+			code: "external_tool_route_denied",
+			message: "External connector Tool Gateway policy or route denied the request.",
+			category: "permission",
+			retryable: false,
+		},
+	});
+}
+
+/** @internal Bind the private Tool Gateway consumer for a selected durable Attempt. */
+export function bindExternalConnectorToolGatewayConsumer(
+	selection: ExternalConnectorResolvedSelection,
+	attemptId: string,
+): () => void {
+	const bind = externalConnectorToolGatewayConsumerBinders.get(selection);
+	if (bind === undefined) {
+		throw connectorRegistryError("External connector selection has no Tool Gateway consumer authority.");
+	}
+	return bind(attemptId);
 }
 
 function isConnectorRecord(value: unknown): value is Record<string, unknown> {
@@ -739,11 +787,14 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				);
 			}
 			if (!result.ok) {
-				return hasExactConnectorKeys(result, RESULT_ERROR_KEYS) && FoundationError.is(result.error)
-					? Result.err(result.error)
-					: Result.err(
-							connectorRegistryError("External connector Tool Gateway handler returned a malformed failure."),
-						);
+				if (!hasExactConnectorKeys(result, RESULT_ERROR_KEYS) || !FoundationError.is(result.error)) {
+					return Result.err(
+						connectorRegistryError("External connector Tool Gateway handler returned a malformed failure."),
+					);
+				}
+				return EXTERNAL_CONNECTOR_TOOL_GATEWAY_ROUTE_DENIAL_CODES.has(result.error.code)
+					? Result.ok(externalConnectorToolGatewayDeniedResult(canonicalRequest))
+					: Result.err(result.error);
 			}
 			if (!hasExactConnectorKeys(result, RESULT_OK_KEYS)) {
 				return Result.err(
@@ -760,22 +811,28 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 					connectorRegistryError("External connector Tool Gateway result does not match its request."),
 				);
 			}
+			if (
+				!checkedResult.value.ok &&
+				checkedResult.value.error !== undefined &&
+				EXTERNAL_CONNECTOR_TOOL_GATEWAY_POLICY_DENIAL_CODES.has(checkedResult.value.error.code)
+			) {
+				return Result.ok(externalConnectorToolGatewayDeniedResult(canonicalRequest));
+			}
 			return Result.ok(cloneDeepFrozen(checkedResult.value));
 		};
-		const bindToolGatewayConsumer: ExternalConnectorResolvedSelection["bindToolGatewayConsumer"] = (attemptId) =>
+		const bindToolGatewayConsumer: ExternalConnectorToolGatewayConsumerBinder = (attemptId) =>
 			Reflect.apply(registered.implementation.bindToolGatewayConsumer, registered.connector, [
 				attemptId,
 				executeToolGateway,
 			]);
-		return Result.ok(
-			Object.freeze({
-				descriptor: registered.descriptor,
-				connector: registered.selectedConnector,
-				capabilitySnapshot: verified.value.snapshot,
-				capabilityTruth: verified.value.truth,
-				bindToolGatewayConsumer,
-			}),
-		);
+		const resolvedSelection: ExternalConnectorResolvedSelection = Object.freeze({
+			descriptor: registered.descriptor,
+			connector: registered.selectedConnector,
+			capabilitySnapshot: verified.value.snapshot,
+			capabilityTruth: verified.value.truth,
+		});
+		externalConnectorToolGatewayConsumerBinders.set(resolvedSelection, bindToolGatewayConsumer);
+		return Result.ok(resolvedSelection);
 	}
 
 	list(): readonly ExternalConnectorDescriptor[] {

@@ -658,6 +658,7 @@ export type AutomationErrorCode =
 	| "external_event_invalid"
 	| "external_resource_limit_exceeded"
 	| "external_path_outside_workspace"
+	| "external_tool_route_denied"
 	| "external_terminal_ambiguous"
 	// Capability preflight / resume failures. These keep profile, connection,
 	// authorization and binding problems in the structured Automation Host error
@@ -787,6 +788,7 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "external_event_invalid" ||
 		value === "external_resource_limit_exceeded" ||
 		value === "external_path_outside_workspace" ||
+		value === "external_tool_route_denied" ||
 		value === "external_terminal_ambiguous" ||
 		value === "capability_profile_not_found" ||
 		value === "capability_denied" ||
@@ -2272,6 +2274,8 @@ export function serializePublicAutomationError(error: AutomationError, message?:
 				? "External connector emitted invalid supervised output."
 				: error.code === "external_resource_limit_exceeded"
 					? "External connector exceeded a supervised resource limit."
+					: error.code === "external_tool_route_denied"
+						? "External connector Tool Gateway policy or route denied the request."
 					: "Run failed."),
 		error.retryable,
 	);
