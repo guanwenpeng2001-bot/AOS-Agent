@@ -480,6 +480,28 @@ function mappingFor(value: Fixture): CanonicalExternalConnectorMapping {
 	});
 }
 
+async function persistSupervisorIdentity(value: Fixture): Promise<void> {
+	const mapping = mappingFor(value);
+	const handle = value.supervision.processController.launch({
+		supervisorRef: mapping.supervisor.ref,
+		operationNonce: mapping.supervisor.nonce,
+		detached: false,
+		containment: value.supervision.options.containment,
+	});
+	value.supervision.processController.launchCalls = 0;
+	await value.supervision.privateStateStore.write(value.attempt.attemptId, {
+		schemaVersion: 1,
+		reference: {
+			schemaVersion: 1,
+			supervisorRef: mapping.supervisor.ref,
+			operationNonce: mapping.supervisor.nonce,
+		},
+		detached: false,
+		containment: value.supervision.options.containment,
+		processIdentity: handle.identity,
+	});
+}
+
 function receiptFor(value: Fixture, receiptProviderId = providerId): AttemptReceipt {
 	const attemptReceiptId = `attempt_receipt_${value.attempt.attemptId}`;
 	return {
@@ -579,6 +601,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		persistAttempt(value);
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
 		const resumed = await value.connector.resumeAttempt(value.attempt, { correlation });
 		expect(resumed.ok).toBe(true);
 		expect(value.driver.calls.connect).toBe(1);
@@ -593,6 +616,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 		const mapping = mappingFor(value);
 		value.store.mappings.set(value.attempt.attemptId, mapping);
+		await persistSupervisorIdentity(value);
 		value.driver.connectHandle = {
 			externalSessionId: "different-external-session",
 			externalTurnId: mapping.externalTurnId,
@@ -645,6 +669,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		persistAttempt(value);
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
 		value.driver.eventValues = [{
 			schemaVersion: 1,
 			type: "progress",
@@ -788,6 +813,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		persistAttempt(value);
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
 		const first = await value.connector.cancelAttempt(value.attempt.attemptId);
 		const second = await value.connector.cancelAttempt(value.attempt.attemptId);
 		expect(first.ok).toBe(true);
@@ -803,6 +829,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 		const mapping = mappingFor(value);
 		value.store.mappings.set(value.attempt.attemptId, mapping);
+		await persistSupervisorIdentity(value);
 		value.driver.connectHandle = {
 			externalSessionId: mapping.externalSessionId,
 			externalTurnId: "different-external-turn",
@@ -844,11 +871,64 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.store.operations.get(value.attempt.attemptId)?.status).toBe("reconcile_required");
 	});
 
+	it("closes the launch-before-private-identity-persist window before driver start", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.supervision.privateStateStore.failWrites = 1;
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed.ok).toBe(false);
+		expect(value.supervision.processController.launchCalls).toBe(1);
+		expect(value.supervision.processController.forceCalls).toBe(1);
+		expect(value.driver.calls.spawn).toBe(0);
+		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
+		expect(value.store.operations.get(value.attempt.attemptId)?.status).toBe("reconcile_required");
+	});
+
+	it("fails closed and retains exact identity when launch cleanup cannot be confirmed", async () => {
+		const value = await fixture();
+		persistAttempt(value);
+		value.supervision.privateStateStore.failWrites = 1;
+		value.supervision.processController.forceExits = false;
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed.ok).toBe(false);
+		expect(value.supervision.processController.forceCalls).toBe(1);
+		expect(value.driver.calls.spawn).toBe(0);
+		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toMatchObject({
+			reference: { operationNonce: "operation-nonce-1" },
+			processIdentity: { pid: 20_000, startToken: "start-20000" },
+		});
+		expect(value.store.operations.get(value.attempt.attemptId)?.status).toBe("reconcile_required");
+	});
+
+	it("never launches a replacement supervisor during resume, reconcile, or cancellation recovery", async () => {
+		for (const recovery of ["resume", "reconcile", "cancel"] as const) {
+			const value = await fixture();
+			persistAttempt(value);
+			value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
+			value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+
+			const result = recovery === "resume"
+				? await value.connector.resumeAttempt(value.attempt, { correlation })
+				: recovery === "reconcile"
+					? await value.connector.reconcileAttempt(value.attempt, { correlation })
+					: await value.connector.cancelAttempt(value.attempt.attemptId);
+
+			expect(result.ok).toBe(false);
+			expect(value.supervision.processController.launchCalls).toBe(0);
+			expect(value.driver.calls).toMatchObject({ spawn: 0, connect: 0, lookup: 0, cancel: 0 });
+		}
+	});
+
 	it("reconciles with mapping and driver lookup without restarting", async () => {
 		const value = await fixture();
 		persistAttempt(value);
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "reconcile_required"));
 		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
 		value.driver.lookupResult = { status: "terminal", evidence: terminalEvidence() };
 		const reconciled = await value.connector.reconcileAttempt(value.attempt, { correlation });
 		expect(reconciled.ok).toBe(true);
@@ -863,6 +943,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 		const mapping = mappingFor(value);
 		value.store.mappings.set(value.attempt.attemptId, mapping);
+		await persistSupervisorIdentity(value);
 		value.driver.lookupResult = {
 			status: "running",
 			handle: {
@@ -886,6 +967,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		persistAttempt(value);
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
 		value.driver.lookupResult = { status: "running", handle: value.driver.handle, transcript: "untrusted" };
 
 		const reconciled = await value.connector.reconcileAttempt(value.attempt, { correlation });
@@ -1080,6 +1162,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		persistAttempt(value);
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "reconcile_required"));
 		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
 		value.driver.lookupResult = {
 			status: "terminal",
 			evidence: terminalEvidence("succeeded", { operationNonce: "different-nonce" }),
