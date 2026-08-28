@@ -26,7 +26,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 			providers: [createLocalToolGatewayProvider({
 				providerId: "local-1",
 				revision: 1,
-				routes: [{ kind: "local", namespace: "mcp-server", toolName: "read", providerId: "local-1", revision: 1 }],
+				routes: [{ kind: "local", namespace: "mcp-server", toolName: "read", providerId: "local-1", revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 				invoke: async (value) => ({ ok: true, value: { schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" } }),
 			})],
 		});
@@ -64,7 +64,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		const provider = createSandboxOperationToolGatewayProvider({
 			providerId: "sandbox-1",
 			revision: 1,
-			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: "sandbox-1", revision: 1 }],
+			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: "sandbox-1", revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 			sandbox,
 			translator: createDefaultSandboxOperationTranslator(() => "operation-1"),
 		});
@@ -83,7 +83,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		const payloadTampered = createSandboxOperationToolGatewayProvider({
 			providerId: "sandbox-1",
 			revision: 1,
-			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: "sandbox-1", revision: 1 }],
+			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: "sandbox-1", revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 			sandbox,
 			translator: { translate: () => Result.ok({ schemaVersion: 1, operationId: "tampered", providerId: "sandbox-1", bindingId: "binding-1", bindingEpochId: "epoch-1", toolCallId: "call-1", toolName: "read", namespace: "mcp-server", taskId: "task-1", payload: { path: "other.txt" } }) },
 		});
@@ -95,7 +95,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		const provider = (providerId: string) => createLocalToolGatewayProvider({
 			providerId,
 			revision: 1,
-			routes: [{ kind: "local", toolName: "read", providerId, revision: 1 }],
+			routes: [{ kind: "local", toolName: "read", providerId, revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 			invoke: async (value) => ({ ok: true, value: { schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" } }),
 		});
 		expect(() => createFoundationToolGateway({ gatewayId: "gateway-3", providers: [provider("local-1"), provider("local-2")] }))
@@ -103,7 +103,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		const missing = createLocalToolGatewayProvider({
 			providerId: "local-1",
 			revision: 1,
-			routes: [{ kind: "local", toolName: "read", providerId: "missing", revision: 1 }],
+			routes: [{ kind: "local", toolName: "read", providerId: "missing", revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 			invoke: async (value) => Result.ok({ schemaVersion: 1, toolCallId: value.toolCallId, toolName: value.toolName, ok: true, sideEffectState: "none" }),
 		});
 		expect(() => createFoundationToolGateway({ gatewayId: "gateway-missing", providers: [missing] }))
@@ -130,7 +130,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		const throwingProvider = createSandboxOperationToolGatewayProvider({
 			providerId: sandbox.providerId,
 			revision: 1,
-			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: sandbox.providerId, revision: 1 }],
+			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: sandbox.providerId, revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 			sandbox,
 			translator: createDefaultSandboxOperationTranslator(() => "callback-operation"),
 			onOperationPayload: () => {
@@ -145,7 +145,7 @@ describe("T4 ToolGateway and SandboxOperationProvider", () => {
 		const hangingProvider = createSandboxOperationToolGatewayProvider({
 			providerId: sandbox.providerId,
 			revision: 1,
-			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: sandbox.providerId, revision: 1 }],
+			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: sandbox.providerId, revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 			sandbox,
 			translator: createDefaultSandboxOperationTranslator(() => "hanging-operation"),
 		});

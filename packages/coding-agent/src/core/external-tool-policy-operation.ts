@@ -1,6 +1,7 @@
-import type {
-	ToolGatewayRequest,
-	ToolGatewayRoute,
+import {
+	isToolGatewayRoute,
+	type ToolGatewayRequest,
+	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import { PolicyError, type PolicyOperationRequest } from "./execution-policy.ts";
 import {
@@ -8,7 +9,6 @@ import {
 	resolveHostPathForPolicy,
 	type HostFilesystemRoots,
 } from "./policy-filesystem.ts";
-import type { PolicyEffect } from "./protected-path-policy.ts";
 
 export interface ExternalToolPolicyOperationInput {
 	readonly request: ToolGatewayRequest;
@@ -17,18 +17,6 @@ export interface ExternalToolPolicyOperationInput {
 	readonly roots: HostFilesystemRoots;
 	readonly capabilityId?: string;
 }
-
-const RAW_COMMAND_EFFECTS = Object.freeze([
-	"write",
-	"create",
-	"delete",
-	"move",
-	"command",
-	"network",
-	"commit",
-	"push",
-	"merge",
-] satisfies readonly PolicyEffect[]);
 
 function record(value: unknown): Readonly<Record<string, unknown>> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -48,19 +36,6 @@ function requiredStringArgument(args: Readonly<Record<string, unknown>>, ...keys
 	const value = stringArgument(args, ...keys);
 	if (value === undefined) throw new PolicyError("protected_path_invalid");
 	return value;
-}
-
-function routeIdentity(route: ToolGatewayRoute): string {
-	const toolName = route.toolName.toLowerCase();
-	const namespace = route.namespace?.toLowerCase();
-	if (namespace === undefined || toolName.startsWith(`${namespace}.`)) return toolName;
-	return `${namespace}.${toolName}`;
-}
-
-function routeLeaf(route: ToolGatewayRoute): string {
-	const identity = routeIdentity(route);
-	const separator = identity.lastIndexOf(".");
-	return separator === -1 ? identity : identity.slice(separator + 1);
 }
 
 async function canonicalPath(input: ExternalToolPolicyOperationInput, targetPath: string, access: "read" | "write") {
@@ -91,115 +66,74 @@ function common(input: ExternalToolPolicyOperationInput) {
 export async function classifyExternalToolPolicyOperation(
 	input: ExternalToolPolicyOperationInput,
 ): Promise<PolicyOperationRequest> {
+	if (
+		!isToolGatewayRoute(input.route) ||
+		input.request.toolName !== input.route.toolName ||
+		input.request.namespace !== input.route.namespace
+	) throw new PolicyError("protected_path_invalid");
 	const args = record(input.request.originalArguments);
-	const identity = routeIdentity(input.route);
-	const leaf = routeLeaf(input.route);
 	const base = common(input);
+	const operation = input.route.operation;
 
-	if (["read", "find", "grep", "search"].includes(leaf)) {
+	if (["filesystem.read", "filesystem.find", "filesystem.grep"].includes(operation.resource)) {
 		const targetPath = stringArgument(args, "path", "cwd", "directory") ?? ".";
 		const resolved = await canonicalPath(input, targetPath, "read");
 		return {
 			...base,
-			resource: leaf === "find" || leaf === "search"
-				? "filesystem.find"
-				: leaf === "grep"
-					? "filesystem.grep"
-					: "filesystem.read",
+			resource: operation.resource,
 			scope: "workspace",
 			path: targetPath,
-			effects: ["read"],
+			effects: operation.effects,
 			canonicalPath: resolved.canonicalPath!,
 		};
 	}
 
-	if (["write", "create", "edit", "patch"].includes(leaf)) {
+	if (operation.resource === "filesystem.write") {
 		const targetPath = requiredStringArgument(args, "path", "file", "targetPath");
+		if (operation.effects.includes("move")) {
+			const destinationPath = requiredStringArgument(args, "targetPath", "destinationPath", "to");
+			const [source, target] = await Promise.all([
+				canonicalPath(input, targetPath, "write"),
+				canonicalPath(input, destinationPath, "write"),
+			]);
+			return {
+				...base,
+				resource: operation.resource,
+				scope: "workspace",
+				path: targetPath,
+				targetPath: destinationPath,
+				effects: operation.effects,
+				canonicalPaths: [source.canonicalPath!, target.canonicalPath!],
+			};
+		}
 		const resolved = await canonicalPath(input, targetPath, "write");
-		const effects: readonly PolicyEffect[] = leaf === "create" || !resolved.existingPath ? ["create"] : ["write"];
-		return {
-			...base,
-			resource: "filesystem.write",
-			scope: "workspace",
-			path: targetPath,
-			effects,
-			canonicalPath: resolved.canonicalPath!,
-		};
+		return { ...base, resource: operation.resource, scope: "workspace", path: targetPath, effects: operation.effects, canonicalPath: resolved.canonicalPath! };
 	}
 
-	if (["delete", "remove", "unlink"].includes(leaf)) {
-		const targetPath = requiredStringArgument(args, "path", "file", "targetPath");
-		const resolved = await canonicalPath(input, targetPath, "write");
-		return {
-			...base,
-			resource: "filesystem.write",
-			scope: "workspace",
-			path: targetPath,
-			effects: ["delete"],
-			canonicalPath: resolved.canonicalPath!,
-		};
-	}
-
-	if (["move", "rename"].includes(leaf)) {
-		const sourcePath = requiredStringArgument(args, "path", "sourcePath", "from");
-		const targetPath = requiredStringArgument(args, "targetPath", "destinationPath", "to");
-		const [source, target] = await Promise.all([
-			canonicalPath(input, sourcePath, "write"),
-			canonicalPath(input, targetPath, "write"),
-		]);
-		return {
-			...base,
-			resource: "filesystem.write",
-			scope: "workspace",
-			path: sourcePath,
-			targetPath,
-			effects: ["move"],
-			canonicalPaths: [source.canonicalPath!, target.canonicalPath!],
-		};
-	}
-
-	if (["bash", "shell", "command", "exec", "run", "spawn"].includes(leaf)) {
+	if (operation.resource === "process.spawn") {
 		const workspace = await canonicalPath(input, ".", "read");
 		return {
 			...base,
-			resource: "process.spawn",
+			resource: operation.resource,
 			scope: "workspace",
-			command: stringArgument(args, "command", "cmd") ?? identity,
-			effects: RAW_COMMAND_EFFECTS,
+			command: stringArgument(args, "command", "cmd") ?? input.route.toolName,
+			effects: operation.effects,
 			canonicalPath: workspace.canonicalPath!,
-			requiresSandbox: true,
+			requiresSandbox: operation.requiresSandbox === true,
 			sandboxed: input.route.kind === "sandbox",
 			...(input.route.kind === "sandbox" ? { sandboxProviderId: input.route.providerId } : {}),
 		};
 	}
 
-	if (identity.startsWith("git.") || input.route.namespace?.toLowerCase() === "git") {
-		const workspace = await canonicalPath(input, ".", "read");
-		if (["status", "diff", "show", "log", "blame"].includes(leaf)) {
-			return { ...base, resource: "filesystem.read", scope: "workspace", effects: ["read"], canonicalPath: workspace.canonicalPath! };
-		}
-		if (leaf === "commit") {
-			return { ...base, resource: "process.spawn", scope: "workspace", effects: ["write", "commit"], canonicalPath: workspace.canonicalPath! };
-		}
-		if (leaf === "push") {
-			return { ...base, resource: "network.connect", scope: "workspace", effects: ["network", "push"], canonicalPath: workspace.canonicalPath! };
-		}
-		if (leaf === "merge") {
-			return { ...base, resource: "process.spawn", scope: "workspace", effects: ["write", "merge"], canonicalPath: workspace.canonicalPath! };
-		}
-		return { ...base, resource: "process.spawn", scope: "workspace", effects: ["write"], canonicalPath: workspace.canonicalPath! };
-	}
-
-	if (["connect", "request", "fetch", "download", "upload"].includes(leaf) || identity.startsWith("network.")) {
+	if (operation.resource === "network.connect") {
+		const destination = stringArgument(args, "destination", "url", "host");
 		return {
 			...base,
-			resource: "network.connect",
-			effects: ["network"],
-			...(stringArgument(args, "destination", "url", "host") === undefined
-				? {}
-				: { destination: stringArgument(args, "destination", "url", "host") }),
+			resource: operation.resource,
+			effects: operation.effects,
+			...(destination === undefined ? {} : { destination }),
 		};
 	}
 
-	return { ...base, resource: "capability.invoke" };
+	throw new PolicyError("protected_path_invalid");
 }

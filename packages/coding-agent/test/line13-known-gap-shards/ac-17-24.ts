@@ -467,7 +467,7 @@ const ac21 = defineLine13ResolvedCase({
 				providerId: "catalog-provider",
 				revision: 1,
 				routes: [
-					{ kind: "local", toolName: "read", namespace: "line13", providerId: "missing-provider", revision: 1 },
+					{ kind: "local", toolName: "read", namespace: "line13", providerId: "missing-provider", revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } },
 				],
 				invoke: async (request) =>
 					Result.ok({
@@ -506,7 +506,7 @@ const ac21 = defineLine13ResolvedCase({
 				providerId: "sandbox-provider",
 				revision: 1,
 				routes: [
-					{ kind: "sandbox", toolName: "write", namespace: "line13", providerId: "sandbox-provider", revision: 1 },
+					{ kind: "sandbox", toolName: "write", namespace: "line13", providerId: "sandbox-provider", revision: 1, operation: { resource: "filesystem.write", effects: ["write", "create"] } },
 				],
 				sandbox,
 				onOperationPayload: () => {

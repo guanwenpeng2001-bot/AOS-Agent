@@ -1159,7 +1159,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const gateway = createSandboxOperationToolGatewayProvider({
 			providerId: current.providerId,
 			revision: 1,
-			routes: [{ kind: "sandbox", toolName: "read", providerId: current.providerId, revision: 1 }],
+			routes: [{ kind: "sandbox", toolName: "read", providerId: current.providerId, revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 			sandbox: current,
 			onOperationPayload: (operationId, payload) => current.onOperationPayload(operationId, payload),
 		});
@@ -1192,10 +1192,10 @@ describe("WorkerSandboxProviderV1", () => {
 			providerId: current.providerId,
 			revision: 1,
 			routes: [
-				{ kind: "sandbox", toolName: "read", providerId: current.providerId, revision: 1 },
-				{ kind: "sandbox", toolName: "write", providerId: current.providerId, revision: 1 },
-				{ kind: "sandbox", toolName: "list", providerId: current.providerId, revision: 1 },
-				{ kind: "sandbox", toolName: "process", providerId: current.providerId, revision: 1 },
+				{ kind: "sandbox", toolName: "read", providerId: current.providerId, revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } },
+				{ kind: "sandbox", toolName: "write", providerId: current.providerId, revision: 1, operation: { resource: "filesystem.write", effects: ["write", "create"] } },
+				{ kind: "sandbox", toolName: "list", providerId: current.providerId, revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } },
+				{ kind: "sandbox", toolName: "process", providerId: current.providerId, revision: 1, operation: { resource: "process.spawn", effects: ["write", "create", "delete", "move", "command", "network", "commit", "push", "merge"], requiresSandbox: true } },
 			],
 			sandbox: current,
 			onOperationPayload: (operationId, payload) => current.onOperationPayload(operationId, payload),
@@ -3545,7 +3545,7 @@ describe("WorkerSandboxProviderV1", () => {
 			compatibilityWriter: createHarnessCompatibilityWriter(session, storage),
 			workerSandbox: {
 				provider: workerProvider,
-				routes: [{ kind: "sandbox", toolName: "worker-read", providerId: workerProvider.providerId, revision: 1 }],
+				routes: [{ kind: "sandbox", toolName: "worker-read", providerId: workerProvider.providerId, revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 				onOperationPayload: (operationId, payload) => workerProvider.onOperationPayload(operationId, payload),
 			},
 		});
