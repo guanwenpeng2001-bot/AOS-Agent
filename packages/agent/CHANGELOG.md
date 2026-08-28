@@ -21,6 +21,7 @@
 
 ### Changed
 
+- Tool Gateway results can carry a bounded JSON-safe structured result separately from their canonical receipt reference.
 - Restricted current Native Subagent lifecycle events and capability metadata to Native provider kinds; external protocols use the separate External Agent Connector contract.
 - Renamed the machine-readable Foundation capability manifest to `foundation-capabilities.ts`; serialized `schemaVersion` fields and protocol revision values remain unchanged.
 
