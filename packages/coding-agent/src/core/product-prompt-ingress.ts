@@ -34,6 +34,7 @@ import {
 	createPromptTaskAdapter,
 	type PromptTaskDependencyName,
 	type PromptTaskExecution,
+	type PromptTaskMcpSelectionSource,
 } from "./prompt-task-adapter.ts";
 import {
 	ProductPromptBindingRevisionAuthorityV1,
@@ -128,6 +129,7 @@ export interface ProductPromptIngressOptionsV1 {
 	readonly cwd: string;
 	readonly currentModel: () => Model<Api>;
 	readonly currentThinkingLevel: () => ThinkingLevel;
+	readonly mcpSelectionSource: PromptTaskMcpSelectionSource;
 	readonly dependencySnapshot: (
 		name: PromptTaskDependencyName,
 		context: ProductPromptDependencySnapshotContextV1,
@@ -534,6 +536,7 @@ export class ProductPromptIngressV1 {
 		const adapter = createPromptTaskAdapter({
 			dependencies: bindingFacts.dependencies,
 			provider: this.provider,
+			mcpSelectionSource: this.options.mcpSelectionSource,
 			harness: {
 				session: this.options.session,
 				models: this.options.models,

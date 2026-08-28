@@ -44,6 +44,7 @@ import type { ChildTaskSettlementPolicyV1 } from "../src/core/subagent-result.ts
 
 const MODEL = getModel("openai", "gpt-4o-mini");
 const NOW = "2026-08-22T00:00:00.000Z";
+const EMPTY_CAPABILITY_BINDING_ID = "capability-binding-product-composition-empty";
 
 function response(text: string): AssistantMessage {
 	if (MODEL === undefined) throw new Error("Test model is unavailable");
@@ -366,7 +367,13 @@ async function createFixture(options: {
 		cwd: "C:/workspace",
 		currentModel: () => MODEL,
 		currentThinkingLevel: () => "off",
-		dependencySnapshot: (name, context): FoundationJsonValue => ({ name, runId: context.runId, state: "active" }),
+		mcpSelectionSource: () => ({
+			capabilityBinding: { id: EMPTY_CAPABILITY_BINDING_ID, descriptors: [], toolAllowlist: [] },
+			routeCatalog: [],
+		}),
+		dependencySnapshot: (name, context): FoundationJsonValue => name === "capability"
+			? { name, state: "active", bindingId: EMPTY_CAPABILITY_BINDING_ID }
+			: { name, runId: context.runId, state: "active" },
 		subagents: composition,
 		now: () => NOW,
 	});

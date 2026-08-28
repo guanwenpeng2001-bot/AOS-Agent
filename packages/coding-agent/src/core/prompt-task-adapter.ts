@@ -29,6 +29,8 @@ import {
 	type ExecutionCorrelation,
 	type FoundationJsonValue,
 	type ModelProfile,
+	type McpCapabilityBinding,
+	type McpToolRoute,
 	type RevisionReference,
 	type Result as ResultValue,
 	type RoleRevision,
@@ -168,6 +170,8 @@ export interface PromptTaskExecution {
 export interface PromptTaskCompositionRootOptions {
 	readonly dependencies: PromptTaskCompositionDependencies;
 	readonly provider: TaskExecutorProvider;
+	/** Trusted live facts used to freeze a non-empty Role MCP selector. */
+	readonly mcpSelectionSource?: PromptTaskMcpSelectionSource;
 	readonly harness: Omit<CreateCodingAgentHarnessOptions, "env" | "foundationExecution" | "foundationProvider"> & {
 		readonly env?: CreateCodingAgentHarnessOptions["env"];
 	};
@@ -186,6 +190,13 @@ export interface PromptTaskCompositionRootOptions {
 		compose?(input: PromptTaskSubagentCompositionInputV1): Promise<ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>>;
 	};
 }
+
+export interface PromptTaskMcpSelectionUniverse {
+	readonly capabilityBinding: McpCapabilityBinding;
+	readonly routeCatalog: readonly McpToolRoute[];
+}
+
+export type PromptTaskMcpSelectionSource = () => PromptTaskMcpSelectionUniverse;
 
 export interface PromptTaskSubagentSpawnResultV1 {
 	readonly attemptReceiptIds: readonly string[];
@@ -359,35 +370,55 @@ function createTask(input: PromptTaskInput, timestamp: string): TaskEnvelope {
 }
 
 function createBinding(
+	options: PromptTaskCompositionRootOptions,
 	input: PromptTaskInput,
 	task: TaskEnvelope,
 	resolved: ResolvedPromptTaskDependencies,
 	timestamp: string,
 ): AgentBinding {
-	const capabilityPayload = resolved.capability.payload;
-	const capabilitySnapshot = capabilityPayload !== null && typeof capabilityPayload === "object" && !Array.isArray(capabilityPayload)
-		? capabilityPayload.snapshot
-		: undefined;
-	const capabilityTools = capabilitySnapshot !== null && typeof capabilitySnapshot === "object" && !Array.isArray(capabilitySnapshot) && Array.isArray(capabilitySnapshot.tools)
-		? capabilitySnapshot.tools
-		: [];
-	if (capabilityTools.some((tool) =>
-		tool !== null && typeof tool === "object" && !Array.isArray(tool) && tool.kind === "mcp_tool"
-	)) {
-		throw new PromptTaskCompositionError(
-			"prompt_task_dependency_invalid",
-			"Prompt Task MCP dependency does not carry an exact Tool Gateway selection",
-			"mcp",
-		);
+	const capabilityBindingId = resolved.capability.reference.id;
+	let capabilityBinding: McpCapabilityBinding = { id: capabilityBindingId, descriptors: [], toolAllowlist: [] };
+	let routeCatalog: readonly McpToolRoute[] = [];
+	if (input.roleRevision.mcpSelector.policy !== "none") {
+		const capabilityPayload = resolved.capability.payload;
+		const capabilitySnapshot = capabilityPayload !== null && typeof capabilityPayload === "object" && !Array.isArray(capabilityPayload)
+			? capabilityPayload.snapshot
+			: undefined;
+		const persistedCapabilityBindingId = capabilitySnapshot !== null && typeof capabilitySnapshot === "object" && !Array.isArray(capabilitySnapshot)
+			? capabilitySnapshot.bindingId
+			: undefined;
+		let universe: PromptTaskMcpSelectionUniverse;
+		try {
+			if (options.mcpSelectionSource === undefined) throw new Error("MCP selection source is unavailable");
+			universe = options.mcpSelectionSource();
+		} catch (error) {
+			throw new PromptTaskCompositionError(
+				"prompt_task_dependency_invalid",
+				"Prompt Task MCP selection source is unavailable",
+				"mcp",
+				error,
+			);
+		}
+		if (
+			typeof persistedCapabilityBindingId !== "string" ||
+			persistedCapabilityBindingId.length === 0 ||
+			universe.capabilityBinding.id !== persistedCapabilityBindingId
+		) {
+			throw new PromptTaskCompositionError(
+				"prompt_task_dependency_invalid",
+				"Prompt Task MCP selection source does not match the persisted CapabilityBinding",
+				"mcp",
+			);
+		}
+		// AgentBinding keys the exact set to its durable capability revision; the
+		// live CapabilityBinding identity was matched against that fact above.
+		capabilityBinding = { ...universe.capabilityBinding, id: capabilityBindingId };
+		routeCatalog = universe.routeCatalog;
 	}
 	const mcpSelection = resolveMcpSelection({
 		selector: input.roleRevision.mcpSelector,
-		capabilityBinding: {
-			id: resolved.capability.reference.id,
-			descriptors: [],
-			toolAllowlist: [],
-		},
-		routeCatalog: [],
+		capabilityBinding,
+		routeCatalog,
 	});
 	if (!mcpSelection.ok) {
 		throw new PromptTaskCompositionError(
@@ -521,7 +552,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				throw new PromptTaskCompositionError("prompt_task_dependency_invalid", "Prompt Task Adapter binding does not match the trusted execution provider", "adapter");
 			}
 			await persistBindingSources(options, normalizedInput, resolved);
-			const binding = createBinding(normalizedInput, persistedTask.value, resolved, timestamp);
+			const binding = createBinding(options, normalizedInput, persistedTask.value, resolved, timestamp);
 			const dispatch = createDispatch(normalizedInput, persistedTask.value, options.provider, timestamp);
 			const identity = createExecutionIdentity(normalizedInput, persistedTask.value, options.provider, timestamp);
 			const foundationExecution: AgentHarnessFoundationExecution = {
