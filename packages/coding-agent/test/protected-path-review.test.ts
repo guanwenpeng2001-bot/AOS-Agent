@@ -366,6 +366,32 @@ describe("canonical protected path classification", () => {
 		}
 	});
 
+	it("classifies both source and destination for explicitly declared move effects", async () => {
+		const workspace = await mkdtemp(join(tmpdir(), "aos-move-route-"));
+		try {
+			const operation = await classifyExternalToolPolicyOperation({
+				request: gatewayRequest("workspace.relocate", {
+					sourcePath: ".config/source.json",
+					targetPath: "archive/target.json",
+				}),
+				route: gatewayRoute("local", "workspace.relocate", {
+					resource: "filesystem.write",
+					effects: ["move"],
+				}),
+				cwd: workspace,
+				roots: { workspace },
+			});
+			expect(operation).toMatchObject({
+				path: ".config/source.json",
+				targetPath: "archive/target.json",
+				canonicalPaths: [".config/source.json", "archive/target.json"],
+				effects: ["move"],
+			});
+		} finally {
+			await rm(workspace, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects traversal and outside absolute paths while accepting contained absolute paths", async () => {
 		const root = await mkdtemp(join(tmpdir(), "aos-protected-path-"));
 		const workspace = join(root, "workspace");
@@ -670,7 +696,10 @@ describe("Foundation reviewer evidence integration", () => {
 		try {
 			const first = gatewayRequest("workspace.write", { path: ".config/first.json", content: "first" });
 			const second = gatewayRequest("workspace.write", { path: ".config/second.json", content: "second" });
-			const route = gatewayRoute("local", "workspace.write");
+			const route = gatewayRoute("local", "workspace.write", {
+				resource: "filesystem.write",
+				effects: ["write", "create"],
+			});
 
 			await expect(fixture.controlPlane.authorizeExternalToolGatewayRequest(first, route)).rejects.toMatchObject({
 				code: "external_tool_route_denied",
@@ -732,7 +761,10 @@ describe("Foundation reviewer evidence integration", () => {
 	it("rejects stale and wrong reviewers while preserving reviewer and team rejections", async () => {
 		const fixture = await createReviewFixture();
 		try {
-			const route = gatewayRoute("local", "workspace.write");
+			const route = gatewayRoute("local", "workspace.write", {
+				resource: "filesystem.write",
+				effects: ["write", "create"],
+			});
 			const reviewerRequest = gatewayRequest("workspace.write", { path: ".config/rejected.json", content: "blocked" });
 			await expect(fixture.controlPlane.authorizeExternalToolGatewayRequest(reviewerRequest, route)).rejects.toMatchObject({
 				code: "external_tool_route_denied",

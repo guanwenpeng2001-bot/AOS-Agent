@@ -89,23 +89,24 @@ export async function classifyExternalToolPolicyOperation(
 	}
 
 	if (operation.resource === "filesystem.write") {
-		const targetPath = requiredStringArgument(args, "path", "file", "targetPath");
 		if (operation.effects.includes("move")) {
+			const sourcePath = requiredStringArgument(args, "path", "sourcePath", "from");
 			const destinationPath = requiredStringArgument(args, "targetPath", "destinationPath", "to");
 			const [source, target] = await Promise.all([
-				canonicalPath(input, targetPath, "write"),
+				canonicalPath(input, sourcePath, "write"),
 				canonicalPath(input, destinationPath, "write"),
 			]);
 			return {
 				...base,
 				resource: operation.resource,
 				scope: "workspace",
-				path: targetPath,
+				path: sourcePath,
 				targetPath: destinationPath,
 				effects: operation.effects,
 				canonicalPaths: [source.canonicalPath!, target.canonicalPath!],
 			};
 		}
+		const targetPath = requiredStringArgument(args, "path", "file", "targetPath");
 		const resolved = await canonicalPath(input, targetPath, "write");
 		return { ...base, resource: operation.resource, scope: "workspace", path: targetPath, effects: operation.effects, canonicalPath: resolved.canonicalPath! };
 	}
