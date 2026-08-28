@@ -410,6 +410,8 @@ function exactDecisionInputs(
 		requirements.attemptId.length === 0 ||
 		typeof requirements.bindingEpochId !== "string" ||
 		requirements.bindingEpochId.length === 0 ||
+		(requirements.agentInstanceId !== undefined &&
+			(typeof requirements.agentInstanceId !== "string" || requirements.agentInstanceId.length === 0)) ||
 		(requirements.reviewRevision !== undefined && !isFingerprint(requirements.reviewRevision))
 	) {
 		return Result.err(
@@ -1076,6 +1078,15 @@ export class SchedulerExecutorRegistry {
 		if (registration === undefined || runtime === undefined) return schedulerFail("scheduler_executor_unavailable");
 		const providerClass = registration.entry.descriptor.providerClass;
 		if (!isSchedulerProviderClass(providerClass)) return schedulerFail("scheduler_executor_unavailable");
+		const agentInstanceId = providerClass === "agent" ? input.exactRequirements.agentInstanceId : undefined;
+		if (providerClass === "agent" && agentInstanceId === undefined) {
+			return Result.err(
+				new FoundationError(
+					"agent_instance_required_for_agent_provider",
+					"Durable Scheduler agent selection requires an exact AgentInstance identity.",
+				),
+			);
+		}
 		let quotaReservation: QuotaReservation | undefined;
 		if (registration.quota !== undefined) {
 			const attribution = validateQuotaAttribution({
@@ -1083,9 +1094,7 @@ export class SchedulerExecutorRegistry {
 				taskId: queue.value.taskId,
 				...(queue.value.goalId === undefined ? {} : { goalId: queue.value.goalId }),
 				attemptId: input.exactRequirements.attemptId,
-				...(input.exactRequirements.agentInstanceId === undefined
-					? {}
-					: { agentInstanceId: input.exactRequirements.agentInstanceId }),
+				...(agentInstanceId === undefined ? {} : { agentInstanceId }),
 				providerId: registration.entry.descriptor.providerId,
 				ownerKind: schedulerQuotaOwnerKind(providerClass),
 			});
@@ -1134,9 +1143,7 @@ export class SchedulerExecutorRegistry {
 			attemptId: input.exactRequirements.attemptId,
 			bindingId: binding.value.bindingId,
 			bindingEpochId: input.exactRequirements.bindingEpochId,
-			...(input.exactRequirements.agentInstanceId === undefined
-				? {}
-				: { agentInstanceId: input.exactRequirements.agentInstanceId }),
+			...(agentInstanceId === undefined ? {} : { agentInstanceId }),
 			capabilityRevision: runtime.capabilitySnapshot.revision,
 			capabilityDigest: runtime.capabilitySnapshot.digest,
 			configRevision: runtime.configRevision,

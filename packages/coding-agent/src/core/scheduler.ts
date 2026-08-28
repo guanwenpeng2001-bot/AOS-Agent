@@ -33,7 +33,11 @@ import {
 	type TaskResult,
 } from "@aos-agent/agent-core";
 import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
-import type { SchedulerDispatchOutcomeV1, SchedulerRunDispatchRequestV1 } from "./scheduler-dispatch.ts";
+import type {
+	SchedulerDispatchExecutorRequirementsV1,
+	SchedulerDispatchOutcomeV1,
+	SchedulerRunDispatchRequestV1,
+} from "./scheduler-dispatch.ts";
 import type { SchedulerFanInSettlementV1, SchedulerFanInSettleRequestV1 } from "./scheduler-fan-in.ts";
 import type {
 	SchedulerClaimAcquireResultV1,
@@ -1577,6 +1581,8 @@ export interface SchedulerHostRunAssociationV1 {
 	readonly runId: string;
 	readonly task: TaskEnvelope;
 	readonly binding: AgentBinding;
+	/** Exact trusted executor constraints forwarded unchanged to the durable selection boundary. */
+	readonly executorRequirements?: SchedulerDispatchExecutorRequirementsV1;
 	readonly joinPolicy?: SchedulerJoinPolicyV1;
 }
 
@@ -1991,6 +1997,9 @@ export class SchedulerHost {
 				queueEntryId: item.entry.queueEntryId,
 				fencingToken: claim.fencingToken,
 				binding: association.binding,
+				...(association.executorRequirements === undefined
+					? {}
+					: { executorRequirements: association.executorRequirements }),
 			});
 			if (!dispatched.ok) return this.workError(item, dispatched.error, true, false);
 			const renewalFailure = renewal.failure();

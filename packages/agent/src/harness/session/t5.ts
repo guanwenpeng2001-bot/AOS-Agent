@@ -77,7 +77,7 @@ export interface T5FactWriteOptions {
 export class SessionLedgerWriter {
 	readonly session: Session;
 	readonly lane: string;
-	private readonly ownerId: string;
+	readonly ownerId: string;
 	private readonly leaseTtlMs: number;
 	private readonly now: () => number;
 	private lease: LedgerWriterLease | undefined;

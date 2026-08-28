@@ -20,6 +20,7 @@ import {
 	type Result as ResultValue,
 	type Session,
 	SessionLedger,
+	type SessionLedgerWriter,
 	type SideEffectState,
 	type TaskEnvelope,
 	type AgentStep,
@@ -28,7 +29,10 @@ import {
 	WorkflowStore,
 	type Workflow,
 } from "@aos-agent/agent-core";
-import { SchedulerDispatchController } from "./scheduler-dispatch.ts";
+import {
+	SchedulerDispatchController,
+	type SchedulerNativeAgentBridgeV1,
+} from "./scheduler-dispatch.ts";
 import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
 import { SchedulerFanInController, schedulerNodeJoinId } from "./scheduler-fan-in.ts";
 import { SchedulerHandoffController } from "./scheduler-handoff.ts";
@@ -148,11 +152,15 @@ export interface SchedulerWorkflowControllerOptionsV1 {
 	readonly sourceGraph: TaskGraphStore;
 	readonly targetGraph: TaskGraphStore;
 	readonly ownerId: string;
+	/** Optional canonical source-Session writer; borrowers never release it. */
+	readonly writer?: SessionLedgerWriter;
 	readonly registry: SchedulerExecutorRegistry;
 	readonly task: TaskEnvelope;
 	readonly binding: AgentBinding;
 	readonly runLifecycleSession?: RunLedgerSession;
 	readonly runLifecycleHookOwnership?: "dispatch" | "host";
+	/** Product-owned Native Subagent bridge; omission keeps agent executors unavailable. */
+	readonly nativeAgentBridge?: SchedulerNativeAgentBridgeV1;
 	readonly executorOwnerId?: string;
 	readonly compensationPolicy?: SchedulerWorkflowCompensationPolicyV1;
 	readonly maxAttempts?: number;
@@ -359,6 +367,14 @@ export class SchedulerWorkflowController {
 	private eventRevisions = new Map<string, number>();
 
 	constructor(options: SchedulerWorkflowControllerOptionsV1) {
+		if (
+			options.writer !== undefined &&
+			(options.writer.session !== options.sourceSession ||
+				options.writer.ownerId !== options.ownerId ||
+				options.writer.lane !== "main")
+		) {
+			throw new TypeError("Scheduler Workflow writer must match the source Session, owner, and lane");
+		}
 		this.clock = runtimeClockFor(options);
 		this.enabled = options.enabled ?? false;
 		this.sourceSession = options.sourceSession;
@@ -381,8 +397,14 @@ export class SchedulerWorkflowController {
 						: { policy: Object.freeze({ ...options.connectorRetry.policy }) }),
 				});
 		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
-		this.store = new WorkflowStore(options.sourceSession, { ownerId: options.ownerId });
-		this.ledger = new SessionLedger(options.sourceSession, { ownerId: options.ownerId });
+		this.store = new WorkflowStore(options.sourceSession, {
+			ownerId: options.ownerId,
+			...(options.writer === undefined ? {} : { writer: options.writer }),
+		});
+		this.ledger = new SessionLedger(options.sourceSession, {
+			ownerId: options.ownerId,
+			...(options.writer === undefined ? {} : { writer: options.writer }),
+		});
 		this.connectorRetry = options.connectorRetry === undefined
 			? undefined
 			: new ConnectorRetryCircuit(
@@ -432,6 +454,9 @@ export class SchedulerWorkflowController {
 					...(options.runLifecycleHookOwnership === undefined
 						? {}
 						: { runLifecycleHookOwnership: options.runLifecycleHookOwnership }),
+					...(options.nativeAgentBridge === undefined
+						? {}
+						: { nativeAgentBridge: options.nativeAgentBridge }),
 					now: this.nowFn,
 				},
 				this.clock,
@@ -442,6 +467,7 @@ export class SchedulerWorkflowController {
 			session: options.sourceSession,
 			sessionId: options.sourceSessionId,
 			ownerId: options.ownerId,
+			...(options.writer === undefined ? {} : { writer: options.writer }),
 			now: this.nowFn,
 		});
 		const endpoints: readonly [SchedulerMessageSessionEndpointV1, SchedulerMessageSessionEndpointV1] = [

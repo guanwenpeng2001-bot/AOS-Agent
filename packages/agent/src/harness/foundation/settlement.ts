@@ -410,8 +410,8 @@ export class LayeredResultSettlement {
 	private readonly ledger: SessionLedger;
 	private finalizationTail: Promise<void> = Promise.resolve();
 
-	constructor(session: Session, options: { readonly ownerId?: string; readonly writer?: SessionLedgerWriter } = {}) {
-		this.ledger = new SessionLedger(session, { ownerId: options.ownerId, writer: options.writer });
+	constructor(session: Session, options: { readonly ownerId?: string; readonly writer?: SessionLedgerWriter; readonly laneId?: string } = {}) {
+		this.ledger = new SessionLedger(session, { ownerId: options.ownerId, writer: options.writer, laneId: options.laneId });
 	}
 
 	async executeOperation(input: OperationExecutionInput): Promise<ResultValue<WorkerReceipt, FoundationError>> {
@@ -452,7 +452,12 @@ export class LayeredResultSettlement {
 			await this.persistFact("agent_binding", canonicalBinding.bindingId, canonicalBinding, { taskId: canonicalBinding.taskId, bindingId: canonicalBinding.bindingId }, { immutable: true });
 			await this.persistFact("binding_epoch", checkedEpoch.value.bindingEpochId, checkedEpoch.value, { taskId: checkedEpoch.value.taskId, attemptId: checkedEpoch.value.attemptId, bindingId: checkedEpoch.value.bindingId, bindingEpochId: checkedEpoch.value.bindingEpochId, agentInstanceId: checkedEpoch.value.agentInstanceId }, { immutable: true });
 			if (canonicalAgent?.ok) await this.persistFact("agent_instance", canonicalAgent.value.agentInstanceId, canonicalAgent.value, { taskId: canonicalAgent.value.taskId, agentInstanceId: canonicalAgent.value.agentInstanceId }, { immutable: true });
-			await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, bindingId: checkedDispatch.value.bindingId }, { immutable: true });
+			await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, {
+				taskId: checkedDispatch.value.taskId,
+				dispatchId: checkedDispatch.value.dispatchId,
+				bindingId: checkedDispatch.value.bindingId,
+				...(canonicalAgent?.ok ? { agentInstanceId: canonicalAgent.value.agentInstanceId } : {}),
+			}, { immutable: true });
 			const replayed = await this.findDurableDispatchExecution(checkedDispatch.value, canonicalBinding, checkedEpoch.value, input.provider);
 			if (replayed !== undefined) return Result.ok({ ...replayed, receipt: replayed.receipt });
 			const existingAttempt = await this.findDurableAttempt(checkedDispatch.value, canonicalBinding, checkedEpoch.value, input.provider);
@@ -562,7 +567,7 @@ export class LayeredResultSettlement {
 			const parentContext = await this.requireParentSpawnContext(checkedParentIntent.value, parentTask, request);
 			await this.validateChildTaskReference(request, checkedParentIntent.value);
 			const durableSources = await this.requireDurableSpawnSources(request.roleRevision, request.modelProfile);
-			const durableTask = await this.persistFact("task", request.taskEnvelope.taskId, request.taskEnvelope, { taskId: request.taskEnvelope.taskId, spawnId: request.spawnId }, { immutable: true });
+			const durableTask = await this.persistFact("task", request.taskEnvelope.taskId, request.taskEnvelope, { taskId: request.taskEnvelope.taskId }, { immutable: true });
 			const persistedIntent = validateSpawnAgentIntent(checkedParentIntent.value, { taskExists: (taskId) => taskId === (durableTask.payload as TaskEnvelope).taskId });
 			if (!persistedIntent.ok) return persistedIntent;
 			const canonicalRequest = cloneDeepFrozen({ ...request, taskEnvelope: durableTask.payload as TaskEnvelope, roleRevision: durableSources.roleRevision, modelProfile: durableSources.modelProfile });
@@ -573,7 +578,7 @@ export class LayeredResultSettlement {
 				if (canonicalFoundationJson(fact.value.request) !== canonicalFoundationJson(canonicalRequest)) return Result.err(new FoundationError("session_ledger_conflict", "A stable spawnId is already bound to a different canonical request", { details: { spawnId: canonicalRequest.spawnId } }));
 				const childContext = this.createChildSpawnContext(canonicalRequest, parentContext);
 				if (fact.value.contextId !== childContext.contextId) return Result.err(new FoundationError("session_ledger_conflict", "A durable spawn fact reuses a different child Context identity", { details: { spawnId: canonicalRequest.spawnId } }));
-				await this.persistFact("context", childContext.contextId, childContext, { taskId: childContext.taskId, spawnId: canonicalRequest.spawnId, contextId: childContext.contextId }, { immutable: true });
+				await this.persistFact("context", childContext.contextId, childContext, { taskId: childContext.taskId }, { immutable: true });
 				await this.persistSpawnChain(fact.value.request, fact.value.result, fact.value.contextId);
 				return Result.ok(cloneDeepFrozen(fact.value.result));
 			}
@@ -583,7 +588,7 @@ export class LayeredResultSettlement {
 			if (parsedExistingIntent !== undefined && !parsedExistingIntent.ok) return parsedExistingIntent;
 			if (existingIntent !== undefined && existingIntent.kind !== "intent") return Result.err(new FoundationError("session_ledger_conflict", "A durable non-create spawn intent already occupies this spawnId", { details: { spawnId: canonicalRequest.spawnId } }));
 			const childContext = this.createChildSpawnContext(canonicalRequest, parentContext);
-			await this.persistFact("context", childContext.contextId, childContext, { taskId: childContext.taskId, spawnId: canonicalRequest.spawnId, contextId: childContext.contextId }, { immutable: true });
+			await this.persistFact("context", childContext.contextId, childContext, { taskId: childContext.taskId }, { immutable: true });
 			let spawned: ResultValue<ChildSpawnResult, FoundationError>;
 			if (parsedExistingIntent?.ok) {
 				const provider = input.provider as ChildAgentProvider;
@@ -612,7 +617,7 @@ export class LayeredResultSettlement {
 			const canonicalResult = canonicalizeSpawnResult(spawned.value, canonicalRequest, input.provider.providerId, durableSources.roleRevision);
 			if (!canonicalResult.ok) return canonicalResult;
 			const spawnFact: AgentSpawnFactPayload = { schemaVersion: 1, spawnId: canonicalRequest.spawnId, providerId: input.provider.providerId, request: canonicalRequest, result: canonicalResult.value, contextId: childContext.contextId };
-			await this.persistFact(AGENT_SPAWN_OBJECT_TYPE, canonicalRequest.spawnId, spawnFact, { taskId: canonicalRequest.taskEnvelope.taskId, spawnId: canonicalRequest.spawnId }, { expectedRevision: 1 });
+			await this.persistFact(AGENT_SPAWN_OBJECT_TYPE, canonicalRequest.spawnId, spawnFact, { taskId: canonicalRequest.taskEnvelope.taskId }, { expectedRevision: 1 });
 			await this.persistSpawnChain(canonicalRequest, canonicalResult.value, childContext.contextId);
 			return Result.ok(cloneDeepFrozen(canonicalResult.value));
 		} catch (error) {
@@ -675,7 +680,7 @@ export class LayeredResultSettlement {
 		const childDispatch: Dispatch = { schemaVersion: 1, dispatchId: spawned.attempt.dispatchId, taskId: spawned.attempt.taskId, bindingId: spawned.attempt.bindingId, taskExecutorProviderId: spawned.attempt.providerId, status: "pending", createdAt: spawned.attempt.startedAt };
 		const checkedDispatch = validateDispatch(childDispatch);
 		if (!checkedDispatch.ok) throw checkedDispatch.error;
-		await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, bindingId: checkedDispatch.value.bindingId, spawnId: request.spawnId }, { immutable: true });
+		await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, bindingId: checkedDispatch.value.bindingId, agentInstanceId: spawned.agentInstance.agentInstanceId }, { immutable: true });
 		await this.persistFact("agent_instance", spawned.agentInstance.agentInstanceId, spawned.agentInstance, { taskId: spawned.agentInstance.taskId, agentInstanceId: spawned.agentInstance.agentInstanceId }, { immutable: true });
 		await this.persistFact("binding_epoch", spawned.initialBindingEpoch.bindingEpochId, spawned.initialBindingEpoch, { taskId: spawned.initialBindingEpoch.taskId, attemptId: spawned.initialBindingEpoch.attemptId, bindingId: spawned.initialBindingEpoch.bindingId, bindingEpochId: spawned.initialBindingEpoch.bindingEpochId, agentInstanceId: spawned.initialBindingEpoch.agentInstanceId }, { immutable: true });
 		await this.persistFact("attempt", spawned.attempt.attemptId, spawned.attempt, { taskId: spawned.attempt.taskId, dispatchId: spawned.attempt.dispatchId, attemptId: spawned.attempt.attemptId, bindingId: spawned.attempt.bindingId, bindingEpochId: spawned.attempt.bindingEpochIds[0], agentInstanceId: spawned.attempt.agentInstanceId }, { immutable: true });

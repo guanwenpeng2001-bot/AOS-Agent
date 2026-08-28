@@ -1,7 +1,7 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,11 @@ import {
 	getProductionExternalConnectorVendorDriverProvenance,
 } from "../../src/core/external-connector-production.ts";
 import { resolveProductionExternalConnectorDriverProvenance } from "../../src/core/external-connector-process-controller.ts";
+import {
+	ExternalConnectorBoundedSupervisor,
+	ExternalConnectorSupervisorError,
+	type ExternalConnectorSupervisorPrivateState,
+} from "../../src/core/external-connector-supervisor.ts";
 import type { CanonicalExternalConnectorMapping } from "../../src/core/external-session-mapping.ts";
 import type {
 	ExternalConnectorDriverEvent,
@@ -68,10 +73,16 @@ import { SessionManager } from "../../src/core/session-manager.ts";
 import { withRuntimeClock } from "../../src/core/runtime-clock.ts";
 import { isSchedulerSideEffectRetryable } from "../../src/core/scheduler.ts";
 import { SchedulerQueueStore } from "../../src/core/scheduler-queue.ts";
+import {
+	ShutdownCoordinator,
+	type ShutdownResult,
+	type ShutdownSignalHandlers,
+	type TerminationSignal,
+} from "../../src/core/shutdown-coordinator.ts";
 import { TaskGraphStore } from "../../src/core/task-graph.ts";
-import { WorkerSupervisorV1 } from "../../src/core/worker-supervisor.ts";
 import type { WorkerBindingV1 } from "../../src/core/worker.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
+import { createExternalConnectorTestSupervision } from "../external-connector-test-supervision.ts";
 import { FakeWorkerProtocolTransportV1 } from "../fixtures/worker-protocol-fake-transport.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
 import {
@@ -245,118 +256,141 @@ const ac17 = defineLine13ResolvedCase({
 	},
 });
 
-const ac18 = defineLine13KnownGapCase({
-	entry: {
-		ac: "AC-18",
-		fullTestName: "Line 13 AC-18 routes SIGINT through bounded non-cooperative shutdown",
-		baseSha: LINE13_T0_BASE_SHA,
-		ownerStage: "T9c",
-		mode: "fails",
-		expectedFailure: {
-			reason: "shutdown.sigint_bound",
-			fingerprint: "sha256:c11e32e97570e7a95a27bc80c60ce2c0b8e8b0e6b5a4d35795b6994c8b730732",
-		},
-	},
+const ac18 = defineLine13ResolvedCase({
+	ac: "AC-18",
+	fullTestName: "Line 13 AC-18 routes SIGINT through bounded non-cooperative shutdown",
 	scenario: {
 		fixture: () => {
-			const directory = mkdtempSync(join(tmpdir(), "aos-line13-ac18-"));
-			return {
-				directory,
-				driverPath: join(directory, "sigint-driver.ts"),
-				markerPath: join(directory, "shutdown-started"),
-				recordPath: join(directory, "result.json"),
-				outcome: undefined as ProcessOutcome | undefined,
+			const clock = new DeterministicClock();
+			const listeners = new Map<TerminationSignal, Set<() => void>>();
+			const signalHandlers = {
+				add(signal: TerminationSignal, handler: () => void): void {
+					const handlers = listeners.get(signal) ?? new Set<() => void>();
+					handlers.add(handler);
+					listeners.set(signal, handlers);
+				},
+				remove(signal: TerminationSignal, handler: () => void): void {
+					const handlers = listeners.get(signal);
+					handlers?.delete(handler);
+					if (handlers?.size === 0) listeners.delete(signal);
+				},
+				emit(signal: TerminationSignal): void {
+					for (const handler of [...(listeners.get(signal) ?? [])]) handler();
+				},
+				listenerCount(): number {
+					return [...listeners.values()].reduce((total, handlers) => total + handlers.size, 0);
+				},
+			} satisfies ShutdownSignalHandlers & {
+				emit(signal: TerminationSignal): void;
+				listenerCount(): number;
 			};
-		},
-		setup: async (fixture) => {
-			const sourceRoot = fileURLToPath(new URL("../../src", import.meta.url));
-			const indexUrl = pathToFileURL(join(sourceRoot, "index.ts")).href;
-			const authUrl = pathToFileURL(join(sourceRoot, "core", "auth-storage.ts")).href;
-			const rpcModeUrl = pathToFileURL(join(sourceRoot, "modes", "rpc", "rpc-mode.ts")).href;
-			const aiCompatUrl = pathToFileURL(join(sourceRoot, "..", "..", "ai", "src", "compat.ts")).href;
-			writeFileSync(
-				fixture.driverPath,
-				`import { writeFileSync } from "node:fs";\nimport { registerFauxProvider } from ${JSON.stringify(aiCompatUrl)};\nimport { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices } from ${JSON.stringify(indexUrl)};\nimport { AuthStorage } from ${JSON.stringify(authUrl)};\nimport { runRpcMode } from ${JSON.stringify(rpcModeUrl)};\nconst marker = ${JSON.stringify(fixture.markerPath)};\nconst record = ${JSON.stringify(fixture.recordPath)};\nconst directory = ${JSON.stringify(fixture.directory)};\nconst faux = registerFauxProvider();\nconst auth = AuthStorage.inMemory();\nawait auth.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));\nconst createRuntime = async ({ cwd, sessionManager, sessionStartEvent, registerCandidateSession }) => { const services = await createAgentSessionServices({ cwd, agentDir: directory, authStorage: auth, model: faux.getModel(), resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: [(agent) => { agent.registerProvider(faux.getModel().provider, { baseUrl: faux.getModel().baseUrl, apiKey: "faux-key", api: faux.api, models: faux.models }); agent.on("session_shutdown", async () => { writeFileSync(marker, "started"); await new Promise(() => {}); }); }] } }); const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model: faux.getModel() }); registerCandidateSession(created.session); return { ...created, services, diagnostics: services.diagnostics }; };\nconst runtime = await createAgentSessionRuntime(createRuntime, { cwd: directory, agentDir: directory, session: { mode: "memory" } });\nawait runtime.session.bindExtensions({});\nvoid runRpcMode(runtime);\nsetTimeout(() => { const listener = process.listenerCount("SIGINT") > 0; writeFileSync(record, JSON.stringify({ listener })); process.emit("SIGINT"); setTimeout(() => { writeFileSync(record, JSON.stringify({ listener, watchdog: true })); process.exit(91); }, 750); }, 250);\n`,
-				"utf8",
-			);
-			fixture.outcome = await runProcess(process.execPath, sourceProcessArgs(fixture.driverPath), {
-				cwd: fixture.directory,
-				env: sourceProcessEnv(),
-				timeoutMs: 2_000,
+			const state = {
+				observedSignal: undefined as TerminationSignal | undefined,
+				resourceAborted: false,
+				exitCodes: [] as number[],
+				result: undefined as ShutdownResult | undefined,
+			};
+			const coordinator = new ShutdownCoordinator({
+				clock,
+				signalHandlers,
+				terminationSignals: ["SIGINT"],
+				budget: { totalMs: 100, resourceMs: 60, finalizationMs: 20 },
+				closeAdmission: (request) => {
+					state.observedSignal = request.signal;
+				},
+				resourceGroups: [[{
+					name: "non_cooperative",
+					cleanup: (signal) => {
+						signal.addEventListener("abort", () => {
+							state.resourceAborted = true;
+						}, { once: true });
+						return new Promise<void>(() => {});
+					},
+				}]],
+				exit: (exitCode) => state.exitCodes.push(exitCode),
 			});
-		},
-		assertion: (fixture) => {
-			const record = (existsSync(fixture.recordPath) ? JSON.parse(readFileSync(fixture.recordPath, "utf8")) : {}) as {
-				readonly listener?: boolean;
-				readonly watchdog?: boolean;
+			return {
+				clock,
+				coordinator,
+				signalHandlers,
+				state,
 			};
-			strictEqual(
-				record.listener === true && existsSync(fixture.markerPath) && record.watchdog !== true && fixture.outcome?.exitCode !== 91,
-				true,
-				"SIGINT must enter shutdown and bound non-cooperative cleanup before the watchdog",
-			);
 		},
-		cleanup: (fixture) => rmSync(fixture.directory, { recursive: true, force: true }),
+		setup: async ({ clock, coordinator, signalHandlers, state }) => {
+			coordinator.installSignalHandlers();
+			signalHandlers.emit("SIGINT");
+			clock.advanceBy(60);
+			for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+			if (coordinator.completion === undefined) throw new Error("SIGINT did not start shutdown");
+			state.result = await coordinator.completion;
+		},
+		assertion: ({ clock, signalHandlers, state }) => {
+			strictEqual(state.observedSignal, "SIGINT");
+			strictEqual(state.resourceAborted, true);
+			deepStrictEqual(state.result?.failures.map(({ phase, resource, reason }) => ({ phase, resource, reason })), [{
+				phase: "resource",
+				resource: "non_cooperative",
+				reason: "deadline_exceeded",
+			}]);
+			deepStrictEqual(state.exitCodes, [130]);
+			strictEqual(signalHandlers.listenerCount(), 0);
+			strictEqual(clock.pendingCount(), 0);
+		},
 	},
 });
 
-const ac19 = defineLine13KnownGapCase({
-	entry: {
-		ac: "AC-19",
-		fullTestName: "Line 13 AC-19 binds orphan cleanup to a non-reusable process identity",
-		baseSha: LINE13_T0_BASE_SHA,
-		ownerStage: "T9c",
-		mode: "fails",
-		expectedFailure: {
-			reason: "worker.pid_reuse",
-			fingerprint: "sha256:efc70b64c573fb23dab43b640719bfddfa90d3846f0a8cc693694cd99a6357a3",
-		},
-	},
+const ac19 = defineLine13ResolvedCase({
+	ac: "AC-19",
+	fullTestName: "Line 13 AC-19 binds orphan cleanup to a non-reusable process identity",
 	scenario: {
 		fixture: () => {
-			const profileId = "reclaim_unknown";
+			const attemptId = "attempt-line13-identity-recovery";
+			const supervision = createExternalConnectorTestSupervision();
+			const createSupervisor = () => new ExternalConnectorBoundedSupervisor({
+				reference: {
+					schemaVersion: 1,
+					supervisorRef: "line13-identity-supervisor",
+					operationNonce: "line13-identity-nonce",
+				},
+				containment: supervision.options.containment,
+				processController: supervision.processController,
+				artifactsAllowed: false,
+				deadlines: supervision.options.deadlines,
+			});
 			return {
-				supervisor: new WorkerSupervisorV1({
-					executable: process.execPath,
-					entrypoint: CHILD_ENTRY,
-					profileId,
-					profileRevision: 1,
-					capabilities: ["filesystem.read", "process.spawn"],
-					environment: { AOS_SAFE_TEST_MARKER: "1" },
-					readyTimeoutMs: 2_000,
-					heartbeatTimeoutMs: 250,
-					cancelTimeoutMs: 100,
-					terminateTimeoutMs: 100,
-				}),
-				binding: workerBinding(profileId),
-				identityBound: false,
-				cleaned: false,
+				attemptId,
+				createSupervisor,
+				supervision,
+				launchedState: undefined as ExternalConnectorSupervisorPrivateState | undefined,
+				persistedState: undefined as ExternalConnectorSupervisorPrivateState | undefined,
+				recoveryRejected: false,
+				restarted: undefined as ExternalConnectorBoundedSupervisor | undefined,
 			};
 		},
 		setup: async (fixture) => {
-			const preflight = fixture.supervisor.preflight({ binding: fixture.binding, runAccepted: true });
-			if (!preflight.ok) throw preflight.error;
-			const activated = await fixture.supervisor.activate(preflight.value);
-			if (!activated.ok) throw activated.error;
-			const privateState = fixture.supervisor as unknown as Record<string, unknown>;
-			fixture.identityBound = Object.entries(privateState).some(([key, value]) => {
-				if (!/(identity|containment)/i.test(key) || value === null || typeof value !== "object") return false;
-				const identity = value as Record<string, unknown>;
-				return typeof identity.pid === "number" && (typeof identity.startedAt === "string" || typeof identity.startTime === "number");
-			});
-			const reclaimed = await fixture.supervisor.reclaim();
-			if (!reclaimed.ok) throw reclaimed.error;
-			fixture.cleaned = !fixture.supervisor.snapshot.hasLiveProcess && fixture.supervisor.snapshot.quarantined;
+			const first = fixture.createSupervisor();
+			fixture.launchedState = await first.launch((state) =>
+				fixture.supervision.privateStateStore.write(fixture.attemptId, state));
+			fixture.persistedState = await fixture.supervision.privateStateStore.read(fixture.attemptId);
+			if (fixture.persistedState === undefined) throw new Error("canonical process identity was not persisted");
+			fixture.supervision.processController.reattachResult = { status: "identity_mismatch" };
+			fixture.restarted = fixture.createSupervisor();
+			try {
+				await fixture.restarted.recoverAndReap(fixture.persistedState);
+			} catch (error) {
+				fixture.recoveryRejected =
+					error instanceof ExternalConnectorSupervisorError && error.code === "reconcile_required";
+			}
 		},
 		assertion: (fixture) => {
-			strictEqual(
-				fixture.cleaned && fixture.identityBound,
-				true,
-				"orphan cleanup must retain process-start identity so a reused PID is never signalled",
-			);
+			deepStrictEqual(fixture.persistedState?.processIdentity, fixture.launchedState?.processIdentity);
+			strictEqual(fixture.recoveryRejected, true);
+			strictEqual(fixture.restarted?.snapshot.quarantined, true);
+			strictEqual(fixture.restarted?.snapshot.cleaned, false);
+			strictEqual(fixture.supervision.processController.forceCalls, 0);
 		},
-		cleanup: async ({ supervisor }) => {
-			await supervisor.dispose();
+		cleanup: ({ supervision }) => {
+			supervision.processController.resolveExits();
 		},
 	},
 });
@@ -1009,6 +1043,6 @@ export const line13KnownGapCasesAc17Ac24 = defineLine13KnownGapCaseShard({
 	schemaVersion: 1,
 	shardId: "ac-17-24",
 	complete: true,
-	cases: [ac18, ac19, ac22, ac24],
-	resolvedCases: [ac17, ac20, ac21, ac23],
+	cases: [ac22, ac24],
+	resolvedCases: [ac17, ac18, ac19, ac20, ac21, ac23],
 });

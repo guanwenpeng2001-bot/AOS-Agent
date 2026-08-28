@@ -526,6 +526,10 @@ export class TrustedSubagentCompositionV1 {
 		return Object.freeze([...this.providers.values()]);
 	}
 
+	usesCanonicalWriter(writer: SessionLedgerWriter): boolean {
+		return this.writer === writer;
+	}
+
 	/** Build the explicit default-off Scheduler bridge over this composition's exact Native runtimes. */
 	schedulerNativeAgentBridge(planner: TrustedSchedulerNativeAgentPlannerV1): SchedulerNativeAgentBridgeV1 {
 		if (planner.schemaVersion !== 1 || typeof planner.plan !== "function") {

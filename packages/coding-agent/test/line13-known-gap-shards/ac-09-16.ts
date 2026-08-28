@@ -18,6 +18,7 @@ import {
 	Result,
 	Session,
 	SessionLedger,
+	createAgentInstance,
 	createAttempt,
 	createBindingEpoch,
 	createConnectorCapabilitySnapshot,
@@ -78,18 +79,26 @@ import {
 	CapabilityPublicIdentity,
 	getCapabilityPublicIdentityPath,
 } from "../../src/core/capability-public-identity.ts";
-import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "../../src/core/scheduler-executors.ts";
+import {
+	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
+	createSchedulerExecutorRuntimeSnapshotV1,
+	schedulerBindingRequirementDigestV1,
+} from "../../src/core/scheduler-executors.ts";
+import { SchedulerSelectionReservationStore } from "../../src/core/scheduler-selection-reservations.ts";
+import type {
+	SchedulerNativeAgentBridgeV1,
+	SchedulerNativeAgentResolutionV1,
+} from "../../src/core/scheduler-dispatch.ts";
 import type { SchedulerExecutorEntryV1, SchedulerQueueEntryV1 } from "../../src/core/scheduler.ts";
 import {
-	defineLine13KnownGapCase,
 	defineLine13KnownGapCaseShard,
 	defineLine13ResolvedCase,
 } from "../support/line13-known-gaps.ts";
 import { LINE13_T0_PUBLIC_ROOTS, line13RepoRoot } from "../support/line13-t0-baseline-inventory.ts";
 
-const BASE_SHA = "db279303b9e894b58acea165ab44f74bfdf0cddb" as const;
 const NOW = "2026-08-25T00:00:00.000Z";
 const LATER = "2026-08-25T00:01:00.000Z";
+const SELECTION_EXPIRES_AT = "2026-08-25T01:00:00.000Z";
 const SESSION_ID = "line13-ac09-session";
 const TASK_ID = "line13-ac09-task";
 const OWNER_ID = "line13-ac09-owner";
@@ -246,10 +255,53 @@ function executorEntry(provider: SchedulerInProcessTaskExecutorProvider): Schedu
 	};
 }
 
+function schedulerRuntimeSnapshot(providerId: string, currentBinding: AgentBinding) {
+	const bindingDigest = schedulerBindingRequirementDigestV1(currentBinding);
+	if (!bindingDigest.ok) throw bindingDigest.error;
+	const policyDigest = currentBinding.policyRevision.fingerprint;
+	if (policyDigest === undefined) throw new Error("Line 13 Scheduler binding lacks a policy fingerprint");
+	const snapshot = createSchedulerExecutorRuntimeSnapshotV1({
+		schemaVersion: 1,
+		capabilitySnapshot: createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId,
+			revision: 1,
+			protocol: { name: "line13-scheduler", version: "1" },
+			modelAccess: "aos_gateway",
+			resume: true,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		}),
+		configRevision: fingerprintFoundationValue(`line13-config:${providerId}`),
+		bindingRequirementDigests: [bindingDigest.value],
+		toolSelectionDigests: [currentBinding.mcpSelection.digest],
+		policyRevisionDigests: [policyDigest],
+		reviewRevisionDigests: [],
+		credentialTargetRefs: [],
+		sandboxTargetRefs: [],
+		observedAt: NOW,
+		expiresAt: SELECTION_EXPIRES_AT,
+	});
+	if (!snapshot.ok) throw snapshot.error;
+	return snapshot.value;
+}
+
+function schedulerExactRequirements(currentBinding: AgentBinding, attemptId: string) {
+	return {
+		binding: currentBinding,
+		attemptId,
+		bindingEpochId: `epoch-${attemptId}`,
+		requireResume: true,
+		modelAccess: "aos_gateway" as const,
+	};
+}
+
 async function registerExecutor(
 	registry: SchedulerExecutorRegistry,
 	provider: SchedulerInProcessTaskExecutorProvider,
 	maxConcurrency = 1,
+	currentBinding?: AgentBinding,
 ): Promise<void> {
 	const registered = await registry.register({
 		entry: executorEntry(provider),
@@ -257,82 +309,59 @@ async function registerExecutor(
 		trusted: true,
 		latencyMs: 0,
 		maxConcurrency,
+		...(currentBinding === undefined
+			? {}
+			: { runtimeSnapshot: schedulerRuntimeSnapshot(provider.providerId, currentBinding) }),
 	});
 	if (!registered.ok) throw registered.error;
 }
 
 interface SelectionReplayFixture {
-	readonly session: Session;
+	readonly storage: InMemorySessionStorage;
 	readonly currentBinding: AgentBinding;
-	reopenedController?: SchedulerDispatchController;
-	request?: {
-		readonly queueEntryId: string;
-		readonly fencingToken: string;
-		readonly binding: AgentBinding;
-	};
+	reopenedRegistry?: SchedulerExecutorRegistry;
+	reopenedStore?: SchedulerSelectionReservationStore;
 }
 
 async function prepareSelectionReplayFixture(fixture: SelectionReplayFixture): Promise<void> {
-	await seedBindingFacts(fixture.session, fixture.currentBinding);
-	const queue = new SchedulerQueueStore({
-		ledger: fixture.session,
-		sessionId: SESSION_ID,
-		ownerId: OWNER_ID,
+	const firstSession = new Session(fixture.storage);
+	await seedBindingFacts(firstSession, fixture.currentBinding);
+	const firstStore = new SchedulerSelectionReservationStore(firstSession, {
+		ownerId: `${OWNER_ID}-first`,
 		now: () => NOW,
 	});
-	const enqueued = await queue.enqueue(queueEntry());
-	if (!enqueued.ok) throw enqueued.error;
-	const claimed = await queue.claim({
-		queueEntryId: "line13-ac09-queue",
-		ownerId: OWNER_ID,
-		claimId: "line13-ac09-claim",
-		fencingToken: "line13-ac09-fence",
-	});
-	if (!claimed.ok) throw claimed.error;
-	const request = {
-		queueEntryId: "line13-ac09-queue",
-		fencingToken: claimed.value.claim.fencingToken,
-		binding: fixture.currentBinding,
-	};
-	const firstRegistry = new SchedulerExecutorRegistry();
+	const firstRegistry = new SchedulerExecutorRegistry({ reservationStore: firstStore });
 	await registerExecutor(
 		firstRegistry,
 		new SchedulerInProcessTaskExecutorProvider({ providerId: "line13.scheduler.a", now: () => NOW }),
+		1,
+		fixture.currentBinding,
 	);
-	const firstController = new SchedulerDispatchController({
-		session: fixture.session,
-		queue,
-		registry: firstRegistry,
-		sessionId: SESSION_ID,
-		ownerId: OWNER_ID,
-		now: () => NOW,
+	const selected = await firstRegistry.select({
+		queueEntry: queueEntry(),
+		requiredCapabilities: [CAPABILITY],
+		decidedAt: NOW,
+		exactRequirements: schedulerExactRequirements(fixture.currentBinding, "line13-ac09-attempt"),
 	});
-	const first = await firstController.dispatchClaimed(request);
-	firstController.dispose();
-	if (first.ok || first.error.code !== "scheduler_executor_unavailable") {
-		throw new Error("Selection replay fixture did not reach the intended pre-execution crash boundary");
+	if (!selected.ok) throw selected.error;
+	if (selected.value.provider.providerId !== "line13.scheduler.a") {
+		throw new Error("Selection replay fixture did not persist the original Scheduler choice");
 	}
+	await firstStore.release();
 
-	const reopenedQueue = new SchedulerQueueStore({
-		ledger: fixture.session,
-		sessionId: SESSION_ID,
-		ownerId: OWNER_ID,
+	const reopenedStore = new SchedulerSelectionReservationStore(new Session(fixture.storage), {
+		ownerId: `${OWNER_ID}-reopened`,
 		now: () => LATER,
 	});
-	const reopenedRegistry = new SchedulerExecutorRegistry();
+	const reopenedRegistry = new SchedulerExecutorRegistry({ reservationStore: reopenedStore });
 	await registerExecutor(
 		reopenedRegistry,
 		new SchedulerInProcessTaskExecutorProvider({ providerId: "line13.scheduler.b", now: () => LATER }),
+		1,
+		fixture.currentBinding,
 	);
-	fixture.reopenedController = new SchedulerDispatchController({
-		session: fixture.session,
-		queue: reopenedQueue,
-		registry: reopenedRegistry,
-		sessionId: SESSION_ID,
-		ownerId: OWNER_ID,
-		now: () => LATER,
-	});
-	fixture.request = request;
+	fixture.reopenedRegistry = reopenedRegistry;
+	fixture.reopenedStore = reopenedStore;
 }
 
 class Line13AgentTaskExecutor implements TaskExecutorProvider {
@@ -410,6 +439,74 @@ class Line13AgentTaskExecutor implements TaskExecutorProvider {
 	async dispose(): Promise<void> {}
 }
 
+class Line13NativeAgentBridge implements SchedulerNativeAgentBridgeV1 {
+	private readonly session: Session;
+	private readonly provider: Line13AgentTaskExecutor;
+
+	constructor(session: Session, provider: Line13AgentTaskExecutor) {
+		this.session = session;
+		this.provider = provider;
+	}
+
+	async resolve(input: Parameters<SchedulerNativeAgentBridgeV1["resolve"]>[0]) {
+		const instance = createAgentInstance({
+			agentInstanceId: input.agentInstanceId,
+			providerId: input.provider.providerId,
+			providerDeclaredAgent: true,
+			roleRevision: roleRevision(),
+			taskId: input.entry.taskId,
+			now: () => input.now,
+		});
+		if (!instance.ok) return instance;
+		const epoch = createBindingEpoch({
+			bindingEpochId: input.bindingEpochId,
+			taskId: input.entry.taskId,
+			attemptId: input.attemptId,
+			agentInstanceId: input.agentInstanceId,
+			bindingId: input.binding.bindingId,
+			activationReason: "attempt_started",
+			activatedByCommandId: input.activatedByCommandId,
+			now: () => input.now,
+		});
+		if (!epoch.ok) return epoch;
+		const resolution: SchedulerNativeAgentResolutionV1 = {
+			schemaVersion: 1,
+			providerId: input.provider.providerId,
+			dispatch: {
+				schemaVersion: 1,
+				dispatchId: input.dispatchId,
+				taskId: input.entry.taskId,
+				bindingId: input.binding.bindingId,
+				taskExecutorProviderId: input.provider.providerId,
+				status: "pending",
+				createdAt: input.now,
+				...(input.entry.deadlineAt === undefined ? {} : { deadlineAt: input.entry.deadlineAt }),
+			},
+			agentInstance: instance.value,
+			initialBindingEpoch: epoch.value,
+			correlation: createExecutionCorrelation(input.sessionId, input.laneId, {
+				revision: 0,
+				taskId: input.entry.taskId,
+				dispatchId: input.dispatchId,
+				attemptId: input.attemptId,
+				bindingId: input.binding.bindingId,
+				bindingEpochId: input.bindingEpochId,
+				agentInstanceId: input.agentInstanceId,
+				providerId: input.provider.providerId,
+			}),
+		};
+		return Result.ok(resolution);
+	}
+
+	async revalidate(input: Parameters<SchedulerNativeAgentBridgeV1["revalidate"]>[0]) {
+		const durable = await this.session.getFoundationObject("attempt", input.resolution.initialBindingEpoch.attemptId);
+		if (durable?.kind !== "fact" || input.provider !== this.provider) {
+			return Result.err(new FoundationError("invalid_correlation", "Line 13 Agent bridge lost durable identity"));
+		}
+		return Result.ok(undefined);
+	}
+}
+
 interface AgentDispatchFixture {
 	readonly session: Session;
 	readonly queue: SchedulerQueueStore;
@@ -429,6 +526,7 @@ function agentDispatchFixture(): AgentDispatchFixture {
 		now: () => NOW,
 	});
 	const registry = new SchedulerExecutorRegistry();
+	const provider = new Line13AgentTaskExecutor();
 	return {
 		session,
 		queue,
@@ -440,9 +538,10 @@ function agentDispatchFixture(): AgentDispatchFixture {
 			sessionId: SESSION_ID,
 			ownerId: OWNER_ID,
 			requiredCapabilities: [],
+			nativeAgentBridge: new Line13NativeAgentBridge(session, provider),
 			now: () => NOW,
 		}),
-		provider: new Line13AgentTaskExecutor(),
+		provider,
 		currentBinding: binding(),
 	};
 }
@@ -480,14 +579,33 @@ async function prepareAgentDispatchFixture(fixture: AgentDispatchFixture): Promi
 }
 
 interface CapacityFixture {
+	readonly session: Session;
+	readonly currentBinding: AgentBinding;
+	readonly reservationStore: SchedulerSelectionReservationStore;
 	readonly registry: SchedulerExecutorRegistry;
 }
 
+function capacityFixture(): CapacityFixture {
+	const session = new Session(new InMemorySessionStorage({ id: "line13-ac11-session", createdAt: 1 }));
+	const reservationStore = new SchedulerSelectionReservationStore(session, {
+		ownerId: "line13-ac11-selection-owner",
+		now: () => NOW,
+	});
+	return {
+		session,
+		currentBinding: binding(),
+		reservationStore,
+		registry: new SchedulerExecutorRegistry({ reservationStore }),
+	};
+}
+
 async function prepareCapacityFixture(fixture: CapacityFixture): Promise<void> {
+	await seedBindingFacts(fixture.session, fixture.currentBinding);
 	await registerExecutor(
 		fixture.registry,
 		new SchedulerInProcessTaskExecutorProvider({ providerId: "line13.scheduler.capacity", now: () => NOW }),
 		1,
+		fixture.currentBinding,
 	);
 }
 
@@ -495,24 +613,28 @@ interface QuotaThrowFixture {
 	readonly provider: SchedulerInProcessTaskExecutorProvider;
 	readonly attempt: Attempt;
 	readonly correlation: ReturnType<typeof createExecutionCorrelation>;
+	readonly reserved: { count: number };
 	readonly settled: { count: number };
 }
 
 function quotaThrowFixture(): QuotaThrowFixture {
+	const reserved = { count: 0 };
 	const settled = { count: 0 };
 	const quota: QuotaProvider = {
 		schemaVersion: 1,
 		providerId: "line13.scheduler.quota",
 		providerClass: "quota",
 		capabilities: async () => [],
-		reserve: async (attribution: QuotaAttribution, budget: QuotaReservation["budget"]) =>
-			Result.ok({
+		reserve: async (attribution: QuotaAttribution, budget: QuotaReservation["budget"]) => {
+			reserved.count += 1;
+			return Result.ok({
 				schemaVersion: 1,
 				reservationId: "line13-ac12-reservation",
 				attribution,
 				budget,
 				grantedAt: NOW,
-			}),
+			});
+		},
 		settle: async (_reservation: QuotaReservation, usage: BudgetUsage) => {
 			settled.count += 1;
 			return Result.ok(usage);
@@ -568,6 +690,7 @@ function quotaThrowFixture(): QuotaThrowFixture {
 			bindingEpochId: createdEpoch.value.bindingEpochId,
 			providerId: provider.providerId,
 		}),
+		reserved,
 		settled,
 	};
 }
@@ -998,30 +1121,27 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 	schemaVersion: 1,
 	shardId: "ac-09-16",
 	complete: true,
-	cases: [
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-09",
-				fullTestName: "Line 13 AC-09 replays the durable SelectionFact after Scheduler Host restart",
-				baseSha: BASE_SHA,
-				ownerStage: "T9b",
-				mode: "fails",
-				expectedFailure: {
-					reason: "scheduler.selection_fact_not_durable",
-					fingerprint: "sha256:ffd25d6eb9c99a48a810c48f983dbc10adc08a69f5d837531010f691d96a17d5",
-				},
-			},
+	cases: [],
+	resolvedCases: [
+		defineLine13ResolvedCase({
+			ac: "AC-09",
+			fullTestName: "Line 13 AC-09 replays the durable SelectionFact after Scheduler Host restart",
 			scenario: {
 				fixture: (): SelectionReplayFixture => ({
-					session: new Session(new InMemorySessionStorage({ id: SESSION_ID, createdAt: 1 })),
+					storage: new InMemorySessionStorage({ id: SESSION_ID, createdAt: 1 }),
 					currentBinding: binding(),
 				}),
 				setup: prepareSelectionReplayFixture,
 				assertion: async (fixture) => {
-					if (fixture.reopenedController === undefined || fixture.request === undefined) {
+					if (fixture.reopenedRegistry === undefined) {
 						throw new Error("Selection replay fixture is incomplete");
 					}
-					const replayed = await fixture.reopenedController.dispatchClaimed(fixture.request);
+					const replayed = await fixture.reopenedRegistry.select({
+						queueEntry: queueEntry(),
+						requiredCapabilities: [CAPABILITY],
+						decidedAt: LATER,
+						exactRequirements: schedulerExactRequirements(fixture.currentBinding, "line13-ac09-attempt"),
+					});
 					assert.equal(
 						replayed.ok,
 						false,
@@ -1034,23 +1154,12 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 						"expected the restarted Scheduler to replay the original durable SelectionFact",
 					);
 				},
-				cleanup: (fixture) => {
-					fixture.reopenedController?.dispose();
-				},
+				cleanup: async (fixture) => fixture.reopenedStore?.release(),
 			},
 		}),
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-10",
-				fullTestName: "Line 13 AC-10 assembles one AgentInstance across Dispatch BindingEpoch and correlation",
-				baseSha: BASE_SHA,
-				ownerStage: "T9b",
-				mode: "fails",
-				expectedFailure: {
-					reason: "scheduler.agent_instance_not_assembled",
-					fingerprint: "sha256:c921f9a15d36a70eeb216a99d362e49551e6935a2430dd51d13f5888de6446d5",
-				},
-			},
+		defineLine13ResolvedCase({
+			ac: "AC-10",
+			fullTestName: "Line 13 AC-10 assembles one AgentInstance across Dispatch BindingEpoch and correlation",
 			scenario: {
 				fixture: agentDispatchFixture,
 				setup: prepareAgentDispatchFixture,
@@ -1084,22 +1193,13 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 				},
 			},
 		}),
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-11",
-				fullTestName: "Line 13 AC-11 admits atomically at maxConcurrency one",
-				baseSha: BASE_SHA,
-				ownerStage: "T9b",
-				mode: "fails",
-				expectedFailure: {
-					reason: "scheduler.capacity_not_atomic",
-					fingerprint: "sha256:89a016104a76c004248bac76b4ad4cd7e4fce20ca6369b6112ea93b6b0081838",
-				},
-			},
+		defineLine13ResolvedCase({
+			ac: "AC-11",
+			fullTestName: "Line 13 AC-11 admits atomically at maxConcurrency one",
 			scenario: {
-				fixture: () => ({ registry: new SchedulerExecutorRegistry() }),
+				fixture: capacityFixture,
 				setup: prepareCapacityFixture,
-				assertion: async ({ registry }) => {
+				assertion: async ({ currentBinding, registry }) => {
 					const attempts = await Promise.all(
 						["line13-ac11-queue-a", "line13-ac11-queue-b"].map((queueEntryId) =>
 							registry.select({
@@ -1107,6 +1207,10 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 								requiredCapabilities: [CAPABILITY],
 								sessionId: SESSION_ID,
 								decidedAt: NOW,
+								exactRequirements: schedulerExactRequirements(
+									currentBinding,
+									`line13-ac11-attempt-${queueEntryId}`,
+								),
 							}),
 						),
 					);
@@ -1116,36 +1220,22 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 						"expected maxConcurrency one admission to accept exactly one concurrent attempt",
 					);
 				},
+				cleanup: async ({ reservationStore }) => reservationStore.release(),
 			},
 		}),
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-12",
-				fullTestName: "Line 13 AC-12 releases Scheduler quota when the attempt runner throws",
-				baseSha: BASE_SHA,
-				ownerStage: "T9b",
-				mode: "fails",
-				expectedFailure: {
-					reason: "scheduler.quota_not_released",
-					fingerprint: "sha256:58e7ec1ad16951738997499112ca19e3cb41fb8bf0180db9bb38d197f853b46b",
-				},
-			},
+		defineLine13ResolvedCase({
+			ac: "AC-12",
+			fullTestName: "Line 13 AC-12 releases Scheduler quota when the attempt runner throws",
 			scenario: {
 				fixture: quotaThrowFixture,
-				assertion: async ({ provider, attempt, correlation, settled }) => {
-					let runnerThrew = false;
-					try {
-						await provider.runAttempt(attempt, { correlation });
-					} catch (error) {
-						runnerThrew = error instanceof Error && error.message === "planned runner crash";
-					}
-					assert.equal(runnerThrew, true, "expected the planned Scheduler runner crash");
+				assertion: async ({ provider, attempt, correlation, reserved, settled }) => {
+					const executed = await provider.runAttempt(attempt, { correlation });
+					assert.equal(executed.ok, false, "expected the planned Scheduler runner crash to fail execution");
+					assert.equal(reserved.count, 1, "expected one Scheduler quota reservation");
 					assert.equal(settled.count, 1, "expected Scheduler quota reservation release after runner throw");
 				},
 			},
 		}),
-	],
-	resolvedCases: [
 		ac15,
 		defineLine13ResolvedCase({
 			ac: "AC-13",

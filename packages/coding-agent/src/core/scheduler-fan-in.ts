@@ -21,6 +21,7 @@ import {
 	type Result as ResultValue,
 	type Session,
 	SessionLedger,
+	type SessionLedgerWriter,
 	type TaskEnvelope,
 	type TaskResult,
 	type ValidationResult,
@@ -84,6 +85,7 @@ export interface SchedulerFanInOptionsV1 {
 	readonly session: Session;
 	readonly sessionId: string;
 	readonly ownerId: string;
+	readonly writer?: SessionLedgerWriter;
 	readonly laneId?: string;
 	readonly now?: () => string;
 }
@@ -219,13 +221,26 @@ export class SchedulerFanInController {
 	private readonly nowFn: () => string;
 
 	constructor(options: SchedulerFanInOptionsV1) {
-		this.settlement = new LayeredResultSettlement(options.session, { ownerId: options.ownerId });
+		const laneId = options.laneId ?? "main";
+		if (
+			options.writer !== undefined &&
+			(options.writer.session !== options.session ||
+				options.writer.ownerId !== options.ownerId ||
+				options.writer.lane !== laneId)
+		) {
+			throw new TypeError("Scheduler Fan-in writer must match the Session, owner, and lane");
+		}
+		this.settlement = new LayeredResultSettlement(options.session, {
+			ownerId: options.ownerId,
+			...(options.writer === undefined ? {} : { writer: options.writer }),
+		});
 		this.ledger = new SessionLedger(options.session, {
 			ownerId: options.ownerId,
+			...(options.writer === undefined ? {} : { writer: options.writer }),
 			laneId: options.laneId,
 		});
 		this.sessionId = options.sessionId;
-		this.laneId = options.laneId ?? "main";
+		this.laneId = laneId;
 		this.nowFn = options.now ?? (() => new Date().toISOString());
 	}
 

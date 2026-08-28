@@ -466,6 +466,7 @@ class TestNativeAgentBridge implements SchedulerNativeAgentBridgeV1 {
 	readonly provider: NativeAgentTaskExecutor;
 	resolveCount = 0;
 	revalidateCount = 0;
+	resolvedLaneId: string | undefined;
 	failRevalidation = false;
 	spoofProvider = false;
 	spoofInstance = false;
@@ -478,6 +479,7 @@ class TestNativeAgentBridge implements SchedulerNativeAgentBridgeV1 {
 
 	async resolve(input: SchedulerNativeAgentResolveInputV1) {
 		this.resolveCount += 1;
+		this.resolvedLaneId = input.laneId;
 		const instance = createAgentInstance({
 			agentInstanceId: this.spoofInstance ? "agent_scheduler_spoof" : input.agentInstanceId,
 			providerId: this.spoofProvider ? "native.scheduler.spoof" : input.provider.providerId,
@@ -808,11 +810,14 @@ describe("scheduler native AgentInstance bridge", () => {
 		const ids = schedulerDispatchIdentityV1("queue_dispatch_1", fixture.claim.claimId);
 		expect(fixture.bridge.resolveCount).toBe(1);
 		expect(fixture.bridge.revalidateCount).toBe(1);
+		expect(fixture.bridge.resolvedLaneId).toBe(ids.laneId);
+		expect(ids.laneId).not.toBe("main");
 		expect(fixture.provider.runCount).toBe(1);
 		expect(result.value.attempt.agentInstanceId).toBe(ids.agentInstanceId);
 		expect(result.value.receipt.agentInstanceId).toBe(ids.agentInstanceId);
 		expect(result.value.receipt.bindingEpochIds).toEqual([ids.bindingEpochId]);
 		expect(result.value.receipt.provenance.correlation).toMatchObject({
+			laneId: ids.laneId,
 			providerId: fixture.provider.providerId,
 			agentInstanceId: ids.agentInstanceId,
 			bindingEpochId: ids.bindingEpochId,

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
 	createModelProfileRevision,
 	createConnectorCapabilitySnapshot,
+	createAgentInstance,
 	createRoleRevision,
 	createScopedMemoryStore,
 	createTaskEnvelope,
@@ -19,10 +20,14 @@ import {
 	SessionLedger,
 	SessionT5Ledger,
 	type AgentBinding,
+	type AgentHarness,
+	type AgentInstance,
 	type ArtifactStoreProvider,
+	type ChildSpawnRequest,
 	type ModelProfile,
 	type QuotaProvider,
 	type RevisionReference,
+	type RoleRevision,
 	type ScopedModelGateway,
 	type TaskEnvelope,
 	type ToolGateway,
@@ -62,16 +67,23 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { createRunLifecycleCoordinator, type RunHandle } from "../src/core/run-lifecycle.ts";
+import type { SchedulerNativeAgentResolveInputV1 } from "../src/core/scheduler-dispatch.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
 import type { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { TrustedSubagentCompositionOptionsV1 } from "../src/core/subagent-composition.ts";
+import type {
+	TrustedSubagentCompositionOptionsV1,
+} from "../src/core/subagent-composition.ts";
+import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
+import type { PlanSubagentSpawnInputV1 } from "../src/core/subagent-supervisor.ts";
 import { createTaskCredentialTestProvider } from "../src/core/task-credential-provider.ts";
 import { TaskGraphStore } from "../src/core/task-graph.ts";
 import { createCodingAgentHarness } from "../src/server/create-harness.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 import { createExternalConnectorTestRuntime } from "./external-connector-test-supervision.ts";
+import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
@@ -279,9 +291,13 @@ function schedulerBinding(currentTask: TaskEnvelope, sessionId: string): AgentBi
 	return resolved.value;
 }
 
-function createSubagents(context: AgentRuntimeCompositionContext, toolGateway: ToolGateway): TrustedSubagentCompositionOptionsV1 {
+function createSubagents(
+	context: AgentRuntimeCompositionContext,
+	toolGateway: ToolGateway,
+	createHarness: NonNullable<TrustedSubagentCompositionOptionsV1["createHarness"]> = async () => context.harness,
+): TrustedSubagentCompositionOptionsV1 {
 	const memoryLedger = new SessionT5Ledger(context.session, {
-		ownerId: `composition-memory-${context.sessionId}`,
+		writer: context.harness.t5.writer,
 		memoryScopeId: `composition-memory-scope-${context.sessionId}`,
 		memoryOwnerId: `composition-parent-${context.sessionId}`,
 		artifactBlobStore: new InMemoryArtifactBlobStore(),
@@ -334,7 +350,7 @@ function createSubagents(context: AgentRuntimeCompositionContext, toolGateway: T
 		dispose: async () => {},
 	};
 	const ledgerForLane = (laneId: string) => new SessionLedger(context.session, {
-		ownerId: `composition-ledger-${context.sessionId}`,
+		writer: context.harness.t5.writer,
 		laneId,
 	});
 	return {
@@ -350,7 +366,7 @@ function createSubagents(context: AgentRuntimeCompositionContext, toolGateway: T
 		modelGateway,
 		toolGateway,
 		artifactStore,
-		createHarness: async () => context.harness,
+		createHarness,
 		loadParentContext: async () => Result.err(new FoundationError("subagent_context_fork_invalid", "not exercised")),
 		parentMemory: {
 			store: parentMemory,
@@ -366,6 +382,82 @@ function createSubagents(context: AgentRuntimeCompositionContext, toolGateway: T
 		},
 		now: () => NOW,
 	};
+}
+
+interface NativeSchedulerPlanProof {
+	readonly childRole: RoleRevision;
+	readonly childModel: ModelProfile;
+	readonly parentTask: TaskEnvelope;
+	readonly parent: AgentInstance;
+	readonly parentAttemptId: string;
+	readonly parentSpawnId: string;
+}
+
+function createNativeSchedulerPlanProof(sessionId: string): NativeSchedulerPlanProof {
+	const childRole = roleRevision(sessionId);
+	const childModel = modelProfile(sessionId);
+	const parentTask = schedulerTask(`parent-${sessionId}`);
+	const createdParent = createAgentInstance({
+		agentInstanceId: `composition-parent-${sessionId}`,
+		providerId: "composition-parent-provider",
+		providerDeclaredAgent: true,
+		roleRevision: childRole,
+		taskId: parentTask.taskId,
+		now: () => NOW,
+	});
+	if (!createdParent.ok) throw createdParent.error;
+	return {
+		childRole,
+		childModel,
+		parentTask,
+		parent: createdParent.value,
+		parentAttemptId: `parent-attempt-${sessionId}`,
+		parentSpawnId: `parent-spawn-${sessionId}`,
+	};
+}
+
+function nativeSchedulerPlan(
+	input: SchedulerNativeAgentResolveInputV1,
+	descriptor: SubagentProviderDescriptorV1,
+	currentTask: TaskEnvelope,
+	currentBinding: AgentBinding,
+	proof: NativeSchedulerPlanProof,
+): ReturnType<typeof Result.ok<PlanSubagentSpawnInputV1>> {
+	const request: ChildSpawnRequest = {
+		schemaVersion: 1,
+		spawnId: input.spawnId,
+		parentSpawn: {
+			schemaVersion: 1,
+			type: "agent.spawn",
+			spawnId: proof.parentSpawnId,
+			parentTaskId: proof.parent.taskId,
+			newTaskEnvelopeRef: { schemaVersion: 1, type: "task_envelope", id: currentTask.taskId, revision: 1 },
+			providerId: descriptor.descriptor.providerId,
+			createdAt: NOW,
+		},
+		taskEnvelope: currentTask,
+		roleRevision: proof.childRole,
+		modelProfile: proof.childModel,
+		parentAttemptId: proof.parentAttemptId,
+		parentAgentInstanceId: proof.parent.agentInstanceId,
+		forkScope: "none",
+	};
+	return Result.ok({
+		schemaVersion: 1,
+		request,
+		originParentAgentInstance: proof.parent,
+		originParentAttemptId: proof.parentAttemptId,
+		lineageParentAgentInstance: proof.parent,
+		childLaneId: input.laneId,
+		childBinding: input.binding,
+		providerDescriptor: descriptor,
+		childAgentInstanceId: input.agentInstanceId,
+		dispatchId: input.dispatchId,
+		attemptId: input.attemptId,
+		bindingEpochId: input.bindingEpochId,
+		activatedByCommandId: input.activatedByCommandId,
+		queue: { mode: "fail" },
+	});
 }
 
 const schedulerAdmissionGate = Object.freeze({ getByBusinessKey: () => undefined });
@@ -398,7 +490,7 @@ function createScheduler(
 			{ getByBusinessKey: () => undefined },
 			{ now: () => NOW },
 		),
-		ownerId: `composition-scheduler-${context.sessionId}`,
+		ownerId: selectionReservations.ownerId,
 		registry: options.registry ?? new SchedulerExecutorRegistry({ reservationStore: selectionReservations }),
 		task: currentTask,
 		binding: schedulerBinding(currentTask, context.sessionId),
@@ -793,6 +885,354 @@ describe("AgentRuntimeComposition", () => {
 			await created.session.dispose();
 			await created.session.waitForDispose();
 		}
+	});
+
+	it("runs a Graph agent node through the standard Session Scheduler and Native Subagent composition", async () => {
+		const fixture = await createRuntimeFixture();
+		const sessionManager = SessionManager.inMemory(fixture.cwd, { id: "native-scheduler-product" });
+		const coordinator = createRunLifecycleCoordinator(sessionManager, { diagnostics: () => {} });
+		const runs = new Map<string, RunHandle>();
+		const productTask = schedulerTask(sessionManager.getSessionId());
+		const productBinding = schedulerBinding(productTask, sessionManager.getSessionId());
+		const graph = new TaskGraphStore(
+			sessionManager,
+			{
+				get(runId) {
+					const run = coordinator.getRun(runId);
+					return run === undefined ? undefined : {
+						sessionId: sessionManager.getSessionId(),
+						runId,
+						status: run.record.status,
+						...(run.receipt === undefined ? {} : { receiptStatus: run.receipt.status }),
+					};
+				},
+			},
+			schedulerAdmissionGate,
+			{ now: () => NOW },
+		);
+		graph.create({
+			taskId: productTask.taskId,
+			graphRevision: 1,
+			nodes: [{ nodeId: "native", dependsOn: [] }],
+			clientRequestId: "native-scheduler-product-graph",
+		});
+		const seedSession = new Session(createSessionManagerStorage(sessionManager));
+		const seedLedger = new SessionLedger(seedSession, { ownerId: "native-scheduler-product-seed" });
+		const productRole = roleRevision(sessionManager.getSessionId());
+		const productModel = modelProfile(sessionManager.getSessionId());
+		const planProof = createNativeSchedulerPlanProof(sessionManager.getSessionId());
+		await seedLedger.appendFact("task", productTask.taskId, productTask, {
+			clientRequestId: "native-scheduler-product-seed:task",
+			expectedRevision: 0,
+			correlation: { taskId: productTask.taskId },
+		});
+		await seedLedger.appendFact("role_revision", productBinding.roleRevision.id, productRole, {
+			clientRequestId: "native-scheduler-product-seed:role",
+			expectedRevision: 0,
+			correlation: { taskId: productTask.taskId, bindingId: productBinding.bindingId },
+		});
+		await seedLedger.appendFact("model_profile_revision", productBinding.modelProfileRevision.id, productModel, {
+			clientRequestId: "native-scheduler-product-seed:model",
+			expectedRevision: 0,
+			correlation: { taskId: productTask.taskId, bindingId: productBinding.bindingId },
+		});
+		for (const [objectType, reference] of [
+			["external_agent_binding", productBinding.contextRevision],
+			["capability_binding", productBinding.capabilityRevision],
+			["model_broker_binding", productBinding.modelBrokerBindingRevision],
+			["policy_binding", productBinding.policyRevision],
+		] as const) {
+			await seedLedger.appendFact(objectType, reference.id, {
+				schemaVersion: 1,
+				type: reference.type,
+				id: reference.id,
+				revision: reference.revision,
+			}, {
+				clientRequestId: `native-scheduler-product-seed:${objectType}`,
+				expectedRevision: 0,
+				correlation: { taskId: productTask.taskId, bindingId: productBinding.bindingId },
+			});
+		}
+		await seedLedger.appendFact("agent_binding", productBinding.bindingId, productBinding, {
+			clientRequestId: "native-scheduler-product-seed:binding",
+			expectedRevision: 0,
+			correlation: { taskId: productTask.taskId, bindingId: productBinding.bindingId },
+		});
+		await seedLedger.appendFact("task", planProof.parentTask.taskId, planProof.parentTask, {
+			clientRequestId: "native-scheduler-product-seed:parent-task",
+			expectedRevision: 0,
+			correlation: { taskId: planProof.parentTask.taskId },
+		});
+		await seedLedger.appendFact("agent_instance", planProof.parent.agentInstanceId, planProof.parent, {
+			clientRequestId: "native-scheduler-product-seed:parent-agent",
+			expectedRevision: 0,
+			correlation: {
+				taskId: planProof.parent.taskId,
+				agentInstanceId: planProof.parent.agentInstanceId,
+			},
+		});
+		await seedLedger.appendFact("attempt", planProof.parentAttemptId, {
+			schemaVersion: 1,
+			attemptId: planProof.parentAttemptId,
+			dispatchId: `parent-dispatch-${sessionManager.getSessionId()}`,
+			taskId: planProof.parent.taskId,
+			providerId: planProof.parent.providerId,
+			agentInstanceId: planProof.parent.agentInstanceId,
+			bindingId: `parent-binding-${sessionManager.getSessionId()}`,
+			bindingEpochIds: [`parent-epoch-${sessionManager.getSessionId()}`],
+			status: "running",
+			startedAt: NOW,
+		}, {
+			clientRequestId: "native-scheduler-product-seed:parent-attempt",
+			expectedRevision: 0,
+			correlation: {
+				taskId: planProof.parent.taskId,
+				dispatchId: `parent-dispatch-${sessionManager.getSessionId()}`,
+				attemptId: planProof.parentAttemptId,
+				bindingId: `parent-binding-${sessionManager.getSessionId()}`,
+				bindingEpochId: `parent-epoch-${sessionManager.getSessionId()}`,
+				agentInstanceId: planProof.parent.agentInstanceId,
+			},
+		});
+		await seedLedger.appendFact("context", `context_${planProof.parentSpawnId}`, {
+			schemaVersion: 1,
+			contextId: `context_${planProof.parentSpawnId}`,
+			taskId: planProof.parent.taskId,
+			spawnId: planProof.parentSpawnId,
+			forkScope: "none",
+			lineage: {
+				schemaVersion: 1,
+				entityType: "context",
+				entityId: `context_${planProof.parentSpawnId}`,
+				depth: 0,
+			},
+			createdAt: NOW,
+		}, {
+			clientRequestId: "native-scheduler-product-seed:parent-context",
+			expectedRevision: 0,
+			correlation: { taskId: planProof.parent.taskId },
+		});
+		await seedLedger.release();
+		let schedulerWake: (() => void) | undefined;
+		let schedulerRegistry: SchedulerExecutorRegistry | undefined;
+		let compositionGateway: ToolGateway | undefined;
+		let canonicalWriter: AgentHarness["t5"]["writer"] | undefined;
+		const factory = createAgentRuntimeCompositionFactory({
+			toolGateway: (context) => {
+				compositionGateway = createGateway(context.sessionId);
+				return compositionGateway;
+			},
+			subagents: (context) => {
+				const gateway = compositionGateway;
+				if (gateway === undefined) throw new Error("Native Scheduler Tool Gateway is missing");
+				canonicalWriter = context.harness.t5.writer;
+				return createSubagents(context, gateway, async (input) => ({
+					promptOnLane: async () => Result.ok({
+						runId: `native-run-${input.agentInstance.agentInstanceId}`,
+						kind: "completed" as const,
+						leafId: "native-leaf",
+						finalEntryId: "native-entry",
+						finalMessage: {
+							role: "assistant" as const,
+							content: [{ type: "text" as const, text: "native scheduler complete" }],
+						},
+					}),
+					resumeOnLane: async () => Result.err({ message: "not exercised" }),
+					createLane: async () => Result.ok({ name: input.laneId }),
+					abort: async () => Result.ok({ runId: "native-run", steer: [], followUp: [] }),
+					close: async () => undefined,
+				}) as unknown as AgentHarness);
+			},
+			scheduler: (context, selectionReservations) => {
+				const task = productTask;
+				const binding = productBinding;
+				const targetSessionId = `native-scheduler-target-${context.sessionId}`;
+				const targetManager = SessionManager.inMemory(fixture.cwd, { id: targetSessionId });
+				const registry = new SchedulerExecutorRegistry({ reservationStore: selectionReservations });
+				schedulerRegistry = registry;
+				return {
+					schemaVersion: 1,
+					enabled: true,
+					sourceSession: context.session,
+					targetSession: new Session(createSessionManagerStorage(targetManager)),
+					targetSessionId,
+					targetGraph: new TaskGraphStore(
+						targetManager,
+						{ get: () => undefined },
+						schedulerAdmissionGate,
+						{ now: () => NOW },
+					),
+					ownerId: selectionReservations.ownerId,
+					registry,
+					task,
+					binding,
+					gateLookup: schedulerAdmissionGate,
+					nativeAgentPlanner: {
+						schemaVersion: 1,
+						plan: async (input, descriptor) => nativeSchedulerPlan(input, descriptor, task, binding, planProof),
+					},
+					resolveRunAssociation: async (_graph, node) => {
+						const runId = `native-run-${node.nodeId}`;
+						if (!runs.has(runId)) {
+							const run = coordinator.reserve().accept({
+								runId,
+								attempt: 1,
+								model: { provider: "fake", id: "model-1", thinkingLevel: "off" },
+							});
+							run.start();
+							runs.set(runId, run);
+						}
+						return Result.ok({
+							runId,
+							task,
+							binding,
+							executorRequirements: { requireResume: true, modelAccess: "aos_gateway" },
+						});
+					},
+					settleRunAtHost: async (input) => {
+						const run = runs.get(input.runId);
+						if (run === undefined) {
+							return Result.err(new FoundationError("scheduler_not_found", "Native Scheduler Run is missing"));
+						}
+						if (canonicalWriter === undefined) {
+							return Result.err(new FoundationError("scheduler_executor_unavailable", "Canonical Scheduler writer is missing"));
+						}
+						const terminal = await observeCanonicalTerminal(sessionManager, run, {
+							outcome: input.taskResult === undefined ? "failed" : "completed",
+							writer: canonicalWriter,
+						});
+						if (terminal.event === undefined) {
+							return Result.err(new FoundationError("run_terminal_authority_invalid", "Canonical Run terminal was not projected"));
+						}
+						return Result.ok(undefined);
+					},
+					eventSource: {
+						subscribe(wake) {
+							schedulerWake = wake;
+							return () => { schedulerWake = undefined; };
+						},
+					},
+					pollIntervalMs: 60_000,
+					now: () => NOW,
+				};
+			},
+		});
+		const created = await createAgentSession({
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			modelRuntime: fixture.services.modelRuntime,
+			modelBroker: fixture.services.modelBroker,
+			settingsManager: fixture.services.settingsManager,
+			resourceLoader: fixture.services.resourceLoader,
+			capabilityRegistry: fixture.services.capabilityRegistry,
+			sessionManager,
+			runtimeComposition: factory,
+			noTools: "all",
+		});
+		try {
+			await created.session.whenCapabilitiesReady();
+			if (schedulerWake === undefined) {
+				throw new Error("Native Scheduler product composition did not initialize");
+			}
+			expect(schedulerRegistry?.get("native.in_process")?.maxConcurrency).toBe(1);
+			expect(schedulerRegistry?.get("native.fork")).toBeUndefined();
+			schedulerWake();
+			await vi.waitFor(async () => {
+				const durable = await created.runtimeComposition.session.findFoundationRecords({
+					objectType: "scheduler.queue_entry",
+					includePruned: true,
+				});
+				expect(durable.some((record) =>
+					record.kind === "fact" &&
+					(record.payload as { readonly state?: unknown }).state === "settled"
+				)).toBe(true);
+			}, { timeout: 5_000 });
+			const reopenedGraph = new TaskGraphStore(
+				sessionManager,
+				{
+					get(runId) {
+						const run = coordinator.getRun(runId);
+						return run === undefined ? undefined : {
+							sessionId: sessionManager.getSessionId(),
+							runId,
+							status: run.record.status,
+							...(run.receipt === undefined ? {} : { receiptStatus: run.receipt.status }),
+						};
+					},
+				},
+				schedulerAdmissionGate,
+				{ now: () => NOW },
+			);
+			expect(reopenedGraph.get(productTask.taskId, 1)?.nodes[0]?.status).toBe("succeeded");
+			const records = (await created.runtimeComposition.session.findFoundationRecords({ includePruned: true }))
+				.flatMap((record) => record.kind === "fact" ? [record] : []);
+			const queueEntry = records.find((record) =>
+				record.objectType === "scheduler.queue_entry" &&
+				(record.payload as { readonly state?: unknown }).state === "settled"
+			);
+			const receipt = records.find((record) =>
+				record.objectType === "attempt_receipt" &&
+				(record.payload as { readonly providerId?: unknown }).providerId === "native.in_process"
+			);
+			const receiptIdentity = receipt?.payload as {
+				readonly attemptId?: string;
+				readonly bindingEpochIds?: readonly string[];
+				readonly dispatchId?: string;
+			} | undefined;
+			const dispatch = records.find((record) =>
+				record.objectType === "dispatch" && record.objectId === receiptIdentity?.dispatchId
+			);
+			const epoch = records.find((record) =>
+				record.objectType === "binding_epoch" && record.objectId === receiptIdentity?.bindingEpochIds?.[0]
+			);
+			const attempt = records.find((record) =>
+				record.objectType === "attempt" && record.objectId === receiptIdentity?.attemptId
+			);
+			const agentInstanceId = attempt?.correlation.agentInstanceId;
+			expect(agentInstanceId).toBeDefined();
+			expect(dispatch?.correlation.agentInstanceId).toBe(agentInstanceId);
+			expect(epoch?.correlation.agentInstanceId).toBe(agentInstanceId);
+			expect(receipt?.correlation.agentInstanceId).toBe(agentInstanceId);
+			expect(receipt?.payload).toMatchObject({
+				agentInstanceId,
+				provenance: { correlation: { agentInstanceId } },
+			});
+			expect(queueEntry?.payload).toMatchObject({ state: "settled" });
+			const reservations = await created.runtimeComposition.schedulerSelectionReservations?.list();
+			if (reservations === undefined || !reservations.ok) {
+				throw reservations?.error ?? new Error("Canonical Scheduler selection store is missing");
+			}
+			expect(reservations.value).toMatchObject([{
+				status: "settled",
+				fact: {
+					chosenProviderId: "native.in_process",
+					bindingId: productBinding.bindingId,
+					agentInstanceId,
+				},
+			}]);
+			expect(created.session.getSchedulerStatus()?.tickFailures).toBe(0);
+			const foreignLedger = new SessionLedger(created.runtimeComposition.session, {
+				ownerId: "native-scheduler-foreign-owner",
+			});
+			await expect(foreignLedger.appendFact("scheduler_owner_probe", "foreign", { blocked: true }, {
+				clientRequestId: "native-scheduler-foreign-owner",
+				expectedRevision: 0,
+				correlation: { taskId: productTask.taskId },
+			})).rejects.toMatchObject({ code: "session_writer_busy" });
+			expect(productBinding).toBe(created.runtimeComposition.scheduler?.binding);
+		} finally {
+			await created.session.dispose();
+			await created.session.waitForDispose();
+		}
+		const releasedLedger = new SessionLedger(created.runtimeComposition.session, {
+			ownerId: "native-scheduler-after-dispose",
+		});
+		await releasedLedger.appendFact("scheduler_owner_probe", "released", { released: true }, {
+			clientRequestId: "native-scheduler-after-dispose",
+			expectedRevision: 0,
+			correlation: { taskId: productTask.taskId },
+		});
+		await releasedLedger.release();
 	});
 
 	it("resolves a stable explicit target from trusted catalogs and project/Role narrowing", () => {

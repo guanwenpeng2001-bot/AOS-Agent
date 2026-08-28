@@ -3,6 +3,7 @@ import {
 	LayeredResultSettlement,
 	Session,
 	SessionLedger,
+	type SessionLedgerWriter,
 	type AttemptReceipt,
 	type Attempt,
 	type CanonicalRunResult,
@@ -16,6 +17,7 @@ export type CanonicalTerminalOutcome = "completed" | "failed" | "cancelled";
 
 export interface CanonicalTerminalOptions {
 	readonly outcome: CanonicalTerminalOutcome;
+	readonly writer?: SessionLedgerWriter;
 	readonly sideEffectState?: AttemptReceipt["sideEffectState"];
 	readonly terminalErrorCode?: string;
 	readonly completedAt?: string;
@@ -61,9 +63,13 @@ export async function writeCanonicalRunResult(
 	runId: string,
 	options: CanonicalTerminalOptions,
 ): Promise<CanonicalRunResult> {
-	const session = sessionSource instanceof Session
+	const requestedSession = sessionSource instanceof Session
 		? sessionSource
 		: new Session(createSessionManagerStorage(sessionSource));
+	const session = options.writer?.session ?? requestedSession;
+	if ((await requestedSession.getMetadata()).id !== (await session.getMetadata()).id) {
+		throw new TypeError("Canonical terminal writer must belong to the requested Session");
+	}
 	const sessionId = (await session.getMetadata()).id;
 	const suffix = fixtureSuffix(runId);
 	const taskId = `task-${suffix}`;
@@ -144,8 +150,8 @@ export async function writeCanonicalRunResult(
 		startedAt: completedAt,
 		completedAt,
 	};
-	const ownerId = (await session.getWriterLease())?.ownerId ?? `canonical-run-seed-${suffix}`;
-	const ledger = new SessionLedger(session, { ownerId });
+	const ownerId = options.writer?.ownerId ?? (await session.getWriterLease())?.ownerId ?? `canonical-run-seed-${suffix}`;
+	const ledger = new SessionLedger(session, { ownerId, writer: options.writer });
 	try {
 		await ledger.appendFact("task", taskId, task, {
 			clientRequestId: `canonical-run:task:${suffix}`,
@@ -173,7 +179,7 @@ export async function writeCanonicalRunResult(
 		await ledger.release();
 	}
 
-	const settlement = new LayeredResultSettlement(session, { ownerId });
+	const settlement = new LayeredResultSettlement(session, { ownerId, writer: options.writer });
 	try {
 		const taskResult = await settlement.settle({
 			taskResultId,

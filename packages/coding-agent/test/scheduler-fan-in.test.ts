@@ -35,7 +35,10 @@ import {
 	type SchedulerNodeRefV1,
 	type SchedulerQueueEntryV1,
 } from "../src/core/scheduler.ts";
-import { SchedulerDispatchController } from "../src/core/scheduler-dispatch.ts";
+import {
+	SchedulerDispatchController,
+	type SchedulerDispatchExecutorRequirementsV1,
+} from "../src/core/scheduler-dispatch.ts";
 import { SCHEDULER_IN_PROCESS_CAPABILITY_ID, SchedulerExecutorRegistry } from "../src/core/scheduler-executors.ts";
 import {
 	SchedulerFanInController,
@@ -536,6 +539,50 @@ function settleRequest(
 }
 
 describe("scheduler production fan-in", () => {
+	it("forwards the exact Host association executor requirements to dispatch", async () => {
+		const harness = await createHarness([{ nodeId: "requirements", dependsOn: [] }]);
+		const executorRequirements = Object.freeze({
+			requireResume: true,
+			modelAccess: "aos_gateway" as const,
+			credentialTargetRefs: Object.freeze(["credential:line13"]),
+			sandboxTargetRefs: Object.freeze(["sandbox:line13"]),
+		});
+		let forwardedRequirements: SchedulerDispatchExecutorRequirementsV1 | undefined;
+		const host = new SchedulerHost({
+			enabled: true,
+			sessionId: harness.sessionId,
+			ownerId: OWNER_ID,
+			graph: harness.graph,
+			queue: harness.queue,
+			dispatch: {
+				dispatchRunClaimed(request) {
+					forwardedRequirements = request.executorRequirements;
+					return harness.dispatch.dispatchRunClaimed({
+						runId: request.runId,
+						queueEntryId: request.queueEntryId,
+						fencingToken: request.fencingToken,
+						binding: request.binding,
+					});
+				},
+			},
+			fanIn: harness.fanIn,
+			resolveRunAssociation: async (graph, node) => {
+				const association = harness.association(graph, node);
+				return association.ok
+					? Result.ok({ ...association.value, executorRequirements })
+					: association;
+			},
+			settlementEvidence: async () => Result.ok(validEvidence()),
+			settleRunAtHost: async (input) => harness.settleRun(input.runId, input.taskResult !== undefined),
+		});
+
+		const tick = await host.tick();
+		expect(tick.dispatched).toBe(1);
+		expect(forwardedRequirements).toBe(executorRequirements);
+		harness.dispatch.dispose();
+		await harness.fanIn.release();
+	});
+
 	it("runs a dependent DAG through ready scan, T4 dispatchRunClaimed, settlement, and successor readiness", async () => {
 		const harness = await createHarness([
 			{ nodeId: "root", dependsOn: [] },

@@ -341,6 +341,13 @@ describe("T6 provider-driven role binding and result settlement", () => {
 		for (const objectType of ["task", "context", "dispatch", "agent_instance", "binding_epoch", "attempt"] as const) expect((await session.findFoundationRecords({ kind: "fact", objectType, order: "oldestFirst" })).length).toBeGreaterThan(0);
 		const childContext = await session.getFoundationObject("context", "context_spawn-t6");
 		expect(childContext).toMatchObject({ kind: "fact", payload: { contextId: "context_spawn-t6", taskId: childTask.taskId, parentTaskId: "parent-task-t6", parentContextId: "context_parent-spawn-t6", lineage: { entityType: "context", entityId: "context_spawn-t6", parentId: "context_parent-spawn-t6", depth: 1 } } });
+		expect(childContext).toMatchObject({ correlation: { taskId: childTask.taskId } });
+		const spawnFact = await session.getFoundationObject("agent_spawn", "spawn-t6");
+		const childDispatch = await session.getFoundationObject("dispatch", `dispatch-${provider.providerId}`);
+		for (const record of [childContext, spawnFact, childDispatch]) {
+			expect(record?.correlation).not.toHaveProperty("contextId");
+			expect(record?.correlation).not.toHaveProperty("spawnId");
+		}
 		const orderedFacts = await session.findFoundationRecords({ kind: "fact", order: "oldestFirst" });
 		const childTaskIndex = orderedFacts.findIndex((record) => record.kind === "fact" && record.objectType === "task" && record.objectId === childTask.taskId);
 		const childContextIndex = orderedFacts.findIndex((record) => record.kind === "fact" && record.objectType === "context" && record.objectId === "context_spawn-t6");

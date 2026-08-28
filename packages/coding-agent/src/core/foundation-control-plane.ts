@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import {
 	canonicalFoundationJson,
+	createConnectorCapabilitySnapshot,
 	fingerprintFoundationValue,
 	FoundationError,
 	validateAgentBinding,
@@ -14,6 +15,7 @@ import {
 	type HarnessTool,
 	type McpToolRoute,
 	type Session,
+	type SessionLedgerWriter,
 	type TaskEnvelope,
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
@@ -150,7 +152,12 @@ import {
 	type RuntimeTimerHandle,
 } from "./runtime-clock.ts";
 import { SchedulerDeadlockController } from "./scheduler-deadlock.ts";
-import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
+import {
+	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
+	createSchedulerExecutorRuntimeSnapshotV1,
+	schedulerBindingRequirementDigestV1,
+	type SchedulerExecutorRegistry,
+} from "./scheduler-executors.ts";
 import type { SchedulerSelectionReservationStore } from "./scheduler-selection-reservations.ts";
 import type { SchedulerFanInController } from "./scheduler-fan-in.ts";
 import type { SchedulerHandoffController } from "./scheduler-handoff.ts";
@@ -173,6 +180,7 @@ import {
 } from "./task-graph.ts";
 import {
 	createTrustedSubagentCompositionV1,
+	type TrustedSchedulerNativeAgentPlannerV1,
 	type TrustedSubagentCompositionOptionsV1,
 	type TrustedSubagentCompositionV1,
 } from "./subagent-composition.ts";
@@ -245,9 +253,13 @@ export interface TrustedSchedulerCompositionOptions {
 	readonly targetGraph: TaskGraphStore;
 	readonly runLifecycleSession: SessionManager;
 	readonly ownerId: string;
+	/** Canonical source-Session authority supplied by the trusted Subagent composition. */
+	readonly writer?: SessionLedgerWriter;
 	readonly registry: SchedulerExecutorRegistry;
 	/** Canonical Session-backed owner shared with the exact-selection registry. */
 	readonly selectionReservationStore?: SchedulerSelectionReservationStore;
+	/** Per-Session trusted factory planner; prompt, RPC, and project configuration cannot supply it. */
+	readonly nativeAgentPlanner?: TrustedSchedulerNativeAgentPlannerV1;
 	/** Trusted product initialization that must complete before the Scheduler can start. */
 	readonly initializeBeforeStart?: () => Promise<void>;
 	/** Exact External Connector target and frozen retry policy for this composition generation. */
@@ -261,6 +273,107 @@ export interface TrustedSchedulerCompositionOptions {
 	readonly eventSource?: SchedulerHostEventSourceV1;
 	readonly pollIntervalMs?: number;
 	readonly now?: () => string;
+}
+
+const NATIVE_SCHEDULER_RUNTIME_EXPIRES_AT = "9999-12-31T23:59:59.999Z";
+
+function nativeSchedulerRuntimeSnapshot(
+	providerId: string,
+	binding: AgentBinding,
+	revision: number,
+	now: string,
+) {
+	const bindingRequirementDigest = schedulerBindingRequirementDigestV1(binding);
+	if (!bindingRequirementDigest.ok) throw bindingRequirementDigest.error;
+	const policyRevisionDigest = binding.policyRevision.fingerprint;
+	if (policyRevisionDigest === undefined) {
+		throw new FoundationError(
+			"binding_required_fact",
+			"Native Scheduler executor registration requires a fingerprinted policy revision",
+		);
+	}
+	const snapshot = createSchedulerExecutorRuntimeSnapshotV1({
+		schemaVersion: 1,
+		capabilitySnapshot: createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId,
+			revision,
+			protocol: { name: "aos-native-subagent", version: "1" },
+			modelAccess: "aos_gateway",
+			resume: true,
+			toolGateway: true,
+			artifacts: false,
+			images: false,
+		}),
+		configRevision: fingerprintFoundationValue({
+			schemaVersion: 1,
+			providerId,
+			revision,
+			providerKind: "in_process",
+		}),
+		bindingRequirementDigests: [bindingRequirementDigest.value],
+		toolSelectionDigests: [binding.mcpSelection.digest],
+		policyRevisionDigests: [policyRevisionDigest],
+		reviewRevisionDigests: [],
+		credentialTargetRefs: [],
+		sandboxTargetRefs: [],
+		observedAt: now,
+		expiresAt: NATIVE_SCHEDULER_RUNTIME_EXPIRES_AT,
+	});
+	if (!snapshot.ok) throw snapshot.error;
+	return snapshot.value;
+}
+
+async function registerNativeSchedulerProviders(
+	options: TrustedSchedulerCompositionOptions,
+	subagents: TrustedSubagentCompositionV1,
+	now: string,
+): Promise<void> {
+	const descriptors = new Map(
+		subagents.providerDescriptors().map((descriptor) => [descriptor.descriptor.providerId, descriptor]),
+	);
+	for (const provider of subagents.schedulerAgentProviders()) {
+		const descriptor = descriptors.get(provider.providerId);
+		if (descriptor === undefined || descriptor.descriptor.providerClass !== provider.providerClass) {
+			throw new FoundationError(
+				"subagent_provider_unavailable",
+				"Native Scheduler provider has no matching trusted Subagent descriptor",
+			);
+		}
+		if (descriptor.providerKind !== "in_process" || descriptor.capabilities.resumeSupported !== true) continue;
+		const existing = options.registry.get(provider.providerId);
+		if (existing !== undefined) {
+			throw new FoundationError(
+				"scheduler_queue_conflict",
+				"Native Scheduler provider identity conflicts with an existing executor registration",
+			);
+		}
+		const capabilities = await provider.capabilities();
+		const schedulerCapabilities = [
+			...capabilities.filter((capability) => capability.id !== SCHEDULER_IN_PROCESS_CAPABILITY_ID),
+			{ schemaVersion: 1 as const, id: SCHEDULER_IN_PROCESS_CAPABILITY_ID, version: 1 },
+		];
+		const registered = await options.registry.register({
+			entry: {
+				schemaVersion: 1,
+				descriptor: descriptor.descriptor,
+				capabilities: schedulerCapabilities,
+				costClass: "local",
+				registeredAt: now,
+			},
+			provider,
+			trusted: true,
+			latencyMs: 0,
+			maxConcurrency: 1,
+			runtimeSnapshot: nativeSchedulerRuntimeSnapshot(
+				provider.providerId,
+				options.binding,
+				descriptor.revision,
+				now,
+			),
+		});
+		if (!registered.ok) throw registered.error;
+	}
 }
 
 export interface SchedulerSafeStatus {
@@ -349,15 +462,60 @@ export class TrustedSchedulerComposition {
 	private tickFailures = 0;
 	private lastTick: SchedulerSafeStatus["lastTick"];
 
-	constructor(options: TrustedSchedulerCompositionOptions) {
+	constructor(options: TrustedSchedulerCompositionOptions, subagents?: TrustedSubagentCompositionV1) {
 		if (options.schemaVersion !== 1 || options.enabled !== true) {
 			throw new FoundationError("scheduler_queue_invalid", "Scheduler requires an explicit trusted Host opt-in");
+		}
+		if (
+			options.selectionReservationStore !== undefined &&
+			options.selectionReservationStore.ownerId !== options.ownerId
+		) {
+			throw new FoundationError(
+				"scheduler_queue_conflict",
+				"Scheduler selection and queue persistence must use the same canonical owner",
+			);
+		}
+		if (
+			options.writer !== undefined &&
+			(options.writer.session !== options.sourceSession ||
+				options.writer.ownerId !== options.ownerId ||
+				options.writer.lane !== "main")
+		) {
+			throw new FoundationError(
+				"scheduler_queue_conflict",
+				"Scheduler writer must match the canonical source Session, owner, and lane",
+			);
+		}
+		if (options.nativeAgentPlanner !== undefined && subagents === undefined) {
+			throw new FoundationError(
+				"subagent_provider_unavailable",
+				"Native Scheduler execution requires the standard trusted Subagent composition",
+			);
+		}
+		if (
+			options.nativeAgentPlanner !== undefined &&
+			(options.writer === undefined || subagents?.usesCanonicalWriter(options.writer) !== true)
+		) {
+			throw new FoundationError(
+				"subagent_provider_unavailable",
+				"Native Scheduler execution requires the canonical Subagent writer",
+			);
 		}
 		if (options.pollIntervalMs !== undefined && !Number.isFinite(options.pollIntervalMs)) {
 			throw new FoundationError("scheduler_queue_invalid", "Scheduler poll interval must be finite");
 		}
 		this.clock = runtimeClockFor(options);
 		const now = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
+		const nativeAgentBridge = options.nativeAgentPlanner === undefined
+			? undefined
+			: subagents?.schedulerNativeAgentBridge(options.nativeAgentPlanner);
+		const initializeBeforeStart = nativeAgentBridge === undefined
+			? options.initializeBeforeStart
+			: async (): Promise<void> => {
+					if (subagents === undefined) return;
+					await registerNativeSchedulerProviders(options, subagents, now());
+					await options.initializeBeforeStart?.();
+				};
 		this.sessionId = options.runLifecycleSession.getSessionId();
 		this.pollIntervalMs = Math.min(
 			SCHEDULER_HOST_MAX_POLL_INTERVAL_MS,
@@ -417,11 +575,13 @@ export class TrustedSchedulerComposition {
 						sourceGraph: this.graph,
 						targetGraph: options.targetGraph,
 						ownerId: options.ownerId,
+						...(options.writer === undefined ? {} : { writer: options.writer }),
 						registry: options.registry,
 						task: options.task,
 						binding: options.binding,
 						runLifecycleSession: options.runLifecycleSession,
 						runLifecycleHookOwnership: "host" as const,
+						...(nativeAgentBridge === undefined ? {} : { nativeAgentBridge }),
 						...(options.connectorRetry === undefined ? {} : { connectorRetry: options.connectorRetry }),
 						now,
 					},
@@ -469,11 +629,10 @@ export class TrustedSchedulerComposition {
 					this.clock,
 				),
 			);
-			if (options.initializeBeforeStart === undefined) {
+			if (initializeBeforeStart === undefined) {
 				this.initializationComplete = true;
 				this.start();
 			} else {
-				const initializeBeforeStart = options.initializeBeforeStart;
 				const initialization = Promise.resolve()
 					.then(() => initializeBeforeStart())
 					.then(() => {
@@ -1004,7 +1163,7 @@ export class FoundationControlPlane {
 				if (options.scheduler.runLifecycleSession !== this.sessionManager) {
 					throw new FoundationError("scheduler_queue_invalid", "Scheduler must use the control-plane Session");
 				}
-				scheduler = new TrustedSchedulerComposition(options.scheduler);
+				scheduler = new TrustedSchedulerComposition(options.scheduler, this.subagents);
 			}
 		} catch (error) {
 			unregisterSubagentLifecycleHooks?.();

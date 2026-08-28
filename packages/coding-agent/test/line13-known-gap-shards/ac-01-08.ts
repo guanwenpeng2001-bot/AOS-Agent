@@ -9,12 +9,20 @@ import {
 	Session,
 	SessionLedger,
 	SessionT5Ledger,
+	createAttempt,
+	createBindingEpoch,
 	createConnectorCapabilitySnapshot,
 	createFoundationToolGateway,
 	createLocalToolGatewayProvider,
+	createModelProfileRevision,
+	createRoleRevision,
+	fingerprintFoundationValue,
+	resolveAgentBinding,
 	type AgentBinding,
 	type FoundationError,
 	type FoundationJsonValue,
+	type ModelProfile,
+	type RevisionReference,
 	type TaskEnvelope,
 	type ToolExecutionResult,
 	type ToolGateway,
@@ -28,12 +36,17 @@ import {
 	createAgentSessionServices,
 	createExternalConnectorRegistry,
 	SchedulerExecutorRegistry,
+	SchedulerInProcessTaskExecutorProvider,
 	SchedulerQueueStore,
 	type AgentSession,
 	type CreateAgentSessionRuntimeFactory,
 	type ExternalConnectorRegistry,
-	type TrustedSchedulerRuntimeOptions,
 } from "../../src/index.ts";
+import {
+	createSchedulerExecutorRuntimeSnapshotV1,
+	schedulerBindingRequirementDigestV1,
+} from "../../src/core/scheduler-executors.ts";
+import { SchedulerSelectionReservationStore } from "../../src/core/scheduler-selection-reservations.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/external-agent-connector.ts";
 import type { ExecutionPolicyProfile } from "../../src/core/execution-policy.ts";
 import {
@@ -65,10 +78,8 @@ import { SUBAGENT_PROVIDER_KINDS } from "../../src/core/subagent.ts";
 import { TaskGraphStore } from "../../src/core/task-graph.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../../src/modes/rpc/rpc-host.ts";
 import {
-	defineLine13KnownGapCase,
 	defineLine13KnownGapCaseShard,
 	defineLine13ResolvedCase,
-	LINE13_T0_BASE_SHA,
 } from "../support/line13-known-gaps.ts";
 import {
 	createExternalConnectorTestRuntime,
@@ -674,12 +685,101 @@ function schedulerTask(): TaskEnvelope {
 	};
 }
 
-type TrustedSchedulerFactory = (sourceSession: Session, sessionId: string) => TrustedSchedulerRuntimeOptions;
+function schedulerModelProfile(): ModelProfile {
+	return createModelProfileRevision({
+		schemaVersion: 1,
+		modelProfileId: "line13-scheduler-reopen-profile",
+		provider: "host",
+		model: "host",
+		budget: { tokens: 100 },
+		revision: 1,
+		createdAt: NOW,
+	});
+}
+
+function schedulerImmutableFact(type: string, id: string): RevisionReference {
+	const value = { schemaVersion: 1 as const, type, id, revision: 1 };
+	return { ...value, fingerprint: fingerprintFoundationValue(value) };
+}
+
+function schedulerRoleRevision() {
+	return createRoleRevision({
+		definition: {
+			schemaVersion: 1,
+			roleId: "line13-scheduler-reopen-role",
+			scope: "project",
+			slug: "line13-scheduler-reopen",
+			name: "Line 13 Scheduler reopen",
+			description: "Reconciles one expired Scheduler Attempt",
+			revision: 1,
+			persona: "Reconcile expired Scheduler work.",
+			modelProfileRef: {
+				schemaVersion: 1,
+				type: "model_profile",
+				id: "line13-scheduler-reopen-profile",
+				revision: 1,
+			},
+			capabilitySelector: { policy: "all" },
+			skillSelector: { policy: "none" },
+			mcpSelector: { policy: "none" },
+		},
+		now: () => NOW,
+	});
+}
+
+function schedulerBinding(): AgentBinding {
+	const resolved = resolveAgentBinding({
+		task: schedulerTask(),
+		roleRevision: schedulerRoleRevision(),
+		modelProfile: schedulerModelProfile(),
+		contextRevision: schedulerImmutableFact("external_agent_binding", "line13-scheduler-reopen-context"),
+		capabilityRevision: schedulerImmutableFact("capability_binding", "line13-scheduler-reopen-capability"),
+		modelBrokerBindingRevision: schedulerImmutableFact("model_broker_binding", "line13-scheduler-reopen-broker"),
+		policyRevision: schedulerImmutableFact("policy_binding", "line13-scheduler-reopen-policy"),
+		newBindingId: "line13-scheduler-reopen-binding",
+		now: () => NOW,
+	});
+	if (!resolved.ok) throw resolved.error;
+	return resolved.value;
+}
+
+function schedulerRuntimeSnapshot(providerId: string, currentBinding: AgentBinding) {
+	const bindingDigest = schedulerBindingRequirementDigestV1(currentBinding);
+	if (!bindingDigest.ok) throw bindingDigest.error;
+	const policyDigest = currentBinding.policyRevision.fingerprint;
+	if (policyDigest === undefined) throw new Error("Line 13 Scheduler binding lacks a policy fingerprint");
+	const runtimeSnapshot = createSchedulerExecutorRuntimeSnapshotV1({
+		schemaVersion: 1,
+		capabilitySnapshot: createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId,
+			revision: 1,
+			protocol: { name: "line13-scheduler-reopen", version: "1" },
+			modelAccess: "aos_gateway",
+			resume: true,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		}),
+		configRevision: fingerprintFoundationValue("line13-scheduler-reopen-config"),
+		bindingRequirementDigests: [bindingDigest.value],
+		toolSelectionDigests: [currentBinding.mcpSelection.digest],
+		policyRevisionDigests: [policyDigest],
+		reviewRevisionDigests: [],
+		credentialTargetRefs: [],
+		sandboxTargetRefs: [],
+		observedAt: NOW,
+		expiresAt: "2026-08-26T00:00:00.000Z",
+	});
+	if (!runtimeSnapshot.ok) throw runtimeSnapshot.error;
+	return runtimeSnapshot.value;
+}
 
 interface SchedulerReopenFixture {
 	readonly factoryCalls: number;
 	readonly recoveredState: string | undefined;
 	readonly recoveredAttempts: number | undefined;
+	readonly cancelledAttemptIds: readonly string[];
 	readonly cleanup: () => Promise<void>;
 }
 
@@ -689,46 +789,82 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 	const settingsManager = SettingsManager.inMemory();
 	let clock = NOW;
 	let factoryCalls = 0;
-	const trustedSchedulerFactory: TrustedSchedulerFactory = (sourceSession, _sessionId) => {
-		factoryCalls += 1;
-		const targetSessionId = `line13-target-${factoryCalls}`;
-		const targetSession = new Session(new InMemorySessionStorage({ id: targetSessionId, createdAt: 1 }));
-		const targetManager = SessionManager.inMemory(cwd, { id: targetSessionId });
-		return {
-			schemaVersion: 1,
-			enabled: true,
-			sourceSession,
-			targetSession,
-			targetSessionId,
-			targetGraph: new TaskGraphStore(
-				targetManager,
-				{ get: () => undefined },
-				{ getByBusinessKey: () => undefined },
-				{ now: () => clock },
-			),
-			ownerId: "line13-scheduler-owner",
-			registry: new SchedulerExecutorRegistry(),
-			task: schedulerTask(),
-			binding: { schemaVersion: 1 } as unknown as AgentBinding,
-			gateLookup: { getByBusinessKey: () => undefined },
-			resolveRunAssociation: async () => {
-				throw new Error("Line 13 Scheduler fixture contains no graph work");
-			},
-			settleRunAtHost: async () => {
-				throw new Error("Line 13 Scheduler fixture contains no graph work");
-			},
-			pollIntervalMs: 60_000,
-			now: () => clock,
-		};
-	};
-	const servicesOptions: Parameters<typeof createAgentSessionServices>[0] & {
-		readonly trustedSchedulerFactory: TrustedSchedulerFactory;
-	} = {
+	let canonicalSchedulerOwnerId: string | undefined;
+	const cancelledAttemptIds: string[] = [];
+	const currentBinding = schedulerBinding();
+	const runtimeComposition = codingAgentEntry.createAgentRuntimeCompositionFactory({
+		scheduler: (context, selectionReservations) => {
+			factoryCalls += 1;
+			canonicalSchedulerOwnerId = selectionReservations.ownerId;
+			const targetSessionId = `line13-target-${factoryCalls}`;
+			const targetSession = new Session(new InMemorySessionStorage({ id: targetSessionId, createdAt: 1 }));
+			const targetManager = SessionManager.inMemory(cwd, { id: targetSessionId });
+			const registry = new SchedulerExecutorRegistry({ reservationStore: selectionReservations });
+			const provider = new SchedulerInProcessTaskExecutorProvider({
+				providerId: "line13.scheduler.reopen",
+				now: () => clock,
+			});
+			const cancelAttempt = provider.cancelAttempt.bind(provider);
+			provider.cancelAttempt = async (attemptId) => {
+				cancelledAttemptIds.push(attemptId);
+				return cancelAttempt(attemptId);
+			};
+			return {
+				schemaVersion: 1,
+				enabled: true,
+				sourceSession: context.session,
+				targetSession,
+				targetSessionId,
+				targetGraph: new TaskGraphStore(
+					targetManager,
+					{ get: () => undefined },
+					{ getByBusinessKey: () => undefined },
+					{ now: () => clock },
+				),
+				ownerId: selectionReservations.ownerId,
+				registry,
+				selectionReservationStore: selectionReservations,
+				initializeBeforeStart: async () => {
+					const registered = await registry.register({
+						entry: {
+							schemaVersion: 1,
+							descriptor: {
+								schemaVersion: 1,
+								providerId: provider.providerId,
+								providerClass: provider.providerClass,
+							},
+							capabilities: [],
+							costClass: "local",
+							registeredAt: clock,
+						},
+						provider,
+						trusted: true,
+						latencyMs: 0,
+						maxConcurrency: 1,
+						runtimeSnapshot: schedulerRuntimeSnapshot(provider.providerId, currentBinding),
+					});
+					if (!registered.ok) throw registered.error;
+				},
+				task: schedulerTask(),
+				binding: currentBinding,
+				gateLookup: { getByBusinessKey: () => undefined },
+				resolveRunAssociation: async () => {
+					throw new Error("Line 13 Scheduler fixture contains no graph work");
+				},
+				settleRunAtHost: async () => {
+					throw new Error("Line 13 Scheduler fixture contains no graph work");
+				},
+				pollIntervalMs: 60_000,
+				now: () => clock,
+			};
+		},
+	});
+	const servicesOptions: Parameters<typeof createAgentSessionServices>[0] = {
 		cwd,
 		agentDir: cwd,
 		modelRuntime,
 		settingsManager,
-		trustedSchedulerFactory,
+		runtimeComposition,
 		resourceLoaderOptions: {
 			noExtensions: true,
 			noSkills: true,
@@ -739,23 +875,22 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 	};
 	const services = await createAgentSessionServices(servicesOptions);
 	const sessionManager = SessionManager.inMemory(cwd, { id: "line13-scheduler-session" });
-	const sessionOptions = (): Parameters<typeof createAgentSessionFromServices>[0] & {
-		readonly trustedSchedulerFactory: TrustedSchedulerFactory;
-	} => ({
+	const sessionOptions = (): Parameters<typeof createAgentSessionFromServices>[0] => ({
 		services,
 		sessionManager,
-		trustedSchedulerFactory,
 		noTools: "all",
 	});
 	const first = await createAgentSessionFromServices(sessionOptions());
+	await first.session.whenCapabilitiesReady();
 	await first.session.dispose();
 	await first.session.waitForDispose();
+	if (canonicalSchedulerOwnerId === undefined) throw new Error("Line 13 Scheduler owner was not composed");
 
 	const durableSession = new Session(new SessionManagerStorage(sessionManager));
 	const seedQueue = new SchedulerQueueStore({
 		ledger: durableSession,
 		sessionId: sessionManager.getSessionId(),
-		ownerId: "line13-scheduler-owner",
+		ownerId: canonicalSchedulerOwnerId,
 		now: () => NOW,
 	});
 	const enqueued = await seedQueue.enqueue({
@@ -771,6 +906,46 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 		revision: 0,
 	});
 	if (!enqueued.ok) throw enqueued.error;
+	const selectionStore = new SchedulerSelectionReservationStore(durableSession, {
+		ownerId: canonicalSchedulerOwnerId,
+		now: () => NOW,
+	});
+	const selectionRegistry = new SchedulerExecutorRegistry({ reservationStore: selectionStore });
+	const selectionProvider = new SchedulerInProcessTaskExecutorProvider({
+		providerId: "line13.scheduler.reopen",
+		now: () => NOW,
+	});
+	const registeredSelectionProvider = await selectionRegistry.register({
+		entry: {
+			schemaVersion: 1,
+			descriptor: {
+				schemaVersion: 1,
+				providerId: selectionProvider.providerId,
+				providerClass: selectionProvider.providerClass,
+			},
+			capabilities: [],
+			costClass: "local",
+			registeredAt: NOW,
+		},
+		provider: selectionProvider,
+		trusted: true,
+		latencyMs: 0,
+		maxConcurrency: 1,
+		runtimeSnapshot: schedulerRuntimeSnapshot(selectionProvider.providerId, currentBinding),
+	});
+	if (!registeredSelectionProvider.ok) throw registeredSelectionProvider.error;
+	const selected = await selectionRegistry.select({
+		queueEntry: enqueued.value.entry,
+		decidedAt: NOW,
+		exactRequirements: {
+			binding: currentBinding,
+			attemptId: "attempt-line13-reopen",
+			bindingEpochId: "epoch-line13-reopen",
+			requireResume: true,
+			modelAccess: "aos_gateway",
+		},
+	});
+	if (!selected.ok) throw selected.error;
 	const claimed = await seedQueue.claim({
 		queueEntryId: "queue-line13-reopen",
 		ownerId: "line13-stale-owner",
@@ -779,20 +954,87 @@ async function createSchedulerReopenFixture(): Promise<SchedulerReopenFixture> {
 		ttlMs: 60_000,
 	});
 	if (!claimed.ok) throw claimed.error;
+	const dispatched = await seedQueue.markDispatched({
+		queueEntryId: "queue-line13-reopen",
+		fencingToken: claimed.value.claim.fencingToken,
+		dispatchId: "dispatch-line13-reopen",
+		attemptId: "attempt-line13-reopen",
+		providerId: "line13.scheduler.reopen",
+		providerClass: "task_executor",
+	});
+	if (!dispatched.ok) throw dispatched.error;
+	const epoch = createBindingEpoch({
+		bindingEpochId: "epoch-line13-reopen",
+		taskId: schedulerTask().taskId,
+		attemptId: "attempt-line13-reopen",
+		bindingId: currentBinding.bindingId,
+		activationReason: "attempt_started",
+		activatedByCommandId: "command-line13-reopen",
+		now: () => NOW,
+	});
+	if (!epoch.ok) throw epoch.error;
+	const dispatch = {
+		schemaVersion: 1 as const,
+		dispatchId: "dispatch-line13-reopen",
+		taskId: schedulerTask().taskId,
+		bindingId: currentBinding.bindingId,
+		taskExecutorProviderId: "line13.scheduler.reopen",
+		status: "pending" as const,
+		createdAt: NOW,
+	};
+	const attempt = createAttempt({
+		attemptId: "attempt-line13-reopen",
+		dispatch,
+		providerId: "line13.scheduler.reopen",
+		initialBindingEpoch: epoch.value,
+		providerClass: "task_executor",
+		now: () => NOW,
+	});
+	if (!attempt.ok) throw attempt.error;
+	const seedLedger = new SessionLedger(durableSession, { ownerId: canonicalSchedulerOwnerId });
+	for (const [objectType, objectId, payload, correlation] of [
+		["task", schedulerTask().taskId, schedulerTask(), { taskId: schedulerTask().taskId }],
+		["role_revision", currentBinding.roleRevision.id, schedulerRoleRevision(), { taskId: schedulerTask().taskId, bindingId: currentBinding.bindingId }],
+		["model_profile_revision", currentBinding.modelProfileRevision.id, schedulerModelProfile(), { taskId: schedulerTask().taskId, bindingId: currentBinding.bindingId }],
+		["external_agent_binding", currentBinding.contextRevision.id, { schemaVersion: 1 as const, type: currentBinding.contextRevision.type, id: currentBinding.contextRevision.id, revision: currentBinding.contextRevision.revision }, { taskId: schedulerTask().taskId, bindingId: currentBinding.bindingId }],
+		["capability_binding", currentBinding.capabilityRevision.id, { schemaVersion: 1 as const, type: currentBinding.capabilityRevision.type, id: currentBinding.capabilityRevision.id, revision: currentBinding.capabilityRevision.revision }, { taskId: schedulerTask().taskId, bindingId: currentBinding.bindingId }],
+		["model_broker_binding", currentBinding.modelBrokerBindingRevision.id, { schemaVersion: 1 as const, type: currentBinding.modelBrokerBindingRevision.type, id: currentBinding.modelBrokerBindingRevision.id, revision: currentBinding.modelBrokerBindingRevision.revision }, { taskId: schedulerTask().taskId, bindingId: currentBinding.bindingId }],
+		["policy_binding", currentBinding.policyRevision.id, { schemaVersion: 1 as const, type: currentBinding.policyRevision.type, id: currentBinding.policyRevision.id, revision: currentBinding.policyRevision.revision }, { taskId: schedulerTask().taskId, bindingId: currentBinding.bindingId }],
+		["agent_binding", currentBinding.bindingId, currentBinding, { taskId: schedulerTask().taskId, bindingId: currentBinding.bindingId }],
+		["dispatch", dispatch.dispatchId, dispatch, { taskId: schedulerTask().taskId, dispatchId: dispatch.dispatchId, bindingId: currentBinding.bindingId }],
+		["binding_epoch", epoch.value.bindingEpochId, epoch.value, { taskId: schedulerTask().taskId, attemptId: attempt.value.attemptId, bindingId: currentBinding.bindingId, bindingEpochId: epoch.value.bindingEpochId }],
+		["attempt", attempt.value.attemptId, attempt.value, { taskId: schedulerTask().taskId, dispatchId: dispatch.dispatchId, attemptId: attempt.value.attemptId, bindingId: currentBinding.bindingId, bindingEpochId: epoch.value.bindingEpochId }],
+	] as const) {
+		await seedLedger.appendFact(objectType, objectId, payload, {
+			clientRequestId: `line13-scheduler-reopen:${objectType}`,
+			expectedRevision: 0,
+			correlation,
+		});
+	}
 	clock = LATER;
 	const reopened = await createAgentSessionFromServices(sessionOptions());
-	await new Promise<void>((resolve) => setImmediate(resolve));
-	const recovered = await new SchedulerQueueStore({
+	await reopened.session.whenCapabilitiesReady();
+	const reopenedQueue = new SchedulerQueueStore({
 		ledger: durableSession,
 		sessionId: sessionManager.getSessionId(),
-		ownerId: "line13-scheduler-owner",
+		ownerId: canonicalSchedulerOwnerId,
 		now: () => LATER,
-	}).getEntry("queue-line13-reopen");
+	});
+	let recovered = await reopenedQueue.getEntry("queue-line13-reopen");
+	for (
+		let attempt = 0;
+		attempt < 100 && recovered.ok && recovered.value.state !== "queued";
+		attempt += 1
+	) {
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		recovered = await reopenedQueue.getEntry("queue-line13-reopen");
+	}
 	if (!recovered.ok) throw recovered.error;
 	return {
 		factoryCalls,
 		recoveredState: recovered.value.state,
 		recoveredAttempts: recovered.value.attemptsUsed,
+		cancelledAttemptIds,
 		cleanup: async () => {
 			await reopened.session.dispose();
 			await reopened.session.waitForDispose();
@@ -1698,21 +1940,10 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 				},
 			},
 		}),
-	],
-	cases: [
-		defineLine13KnownGapCase({
-			entry: {
-				ac: "AC-08",
-				fullTestName:
-					"Line 13 reopened product sessions recompose Scheduler workflow recovery from durable expired work",
-				baseSha: LINE13_T0_BASE_SHA,
-				ownerStage: "T9b",
-				mode: "fails",
-				expectedFailure: {
-					reason: "scheduler.product-reopen",
-					fingerprint: "sha256:669853151a66f32f3d36662649c858acf92d2e68c6c23af1e4c01945be054653",
-				},
-			},
+		defineLine13ResolvedCase({
+			ac: "AC-08",
+			fullTestName:
+				"Line 13 reopened product sessions recompose Scheduler workflow recovery from durable expired work",
 			scenario: {
 				fixture: createSchedulerReopenFixture,
 				assertion: (fixture) => {
@@ -1721,8 +1952,14 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 							factoryCalls: fixture.factoryCalls,
 							recoveredState: fixture.recoveredState,
 							recoveredAttempts: fixture.recoveredAttempts,
+							cancelledAttemptIds: fixture.cancelledAttemptIds,
 						},
-						{ factoryCalls: 2, recoveredState: "queued", recoveredAttempts: 1 },
+						{
+							factoryCalls: 2,
+							recoveredState: "queued",
+							recoveredAttempts: 1,
+							cancelledAttemptIds: ["attempt-line13-reopen"],
+						},
 						"reopened product sessions must recompose Scheduler recovery from durable state",
 					);
 				},
@@ -1730,4 +1967,5 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 			},
 		}),
 	],
+	cases: [],
 });

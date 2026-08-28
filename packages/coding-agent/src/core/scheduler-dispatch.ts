@@ -189,11 +189,11 @@ export interface SchedulerNativeAgentResolveInputV1 {
 	readonly claim: SchedulerClaimV1;
 	readonly binding: AgentBinding;
 	readonly sessionId: string;
-	readonly laneId: string;
 	readonly dispatchId: string;
 	readonly attemptId: string;
 	readonly bindingEpochId: string;
 	readonly agentInstanceId: string;
+	readonly laneId: string;
 	readonly spawnId: string;
 	readonly activatedByCommandId: string;
 	readonly now: string;
@@ -330,6 +330,7 @@ export function schedulerDispatchIdentityV1(
 	readonly attemptId: string;
 	readonly bindingEpochId: string;
 	readonly agentInstanceId: string;
+	readonly laneId: string;
 	readonly spawnId: string;
 	readonly commandId: string;
 } {
@@ -340,6 +341,7 @@ export function schedulerDispatchIdentityV1(
 		attemptId: `attempt_${digest}`,
 		bindingEpochId: `epoch_${digest}`,
 		agentInstanceId: `agent_${digest}`,
+		laneId: `lane_${digest}`,
 		spawnId,
 		commandId: `command:${spawnId}`,
 	};
@@ -701,8 +703,9 @@ export class SchedulerDispatchController {
 	private readonly session: Session;
 	private readonly queue: SchedulerQueueStore;
 	private readonly registry: SchedulerExecutorRegistry;
-	private readonly settlement: LayeredResultSettlement;
+	private readonly settlements = new Map<string, LayeredResultSettlement>();
 	private readonly sessionId: string;
+	private readonly ownerId: string;
 	private readonly runLifecycleSession: RunLedgerSession | undefined;
 	private readonly schedulerLifecycleHooks: RunSchedulerLifecycleHooks;
 	private readonly unregisterRunLifecycleHooks: (() => void) | undefined;
@@ -723,7 +726,7 @@ export class SchedulerDispatchController {
 		this.session = options.session;
 		this.queue = options.queue;
 		this.registry = options.registry;
-		this.settlement = new LayeredResultSettlement(options.session, { ownerId: options.ownerId });
+		this.ownerId = options.ownerId;
 		this.sessionId = options.sessionId;
 		if (
 			options.runLifecycleSession !== undefined &&
@@ -890,7 +893,7 @@ export class SchedulerDispatchController {
 	async cancelAttempt(attemptId: string): Promise<ResultValue<void, FoundationError>> {
 		const loaded = await this.loadDurableAttempt(attemptId);
 		if (!loaded.ok) return loaded;
-		const cancelled = await this.settlement.cancelAttempt({
+		const cancelled = await this.settlementFor(loaded.value.correlation).cancelAttempt({
 			provider: loaded.value.provider,
 			dispatch: loaded.value.dispatch,
 			binding: loaded.value.binding,
@@ -1041,6 +1044,7 @@ export class SchedulerDispatchController {
 							binding: request.binding,
 							attemptId: identity.attemptId,
 							bindingEpochId: identity.bindingEpochId,
+							agentInstanceId: identity.agentInstanceId,
 							requireResume: request.executorRequirements.requireResume,
 							modelAccess: request.executorRequirements.modelAccess,
 							...(request.executorRequirements.reviewRevision === undefined
@@ -1115,7 +1119,7 @@ export class SchedulerDispatchController {
 				claim: fenced.value,
 				binding: request.binding,
 				sessionId: this.sessionId,
-				laneId: this.laneId,
+				laneId: identity.laneId,
 				dispatchId: identity.dispatchId,
 				attemptId: identity.attemptId,
 				bindingEpochId: identity.bindingEpochId,
@@ -1135,7 +1139,7 @@ export class SchedulerDispatchController {
 			providerId: selected.value.provider.providerId,
 			providerClass,
 			sessionId: this.sessionId,
-			laneId: this.laneId,
+			laneId: providerClass === "agent" ? identity.laneId : this.laneId,
 			now: nowIso,
 			...(nativeAgent === undefined ? {} : { nativeAgent }),
 		});
@@ -1184,7 +1188,7 @@ export class SchedulerDispatchController {
 		if (scheduled.signal?.aborted === true) requestCancellation();
 		let executed: ResultValue<DispatchExecutionResult, FoundationError>;
 		try {
-			executed = await this.settlement.executeDispatch({
+			executed = await this.settlementFor(prepared.assembly.correlation).executeDispatch({
 				provider: prepared.selection.provider,
 				dispatch: prepared.assembly.dispatch,
 				binding: request.binding,
@@ -1275,7 +1279,7 @@ export class SchedulerDispatchController {
 				const revalidated = await this.revalidateNativeAgent(prepared, request.binding, scheduled.signal);
 				if (!revalidated.ok) return revalidated;
 			}
-			resumed = await this.settlement.resumeDispatch({
+			resumed = await this.settlementFor(prepared.assembly.correlation).resumeDispatch({
 				provider: prepared.selection.provider,
 				dispatch: prepared.assembly.dispatch,
 				binding: request.binding,
@@ -1316,7 +1320,7 @@ export class SchedulerDispatchController {
 		prepared: SchedulerPreparedDispatchV1,
 		binding: AgentBinding,
 	): Promise<ResultValue<void, FoundationError>> {
-		return this.settlement.cancelAttempt({
+		return this.settlementFor(prepared.assembly.correlation).cancelAttempt({
 			provider: prepared.selection.provider,
 			dispatch: prepared.assembly.dispatch,
 			binding,
@@ -1369,6 +1373,17 @@ export class SchedulerDispatchController {
 		return prepared.selection.providerClass === "agent"
 			? expected !== undefined && attempt.agentInstanceId === expected && receipt.agentInstanceId === expected
 			: expected === undefined && attempt.agentInstanceId === undefined && receipt.agentInstanceId === undefined;
+	}
+
+	private settlementFor(correlation: ExecutionCorrelation): LayeredResultSettlement {
+		const existing = this.settlements.get(correlation.laneId);
+		if (existing !== undefined) return existing;
+		const settlement = new LayeredResultSettlement(this.session, {
+			ownerId: this.ownerId,
+			laneId: correlation.laneId,
+		});
+		this.settlements.set(correlation.laneId, settlement);
+		return settlement;
 	}
 
 	private async persistInFlight(
@@ -1608,7 +1623,11 @@ export class SchedulerDispatchController {
 		) {
 			return fail("scheduler_executor_unavailable");
 		}
-		const correlation = createExecutionCorrelation(this.sessionId, this.laneId, {
+		const identity = schedulerDispatchIdentityV1(queueEntry.queueEntryId, claim.claimId);
+		const correlation = createExecutionCorrelation(
+			this.sessionId,
+			queueDispatch.providerClass === "agent" ? identity.laneId : this.laneId,
+			{
 			revision: 1,
 			roleRevisionId: checkedBinding.value.roleRevision.id,
 			modelProfileId: checkedBinding.value.modelProfileRevision.id,
@@ -1634,7 +1653,8 @@ export class SchedulerDispatchController {
 			...(queueEntry.goalId === undefined && checkedBinding.value.goalId === undefined
 				? {}
 				: { goalId: queueEntry.goalId ?? checkedBinding.value.goalId }),
-		});
+			},
+		);
 		return Result.ok({
 			queueEntryId: queueEntry.queueEntryId,
 			provider: registered.provider,

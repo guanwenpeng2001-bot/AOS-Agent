@@ -59,6 +59,7 @@ import {
 } from "./subagent-provider-context.ts";
 import { IN_PROCESS_PROVIDER } from "./subagent-registry.ts";
 import type { SubagentProviderSpawnPlanV1, SubagentSupervisorV1 } from "./subagent-supervisor.ts";
+import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "./scheduler-executors.ts";
 
 export interface ChildAgentHarnessCreateInputV1 {
 	readonly session: Session;
@@ -136,6 +137,7 @@ interface InProcessChildHandleV1 {
 }
 
 const DEFAULT_CAPABILITIES: readonly FoundationProviderCapability[] = Object.freeze([
+	Object.freeze({ schemaVersion: 1 as const, id: SCHEDULER_IN_PROCESS_CAPABILITY_ID, version: 1 }),
 	Object.freeze({ schemaVersion: 1 as const, id: "child_agent.in_process", version: 1 }),
 	Object.freeze({ schemaVersion: 1 as const, id: "child_agent.resume", version: 1 }),
 	Object.freeze({ schemaVersion: 1 as const, id: "child_agent.background", version: 1 }),

@@ -438,10 +438,16 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				snapshot.subagents?.(publicContext) ?? snapshot.subagentOptions,
 				"Trusted Subagent composition",
 			);
+			const schedulerWriter = subagents?.writer;
+			if (schedulerWriter !== undefined && schedulerWriter.session !== publicContext.session) {
+				throw new TypeError("Trusted Subagent writer must belong to the canonical Session");
+			}
+			const canonicalSchedulerOwnerId = schedulerWriter?.ownerId ?? `scheduler:${publicContext.sessionId}`;
 			const schedulerSelectionReservations = snapshot.scheduler === undefined
 				? undefined
 				: new SchedulerSelectionReservationStore(publicContext.session, {
-						ownerId: `scheduler-selection:${publicContext.sessionId}`,
+						ownerId: canonicalSchedulerOwnerId,
+						...(schedulerWriter === undefined ? {} : { writer: schedulerWriter }),
 						maxBacklog: runtimeLimits.values.maxBacklog,
 					});
 			const schedulerSource = requireFresh(
@@ -451,6 +457,28 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				"Trusted Scheduler composition",
 			);
 			let scheduler = schedulerSource === undefined ? undefined : withoutPhysicalScheduler(schedulerSource);
+			if (scheduler?.nativeAgentPlanner !== undefined && schedulerWriter === undefined) {
+				throw new TypeError("Trusted Scheduler Native Agent planning requires a canonical Subagent writer");
+			}
+			if (scheduler !== undefined && schedulerSelectionReservations !== undefined) {
+				if (scheduler.ownerId !== schedulerSelectionReservations.ownerId) {
+					throw new TypeError("Trusted Scheduler composition must use the canonical Scheduler owner");
+				}
+				if (
+					scheduler.selectionReservationStore !== undefined &&
+					scheduler.selectionReservationStore !== schedulerSelectionReservations
+				) {
+					throw new TypeError("Trusted Scheduler composition must use the canonical selection reservation store");
+				}
+				if (scheduler.writer !== undefined && scheduler.writer !== schedulerWriter) {
+					throw new TypeError("Trusted Scheduler composition must use the canonical Subagent writer");
+				}
+				scheduler = Object.freeze({
+					...scheduler,
+					selectionReservationStore: schedulerSelectionReservations,
+					...(schedulerWriter === undefined ? {} : { writer: schedulerWriter }),
+				});
+			}
 			if (
 				snapshot.scheduler !== undefined &&
 				scheduler !== undefined &&
@@ -470,17 +498,14 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 			const externalConnectorTargetConfig = snapshot.externalConnectorTargetConfig;
 			const externalConnectorTarget = externalConnectorTargetConfig?.selectedTarget;
 			if (scheduler !== undefined && externalConnectorTarget !== undefined) {
-				scheduler = Object.freeze({
-					...scheduler,
-					connectorRetry: Object.freeze({
+					scheduler = Object.freeze({
+						...scheduler,
+						connectorRetry: Object.freeze({
 						providerId: externalConnectorTarget.providerId,
 						targetId: externalConnectorTarget.targetId,
 						policy: connectorRetryPolicy(runtimeLimits),
 					}),
-					...(schedulerSelectionReservations === undefined
-						? {}
-						: { selectionReservationStore: schedulerSelectionReservations }),
-				});
+					});
 			}
 			const externalConnectorRegistry = externalConnectorTargetConfig !== undefined && externalConnectorTarget === undefined
 				? undefined

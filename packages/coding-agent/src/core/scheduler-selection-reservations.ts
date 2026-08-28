@@ -4,11 +4,13 @@ import {
 	type Fingerprint,
 	FoundationError,
 	fingerprintFoundationValue,
+	newFoundationId,
 	type QuotaReservation,
 	Result,
 	type Result as ResultValue,
 	type Session,
 	SessionLedger,
+	type SessionLedgerWriter,
 	validateBudgetUsage,
 	validateFingerprint,
 	validateQuotaReservation,
@@ -94,6 +96,7 @@ export interface SchedulerSelectionReservationRecordV1 {
 
 export interface SchedulerSelectionReservationStoreOptionsV1 {
 	readonly ownerId?: string;
+	readonly writer?: SessionLedgerWriter;
 	readonly laneId?: string;
 	readonly now?: () => string;
 	/** Bound on the current reconciliation aggregate; prior ledger revisions remain durable audit history. */
@@ -450,14 +453,23 @@ function replaceRecord(
  * and reserving `maxConcurrency` one durable operation across queue entries.
  */
 export class SchedulerSelectionReservationStore {
+	readonly ownerId: string;
 	private readonly ledger: SessionLedger;
 	private readonly now: () => string;
 	private readonly maxBacklog: number;
 	private mutationTail: Promise<void> = Promise.resolve();
 
 	constructor(session: Session, options: SchedulerSelectionReservationStoreOptionsV1 = {}) {
+		if (options.writer !== undefined && options.writer.session !== session) {
+			throw new TypeError("Scheduler selection writer must belong to the canonical Session");
+		}
+		this.ownerId = options.ownerId ?? options.writer?.ownerId ?? newFoundationId("foundation-writer");
+		if (options.writer !== undefined && options.writer.ownerId !== this.ownerId) {
+			throw new TypeError("Scheduler selection writer must use the canonical Scheduler owner");
+		}
 		this.ledger = new SessionLedger(session, {
-			...(options.ownerId === undefined ? {} : { ownerId: options.ownerId }),
+			ownerId: this.ownerId,
+			...(options.writer === undefined ? {} : { writer: options.writer }),
 			...(options.laneId === undefined ? {} : { laneId: options.laneId }),
 		});
 		this.now = options.now ?? (() => new Date().toISOString());
@@ -753,7 +765,7 @@ export class SchedulerSelectionReservationStore {
 				{
 					clientRequestId,
 					expectedRevision: loaded.revision,
-					correlation: { revision: 1, taskId },
+					correlation: { taskId },
 				},
 			);
 			return Result.ok(undefined);

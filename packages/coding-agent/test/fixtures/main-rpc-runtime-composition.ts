@@ -178,7 +178,7 @@ function createSubagents(context: AgentRuntimeCompositionContext): TrustedSubage
 	const toolGateway = canonicalToolGateway;
 	if (toolGateway === undefined) throw new Error("main RPC Tool Gateway was not composed before Subagent");
 	const memoryLedger = new SessionT5Ledger(context.session, {
-		ownerId: `main-rpc-memory-${context.sessionId}`,
+		writer: context.harness.t5.writer,
 		memoryScopeId: `main-rpc-memory-scope-${context.sessionId}`,
 		memoryOwnerId: `main-rpc-parent-${context.sessionId}`,
 		artifactBlobStore: new InMemoryArtifactBlobStore(),
@@ -285,7 +285,7 @@ function createScheduler(
 			{ getByBusinessKey: () => undefined },
 			{ now: () => NOW },
 		),
-		ownerId: `main-rpc-scheduler-${context.sessionId}`,
+		ownerId: selectionReservations.ownerId,
 		registry: new SchedulerExecutorRegistry({ reservationStore: selectionReservations }),
 		task,
 		binding: schedulerBinding(task, context.sessionId),
