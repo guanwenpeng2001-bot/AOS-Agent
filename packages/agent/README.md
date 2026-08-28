@@ -190,6 +190,10 @@ Classifications also expose a stable operation (`model`, `tool`, `mcp`, or `sand
 
 Retries are bounded and apply only when a retry policy is enabled. A transient provider failure is retryable only before visible output and when no side effect is possible. Model retries use that rule directly; tool, MCP, and sandbox retries additionally require an explicit safe replay decision. Permission/parameter failures, cancellation, deadlines, unknown failures, and any `side_effect_unknown` result are terminal for automatic retry. Never blindly retry after `side_effect_unknown`; inspect or reconcile the external operation first because repeating it may duplicate a side effect.
 
+Higher-level connector retry circuits must preserve this boundary: even an
+otherwise idempotent or resumable operation records a terminal stop decision
+when its durable side-effect state is `side_effect_unknown`.
+
 ## Agent Options
 
 ```typescript

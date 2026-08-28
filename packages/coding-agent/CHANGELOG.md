@@ -52,6 +52,7 @@
 
 ### Fixed
 
+- Replaced stale Line 13 External Connector gap probes with current Node package, product-composition, RuntimeLimits, runtime-status, and durable retry owner regressions, while retaining the outstanding final promotion evidence boundary.
 - External Connector capability probes and lifecycle rechecks now use Host hard/idle deadlines and `AbortSignal`; drifted cancellation still contains the same Attempt, and registry shutdown waits for confirmed process cleanup or fails closed.
 - External Connector production supervision now activates configured companion processes only after crash-safe private identity persistence, uses non-detached Linux process groups or Windows Job Objects, and re-verifies the operation nonce plus full live process identity immediately before contained-tree termination.
 - External Connector reconciliation now reaps an exactly identified activated companion after a Host crash before canonical mapping persistence, while missing, reused, or ambiguous process identities remain quarantined without termination, private-state deletion, or fabricated receipts.

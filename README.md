@@ -42,6 +42,15 @@ The installable package is `aos-agent`, and it exposes the `aos` executable. The
 
 This repository contains the source for the published `0.84.3` package set. Hosted services and generated model catalogs remain outside the release boundary.
 
+External Connector checks in this checkout cover the Node package's public
+`aos-agent/external-connector` subpath through an isolated npm install, plus
+local deterministic product-transition, RuntimeLimits, runtime-status, and
+retry-circuit regressions. This is local closure evidence only. Bun and compiled
+artifact checks, Windows/Linux/macOS CI, upgrade from a previously published
+package, vendor certification, and exact-head remote artifacts have not been
+run, so the final External Connector promotion gate has not passed and this
+checkout does not claim product readiness.
+
 ## Configuration
 
 User data defaults to `~/.aos-agent/agent/`. Project-local settings and resources use `.aos-agent/`. Provider credentials can be supplied through the provider's documented environment variable or the local auth flow; do not commit credentials or place them in project files that will be shared.

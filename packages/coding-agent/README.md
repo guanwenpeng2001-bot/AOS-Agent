@@ -79,6 +79,23 @@ catalog with `get_model_routes` and pass `modelRoute` or `modelRole` to
 an over-limit response is retained, while later calls in that operation or Run
 are rejected.
 
+### External Agent Connector
+
+The supported package surface is `aos-agent/external-connector`. It exposes the
+packaged driver loader and deterministic, default-off fake fixture used by the
+Node package smoke test. The smoke test packs a staged package, installs it
+outside the repository, resolves only the public subpath, and checks the shipped
+asset and safe missing-asset error.
+
+Local regressions also exercise the standard product composition across
+run/switch/fork/import/reload/cancel/restart, immutable RuntimeLimits with
+no-widen rules, passive connector runtime-status projection, and terminal
+`side_effect_unknown` retry handling. They do not prove Bun or compiled
+artifacts, Windows/Linux/macOS CI, upgrade from a previously published package,
+vendor certification, or exact-head remote artifacts. Those checks remain
+unrun; the final promotion gate has not passed and product readiness is not
+claimed.
+
 ## Package contents
 
 - `dist/` — generated build output; it is created by `npm run build` and is not source-controlled in this baseline.

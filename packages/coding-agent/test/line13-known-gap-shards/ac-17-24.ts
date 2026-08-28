@@ -1,16 +1,17 @@
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import {
 	FoundationError,
 	InMemorySessionStorage,
 	Result,
 	Session,
+	SessionLedger,
 	createConnectorCapabilitySnapshot,
 	createFoundationToolGateway,
 	createLocalToolGatewayProvider,
@@ -30,11 +31,24 @@ import {
 	createAgentSessionServices,
 	createRpcTransport,
 	getPackageDir,
-	SchedulerHost,
 	type CreateAgentSessionRuntimeFactory,
 	type ExtensionAPI,
-	type SchedulerHostOptions,
 } from "../../src/index.ts";
+import {
+	loadPackagedExternalAgentDriver,
+	runPackagedExternalAgentDriverFixture,
+	runPackagedLine13ProductTrace,
+} from "../../src/external-connector.ts";
+import {
+	CONNECTOR_RUNTIME_LATENCY_BUCKET_BOUNDS_MS,
+	createConnectorRuntimeAggregateSnapshot,
+	projectConnectorRuntimeStatus,
+} from "../../src/core/connector-runtime-status.ts";
+import { ConnectorRetryCircuit } from "../../src/core/connector-retry-circuit.ts";
+import {
+	createDescriptorExternalConnectorActivationSource,
+	createExternalConnectorReadinessSnapshot,
+} from "../../src/core/external-connector-readiness.ts";
 import { createExternalConnectorRegistry } from "../../src/core/external-agent-registry.ts";
 import type {
 	ExternalConnectorDurableStore,
@@ -69,70 +83,25 @@ import type {
 	ExternalConnectorVendorDriver,
 } from "../../src/core/vendor-drivers/types.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
 import { withRuntimeClock } from "../../src/core/runtime-clock.ts";
-import { isSchedulerSideEffectRetryable } from "../../src/core/scheduler.ts";
-import { SchedulerQueueStore } from "../../src/core/scheduler-queue.ts";
+import { resolveRuntimeLimits } from "../../src/core/runtime-limits.ts";
 import {
 	ShutdownCoordinator,
 	type ShutdownResult,
 	type ShutdownSignalHandlers,
 	type TerminationSignal,
 } from "../../src/core/shutdown-coordinator.ts";
-import { TaskGraphStore } from "../../src/core/task-graph.ts";
 import type { WorkerBindingV1 } from "../../src/core/worker.ts";
-import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
 import { createExternalConnectorTestSupervision } from "../external-connector-test-supervision.ts";
 import { FakeWorkerProtocolTransportV1 } from "../fixtures/worker-protocol-fake-transport.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
 import {
-	LINE13_T0_BASE_SHA,
-	defineLine13KnownGapCase,
 	defineLine13KnownGapCaseShard,
 	defineLine13ResolvedCase,
 } from "../support/line13-known-gaps.ts";
 
 const CHILD_ENTRY = fileURLToPath(new URL("../fixtures/fake-worker-child.ts", import.meta.url));
 const NOW = "2026-08-25T00:00:00.000Z";
-
-interface ProcessOutcome {
-	readonly exitCode: number | null;
-	readonly stdout: string;
-	readonly stderr: string;
-}
-
-function runProcess(
-	executable: string,
-	args: readonly string[],
-	options: { readonly cwd: string; readonly env?: NodeJS.ProcessEnv; readonly timeoutMs?: number },
-): Promise<ProcessOutcome> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(executable, args, {
-			cwd: options.cwd,
-			env: options.env ?? process.env,
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		let stdout = "";
-		let stderr = "";
-		child.stdout.setEncoding("utf8");
-		child.stderr.setEncoding("utf8");
-		child.stdout.on("data", (chunk: string) => {
-			stdout += chunk;
-		});
-		child.stderr.on("data", (chunk: string) => {
-			stderr += chunk;
-		});
-		const timer = setTimeout(() => child.kill(), options.timeoutMs ?? 5_000);
-		child.once("error", (error) => {
-			clearTimeout(timer);
-			reject(error);
-		});
-		child.once("close", (exitCode) => {
-			clearTimeout(timer);
-			resolve({ exitCode, stdout, stderr });
-		});
-	});
-}
 
 function workerBinding(profileId: string): WorkerBindingV1 {
 	return {
@@ -568,76 +537,63 @@ const ac21 = defineLine13ResolvedCase({
 	},
 });
 
-const ac22 = defineLine13KnownGapCase({
-	entry: {
-		ac: "AC-22",
-		fullTestName: "Line 13 AC-22 ships the fake connector for npm and Bun and fails safely on missing assets",
-		baseSha: LINE13_T0_BASE_SHA,
-		ownerStage: "T10",
-		mode: "fails",
-		expectedFailure: {
-			reason: "package.connector_assets",
-			fingerprint: "sha256:0e32fc7c070f94db26791d541f3ebffcdb31da45b390900e0eff16108883eb2a",
-		},
-	},
+const ac22 = defineLine13ResolvedCase({
+	ac: "AC-22",
+	fullTestName: "Line 13 AC-22 ships the fake connector through the public Node package subpath",
 	scenario: {
-		fixture: () => {
-			const directory = mkdtempSync(join(tmpdir(), "aos-line13-ac22-"));
-			return {
-				directory,
-				scriptPath: join(directory, "package-smoke.ts"),
-				nodeOutcome: undefined as ProcessOutcome | undefined,
-				bunOutcome: undefined as ProcessOutcome | undefined,
-				copyAssets: "",
-				copyBinaryAssets: "",
-				missingCode: "",
-			};
-		},
-		setup: async (fixture) => {
+		fixture: () => ({
+			packageMetadata: false,
+			assetTrace: false,
+			missingCode: "",
+			isolatedOwnerPassed: false,
+		}),
+		setup: (fixture) => {
 			const packageDirectory = getPackageDir();
 			const manifest = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8")) as {
 				readonly scripts?: Record<string, unknown>;
+				readonly exports?: Record<string, unknown>;
 			};
-			fixture.copyAssets = String(manifest.scripts?.["copy-assets"] ?? "");
-			fixture.copyBinaryAssets = String(manifest.scripts?.["copy-binary-assets"] ?? "");
-			const sourceIndexUrl = pathToFileURL(fileURLToPath(new URL("../../src/index.ts", import.meta.url))).href;
-			writeFileSync(
-				fixture.scriptPath,
-				`import { createExternalConnectorRegistry, getPackageDir } from ${JSON.stringify(sourceIndexUrl)};\nconst registry = createExternalConnectorRegistry();\nprocess.stdout.write(JSON.stringify({ packageDir: getPackageDir(), connectors: registry.list().length }));\n`,
-				"utf8",
-			);
-			fixture.nodeOutcome = await runProcess(process.execPath, sourceProcessArgs(fixture.scriptPath), {
-				cwd: fixture.directory,
-				env: sourceProcessEnv(),
-			});
-			fixture.bunOutcome = await runProcess("bun", [fixture.scriptPath], {
-				cwd: fixture.directory,
-				env: sourceProcessEnv(),
-			});
-			const loader = Reflect.get(CodingAgent, "loadPackagedExternalAgentDriver");
-			if (typeof loader !== "function") {
-				fixture.missingCode = "missing_public_loader";
-			} else {
-				try {
-					await Reflect.apply(loader, undefined, ["line13-missing-connector"]);
-				} catch (error) {
-					fixture.missingCode =
-						typeof error === "object" && error !== null && "code" in error ? String(error.code) : "unsafe_error";
-				}
+			const publicSubpath = manifest.exports?.["./external-connector"] as
+				| { readonly types?: unknown; readonly import?: unknown }
+				| undefined;
+			fixture.packageMetadata =
+				publicSubpath?.types === "./dist/external-connector.d.ts" &&
+				publicSubpath.import === "./dist/external-connector.js" &&
+				String(manifest.scripts?.["copy-assets"] ?? "").includes("fake-connector") &&
+				String(manifest.scripts?.["copy-binary-assets"] ?? "").includes("fake-connector");
+
+			const driver = loadPackagedExternalAgentDriver("fake-connector");
+			const trace = runPackagedExternalAgentDriverFixture();
+			fixture.assetTrace =
+				driver.defaultEnabled === false &&
+				driver.networkMode === "disabled" &&
+				trace.events.map(({ output }) => output).join("|") ===
+					"attempt:started|tool:ok|attempt:completed|attempt:cancelled";
+			try {
+				loadPackagedExternalAgentDriver("line13-missing-connector");
+			} catch (error) {
+				fixture.missingCode =
+					typeof error === "object" && error !== null && "code" in error ? String(error.code) : "unsafe_error";
 			}
+
+			const ownerTest = fileURLToPath(new URL("../../scripts/line13-pack-smoke.test.mjs", import.meta.url));
+			const owner = spawnSync(process.execPath, ["--test", ownerTest], {
+				cwd: packageDirectory,
+				encoding: "utf8",
+				timeout: 120_000,
+			});
+			fixture.isolatedOwnerPassed = owner.status === 0;
 		},
 		assertion: (fixture) => {
 			strictEqual(
-				fixture.nodeOutcome?.exitCode === 0 &&
-					fixture.bunOutcome?.exitCode === 0 &&
-					fixture.copyAssets.includes("fake-connector") &&
-					fixture.copyBinaryAssets.includes("fake-connector") &&
-					fixture.missingCode === "external_agent_driver_asset_missing",
+				fixture.packageMetadata &&
+					fixture.assetTrace &&
+					fixture.missingCode === "external_agent_driver_asset_missing" &&
+					fixture.isolatedOwnerPassed,
 				true,
-				"npm and Bun packages must ship the fake connector and missing assets must fail with a safe code",
+				"the Node package owner must expose the public subpath, ship the fixture, install outside the repository, and fail safely on missing assets",
 			);
 		},
-		cleanup: (fixture) => rmSync(fixture.directory, { recursive: true, force: true }),
 	},
 });
 
@@ -940,102 +896,158 @@ const ac23 = defineLine13ResolvedCase({
 	},
 });
 
-const ac24 = defineLine13KnownGapCase({
-	entry: {
-		ac: "AC-24",
-		fullTestName: "Line 13 AC-24 applies RuntimeLimits and exposes deterministic terminal resource status",
-		baseSha: LINE13_T0_BASE_SHA,
-		ownerStage: "T10",
-		mode: "fails",
-		expectedFailure: {
-			reason: "runtime.limits_status",
-			fingerprint: "sha256:b0d86b954bcbe1313c2122afcecac188a32a977259ab55b741b1bc025de8cc02",
-		},
-	},
+const ac24 = defineLine13ResolvedCase({
+	ac: "AC-24",
+	fullTestName: "Line 13 AC-24 applies RuntimeLimits and exposes deterministic terminal resource status",
 	scenario: {
-		fixture: () => ({ plateau: false, sideEffectUnknownTerminal: false, limitsApplied: false, statusObservable: false }),
-		setup: async (fixture) => {
-			const clock = new DeterministicClock({ wallTimeMs: Date.parse(NOW) });
-			const manager = SessionManager.inMemory("C:/line13/runtime-limits", { id: "session-line13-runtime" });
-			const graph = new TaskGraphStore(
-				manager,
-				{ get: () => undefined },
-				{ getByBusinessKey: () => undefined },
-				{ now: () => new Date(clock.wallNow()).toISOString() },
-			);
-			const ledger = new Session(new InMemorySessionStorage({ id: "session-line13-runtime", createdAt: 1 }));
-			const queue = new SchedulerQueueStore(
-				withRuntimeClock(
-					{
-						ledger,
-						sessionId: "session-line13-runtime",
-						ownerId: "line13-runtime-owner",
-						now: () => new Date(clock.wallNow()).toISOString(),
-					},
-					clock,
-				),
-			);
-			const options = {
-				enabled: true,
-				sessionId: "session-line13-runtime",
-				ownerId: "line13-runtime-owner",
-				graph,
-				queue,
-				dispatch: {
-					dispatchRunClaimed: async () => Result.err(new FoundationError("scheduler_no_executor", "no work expected")),
-				},
-				fanIn: {
-					settle: async () => Result.err(new FoundationError("scheduler_fanin_invalid", "no work expected")),
-				},
-				resolveRunAssociation: async () =>
-					Result.err(new FoundationError("scheduler_not_found", "no work expected")),
-				settleRunAtHost: async () => Result.ok(undefined),
-				pollIntervalMs: 50,
-				runtimeLimits: {
-					maxGraphsPerTick: 2,
-					maxNodesPerTick: 2,
-					maxConcurrentAttempts: 2,
-					maxPendingWriteBytes: 64 * 1024,
-				},
-			} satisfies SchedulerHostOptions & {
-				readonly runtimeLimits: {
-					readonly maxGraphsPerTick: number;
-					readonly maxNodesPerTick: number;
-					readonly maxConcurrentAttempts: number;
-					readonly maxPendingWriteBytes: number;
-				};
+		fixture: () => {
+			const root = mkdtempSync(join(tmpdir(), "aos-line13-ac24-"));
+			return {
+				root,
+				productClosure: false,
+				sideEffectUnknownTerminal: false,
+				limitsApplied: false,
+				statusObservable: false,
 			};
-			const host = new SchedulerHost(withRuntimeClock(options, clock));
-			host.start();
-			let peakResources = 0;
-			for (let iteration = 0; iteration < 256; iteration += 1) {
-				clock.advanceBy(50);
-				await host.tick();
-				peakResources = Math.max(peakResources, clock.pendingCount());
+		},
+		setup: async (fixture) => {
+			const workDirectory = join(fixture.root, "state");
+			mkdirSync(workDirectory);
+			const trace = await runPackagedLine13ProductTrace({ workDirectory, iterations: 7 });
+			fixture.productClosure =
+				trace.entrypoint === "aos-agent/external-connector" &&
+				trace.adapter === "standard_product_composition" &&
+				trace.samples.length === 7 &&
+				Object.values(trace.operations).every((count) => count === 1) &&
+				trace.provider.kind === "faux" &&
+				trace.provider.pendingResponses === 0 &&
+				trace.final.activeRuns === 0 &&
+				trace.final.backlog === 0 &&
+				trace.final.status === 0 &&
+				trace.final.credentials === 0 &&
+				trace.final.reservations === 0 &&
+				trace.final.processes === 0 &&
+				trace.final.timers === 0 &&
+				trace.final.files === 1 &&
+				trace.final.pendingWrites === 0;
+
+			const limits = resolveRuntimeLimits({
+				global: { maxConcurrency: 4, maxBacklog: 32 },
+				project: { maxConcurrency: 2, maxBacklog: 16 },
+			});
+			let noWiden = false;
+			try {
+				resolveRuntimeLimits({ global: { maxConcurrency: 4 }, project: { maxConcurrency: 5 } });
+			} catch {
+				noWiden = true;
 			}
-			host.stop();
-			fixture.plateau = peakResources <= 1 && clock.pendingCount() === 0;
-			fixture.sideEffectUnknownTerminal = !isSchedulerSideEffectRetryable("side_effect_unknown");
-			const privateHost = host as unknown as Record<string, unknown>;
-			fixture.limitsApplied = privateHost.maxConcurrentAttempts === 2 && privateHost.maxGraphsPerTick === 2;
-			const status = typeof privateHost.status === "function" ? Reflect.apply(privateHost.status, host, []) : undefined;
-			const statusText = status === undefined ? "" : JSON.stringify(status);
+			fixture.limitsApplied =
+				Object.isFrozen(limits) &&
+				Object.isFrozen(limits.values) &&
+				limits.values.maxConcurrency === 2 &&
+				limits.values.maxBacklog === 16 &&
+				noWiden;
+
+			const observedAtMs = Date.parse(NOW);
+			const capability = createConnectorCapabilitySnapshot({
+				schemaVersion: 1,
+				providerId: "line13.runtime-provider",
+				revision: 1,
+				protocol: { name: "fixture", version: "1" },
+				modelAccess: "agent_owned",
+				resume: true,
+				toolGateway: false,
+				artifacts: false,
+				images: false,
+			});
+			const readiness = createExternalConnectorReadinessSnapshot({
+				source: createDescriptorExternalConnectorActivationSource({
+					providerId: capability.providerId,
+					revision: capability.revision,
+					capabilityDigest: capability.digest,
+				}),
+				status: "ready",
+				reasonCode: "ready",
+				state: "current",
+				observedAtMs,
+				ttlMs: 60_000,
+			});
+			const zeroCounts = CONNECTOR_RUNTIME_LATENCY_BUCKET_BOUNDS_MS.map(() => 0);
+			const runtime = createConnectorRuntimeAggregateSnapshot({
+				providerId: capability.providerId,
+				targetId: "line13.runtime-target",
+				observedAtMs,
+				ttlMs: 60_000,
+				circuit: null,
+				limits,
+				activity: { active: 0, queued: 0, reconcile: 0 },
+				counters: {
+					startTotal: 0,
+					resumeTotal: 0,
+					cancelTotal: 0,
+					forcedKillTotal: 0,
+					limitRejectTotal: 0,
+					frameRejectTotal: 0,
+					eventDropTotal: 0,
+				},
+				latency: {
+					cancelMs: { counts: zeroCounts, overflowCount: 0 },
+					shutdownMs: { counts: zeroCounts, overflowCount: 0 },
+				},
+			});
+			const status = projectConnectorRuntimeStatus({
+				providerId: capability.providerId,
+				readinessSnapshot: readiness,
+				runtimeSnapshot: runtime,
+				nowMs: observedAtMs,
+			});
 			fixture.statusObservable =
-				statusText.includes("runtimeLimits") &&
-				statusText.includes("side_effect_unknown") &&
-				statusText.includes("backoff") &&
-				statusText.includes("terminal");
+				status.availability === "available" &&
+				status.readiness.state === "ready" &&
+				status.circuit.state === "closed" &&
+				status.circuit.nextTransition === "none" &&
+				status.limits.digest.value === limits.digest.value &&
+				status.activity.active === 0 &&
+				status.activity.queued === 0 &&
+				status.activity.reconcile === 0;
+
+			const clock = new DeterministicClock({ wallTimeMs: observedAtMs, monotonicTimeMs: 0 });
+			const session = new Session(new InMemorySessionStorage({ id: "session-line13-runtime", createdAt: 1 }));
+			const ledger = new SessionLedger(session, { ownerId: "line13-runtime-owner" });
+			try {
+				const circuit = new ConnectorRetryCircuit(
+					withRuntimeClock({ ledger, taskId: "task-line13-runtime" }, clock),
+				);
+				const decision = await circuit.recordFailure({
+					operationId: "line13-side-effect-unknown",
+					targetId: "line13.runtime-target",
+					attemptCount: 1,
+					guarantee: "idempotent",
+					sideEffectState: "side_effect_unknown",
+					error: {
+						code: "external_connector_unavailable",
+						message: "Connector unavailable.",
+						category: "transient",
+						retryable: true,
+					},
+				});
+				fixture.sideEffectUnknownTerminal =
+					decision.ok && decision.value.decision === "stop" && decision.value.reasonCode === "side_effect_unknown";
+			} finally {
+				await ledger.release();
+			}
 		},
 		assertion: (fixture) => {
 			strictEqual(
-				fixture.plateau &&
+				fixture.productClosure &&
 					fixture.sideEffectUnknownTerminal &&
 					fixture.limitsApplied &&
 					fixture.statusObservable,
 				true,
-				"RuntimeLimits, retry classification, terminal status, and deterministic resource plateau must be observable",
+				"the standard product trace, RuntimeLimits, passive status, and terminal unknown-side-effect retry decision must close through current owners",
 			);
 		},
+		cleanup: ({ root }) => rmSync(root, { recursive: true, force: true }),
 	},
 });
 
@@ -1043,6 +1055,6 @@ export const line13KnownGapCasesAc17Ac24 = defineLine13KnownGapCaseShard({
 	schemaVersion: 1,
 	shardId: "ac-17-24",
 	complete: true,
-	cases: [ac22, ac24],
-	resolvedCases: [ac17, ac18, ac19, ac20, ac21, ac23],
+	cases: [],
+	resolvedCases: [ac17, ac18, ac19, ac20, ac21, ac22, ac23, ac24],
 });

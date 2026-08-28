@@ -61,3 +61,28 @@ registry, mapping, receipt, provider taxonomy, or execution contract.
 Historical automation-ledger external references are decoded only by the
 private migration parser. Migration never generates current `AgentInstance` or
 external execution records.
+
+## Packaged public subpath
+
+Package consumers import the connector surface from
+`aos-agent/external-connector`. The Node packaging regression stages the
+generated entrypoint and fixture asset, creates an npm tarball, installs it in a
+directory outside the repository, and resolves that public subpath from the
+installed package. The packaged fake driver is deterministic and disabled by
+default; a missing allowlisted asset fails with
+`external_agent_driver_asset_missing`.
+
+## Local closure and promotion boundary
+
+The ordinary local regressions cover the packaged Node owner above, the standard
+product composition across run/switch/fork/import/reload/cancel/restart,
+immutable RuntimeLimits and no-widen validation, passive runtime-status
+projection, and a durable terminal retry decision for `side_effect_unknown`.
+They do not substitute a scheduler-shaped fixture or inspect private Host
+fields.
+
+The following promotion evidence was not run in this closure: Bun package and
+compiled artifacts, Windows/Linux/macOS CI, upgrade and restart from a
+previously published package, pinned vendor certification, and exact-head remote
+artifacts. The final External Connector gate therefore has not passed, and
+these local results do not establish product readiness.
