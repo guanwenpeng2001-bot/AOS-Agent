@@ -9,7 +9,11 @@ import {
 	type PolicyErrorCode,
 	type PolicyProfileNarrowing,
 } from "./execution-policy.ts";
-import { preserveManagedProtectedPathRules } from "./protected-path-policy.ts";
+import {
+	preserveManagedProtectedPathRules,
+	type ProtectedPathPolicy,
+	type ProtectedPathRule,
+} from "./protected-path-policy.ts";
 
 /** The version of the JSON settings shape owned by the policy settings layer. */
 export const EXECUTION_POLICY_SETTINGS_VERSION = 1 as const;
@@ -278,20 +282,17 @@ function mergeCatalogs(
 ): { profiles: Readonly<Record<string, ExecutionPolicyProfile>>; defaultProfile: string } {
 	const systemProfiles = parseProfiles(system.profiles, "$.system.executionPolicy.profiles", true);
 	const globalProfiles = parseProfiles(global.profiles, "$.global.executionPolicy.profiles", false);
-	const profiles: Record<string, ExecutionPolicyProfile> = { ...systemProfiles };
-	for (const [id, globalProfile] of Object.entries(globalProfiles)) {
-		const systemProfile = systemProfiles[id];
-		if (systemProfile === undefined || (systemProfile.protectedPaths?.managedLocks?.length ?? 0) === 0) {
-			profiles[id] = globalProfile;
-			continue;
-		}
-		const protectedPaths = preserveManagedProtectedPathRules(systemProfile.protectedPaths, globalProfile.protectedPaths);
-		if (protectedPaths === undefined) {
-			fail("policy_profile_untrusted", `$.global.executionPolicy.profiles.${id}.protectedPaths`, "user policy cannot widen a managed review lock");
-		}
-		profiles[id] = freezePolicyProfile({ ...globalProfile, protectedPaths });
-	}
+	const managedProtectedPaths = collectManagedProtectedPathRules(systemProfiles);
+	const profiles: Record<string, ExecutionPolicyProfile> = { ...systemProfiles, ...globalProfiles };
 	if (profiles[POLICY_DEFAULT_PROFILE] === undefined) profiles[POLICY_DEFAULT_PROFILE] = LEGACY_PROFILE;
+	for (const [id, profile] of Object.entries(profiles)) {
+		const path = Object.hasOwn(globalProfiles, id)
+			? `$.global.executionPolicy.profiles.${id}`
+			: Object.hasOwn(systemProfiles, id)
+				? `$.system.executionPolicy.profiles.${id}`
+				: `$.executionPolicy.profiles.${id}`;
+		profiles[id] = applyManagedProtectedPathRules(profile, managedProtectedPaths, path);
+	}
 	const defaultProfile = global.defaultProfile ?? system.defaultProfile ?? POLICY_DEFAULT_PROFILE;
 	if (profiles[defaultProfile] === undefined) {
 		fail(
@@ -301,6 +302,56 @@ function mergeCatalogs(
 		);
 	}
 	return { profiles: deepFreeze(profiles), defaultProfile };
+}
+
+function collectManagedProtectedPathRules(
+	systemProfiles: Readonly<Record<string, ExecutionPolicyProfile>>,
+): ProtectedPathPolicy | undefined {
+	const rules = new Map<string, ProtectedPathRule>();
+	for (const [profileId, profile] of Object.entries(systemProfiles)) {
+		const protectedPaths = profile.protectedPaths;
+		if (protectedPaths === undefined) continue;
+		for (const managedId of protectedPaths.managedLocks ?? []) {
+			const rule = protectedPaths.rules.find((candidate) => candidate.id === managedId);
+			if (rule === undefined) {
+				fail(
+					"policy_settings_invalid",
+					`$.system.executionPolicy.profiles.${profileId}.protectedPaths.managedLocks`,
+					"system managed review lock must reference a registered rule",
+				);
+			}
+			const previous = rules.get(managedId);
+			if (previous !== undefined && JSON.stringify(stableValue(previous)) !== JSON.stringify(stableValue(rule))) {
+				fail(
+					"policy_settings_invalid",
+					`$.system.executionPolicy.profiles.${profileId}.protectedPaths.managedLocks`,
+					"system managed review lock ids must describe one rule",
+				);
+			}
+			rules.set(managedId, rule);
+		}
+	}
+	if (rules.size === 0) return undefined;
+	return preserveManagedProtectedPathRules(
+		{
+			rules: [...rules.values()].sort((left, right) => left.id.localeCompare(right.id)),
+			managedLocks: [...rules.keys()].sort(),
+		},
+		undefined,
+	);
+}
+
+function applyManagedProtectedPathRules(
+	profile: ExecutionPolicyProfile,
+	managedProtectedPaths: ProtectedPathPolicy | undefined,
+	path: string,
+): ExecutionPolicyProfile {
+	if (managedProtectedPaths === undefined) return profile;
+	const protectedPaths = preserveManagedProtectedPathRules(managedProtectedPaths, profile.protectedPaths);
+	if (protectedPaths === undefined) {
+		fail("policy_profile_untrusted", `${path}.protectedPaths`, "user policy cannot widen a managed review lock");
+	}
+	return freezePolicyProfile({ ...profile, protectedPaths });
 }
 
 function normalizeProviderIds(value: SandboxProviderRegistry | undefined, path: string): string[] {

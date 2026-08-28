@@ -4,6 +4,7 @@ import {
 	ExecutionPolicySettingsError,
 	DEFAULT_REGISTERED_SANDBOX_PROVIDER_IDS,
 } from "../src/core/execution-policy-settings.ts";
+import { resolveExecutionPolicy } from "../src/core/execution-policy.ts";
 import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
 
 const hostProfile = {
@@ -92,6 +93,79 @@ describe("execution policy settings", () => {
 		expect(result.defaultProfile).toBe("workspace-safe");
 		expect(result.selectedProfile.process.action).toBe("deny");
 		expect(result.selectedProfile.network.action).toBe("deny");
+	});
+
+	it("keeps system managed review locks across global, project, and Run profile selection", () => {
+		const managedProfile = {
+			...hostProfile,
+			id: "system-managed",
+			defaultAction: "allow",
+			protectedPaths: {
+				rules: [{ id: "git-lock", pattern: ".git/**", effects: ["write"], requirement: "team_enforced", teamId: "security" }],
+				managedLocks: ["git-lock"],
+			},
+		} as const;
+		const alternateProfile = {
+			...hostProfile,
+			id: "user-alternate",
+			defaultAction: "allow",
+		} as const;
+		const system = {
+			executionPolicy: {
+				defaultProfile: managedProfile.id,
+				profiles: { [managedProfile.id]: managedProfile },
+			},
+		};
+		const global = {
+			executionPolicy: {
+				defaultProfile: alternateProfile.id,
+				profiles: { [alternateProfile.id]: alternateProfile },
+			},
+		};
+		const selections = [
+			{ name: "global default", options: {} },
+			{
+				name: "trusted project default with narrowing",
+				options: {
+					projectTrusted: true,
+					project: {
+						executionPolicy: {
+							defaultProfile: alternateProfile.id,
+							profiles: { [alternateProfile.id]: { protectedPaths: { rules: [] } } },
+						},
+					},
+				},
+			},
+			{ name: "Run selector", options: { policyProfile: alternateProfile.id } },
+		] as const;
+
+		for (const selection of selections) {
+			const settings = buildExecutionPolicySettings({ system, global, ...selection.options });
+			expect(settings.selectedProfileId, selection.name).toBe(alternateProfile.id);
+			expect(settings.selectedProfile.protectedPaths?.managedLocks, selection.name).toEqual(["git-lock"]);
+			expect(settings.selectedProfile.protectedPaths?.rules, selection.name).toEqual(managedProfile.protectedPaths.rules);
+
+			const resolved = resolveExecutionPolicy({
+				profiles: settings.profiles,
+				defaultProfile: settings.defaultProfile,
+				policyProfile: settings.selectedProfileId,
+				operation: {
+					resource: "filesystem.write",
+					source: "sdk",
+					scope: "workspace",
+					canonicalPath: ".git/config",
+					effects: ["write"],
+				},
+			});
+			expect(resolved.ok, selection.name).toBe(true);
+			if (resolved.ok) {
+				expect(resolved.decision, selection.name).toMatchObject({
+					outcome: "deny",
+					reasonCode: "policy_review_required",
+					reviewRequirement: "team_enforced",
+				});
+			}
+		}
 	});
 
 	it("allows an untrusted project to narrow the selected profile but not widen it", () => {
