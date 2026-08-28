@@ -2,6 +2,7 @@
 
 import {
 	copyFileSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -9,7 +10,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import spawn from "cross-spawn";
@@ -85,8 +86,20 @@ function isWithinPath(child, parent) {
 	return childRelative === "" || (!childRelative.startsWith("..") && !isAbsolute(childRelative));
 }
 
+function canonicalizePath(path) {
+	let existingPath = resolve(path);
+	const missingSegments = [];
+	while (!existsSync(existingPath)) {
+		const parent = dirname(existingPath);
+		if (parent === existingPath) throw new Error(`Path has no existing parent: ${path}`);
+		missingSegments.unshift(basename(existingPath));
+		existingPath = parent;
+	}
+	return resolve(realpathSync(existingPath), ...missingSegments);
+}
+
 export function assertOutsideRepository(workRoot, repoRoot = defaultRepoRoot) {
-	const resolvedWorkRoot = resolve(workRoot);
+	const resolvedWorkRoot = canonicalizePath(workRoot);
 	const resolvedRepoRoot = realpathSync(repoRoot);
 	if (isWithinPath(resolvedWorkRoot, resolvedRepoRoot)) {
 		throw new Error(`Package-smoke work root must be outside the repository: ${resolvedWorkRoot}`);

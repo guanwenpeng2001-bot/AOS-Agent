@@ -5,11 +5,13 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import spawn from "cross-spawn";
@@ -110,6 +112,47 @@ test("package-content validation catches missing public exports and assets", () 
 		() => assertPackageContents({ files: files.filter(({ path }) => !path.endsWith("fake-connector.json")) }),
 		/missing package\/dist\/core\/external-connector-assets\/fake-connector\.json/u,
 	);
+});
+
+test("outside-repository validation supports missing external paths and rejects filesystem roots", () => {
+	const root = mkdtempSync(join(tmpdir(), "aos-line13-work-root-test-"));
+	try {
+		const workRoot = join(root, "missing", "work-root");
+		assert.equal(assertOutsideRepository(workRoot, repoRoot), join(realpathSync(root), "missing", "work-root"));
+		assert.throws(
+			() => assertOutsideRepository(parse(root).root, repoRoot),
+			/cannot be a filesystem root/u,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("outside-repository validation rejects a link or junction targeting the repository", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "aos-line13-work-root-link-test-"));
+	try {
+		const repositoryLink = join(root, "repository-link");
+		try {
+			symlinkSync(repoRoot, repositoryLink, process.platform === "win32" ? "junction" : "dir");
+		} catch (error) {
+			const unsupportedCodes = new Set(["EACCES", "ENOSYS", "ENOTSUP", "EOPNOTSUPP", "EPERM"]);
+			if (typeof error === "object" && error !== null && "code" in error && unsupportedCodes.has(error.code)) {
+				t.skip(`filesystem links are unavailable: ${error.code}`);
+				return;
+			}
+			throw error;
+		}
+		assert.throws(
+			() => assertOutsideRepository(repositoryLink, repoRoot),
+			/must be outside the repository/u,
+		);
+		assert.throws(
+			() => assertOutsideRepository(join(repositoryLink, "missing-work-root"), repoRoot),
+			/must be outside the repository/u,
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("external npm install loads only the packed public subpath and fixture", () => {
