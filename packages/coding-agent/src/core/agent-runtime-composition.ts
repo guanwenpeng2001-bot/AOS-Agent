@@ -21,6 +21,11 @@ import type { SessionManager } from "./session-manager.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import {
+	isTrustedExternalConnectorTargetConfig,
+	type ExternalConnectorResolvedTarget,
+	type ExternalConnectorTargetConfig,
+} from "./external-connector-target-config.ts";
+import {
 	WorkerSandboxProviderV1,
 	type WorkerSandboxProfileV1,
 	type WorkerSandboxProviderOptionsV1,
@@ -95,6 +100,8 @@ export type TrustedExternalConnectorRegistryFactory = (
 	context: AgentRuntimeCompositionContext,
 	/** The same canonical Foundation Tool Gateway exposed to every executor in this Session. */
 	toolGateway: ToolGateway | undefined,
+	/** Explicit target resolved from trusted global/managed definitions plus project/Role narrowing. */
+	target: ExternalConnectorResolvedTarget | undefined,
 ) => ExternalConnectorRegistry;
 export type TrustedTaskCredentialProviderFactory = (
 	context: AgentRuntimeCompositionContext,
@@ -108,6 +115,8 @@ export interface AgentRuntimeCompositionOptions {
 	readonly trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
 	readonly subagents?: TrustedSubagentCompositionFactory;
 	readonly scheduler?: TrustedSchedulerCompositionFactory;
+	/** Immutable target catalog. A catalog without explicit selection remains off. */
+	readonly externalConnectorTargetConfig?: ExternalConnectorTargetConfig;
 	readonly externalConnectorRegistry?: TrustedExternalConnectorRegistryFactory;
 	readonly taskCredentialProvider?: TrustedTaskCredentialProviderFactory;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
@@ -125,6 +134,8 @@ export interface AgentRuntimeComposition extends AgentRuntimeCompositionContext 
 	readonly workerSandboxProvider?: WorkerSandboxProviderV1;
 	readonly subagents?: TrustedSubagentCompositionOptionsV1;
 	readonly scheduler?: TrustedSchedulerRuntimeOptions;
+	readonly externalConnectorTargetConfig?: ExternalConnectorTargetConfig;
+	readonly externalConnectorTarget?: ExternalConnectorResolvedTarget;
 	readonly externalConnectorRegistry?: ExternalConnectorRegistry;
 	readonly taskCredentialProvider?: TaskCredentialProvider;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
@@ -197,6 +208,12 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 	if (options.workerSandboxProvider !== undefined && options.trustedWorkerSandboxFactory !== undefined) {
 		throw new TypeError("Trusted Worker providers must have one composition source");
 	}
+	if (
+		options.externalConnectorTargetConfig !== undefined &&
+		!isTrustedExternalConnectorTargetConfig(options.externalConnectorTargetConfig)
+	) {
+		throw new TypeError("External Connector target config must be resolved by the trusted Host");
+	}
 	const snapshot = Object.freeze({ ...options });
 	const materializedAuthorities = new WeakSet<object>();
 	const requireFresh = <T extends object>(authority: T | undefined, name: string): T | undefined => {
@@ -263,10 +280,15 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				subagents === undefined || toolGateway === undefined || subagents.toolGateway !== underlyingToolGateway
 					? subagents
 					: Object.freeze({ ...subagents, toolGateway });
-			const externalConnectorRegistry = requireFresh(
-				snapshot.externalConnectorRegistry?.(publicContext, toolGateway) ?? snapshot.externalConnectorRegistryInstance,
-				"Trusted External Connector registry",
-			);
+			const externalConnectorTargetConfig = snapshot.externalConnectorTargetConfig;
+			const externalConnectorTarget = externalConnectorTargetConfig?.selectedTarget;
+			const externalConnectorRegistry = externalConnectorTargetConfig !== undefined && externalConnectorTarget === undefined
+				? undefined
+				: requireFresh(
+					snapshot.externalConnectorRegistry?.(publicContext, toolGateway, externalConnectorTarget) ??
+						snapshot.externalConnectorRegistryInstance,
+					"Trusted External Connector registry",
+				);
 			const taskCredentialProvider = requireFresh(
 				snapshot.taskCredentialProvider?.(publicContext) ?? snapshot.taskCredentialProviderInstance,
 				"Trusted Task Credential provider",
@@ -279,6 +301,8 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				...(workerSandboxProvider === undefined ? {} : { workerSandboxProvider }),
 				...(composedSubagents === undefined ? {} : { subagents: composedSubagents }),
 				...(scheduler === undefined ? {} : { scheduler }),
+				...(externalConnectorTargetConfig === undefined ? {} : { externalConnectorTargetConfig }),
+				...(externalConnectorTarget === undefined ? {} : { externalConnectorTarget }),
 				...(externalConnectorRegistry === undefined
 					? {}
 					: { externalConnectorRegistry }),
@@ -306,6 +330,7 @@ export function createAgentRuntimeCompositionFactory(
 		options.trustedWorkerSandboxFactory === undefined &&
 		options.subagents === undefined &&
 		options.scheduler === undefined &&
+		options.externalConnectorTargetConfig === undefined &&
 		options.externalConnectorRegistry === undefined &&
 		options.taskCredentialProvider === undefined &&
 		options.taskCredentialPolicyMaxTtlMs === undefined
