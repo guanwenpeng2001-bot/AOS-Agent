@@ -144,6 +144,9 @@ import type {
 	PolicyApprovalRequest,
 	PolicyApprovalSource,
 	PolicyBinding,
+	PolicyReviewDecision,
+	PolicyReviewEvidence,
+	PolicyReviewerIdentity,
 	PublicPolicySummary,
 } from "./execution-policy.ts";
 import type { BindingHandle } from "./binding-handles.ts";
@@ -3569,6 +3572,22 @@ export class CanonicalAgentSessionServices {
 		this.controlPlane.rejectExecutionPolicyRequest(_requestId, _source);
 	}
 
+	resolveExecutionPolicyReview(
+		_requestId: string,
+		_reviewer: PolicyReviewerIdentity,
+		_decision: PolicyReviewDecision,
+		_resolvedAt: string,
+		_source: PolicyApprovalSource = "system",
+	): PolicyReviewEvidence {
+		return this.controlPlane.resolveExecutionPolicyReview(
+			_requestId,
+			_reviewer,
+			_decision,
+			_resolvedAt,
+			_source,
+		);
+	}
+
 	getMcpConnectionStatus(_serverId: string): MCPConnectionStatus | undefined {
 		return this.controlPlane.getMcpConnectionStatus(_serverId);
 	}
@@ -3804,6 +3823,7 @@ const COMPATIBILITY_FORWARDERS = [
 	"getPendingExecutionPolicyApprovals",
 	"approveExecutionPolicyRequest",
 	"rejectExecutionPolicyRequest",
+	"resolveExecutionPolicyReview",
 	"getMcpConnectionStatus",
 	"getMcpServerConfigView",
 	"getMcpAuthManager",
@@ -4029,6 +4049,7 @@ export class AgentSession {
 	declare readonly getPendingExecutionPolicyApprovals: CanonicalAgentSessionServices["getPendingExecutionPolicyApprovals"];
 	declare readonly approveExecutionPolicyRequest: CanonicalAgentSessionServices["approveExecutionPolicyRequest"];
 	declare readonly rejectExecutionPolicyRequest: CanonicalAgentSessionServices["rejectExecutionPolicyRequest"];
+	declare readonly resolveExecutionPolicyReview: CanonicalAgentSessionServices["resolveExecutionPolicyReview"];
 	declare readonly getMcpConnectionStatus: CanonicalAgentSessionServices["getMcpConnectionStatus"];
 	declare readonly getMcpServerConfigView: CanonicalAgentSessionServices["getMcpServerConfigView"];
 	declare readonly getMcpAuthManager: CanonicalAgentSessionServices["getMcpAuthManager"];
