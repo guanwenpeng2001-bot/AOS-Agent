@@ -157,6 +157,7 @@ export class AgentSessionRuntime {
 	private readonly currentScope: CurrentSessionScope<AgentSessionScope>;
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	private readonly runtimeCompositionFactory: AgentRuntimeCompositionFactory;
+	private shutdownAdmissionClosed = false;
 	private transitionTail: Promise<void> = Promise.resolve();
 
 	constructor(
@@ -230,6 +231,22 @@ export class AgentSessionRuntime {
 	 */
 	setBeforeSessionInvalidate(beforeSessionInvalidate?: () => void): void {
 		this.beforeSessionInvalidate = beforeSessionInvalidate;
+	}
+
+	/** Synchronously fence prompts and Session transitions before process cleanup starts. */
+	closeAdmissionForShutdown(): void {
+		if (this.shutdownAdmissionClosed) return;
+		pauseAgentSessionAdmission(this.session);
+		this.shutdownAdmissionClosed = true;
+	}
+
+	/**
+	 * Move accepted work toward the canonical abort/recovery boundary before
+	 * fallible extension and provider disposal. The process coordinator bounds
+	 * this promise; restart recovery still derives from facts persisted earlier.
+	 */
+	async handoffShutdownRecovery(): Promise<void> {
+		await this.session.abort();
 	}
 
 	private async emitBeforeSwitch(
@@ -359,9 +376,18 @@ export class AgentSessionRuntime {
 		}
 	}
 
-	private runTransition<TResult>(transition: () => Promise<TResult>): Promise<TResult> {
+	private runTransition<TResult>(
+		transition: () => Promise<TResult>,
+		allowDuringShutdown = false,
+	): Promise<TResult> {
+		if (this.shutdownAdmissionClosed && !allowDuringShutdown) {
+			return Promise.reject(new Error("AgentSessionRuntime is shutting down"));
+		}
 		const originatingSession = getAgentSessionTransitionOrigin();
 		const execute = (): Promise<TResult> => {
+			if (this.shutdownAdmissionClosed && !allowDuringShutdown) {
+				throw new Error("AgentSessionRuntime is shutting down");
+			}
 			if (originatingSession !== undefined && this.session !== originatingSession) {
 				throw new Error("Extension command Session transition origin is no longer current");
 			}
@@ -434,7 +460,7 @@ export class AgentSessionRuntime {
 						previous.sessionManager.resumeWrites();
 						previousWritesPaused = false;
 					}
-					if (!previousAdmissionPaused) return;
+					if (!previousAdmissionPaused || this.shutdownAdmissionClosed) return;
 					resumeAgentSessionAdmission(previous.session);
 					previousAdmissionPaused = false;
 				},
@@ -444,7 +470,7 @@ export class AgentSessionRuntime {
 					previousWritesPaused = false;
 					candidate.sessionManager.resumeWrites();
 					candidateWritesPaused = false;
-					if (candidateAdmissionPaused) {
+					if (candidateAdmissionPaused && !this.shutdownAdmissionClosed) {
 						resumeAgentSessionAdmission(candidate.session);
 						candidateAdmissionPaused = false;
 					}
@@ -691,6 +717,7 @@ export class AgentSessionRuntime {
 	}
 
 	async dispose(): Promise<void> {
+		this.closeAdmissionForShutdown();
 		return this.runTransition(async () => {
 			await emitSessionShutdownEvent(this.session.extensionRunner, {
 				type: "session_shutdown",
@@ -698,7 +725,7 @@ export class AgentSessionRuntime {
 			});
 			this.beforeSessionInvalidate?.();
 			await this.session.dispose();
-		});
+		}, true);
 	}
 }
 
