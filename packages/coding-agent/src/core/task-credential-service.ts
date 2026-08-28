@@ -244,7 +244,7 @@ export interface TaskCredentialRunIssueContext {
 	readonly workerId?: string;
 	/** Optional transient Worker bridge; never serialized into the binding. */
 	readonly workerTarget?: TaskCredentialWorkerTarget;
-	/** Host-only external target lifecycle; default-off and never material-bearing. */
+	/** External-target assertion; lifecycle is derived from the validated exact target kind. */
 	readonly targetLifecycle?: "external_connector";
 	readonly scopes: ReadonlyArray<TaskCredentialScope>;
 	readonly requestedTtlMs: number;
@@ -553,8 +553,6 @@ export class TaskCredentialService {
 	private readonly workerByLeaseId = new Map<string, string>();
 	/** Issue-time Worker target bridge; lost on restart so old targets cannot revive. */
 	private readonly workerTargetByLeaseId = new Map<string, TaskCredentialWorkerTarget>();
-	/** Leases whose material target must renew/revoke with the Host issuer. */
-	private readonly externalTargetLeases = new Set<string>();
 	/** Per-request fence for safe Worker projection/revoke calls. */
 	private readonly workerRequestKeys = new Set<string>();
 	private readonly workerTargets: ReadonlyMap<string, TaskCredentialWorkerTarget> | undefined;
@@ -906,9 +904,6 @@ export class TaskCredentialService {
 			scopeCount: normalizedScopes.length,
 			...(context.targetKind === undefined ? {} : { targetKind: context.targetKind }),
 		});
-		if (context.targetLifecycle === "external_connector") {
-			this.externalTargetLeases.add(issued.grant.leaseId);
-		}
 		if (context.workerId !== undefined) {
 			this.workerByLeaseId.set(issued.grant.leaseId, context.workerId);
 			if (workerTarget !== undefined) this.workerTargetByLeaseId.set(issued.grant.leaseId, workerTarget);
@@ -1081,7 +1076,7 @@ export class TaskCredentialService {
 				requestedTtlMs: input.requestedTtlMs,
 				ttlBounds: this.ttlBounds(),
 				clientRequestId: input.clientRequestId,
-				...(this.externalTargetLeases.has(input.leaseId)
+				...(this.hasExternalTargetLifecycle(input.leaseId)
 					? { targetLifecycle: "external_connector" as const }
 					: {}),
 			});
@@ -1154,7 +1149,7 @@ export class TaskCredentialService {
 				leaseId: input.leaseId,
 				...(input.reasonCode === undefined ? {} : { reasonCode: input.reasonCode }),
 				clientRequestId: input.clientRequestId,
-				...(this.externalTargetLeases.has(input.leaseId)
+				...(this.hasExternalTargetLifecycle(input.leaseId)
 					? { targetLifecycle: "external_connector" as const }
 					: {}),
 			});
@@ -1288,7 +1283,8 @@ export class TaskCredentialService {
 			isOptionalIdentifier(context.targetKind) &&
 			isOptionalIdentifier(context.workerId) &&
 			(context.workerTarget === undefined || isWorkerTarget(context.workerTarget)) &&
-			(context.targetLifecycle === undefined || context.targetLifecycle === "external_connector") &&
+			(context.targetLifecycle === undefined ||
+				(context.targetLifecycle === "external_connector" && context.targetKind === "external_connector")) &&
 			isScopeList(context.scopes) &&
 			isPositiveSafeInteger(context.requestedTtlMs) &&
 			isTaskCredentialIdentifier(context.clientRequestId) &&
@@ -1439,6 +1435,11 @@ export class TaskCredentialService {
 		return Date.parse(grant.expiresAt) - Date.parse(grant.issuedAt);
 	}
 
+	/** Exact validated target kind is the single lifecycle authority. */
+	private hasExternalTargetLifecycle(leaseId: string): boolean {
+		return this.issueFactsByLeaseId.get(leaseId)?.targetKind === "external_connector";
+	}
+
 	private revokeAndSettleByFilter(
 		filter: {
 			taskId?: string;
@@ -1478,14 +1479,13 @@ export class TaskCredentialService {
 		if (grant === undefined) return outcomes;
 		const grantId = grant.grantId;
 		if (grant.status === "settled") {
-			this.externalTargetLeases.delete(leaseId);
 			outcomes.push({ leaseId, grantId, action: "noop", settled: true });
 			return outcomes;
 		}
 		// Preserve the existing non-external expired path. External targets must
 		// still be revoked because their projected material can outlive the Host
 		// lease record until the target confirms teardown.
-		const externalTarget = forceExternalTarget || this.externalTargetLeases.has(leaseId);
+		const externalTarget = forceExternalTarget || this.hasExternalTargetLifecycle(leaseId);
 		if (grant.status === "revoked" || (grant.status === "expired" && !externalTarget)) {
 			if (this.safeSettle(leaseId)) {
 				outcomes.push({ leaseId, grantId, action: "settled", settled: true, reasonCode });
@@ -1551,7 +1551,6 @@ export class TaskCredentialService {
 			return outcomes;
 		}
 		if (this.safeSettle(leaseId)) {
-			this.externalTargetLeases.delete(leaseId);
 			outcomes.push({ leaseId, grantId, action: "revoked", settled: true, reasonCode });
 		} else {
 			outcomes.push({ leaseId, grantId, action: "revoked", settled: false, reasonCode });
@@ -1636,7 +1635,7 @@ export class TaskCredentialService {
 		if (
 			grant.status === "settled" ||
 			grant.status === "revoked" ||
-			(grant.status === "expired" && !this.externalTargetLeases.has(leaseId))
+			(grant.status === "expired" && !this.hasExternalTargetLifecycle(leaseId))
 		) {
 			// Already terminal: nothing to revoke; the terminal event settles.
 			outcomes.push({ leaseId, grantId, action: "noop", settled: false, reasonCode: "run_cancelled" });
@@ -1668,7 +1667,7 @@ export class TaskCredentialService {
 				leaseId,
 				reasonCode: "run_cancelled",
 				clientRequestId: lifecycleRequestId(leaseId, "run_cancel_requested"),
-				...(this.externalTargetLeases.has(leaseId)
+				...(this.hasExternalTargetLifecycle(leaseId)
 					? { targetLifecycle: "external_connector" as const }
 					: {}),
 			});
