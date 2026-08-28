@@ -93,7 +93,10 @@ function mapping(): CanonicalExternalConnectorMapping {
 	};
 }
 
-function turn(status: "inProgress" | "completed" | "interrupted" | "failed", id = turnId): FoundationJsonValue {
+function turn(
+	status: "inProgress" | "completed" | "interrupted" | "failed",
+	id = turnId,
+): Record<string, FoundationJsonValue> {
 	return {
 		id,
 		items: [],
@@ -107,7 +110,7 @@ function turn(status: "inProgress" | "completed" | "interrupted" | "failed", id 
 	};
 }
 
-function thread(id = threadId): FoundationJsonValue {
+function thread(id = threadId): Record<string, FoundationJsonValue> {
 	return {
 		id,
 		extra: null,
@@ -139,7 +142,7 @@ function thread(id = threadId): FoundationJsonValue {
 	};
 }
 
-function threadResponse(id = threadId, resume = false): FoundationJsonValue {
+function threadResponse(id = threadId, resume = false): Record<string, FoundationJsonValue> {
 	return {
 		thread: thread(id),
 		model: "gpt-fixture",
@@ -168,6 +171,10 @@ interface FakeCodexOptions {
 	readonly identity?: PrivateCodexAppServerTransport["identity"];
 	readonly resumeThreadId?: string;
 	readonly autoComplete?: boolean;
+	readonly threadStartResponse?: FoundationJsonValue;
+	readonly turnStartResponse?: FoundationJsonValue;
+	readonly turnStartedNotification?: FoundationJsonValue;
+	readonly turnCompletedNotification?: FoundationJsonValue;
 	readonly onTurnStarted?: (server: FakeCodexServer) => void | Promise<void>;
 }
 
@@ -270,7 +277,7 @@ class FakeCodexServer {
 			return;
 		}
 		if (message.method === "thread/start") {
-			await this.send({ id: id as number, result: threadResponse() });
+			await this.send({ id: id as number, result: this.#options.threadStartResponse ?? threadResponse() });
 			return;
 		}
 		if (message.method === "thread/resume") {
@@ -281,11 +288,20 @@ class FakeCodexServer {
 			return;
 		}
 		if (message.method === "turn/start") {
-			await this.send({ id: id as number, result: { turn: turn("inProgress") } });
-			await this.send({ method: "turn/started", params: { threadId, turn: turn("inProgress") } });
+			await this.send({
+				id: id as number,
+				result: this.#options.turnStartResponse ?? { turn: turn("inProgress") },
+			});
+			await this.send({
+				method: "turn/started",
+				params: this.#options.turnStartedNotification ?? { threadId, turn: turn("inProgress") },
+			});
 			await this.#options.onTurnStarted?.(this);
 			if (this.#options.autoComplete !== false) {
-				await this.send({ method: "turn/completed", params: { threadId, turn: turn("completed") } });
+				await this.send({
+					method: "turn/completed",
+					params: this.#options.turnCompletedNotification ?? { threadId, turn: turn("completed") },
+				});
 			}
 			return;
 		}
@@ -382,6 +398,60 @@ describe("private Codex app-server connector", () => {
 		await missing.dispose();
 	});
 
+	it("rejects malformed generated thread, response, and turn fields", async () => {
+		const invalidThreadStatus = new FakeCodexServer({
+			threadStartResponse: {
+				...threadResponse(),
+				thread: { ...thread(), status: { type: "unexpected" } },
+			},
+		});
+		const invalidThreadDriver = new PrivateCodexAppServerDriver(driverOptions(invalidThreadStatus));
+		await expect(invalidThreadDriver.spawn(spawnRequest())).rejects.toMatchObject({ code: "external_event_invalid" });
+
+		const invalidSandbox = new FakeCodexServer({
+			threadStartResponse: {
+				...threadResponse(),
+				sandbox: { type: "workspaceWrite", writableRoots: [7], networkAccess: false },
+			},
+		});
+		const invalidSandboxDriver = new PrivateCodexAppServerDriver(driverOptions(invalidSandbox));
+		await expect(invalidSandboxDriver.spawn(spawnRequest())).rejects.toMatchObject({ code: "external_event_invalid" });
+
+		const invalidTurnTimestamp = new FakeCodexServer({
+			turnStartResponse: { turn: { ...turn("inProgress"), startedAt: 1.5 } },
+		});
+		const invalidTurnDriver = new PrivateCodexAppServerDriver(driverOptions(invalidTurnTimestamp));
+		await expect(invalidTurnDriver.spawn(spawnRequest())).rejects.toMatchObject({ code: "external_event_invalid" });
+
+		const invalidTurnError = new FakeCodexServer({ autoComplete: false });
+		const invalidTurnErrorDriver = new PrivateCodexAppServerDriver(driverOptions(invalidTurnError));
+		const handle = await invalidTurnErrorDriver.spawn(spawnRequest());
+		await invalidTurnError.send({
+			method: "turn/completed",
+			params: {
+				threadId,
+				turn: {
+					...turn("failed"),
+					error: {
+						message: "redacted by driver",
+						codexErrorInfo: { httpConnectionFailed: { httpStatusCode: "500" } },
+						additionalDetails: null,
+					},
+				},
+			},
+		});
+		await expect(invalidTurnErrorDriver.read(handle)).rejects.toMatchObject({ code: "external_event_invalid" });
+
+		await invalidThreadDriver.dispose();
+		await invalidSandboxDriver.dispose();
+		await invalidTurnDriver.dispose();
+		await invalidTurnErrorDriver.dispose();
+		await invalidThreadStatus.dispose();
+		await invalidSandbox.dispose();
+		await invalidTurnTimestamp.dispose();
+		await invalidTurnError.dispose();
+	});
+
 	it.each([
 		["untrusted", "user", "accept", true],
 		["on-request", "auto_review", "decline", true],
@@ -437,6 +507,104 @@ describe("private Codex app-server connector", () => {
 			await server.dispose();
 		},
 	);
+
+	it.each([
+		["accept", "failed", "side_effect_unknown"],
+		["decline", "cancelled", "none"],
+	] as const)(
+		"reports an interrupted %s command approval with truthful side effects",
+		async (decision, status, sideEffectState) => {
+			const server = new FakeCodexServer({
+				autoComplete: false,
+				onTurnStarted: async (active) => {
+					await active.send({
+						method: "item/commandExecution/requestApproval",
+						id: `interrupted-${decision}`,
+						params: {
+							threadId,
+							turnId,
+							itemId: `command-${decision}`,
+							startedAtMs: 1,
+							approvalId: null,
+							environmentId: "workspace",
+							reason: "fixture",
+							command: "echo fixture",
+							cwd: process.cwd(),
+							commandActions: [],
+						},
+					});
+				},
+			});
+			const driver = new PrivateCodexAppServerDriver(driverOptions(server));
+			const handle = await driver.spawn(spawnRequest({ operationNonce: `nonce-interrupted-${decision}` }));
+			const events = driver.events(handle)[Symbol.asyncIterator]();
+			const approval = await nextToolEvent(events);
+			await driver.write(handle, {
+				schemaVersion: 1,
+				kind: "tool_gateway_result",
+				operationNonce: handle.operationNonce,
+				result: toolResult(approval, { decision }),
+			});
+			expect(await nextEvent(events)).toMatchObject({ type: "progress", phase: "server_request_resolved" });
+			await expect(driver.cancel(handle)).resolves.toMatchObject({
+				status,
+				sideEffectState,
+				...(status === "failed" ? { error: { code: "side_effect_unknown" } } : {}),
+			});
+			await driver.dispose();
+			await server.dispose();
+		},
+	);
+
+	it("normalizes interrupted non-none Tool Gateway evidence to side_effect_unknown", async () => {
+		const server = new FakeCodexServer({
+			autoComplete: false,
+			onTurnStarted: async (active) => {
+				await active.send({
+					method: "item/tool/call",
+					id: 72,
+					params: {
+						threadId,
+						turnId,
+						callId: "unknown-side-effect-call",
+						namespace: "github",
+						tool: "write_issue",
+						arguments: { issue: 7 },
+					},
+				});
+			},
+		});
+		const driver = new PrivateCodexAppServerDriver(
+			driverOptions(server, {
+				dynamicTools: [
+					{
+						codexNamespace: "github",
+						codexName: "write_issue",
+						description: "Write one issue",
+						inputSchema: { type: "object" },
+						gateway: { namespace: "mcp.github", toolName: "write_issue" },
+					},
+				],
+			}),
+		);
+		const handle = await driver.spawn(spawnRequest({ operationNonce: "nonce-unknown-side-effect" }));
+		const events = driver.events(handle)[Symbol.asyncIterator]();
+		const tool = await nextToolEvent(events);
+		await driver.write(handle, {
+			schemaVersion: 1,
+			kind: "tool_gateway_result",
+			operationNonce: handle.operationNonce,
+			result: { ...toolResult(tool, { updated: true }), sideEffectState: "unknown" },
+		});
+		expect(await nextEvent(events)).toMatchObject({ type: "progress", phase: "server_request_resolved" });
+		await expect(driver.cancel(handle)).resolves.toMatchObject({
+			status: "failed",
+			sideEffectState: "side_effect_unknown",
+			error: { code: "side_effect_unknown" },
+		});
+		await driver.dispose();
+		await server.dispose();
+	});
 
 	it("exposes only the exact Host-selected local and MCP Tool Gateway intersection", async () => {
 		const server = new FakeCodexServer({
@@ -522,7 +690,8 @@ describe("private Codex app-server connector", () => {
 		});
 		const driver = new PrivateCodexAppServerDriver(driverOptions(server));
 		const handle = await driver.spawn(spawnRequest());
-		const elicitation = await nextToolEvent(driver.events(handle)[Symbol.asyncIterator]());
+		const events = driver.events(handle)[Symbol.asyncIterator]();
+		const elicitation = await nextToolEvent(events);
 		expect(elicitation.request).toMatchObject({
 			namespace: "codex",
 			toolName: "mcp.elicitation",
@@ -538,8 +707,8 @@ describe("private Codex app-server connector", () => {
 			id: "mcp-elicitation-1",
 			result: { action: "decline", content: null, _meta: null },
 		});
-		await server.send({ method: "turn/completed", params: { threadId, turn: turn("completed") } });
-		await expect(driver.read(handle)).resolves.toMatchObject({ status: "succeeded" });
+		expect(await nextEvent(events)).toMatchObject({ type: "progress", phase: "server_request_resolved" });
+		await expect(driver.cancel(handle)).resolves.toMatchObject({ status: "cancelled", sideEffectState: "none" });
 		await driver.dispose();
 		await server.dispose();
 	});
