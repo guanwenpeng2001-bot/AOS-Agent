@@ -890,6 +890,11 @@ describe("scheduler T2 durable queue store", () => {
 		expect(recovered.value[0]?.cancelledAttemptId).toBe("attempt_1");
 		expect(recovered.value[0]?.action).toBe("requeued");
 		expect(recovered.value[0]?.entry.attemptsUsed).toBe(1);
+		const replayed = await store.recoverExpired();
+		expect(replayed.ok).toBe(true);
+		if (!replayed.ok) return;
+		expect(replayed.value).toEqual([]);
+		expect(cancelled).toEqual(["attempt_1"]);
 
 		let failNow = NOW;
 		const failing = createQueueHarness({
@@ -925,6 +930,51 @@ describe("scheduler T2 durable queue store", () => {
 		expect(stuck.ok).toBe(true);
 		if (!stuck.ok) return;
 		expect(stuck.value.state).toBe("dispatched");
+	});
+
+	it("leaves a non-expired dispatched attempt untouched", async () => {
+		const cancelled: string[] = [];
+		const { store } = createQueueHarness({
+			now: () => NOW,
+			cancelAttempt: async (attemptId) => {
+				cancelled.push(attemptId);
+				return Result.ok(undefined);
+			},
+		});
+		expect((await store.enqueue(queued())).ok).toBe(true);
+		expect(
+			(
+				await store.claim({
+					queueEntryId: "queue_1",
+					ownerId: "scheduler_host_1",
+					claimId: "claim_1",
+					fencingToken: "fence_abc",
+				})
+			).ok,
+		).toBe(true);
+		expect(
+			(
+				await store.markDispatched({
+					queueEntryId: "queue_1",
+					fencingToken: "fence_abc",
+					dispatchId: "dispatch_1",
+					attemptId: "attempt_1",
+					providerId: "aos.builtin.in-process",
+					providerClass: "task_executor",
+				})
+			).ok,
+		).toBe(true);
+
+		const recovered = await store.recoverExpired();
+		expect(recovered.ok).toBe(true);
+		if (!recovered.ok) return;
+		expect(recovered.value).toEqual([]);
+		expect(cancelled).toEqual([]);
+		const snapshot = await store.snapshot();
+		expect(snapshot.ok).toBe(true);
+		if (!snapshot.ok) return;
+		expect(snapshot.value.entries[0]?.state).toBe("dispatched");
+		expect(snapshot.value.dispatches[0]?.status).toBe("in_flight");
 	});
 
 	it("renews with T1 sliding remaining TTL and rejects a stale fencing token", async () => {

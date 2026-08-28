@@ -36,7 +36,7 @@ import {
 	SchedulerMessageOrchestrator,
 	type SchedulerMessageSessionEndpointV1,
 } from "./scheduler-messages.ts";
-import { SchedulerQueueStore } from "./scheduler-queue.ts";
+import { SchedulerQueueStore, type SchedulerCancelAttemptV1 } from "./scheduler-queue.ts";
 import type { RunLedgerSession } from "./run-lifecycle.ts";
 import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "./runtime-clock.ts";
 import {
@@ -352,6 +352,7 @@ export class SchedulerWorkflowController {
 		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.store = new WorkflowStore(options.sourceSession, { ownerId: options.ownerId });
 		this.ledger = new SessionLedger(options.sourceSession, { ownerId: options.ownerId });
+		let queueCancelAttempt: SchedulerCancelAttemptV1 | undefined;
 		this.queue = new SchedulerQueueStore(
 			withRuntimeClock(
 				{
@@ -359,6 +360,17 @@ export class SchedulerWorkflowController {
 					sessionId: options.sourceSessionId,
 					ownerId: options.ownerId,
 					now: this.nowFn,
+					cancelAttempt: (attemptId) => {
+						if (queueCancelAttempt !== undefined) return queueCancelAttempt(attemptId);
+						return Promise.resolve(
+							Result.err(
+								new FoundationError(
+									"scheduler_attempt_recovery_failed",
+									"Scheduler dispatch cancellation is not initialized",
+								),
+							),
+						);
+					},
 				},
 				this.clock,
 			),
@@ -382,6 +394,7 @@ export class SchedulerWorkflowController {
 				this.clock,
 			),
 		);
+		queueCancelAttempt = this.dispatch.queueCancelAttempt();
 		this.fanIn = new SchedulerFanInController({
 			session: options.sourceSession,
 			sessionId: options.sourceSessionId,
