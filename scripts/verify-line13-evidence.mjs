@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 import { readdirSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { join } from "node:path";
 import {
+	LINE13_ACCEPTANCE_CRITERIA,
 	LINE13_CONNECTORS,
 	LINE13_PLATFORMS,
 	LINE13_REQUIRED_CHECKS,
 	LINE13_RUNTIME_KINDS,
+	LINE13_QUALITY_GATES,
 	assertChoice,
 	assertExactKeys,
 	assertFullSha,
@@ -21,10 +24,13 @@ import {
 	writeJsonAtomic,
 } from "../packages/coding-agent/scripts/line13-evidence-common.mjs";
 import { validateCertificationRecord } from "../packages/coding-agent/scripts/line13-certification.mjs";
-import { LINE13_SOAK_RESOURCE_NAMES } from "../packages/coding-agent/scripts/line13-soak.mjs";
+import {
+	LINE13_SOAK_OPERATION_PLAN,
+	LINE13_SOAK_RESOURCE_NAMES,
+} from "../packages/coding-agent/scripts/line13-soak.mjs";
 
 const PASS_STATE = "passed";
-const FORBIDDEN_FINAL_STATES = new Set(["cancelled", "partial"]);
+const FORBIDDEN_FINAL_STATES = new Set(["cancelled", "partial", "pending"]);
 
 function rejectCancelledOrPartial(value, context) {
 	if (Array.isArray(value)) {
@@ -135,9 +141,9 @@ function validateSoak(value, expectedHead, platform, context) {
 			"evidenceClass",
 			"iterations",
 			"plateauWindow",
-			"clock",
+			"operations",
+			"canonicalOwners",
 			"resources",
-			"faults",
 			"provider",
 			"safety",
 			"digest",
@@ -145,52 +151,48 @@ function validateSoak(value, expectedHead, platform, context) {
 		[],
 		context,
 	);
-	if (soak.type !== "soak" || soak.schemaVersion !== 1) throw new Error(`${context} has the wrong schema`);
+	if (soak.type !== "soak" || soak.schemaVersion !== 2) throw new Error(`${context} has the wrong schema`);
 	if (assertFullSha(soak.headSha, `${context}.headSha`) !== expectedHead) throw new Error(`${context} is stale`);
-	if (soak.platform !== platform || soak.state !== PASS_STATE || soak.evidenceClass !== "structural_fake") {
-		throw new Error(`${context} did not pass deterministic fake soak for ${platform}`);
+	if (soak.platform !== platform || soak.state !== PASS_STATE || soak.evidenceClass !== "product_trace") {
+		throw new Error(`${context} is not a packaged standard product trace for ${platform}`);
 	}
-	if (!Number.isSafeInteger(soak.iterations) || soak.iterations < 2) throw new Error(`${context}.iterations is invalid`);
+	if (!Number.isSafeInteger(soak.iterations) || soak.iterations < LINE13_SOAK_OPERATION_PLAN.length) {
+		throw new Error(`${context}.iterations is invalid`);
+	}
 	if (!Number.isSafeInteger(soak.plateauWindow) || soak.plateauWindow < 2 || soak.plateauWindow > soak.iterations) {
 		throw new Error(`${context}.plateauWindow is invalid`);
 	}
-	const clock = assertPlainObject(soak.clock, `${context}.clock`);
-	assertExactKeys(clock, ["monotonicTimeMs", "pendingTimers"], [], `${context}.clock`);
-	if (!Number.isSafeInteger(clock.monotonicTimeMs) || clock.monotonicTimeMs < 0 || clock.pendingTimers !== 0) {
-		throw new Error(`${context} retained or reported an invalid deterministic timer`);
+	const operations = assertPlainObject(soak.operations, `${context}.operations`);
+	assertExactKeys(operations, LINE13_SOAK_OPERATION_PLAN, [], `${context}.operations`);
+	for (const operation of LINE13_SOAK_OPERATION_PLAN) {
+		if (!Number.isSafeInteger(operations[operation]) || operations[operation] < 1) {
+			throw new Error(`${context} did not invoke product ${operation}`);
+		}
+	}
+	if (Object.values(operations).reduce((total, count) => total + count, 0) !== soak.iterations) {
+		throw new Error(`${context}.operations does not cover every product iteration`);
+	}
+	if (!Array.isArray(soak.canonicalOwners) || soak.canonicalOwners.length !== 7 || new Set(soak.canonicalOwners).size !== 7) {
+		throw new Error(`${context} did not read closure from every canonical owner`);
 	}
 	const resources = assertPlainObject(soak.resources, `${context}.resources`);
-	assertExactKeys(resources, ["baseline", "peaks", "final", "plateauSamples"], [], `${context}.resources`);
-	const baseline = assertPlainObject(resources.baseline, `${context}.resources.baseline`);
-	const peaks = assertPlainObject(resources.peaks, `${context}.resources.peaks`);
+	assertExactKeys(resources, ["final", "plateauSamples", "plateauDigest"], [], `${context}.resources`);
 	const finalResources = assertPlainObject(resources.final, `${context}.resources.final`);
 	assertExactKeys(finalResources, LINE13_SOAK_RESOURCE_NAMES, [], `${context}.resources.final`);
-	assertExactKeys(baseline, LINE13_SOAK_RESOURCE_NAMES, [], `${context}.resources.baseline`);
-	assertExactKeys(peaks, LINE13_SOAK_RESOURCE_NAMES, [], `${context}.resources.peaks`);
 	for (const name of LINE13_SOAK_RESOURCE_NAMES) {
-		if (baseline[name] !== 0 || finalResources[name] !== 0) throw new Error(`${context} retained ${name}=${finalResources[name]}`);
-		if (!Number.isSafeInteger(peaks[name]) || peaks[name] < 0) throw new Error(`${context}.resources.peaks.${name} is invalid`);
+		const value = finalResources[name];
+		if (!Number.isSafeInteger(value) || value < 0 || (name === "files" ? value > 1 : value !== 0)) {
+			throw new Error(`${context} retained ${name}=${value}`);
+		}
 	}
 	if (resources.plateauSamples !== soak.plateauWindow) {
 		throw new Error(`${context} does not contain a bounded plateau window`);
 	}
+	assertSha256(resources.plateauDigest, `${context}.resources.plateauDigest`);
 	const provider = assertPlainObject(soak.provider, `${context}.provider`);
-	assertExactKeys(provider, ["kind", "callCount", "pendingResponses"], [], `${context}.provider`);
-	if (provider.kind !== "faux" || provider.callCount !== soak.iterations || provider.pendingResponses !== 0) {
-		throw new Error(`${context} retained timers or faux responses`);
-	}
-	const faults = assertPlainObject(soak.faults, `${context}.faults`);
-	assertExactKeys(faults, ["plan", "counts"], [], `${context}.faults`);
-	if (!Array.isArray(faults.plan) || faults.plan.length < 1 || new Set(faults.plan).size !== faults.plan.length) {
-		throw new Error(`${context}.faults.plan is invalid`);
-	}
-	const faultCounts = assertPlainObject(faults.counts, `${context}.faults.counts`);
-	assertExactKeys(faultCounts, [...new Set(faults.plan)], [], `${context}.faults.counts`);
-	if (Object.values(faultCounts).some((count) => !Number.isSafeInteger(count) || count < 0)) {
-		throw new Error(`${context}.faults.counts is invalid`);
-	}
-	if (Object.values(faultCounts).reduce((total, count) => total + count, 0) !== soak.iterations) {
-		throw new Error(`${context}.faults.counts does not cover all iterations`);
+	assertExactKeys(provider, ["kind", "pendingResponses"], [], `${context}.provider`);
+	if (provider.kind !== "faux" || provider.pendingResponses !== 0) {
+		throw new Error(`${context} retained faux responses`);
 	}
 	const safety = assertPlainObject(soak.safety, `${context}.safety`);
 	assertExactKeys(safety, ["credentialsPersisted", "rawPayloadPersisted", "pathsPersisted"], [], `${context}.safety`);
@@ -213,6 +215,7 @@ function validateUpgrade(value, expectedHead, platform, context) {
 			"platform",
 			"state",
 			"evidenceClass",
+			"entrypoints",
 			"previousPackage",
 			"candidatePackage",
 			"outsideRepository",
@@ -226,7 +229,7 @@ function validateUpgrade(value, expectedHead, platform, context) {
 		[],
 		context,
 	);
-	if (upgrade.type !== "upgrade" || upgrade.schemaVersion !== 1) throw new Error(`${context} has the wrong schema`);
+	if (upgrade.type !== "upgrade" || upgrade.schemaVersion !== 2) throw new Error(`${context} has the wrong schema`);
 	if (assertFullSha(upgrade.headSha, `${context}.headSha`) !== expectedHead) throw new Error(`${context} is stale`);
 	if (
 		upgrade.platform !== platform ||
@@ -239,6 +242,11 @@ function validateUpgrade(value, expectedHead, platform, context) {
 	if (upgrade.restartValidated !== true || upgrade.idempotentMigration !== true || upgrade.secretsPersisted !== false) {
 		throw new Error(`${context} did not prove sanitized restart and idempotent migration`);
 	}
+	const entrypoints = assertPlainObject(upgrade.entrypoints, `${context}.entrypoints`);
+	assertExactKeys(entrypoints, ["previous", "candidate"], [], `${context}.entrypoints`);
+	if (entrypoints.previous !== "aos-agent" || entrypoints.candidate !== "aos-agent/external-connector") {
+		throw new Error(`${context} did not invoke the installed package entrypoints`);
+	}
 	for (const name of ["previousPackage", "candidatePackage"]) {
 		const packageRecord = assertPlainObject(upgrade[name], `${context}.${name}`);
 		assertExactKeys(packageRecord, ["name", "version", "digest"], [], `${context}.${name}`);
@@ -247,13 +255,27 @@ function validateUpgrade(value, expectedHead, platform, context) {
 		}
 		assertSha256(packageRecord.digest, `${context}.${name}.digest`);
 	}
+	const versionParts = (version) => version.split("-", 1)[0].split(".").map(Number);
+	const previousParts = versionParts(upgrade.previousPackage.version);
+	const candidateParts = versionParts(upgrade.candidatePackage.version);
+	if (previousParts.length !== 3 || candidateParts.length !== 3) {
+		throw new Error(`${context} package version is invalid`);
+	}
+	let versionDifference = 0;
+	for (let index = 0; index < 3 && versionDifference === 0; index += 1) {
+		if (!Number.isSafeInteger(previousParts[index]) || !Number.isSafeInteger(candidateParts[index])) {
+			throw new Error(`${context} package version is invalid`);
+		}
+		versionDifference = previousParts[index] - candidateParts[index];
+	}
+	if (versionDifference >= 0) throw new Error(`${context} previous package is not older than the candidate`);
 	if (!Array.isArray(upgrade.scenarios) || upgrade.scenarios.length !== 2) {
 		throw new Error(`${context}.scenarios must contain exactly both interruption points`);
 	}
 	const scenarios = new Set();
 	for (const [index, value_] of upgrade.scenarios.entries()) {
 		const scenario = assertPlainObject(value_, `${context}.scenarios[${index}]`);
-		assertExactKeys(scenario, ["fault", "recoveredSchemaVersion", "finalSchemaVersion"], [], `${context}.scenarios[${index}]`);
+		assertExactKeys(scenario, ["fault", "recoveredSchemaVersion", "finalSchemaVersion", "stateDigest"], [], `${context}.scenarios[${index}]`);
 		if (!["before_publish", "after_publish"].includes(scenario.fault) || scenarios.has(scenario.fault)) {
 			throw new Error(`${context}.scenarios has an invalid or duplicate fault`);
 		}
@@ -262,15 +284,12 @@ function validateUpgrade(value, expectedHead, platform, context) {
 		if (scenario.recoveredSchemaVersion !== expectedRecovered || scenario.finalSchemaVersion !== 2) {
 			throw new Error(`${context}.${scenario.fault} did not recover an atomic migration`);
 		}
+		assertSha256(scenario.stateDigest, `${context}.${scenario.fault}.stateDigest`);
 	}
 	for (const fault of ["before_publish", "after_publish"]) {
 		if (!scenarios.has(fault)) throw new Error(`${context} is missing ${fault}`);
 	}
-	const cleanup = assertPlainObject(upgrade.cleanup, `${context}.cleanup`);
-	assertExactKeys(cleanup, ["processes", "files", "pendingWrites", "credentials"], [], `${context}.cleanup`);
-	for (const [name, count] of Object.entries(cleanup)) {
-		if (count !== 0) throw new Error(`${context} retained ${name}=${count}`);
-	}
+	if (upgrade.cleanup !== true) throw new Error(`${context} did not clean its owned installation state`);
 	assertSha256(upgrade.digest, `${context}.digest`);
 	const unsigned = { ...upgrade };
 	delete unsigned.digest;
@@ -298,7 +317,140 @@ function assertUniqueBy(values, selector, context) {
 	}
 }
 
-export function validateLine13EvidenceManifest(value, expectedHead) {
+function validateEvidenceIdentity(value, context) {
+	const identity = assertPlainObject(value, context);
+	assertExactKeys(identity, ["id", "digest"], [], context);
+	if (typeof identity.id !== "string" || !/^[a-z0-9][a-z0-9._:/-]{0,159}$/u.test(identity.id)) {
+		throw new TypeError(`${context}.id must be a stable artifact identity`);
+	}
+	assertSha256(identity.digest, `${context}.digest`);
+	return identity;
+}
+
+function validateInputDigest(record, context) {
+	assertSha256(record.inputDigest, `${context}.inputDigest`);
+	const unsigned = { ...record };
+	delete unsigned.inputDigest;
+	if (record.inputDigest !== digestJson(unsigned)) throw new Error(`${context}.inputDigest drifted`);
+}
+
+function resolveGitMilestoneCommitChain(expectedBase, expectedHead) {
+	const ancestor = spawnSync("git", ["merge-base", "--is-ancestor", expectedBase, expectedHead], {
+		encoding: "utf8",
+		windowsHide: true,
+	});
+	if (ancestor.status !== 0) throw new Error("Requested milestone base is not an ancestor of the requested head");
+	const result = spawnSync("git", ["rev-list", "--first-parent", "--reverse", `${expectedBase}..${expectedHead}`], {
+		encoding: "utf8",
+		windowsHide: true,
+	});
+	if (result.status !== 0) throw new Error("Could not resolve the repository milestone commit chain");
+	const commits = result.stdout.trim().split(/\r?\n/u).filter(Boolean).map((sha, index) =>
+		assertFullSha(sha, `gitMilestoneChain[${index}]`));
+	if (commits.length < 1 || commits.at(-1) !== expectedHead) {
+		throw new Error("Repository milestone chain does not terminate at the requested head");
+	}
+	return commits;
+}
+
+function validateMilestoneChain(value, expectedBase, expectedHead, expectedCommits, context) {
+	const chain = assertPlainObject(value, context);
+	assertExactKeys(chain, ["schemaVersion", "type", "baseSha", "headSha", "state", "commits", "inputDigest"], [], context);
+	if (chain.schemaVersion !== 1 || chain.type !== "milestone_chain" || chain.state !== PASS_STATE) {
+		throw new Error(`${context} is not a passed milestone chain`);
+	}
+	if (assertFullSha(chain.baseSha, `${context}.baseSha`) !== expectedBase) throw new Error(`${context} has a stale base`);
+	if (assertFullSha(chain.headSha, `${context}.headSha`) !== expectedHead) throw new Error(`${context} is stale`);
+	if (!Array.isArray(chain.commits) || chain.commits.length < 1) throw new Error(`${context}.commits is incomplete`);
+	if (chain.commits.length !== expectedCommits.length) throw new Error(`${context}.commits has a base-to-head gap`);
+	const seen = new Set();
+	let parentSha = expectedBase;
+	for (const [index, value_] of chain.commits.entries()) {
+		const commit = assertPlainObject(value_, `${context}.commits[${index}]`);
+		assertExactKeys(commit, ["sequence", "commitSha", "parentSha", "gate", "inputDigest"], [], `${context}.commits[${index}]`);
+		if (commit.sequence !== index + 1) throw new Error(`${context}.commits has a sequence gap`);
+		const commitSha = assertFullSha(commit.commitSha, `${context}.commits[${index}].commitSha`);
+		if (commitSha !== expectedCommits[index]) throw new Error(`${context}.commits[${index}] does not match repository history`);
+		if (seen.has(commitSha)) throw new Error(`${context}.commits contains duplicate ${commitSha}`);
+		seen.add(commitSha);
+		if (assertFullSha(commit.parentSha, `${context}.commits[${index}].parentSha`) !== parentSha) {
+			throw new Error(`${context}.commits[${index}] parent continuity mismatch`);
+		}
+		const gate = assertPlainObject(commit.gate, `${context}.commits[${index}].gate`);
+		assertExactKeys(gate, ["state", "cancelled", "command", "ciArtifact"], [], `${context}.commits[${index}].gate`);
+		if (gate.state !== PASS_STATE || gate.cancelled !== false) {
+			throw new Error(`${context}.commits[${index}] gate is cancelled, pending, or non-passing`);
+		}
+		validateEvidenceIdentity(gate.command, `${context}.commits[${index}].gate.command`);
+		validateEvidenceIdentity(gate.ciArtifact, `${context}.commits[${index}].gate.ciArtifact`);
+		validateInputDigest(commit, `${context}.commits[${index}]`);
+		parentSha = commitSha;
+	}
+	if (parentSha !== expectedHead) throw new Error(`${context}.commits does not terminate at the requested head`);
+	validateInputDigest(chain, context);
+	return chain;
+}
+
+function validateAcOwnerTransitions(value, expectedBase, expectedHead, chain, context) {
+	const evidence = assertPlainObject(value, context);
+	assertExactKeys(evidence, ["schemaVersion", "type", "baseSha", "headSha", "state", "transitions", "inputDigest"], [], context);
+	if (evidence.schemaVersion !== 1 || evidence.type !== "ac_owner_transitions" || evidence.state !== PASS_STATE) {
+		throw new Error(`${context} is not a passed AC owner transition set`);
+	}
+	if (evidence.baseSha !== expectedBase || evidence.headSha !== expectedHead) throw new Error(`${context} is stale`);
+	if (!Array.isArray(evidence.transitions) || evidence.transitions.length !== LINE13_ACCEPTANCE_CRITERIA.length) {
+		throw new Error(`${context} must contain AC-01 through AC-24 exactly once`);
+	}
+	assertUniqueBy(evidence.transitions, (transition) => transition.id, context);
+	const commits = new Set(chain.commits.map((commit) => commit.commitSha));
+	for (const id of LINE13_ACCEPTANCE_CRITERIA) {
+		const transition = evidence.transitions.find((candidate) => candidate.id === id);
+		if (transition === undefined) throw new Error(`${context} is missing ${id}`);
+		const record = assertPlainObject(transition, `${context}.${id}`);
+		assertExactKeys(record, ["id", "from", "to", "owner", "commitSha", "headSha", "state", "inputDigest"], [], `${context}.${id}`);
+		if (
+			record.from !== "open" ||
+			record.to !== "closed" ||
+			record.state !== PASS_STATE ||
+			record.headSha !== expectedHead ||
+			typeof record.owner !== "string" ||
+			!/^[a-z][a-z0-9._-]{0,79}$/u.test(record.owner) ||
+			!commits.has(record.commitSha)
+		) throw new Error(`${context}.${id} is stale or has an invalid owner transition`);
+		validateInputDigest(record, `${context}.${id}`);
+	}
+	validateInputDigest(evidence, context);
+	return evidence;
+}
+
+function validateQualityGates(value, expectedHead, context) {
+	const evidence = assertPlainObject(value, context);
+	assertExactKeys(evidence, ["schemaVersion", "type", "headSha", "state", "gates", "inputDigest"], [], context);
+	if (evidence.schemaVersion !== 1 || evidence.type !== "quality_gates" || evidence.state !== PASS_STATE) {
+		throw new Error(`${context} is not a passed Q0-Q18 evidence set`);
+	}
+	if (evidence.headSha !== expectedHead) throw new Error(`${context} is stale`);
+	if (!Array.isArray(evidence.gates) || evidence.gates.length !== LINE13_QUALITY_GATES.length) {
+		throw new Error(`${context} must contain Q0 through Q18 exactly once`);
+	}
+	assertUniqueBy(evidence.gates, (gate) => gate.id, context);
+	for (const id of LINE13_QUALITY_GATES) {
+		const gate = evidence.gates.find((candidate) => candidate.id === id);
+		if (gate === undefined) throw new Error(`${context} is missing ${id}`);
+		const record = assertPlainObject(gate, `${context}.${id}`);
+		assertExactKeys(record, ["id", "headSha", "state", "cancelled", "command", "ciArtifact", "inputDigest"], [], `${context}.${id}`);
+		if (record.headSha !== expectedHead || record.state !== PASS_STATE || record.cancelled !== false) {
+			throw new Error(`${context}.${id} is stale, cancelled, pending, or non-passing`);
+		}
+		validateEvidenceIdentity(record.command, `${context}.${id}.command`);
+		validateEvidenceIdentity(record.ciArtifact, `${context}.${id}.ciArtifact`);
+		validateInputDigest(record, `${context}.${id}`);
+	}
+	validateInputDigest(evidence, context);
+	return evidence;
+}
+
+export function validateLine13EvidenceManifest(value, expectedHead, expectedBase, expectedCommitChain) {
 	const manifest = assertPlainObject(value, "manifest");
 	assertExactKeys(
 		manifest,
@@ -306,8 +458,12 @@ export function validateLine13EvidenceManifest(value, expectedHead) {
 			"schemaVersion",
 			"type",
 			"headSha",
+			"baseSha",
 			"requestedHeadSha",
 			"state",
+			"milestoneChain",
+			"acOwnerTransitions",
+			"qualityGates",
 			"knownGaps",
 			"platforms",
 			"certifications",
@@ -320,14 +476,38 @@ export function validateLine13EvidenceManifest(value, expectedHead) {
 		throw new Error("manifest has the wrong schema");
 	}
 	const headSha = assertFullSha(manifest.headSha, "manifest.headSha");
+	const baseSha = assertFullSha(manifest.baseSha, "manifest.baseSha");
 	const requestedHeadSha = assertFullSha(manifest.requestedHeadSha, "manifest.requestedHeadSha");
 	if (headSha !== requestedHeadSha || headSha !== assertFullSha(expectedHead, "expectedHead")) {
 		throw new Error("manifest is stale or mixes requested and checked-out heads");
 	}
+	if (baseSha !== assertFullSha(expectedBase, "expectedBase") || baseSha === headSha) {
+		throw new Error("manifest base is stale or does not precede the requested head");
+	}
+	const milestoneCommits = expectedCommitChain ?? resolveGitMilestoneCommitChain(baseSha, headSha);
+	if (!Array.isArray(milestoneCommits) || milestoneCommits.length < 1) {
+		throw new Error("Expected milestone commit chain is empty");
+	}
+	milestoneCommits.forEach((sha, index) => assertFullSha(sha, `expectedCommitChain[${index}]`));
 	if (manifest.state !== PASS_STATE || manifest.createdBy !== "repository_verifier") {
 		throw new Error("manifest is not a completed repository-verifier record");
 	}
 	rejectCancelledOrPartial(manifest, "manifest");
+	const milestoneChain = validateMilestoneChain(
+		manifest.milestoneChain,
+		baseSha,
+		headSha,
+		milestoneCommits,
+		"manifest.milestoneChain",
+	);
+	validateAcOwnerTransitions(
+		manifest.acOwnerTransitions,
+		baseSha,
+		headSha,
+		milestoneChain,
+		"manifest.acOwnerTransitions",
+	);
+	validateQualityGates(manifest.qualityGates, headSha, "manifest.qualityGates");
 	validateKnownGaps(manifest.knownGaps, headSha, "manifest.knownGaps");
 	if (!Array.isArray(manifest.platforms)) throw new TypeError("manifest.platforms must be an array");
 	if (manifest.platforms.length !== LINE13_PLATFORMS.length) {
@@ -404,8 +584,9 @@ function exactlyOne(records, type, platform) {
 	return matches[0];
 }
 
-export function assembleLine13EvidenceManifest(records, expectedHead) {
+export function assembleLine13EvidenceManifest(records, expectedHead, expectedBase, expectedCommitChain) {
 	const headSha = assertFullSha(expectedHead, "expectedHead");
+	const baseSha = assertFullSha(expectedBase, "expectedBase");
 	const certifications = records.filter((record) => record?.type === "connector_certification");
 	const realCertifications = certifications.filter((record) => record.evidenceClass === "product_certification");
 	const structuralCertifications = certifications.filter((record) => record.evidenceClass === "structural_fake");
@@ -422,8 +603,12 @@ export function assembleLine13EvidenceManifest(records, expectedHead) {
 		schemaVersion: 1,
 		type: "line13_final_evidence",
 		headSha,
+		baseSha,
 		requestedHeadSha: headSha,
 		state: "passed",
+		milestoneChain: exactlyOne(records, "milestone_chain"),
+		acOwnerTransitions: exactlyOne(records, "ac_owner_transitions"),
+		qualityGates: exactlyOne(records, "quality_gates"),
 		knownGaps: exactlyOne(records, "known_gaps"),
 		platforms,
 		certifications: LINE13_CONNECTORS.map((connector) => {
@@ -435,7 +620,7 @@ export function assembleLine13EvidenceManifest(records, expectedHead) {
 		}),
 		createdBy: "repository_verifier",
 	};
-	return validateLine13EvidenceManifest(manifest, headSha);
+	return validateLine13EvidenceManifest(manifest, headSha, baseSha, expectedCommitChain);
 }
 
 function collectJsonRecords(directory) {
@@ -480,6 +665,7 @@ Modes:
 
 Common:
   --expected-head <sha>   Full requested candidate SHA (required)
+  --expected-base <sha>   Full base SHA before the milestone chain (final modes)
   --out <path>            Output for assembly or record generation
 
 --record-job:
@@ -506,6 +692,7 @@ function main() {
 		"--records-dir": "value",
 		"--record-job": "boolean",
 		"--expected-head": "value",
+		"--expected-base": "value",
 		"--platform": "value",
 		"--checked-out-start": "value",
 		"--checked-out-final": "value",
@@ -532,12 +719,20 @@ function main() {
 		return;
 	}
 	if (args["--manifest"] !== undefined) {
-		const manifest = validateLine13EvidenceManifest(readJson(args["--manifest"]), expectedHead);
+		const manifest = validateLine13EvidenceManifest(
+			readJson(args["--manifest"]),
+			expectedHead,
+			required(args, "--expected-base"),
+		);
 		console.log(`Line 13 exact-head evidence verified: ${manifest.digest}`);
 		return;
 	}
 	if (args["--records-dir"] !== undefined) {
-		const manifest = assembleLine13EvidenceManifest(collectJsonRecords(args["--records-dir"]), expectedHead);
+		const manifest = assembleLine13EvidenceManifest(
+			collectJsonRecords(args["--records-dir"]),
+			expectedHead,
+			required(args, "--expected-base"),
+		);
 		writeJsonAtomic(required(args, "--out"), manifest);
 		console.log(`Line 13 exact-head evidence assembled and verified: ${manifest.digest}`);
 		return;

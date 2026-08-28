@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	LINE13_ACCEPTANCE_CRITERIA,
 	LINE13_CONNECTORS,
 	LINE13_PLATFORMS,
 	LINE13_REQUIRED_CHECKS,
 	LINE13_RUNTIME_KINDS,
+	LINE13_QUALITY_GATES,
 	digestJson,
 } from "../packages/coding-agent/scripts/line13-evidence-common.mjs";
 import {
@@ -12,7 +14,10 @@ import {
 	createStructuralCertificationRecord,
 	validateCertificationRecord,
 } from "../packages/coding-agent/scripts/line13-certification.mjs";
-import { runLine13Soak } from "../packages/coding-agent/scripts/line13-soak.mjs";
+import {
+	LINE13_SOAK_OPERATION_PLAN,
+	LINE13_SOAK_RESOURCE_NAMES,
+} from "../packages/coding-agent/scripts/line13-soak.mjs";
 import {
 	assembleLine13EvidenceManifest,
 	createNativeJobRecord,
@@ -21,6 +26,68 @@ import {
 
 const HEAD_SHA = "a".repeat(40);
 const OTHER_HEAD_SHA = "b".repeat(40);
+const BASE_SHA = "0".repeat(40);
+const MIDDLE_SHA = "c".repeat(40);
+
+function withInputDigest(value) {
+	return { ...value, inputDigest: digestJson(value) };
+}
+
+function identity(id, character) {
+	return { id, digest: `sha256:${character.repeat(64)}` };
+}
+
+function milestoneRecords() {
+	const commits = [
+		withInputDigest({
+			sequence: 1,
+			commitSha: MIDDLE_SHA,
+			parentSha: BASE_SHA,
+			gate: { state: "passed", cancelled: false, command: identity("check.middle", "1"), ciArtifact: identity("artifact.middle", "2") },
+		}),
+		withInputDigest({
+			sequence: 2,
+			commitSha: HEAD_SHA,
+			parentSha: MIDDLE_SHA,
+			gate: { state: "passed", cancelled: false, command: identity("check.head", "3"), ciArtifact: identity("artifact.head", "4") },
+		}),
+	];
+	const milestone = withInputDigest({
+		schemaVersion: 1,
+		type: "milestone_chain",
+		baseSha: BASE_SHA,
+		headSha: HEAD_SHA,
+		state: "passed",
+		commits,
+	});
+	const transitions = LINE13_ACCEPTANCE_CRITERIA.map((id) => withInputDigest({
+		id,
+		from: "open",
+		to: "closed",
+		owner: "repository",
+		commitSha: HEAD_SHA,
+		headSha: HEAD_SHA,
+		state: "passed",
+	}));
+	const ac = withInputDigest({
+		schemaVersion: 1,
+		type: "ac_owner_transitions",
+		baseSha: BASE_SHA,
+		headSha: HEAD_SHA,
+		state: "passed",
+		transitions,
+	});
+	const gates = LINE13_QUALITY_GATES.map((id, index) => withInputDigest({
+		id,
+		headSha: HEAD_SHA,
+		state: "passed",
+		cancelled: false,
+		command: identity(`command.${id.toLowerCase()}`, String((index % 8) + 1)),
+		ciArtifact: identity(`artifact.${id.toLowerCase()}`, String(((index + 1) % 8) + 1)),
+	}));
+	const quality = withInputDigest({ schemaVersion: 1, type: "quality_gates", headSha: HEAD_SHA, state: "passed", gates });
+	return [milestone, ac, quality];
+}
 
 function packageSmoke(platform) {
 	const evidence = {
@@ -43,23 +110,44 @@ function packageSmoke(platform) {
 
 function upgrade(platform) {
 	const evidence = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		type: "upgrade",
 		headSha: HEAD_SHA,
 		platform,
 		state: "passed",
 		evidenceClass: "packaged_execution",
+		entrypoints: { previous: "aos-agent", candidate: "aos-agent/external-connector" },
 		previousPackage: { name: "aos-agent", version: "0.84.2", digest: `sha256:${"4".repeat(64)}` },
 		candidatePackage: { name: "aos-agent", version: "0.84.3", digest: `sha256:${"5".repeat(64)}` },
 		outsideRepository: true,
 		scenarios: [
-			{ fault: "before_publish", recoveredSchemaVersion: 1, finalSchemaVersion: 2 },
-			{ fault: "after_publish", recoveredSchemaVersion: 2, finalSchemaVersion: 2 },
+			{ fault: "before_publish", recoveredSchemaVersion: 1, finalSchemaVersion: 2, stateDigest: `sha256:${"6".repeat(64)}` },
+			{ fault: "after_publish", recoveredSchemaVersion: 2, finalSchemaVersion: 2, stateDigest: `sha256:${"7".repeat(64)}` },
 		],
 		restartValidated: true,
 		idempotentMigration: true,
 		secretsPersisted: false,
-		cleanup: { processes: 0, files: 0, pendingWrites: 0, credentials: 0 },
+		cleanup: true,
+	};
+	return { ...evidence, digest: digestJson(evidence) };
+}
+
+function soak(platform) {
+	const final = Object.fromEntries(LINE13_SOAK_RESOURCE_NAMES.map((name) => [name, name === "files" ? 1 : 0]));
+	const evidence = {
+		schemaVersion: 2,
+		type: "soak",
+		headSha: HEAD_SHA,
+		platform,
+		state: "passed",
+		evidenceClass: "product_trace",
+		iterations: 28,
+		plateauWindow: 7,
+		operations: Object.fromEntries(LINE13_SOAK_OPERATION_PLAN.map((operation) => [operation, 4])),
+		canonicalOwners: ["agent_harness", "external_connector_registry", "task_credential_service", "scheduler_selection_reservations", "worker_registry", "scheduler_status", "session_manager"],
+		resources: { final, plateauSamples: 7, plateauDigest: `sha256:${"8".repeat(64)}` },
+		provider: { kind: "faux", pendingResponses: 0 },
+		safety: { credentialsPersisted: false, rawPayloadPersisted: false, pathsPersisted: false },
 	};
 	return { ...evidence, digest: digestJson(evidence) };
 }
@@ -72,7 +160,7 @@ function validManifest() {
 		state: "passed",
 		count: 0,
 		totalAcceptanceCriteria: 24,
-	}];
+	}, ...milestoneRecords()];
 	for (const platform of LINE13_PLATFORMS) {
 		records.push(createNativeJobRecord({
 			headSha: HEAD_SHA,
@@ -83,7 +171,7 @@ function validManifest() {
 			checks: LINE13_REQUIRED_CHECKS,
 		}));
 		records.push(packageSmoke(platform));
-		records.push(runLine13Soak({ headSha: HEAD_SHA, platform, iterations: 28, plateauWindow: 7 }));
+		records.push(soak(platform));
 		records.push(upgrade(platform));
 		for (const connector of LINE13_CONNECTORS) {
 			records.push(createStructuralCertificationRecord({ connector, headSha: HEAD_SHA, platform }));
@@ -97,14 +185,17 @@ function validManifest() {
 			reasonCode: "authorized_run_not_provided",
 		}));
 	}
-	return assembleLine13EvidenceManifest(records, HEAD_SHA);
+	return assembleLine13EvidenceManifest(records, HEAD_SHA, BASE_SHA, [MIDDLE_SHA, HEAD_SHA]);
 }
 
 function rejectMutation(mutate, pattern) {
 	const manifest = structuredClone(validManifest());
 	delete manifest.digest;
 	mutate(manifest);
-	assert.throws(() => validateLine13EvidenceManifest(manifest, HEAD_SHA), pattern);
+	assert.throws(
+		() => validateLine13EvidenceManifest(manifest, HEAD_SHA, BASE_SHA, [MIDDLE_SHA, HEAD_SHA]),
+		pattern,
+	);
 }
 
 test("exact-head verifier accepts complete native, packaged, soak, upgrade, and explicit certification states", () => {
@@ -157,6 +248,15 @@ test("exact-head verifier rejects fake evidence substituted for real certificati
 	}, /fake/u);
 });
 
+test("exact-head verifier rejects structural soak and offline upgrade promotion", () => {
+	rejectMutation((manifest) => {
+		manifest.platforms[0].soak.evidenceClass = "structural_fixture";
+	}, /not a packaged standard product trace/u);
+	rejectMutation((manifest) => {
+		manifest.platforms[0].upgrade.evidenceClass = "offline_fixture";
+	}, /not packaged previous-release evidence/u);
+});
+
 test("exact-head verifier accepts a product-ready claim only for an authorized passing record", () => {
 	const manifest = structuredClone(validManifest());
 	delete manifest.digest;
@@ -177,7 +277,40 @@ test("exact-head verifier accepts a product-ready claim only for an authorized p
 		safety: { credentialsPersisted: false, promptsPersisted: false, pathsPersisted: false, transcriptsPersisted: false },
 		source: "authorized_external_run",
 	});
-	assert.equal(validateLine13EvidenceManifest(manifest, HEAD_SHA).certifications[0].productReady, true);
+	assert.equal(
+		validateLine13EvidenceManifest(manifest, HEAD_SHA, BASE_SHA, [MIDDLE_SHA, HEAD_SHA]).certifications[0].productReady,
+		true,
+	);
 	claim.productReady = false;
-	assert.throws(() => validateLine13EvidenceManifest(manifest, HEAD_SHA), /product-ready claim/u);
+	assert.throws(
+		() => validateLine13EvidenceManifest(manifest, HEAD_SHA, BASE_SHA, [MIDDLE_SHA, HEAD_SHA]),
+		/product-ready claim/u,
+	);
+});
+
+test("exact milestone evidence rejects chain gaps, parent mismatch, cancelled gates, stale ACs, and missing Qs", () => {
+	rejectMutation((manifest) => {
+		manifest.milestoneChain.commits.splice(0, 1);
+	}, /base-to-head gap|sequence gap|parent continuity/u);
+	rejectMutation((manifest) => {
+		manifest.milestoneChain.commits[1].parentSha = BASE_SHA;
+	}, /parent continuity/u);
+	rejectMutation((manifest) => {
+		manifest.milestoneChain.commits[0].gate.cancelled = true;
+	}, /cancelled/u);
+	rejectMutation((manifest) => {
+		manifest.acOwnerTransitions.transitions[0].headSha = OTHER_HEAD_SHA;
+	}, /stale/u);
+	rejectMutation((manifest) => {
+		manifest.qualityGates.gates.pop();
+	}, /Q0 through Q18/u);
+});
+
+test("exact milestone evidence rejects duplicate and input-digest drift", () => {
+	rejectMutation((manifest) => {
+		manifest.qualityGates.gates[1].id = manifest.qualityGates.gates[0].id;
+	}, /duplicate/u);
+	rejectMutation((manifest) => {
+		manifest.qualityGates.gates[0].command.id = "drifted.command";
+	}, /inputDigest drifted/u);
 });

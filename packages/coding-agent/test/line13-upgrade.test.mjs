@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,23 +10,48 @@ import {
 } from "../scripts/line13-upgrade.mjs";
 
 const HEAD_SHA = "c".repeat(40);
-const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/line13-upgrade/previous-state.json", import.meta.url), "utf8"));
 
 function fakePackageExecutor() {
 	const calls = [];
 	return {
 		calls,
-		installAndRun({ spec, installDirectory }) {
-			calls.push({ spec, installDirectory });
+		install({ spec, installDirectory }) {
+			calls.push({ operation: "install", spec, installDirectory });
 			mkdirSync(installDirectory, { recursive: true });
-			writeFileSync(join(installDirectory, "ran"), `${spec}\n`, "utf8");
-			const version = spec.includes("candidate") ? "0.84.3" : "0.84.2";
-			return { name: "aos-agent", version, digest: `sha256:${(spec.includes("candidate") ? "4" : "3").repeat(64)}` };
+			return {
+				name: "aos-agent",
+				version: spec.includes("candidate") ? "0.84.3" : "0.84.2",
+				digest: `sha256:${(spec.includes("candidate") ? "4" : "3").repeat(64)}`,
+			};
+		},
+		generatePrevious({ stateDirectory }) {
+			calls.push({ operation: "generate_previous" });
+			mkdirSync(stateDirectory, { recursive: true });
+			const state = { schemaVersion: 1, packageVersion: "0.84.2" };
+			writeFileSync(join(stateDirectory, "publication.json"), `${JSON.stringify(state)}\n`, "utf8");
+			return state;
+		},
+		migrateCandidate({ stateDirectory, fault }) {
+			calls.push({ operation: "migrate_candidate", fault });
+			if (fault === "before_publish") return { status: 2, ok: false, error: "injected_before_publish" };
+			const state = { schemaVersion: 2, migration: { complete: true } };
+			writeFileSync(join(stateDirectory, "publication.json"), `${JSON.stringify(state)}\n`, "utf8");
+			if (fault === "after_publish") return { status: 2, ok: false, error: "injected_after_publish" };
+			return {
+				status: 0,
+				ok: true,
+				result: {
+					entrypoint: "aos-agent/external-connector",
+					adapter: "packaged_durable_state_migration",
+					owners: ["session", "settings", "trust", "auth", "identity", "connector"],
+					stateDigest: `sha256:${"5".repeat(64)}`,
+				},
+			};
 		},
 	};
 }
 
-test("offline upgrade fixtures install and run outside the repository without network", () => {
+test("offline upgrade fixtures invoke both package adapters but cannot mint packaged evidence", () => {
 	const root = mkdtempSync(join(tmpdir(), "line13-upgrade-test-"));
 	const repoRoot = join(root, "repo");
 	const workRoot = join(root, "outside", "run");
@@ -38,64 +63,32 @@ test("offline upgrade fixtures install and run outside the repository without ne
 			platform: "linux",
 			previousSpec: "fixture-previous",
 			candidateSpec: "fixture-candidate",
-			previousState: FIXTURE,
 			workRoot,
 			repoRoot,
-			packageExecutor: executor,
-			executionKind: "offline_fixture",
-		});
+		}, executor);
 		assert.equal(evidence.state, "passed");
 		assert.equal(evidence.evidenceClass, "offline_fixture");
-		assert.equal(evidence.outsideRepository, true);
-		assert.equal(evidence.restartValidated, true);
-		assert.equal(evidence.idempotentMigration, true);
-		assert.equal(evidence.secretsPersisted, false);
+		assert.deepEqual(evidence.entrypoints, { previous: "aos-agent", candidate: "aos-agent/external-connector" });
 		assert.deepEqual(evidence.scenarios.map((scenario) => scenario.recoveredSchemaVersion), [1, 2]);
-		assert.equal(executor.calls.length, 2);
-		assert.equal(executor.calls.every((call) => call.installDirectory.startsWith(workRoot)), true);
-		assert.equal(readFileSync(new URL("./fixtures/line13-upgrade/previous-state.json", import.meta.url), "utf8").includes("secret"), false);
+		assert.equal(executor.calls.filter((call) => call.operation === "generate_previous").length, 2);
+		assert.equal(executor.calls.filter((call) => call.operation === "migrate_candidate").length, 6);
 		assert.equal(existsSync(workRoot), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
-test("upgrade harness rejects repository-local work roots and credential-like fixture material", () => {
+test("upgrade harness rejects repository-local work roots", () => {
 	assert.throws(
-		() =>
-			runLine13UpgradeHarness({
-				headSha: HEAD_SHA,
-				platform: "windows",
-				previousSpec: "fixture-previous",
-				candidateSpec: "fixture-candidate",
-				previousState: FIXTURE,
-				workRoot: join(process.cwd(), "line13-local-work"),
-				packageExecutor: fakePackageExecutor(),
-			}),
+		() => runLine13UpgradeHarness({
+			headSha: HEAD_SHA,
+			platform: "windows",
+			previousSpec: "fixture-previous",
+			candidateSpec: "fixture-candidate",
+			workRoot: join(process.cwd(), "line13-local-work"),
+		}, fakePackageExecutor()),
 		/outside the repository/u,
 	);
-
-	const root = mkdtempSync(join(tmpdir(), "line13-upgrade-secret-test-"));
-	const repoRoot = join(root, "repo");
-	mkdirSync(repoRoot);
-	try {
-		assert.throws(
-			() =>
-				runLine13UpgradeHarness({
-					headSha: HEAD_SHA,
-					platform: "macos",
-					previousSpec: "fixture-previous",
-					candidateSpec: "fixture-candidate",
-					previousState: { ...FIXTURE, auth: { accessToken: "credential-value" } },
-					workRoot: join(root, "outside", "run"),
-					repoRoot,
-					packageExecutor: fakePackageExecutor(),
-				}),
-			/forbidden secret field/u,
-		);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
 });
 
 test("previous release selection is stable and ignores prereleases", () => {

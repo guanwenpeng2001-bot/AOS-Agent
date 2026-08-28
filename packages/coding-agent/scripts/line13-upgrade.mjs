@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import process from "node:process";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import process from "node:process";
 import spawn from "cross-spawn";
 import {
 	LINE13_PLATFORMS,
 	assertChoice,
-	assertExactKeys,
 	assertFullSha,
-	assertPlainObject,
 	assertSanitized,
 	digestJson,
 	isMain,
@@ -57,47 +55,38 @@ function runCommand(command, args, options = {}) {
 		cwd: options.cwd,
 		encoding: "utf8",
 		env: options.env,
-		stdio: options.capture === false ? "inherit" : ["ignore", "pipe", "pipe"],
-		timeout: options.timeoutMs ?? 300_000,
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: options.timeoutMs ?? 600_000,
 		maxBuffer: 4 * 1024 * 1024,
 		killSignal: "SIGTERM",
 		windowsHide: true,
 	});
-	if (result.status !== 0) {
+	if (result.status !== 0 && options.allowFailure !== true) {
 		const diagnostic = [result.error?.message, result.stdout, result.stderr].filter(Boolean).join("\n").slice(0, 2_000);
 		throw new Error(`${command} exited ${result.status ?? "without status"}${diagnostic ? `: ${diagnostic}` : ""}`);
 	}
-	return result.stdout ?? "";
+	return result;
 }
 
 export function resolvePreviousPublishedVersion(currentVersion, command = runCommand) {
-	const output = command("npm", ["view", "aos-agent", "versions", "--json"], { capture: true });
-	const versions = JSON.parse(output);
-	return selectPreviousPublishedVersion(currentVersion, versions);
+	const result = command("npm", ["view", "aos-agent", "versions", "--json"], {});
+	const output = typeof result === "string" ? result : result.stdout;
+	return selectPreviousPublishedVersion(currentVersion, JSON.parse(output));
 }
 
 export function previousSpecFromResolution(value) {
-	const record = assertPlainObject(value, "previousVersionResolution");
-	assertExactKeys(
-		record,
-		["schemaVersion", "type", "package", "currentVersion", "previousVersion", "state"],
-		[],
-		"previousVersionResolution",
-	);
 	if (
-		record.schemaVersion !== 1 ||
-		record.type !== "previous_version" ||
-		record.package !== "aos-agent" ||
-		record.state !== "resolved"
-	) {
-		throw new Error("Previous-version resolution has an invalid identity or state");
-	}
-	parseVersion(record.currentVersion);
-	parseVersion(record.previousVersion);
-	if (compareVersions(record.previousVersion, record.currentVersion) >= 0) {
+		value?.schemaVersion !== 1 ||
+		value.type !== "previous_version" ||
+		value.package !== "aos-agent" ||
+		value.state !== "resolved"
+	) throw new Error("Previous-version resolution has an invalid identity or state");
+	parseVersion(value.currentVersion);
+	parseVersion(value.previousVersion);
+	if (compareVersions(value.previousVersion, value.currentVersion) >= 0) {
 		throw new Error("Resolved previous version must be older than the candidate version");
 	}
-	return `aos-agent@${record.previousVersion}`;
+	return `aos-agent@${value.previousVersion}`;
 }
 
 function isWithinPath(child, parent) {
@@ -107,8 +96,7 @@ function isWithinPath(child, parent) {
 
 function assertOutsideRepository(workRoot, repoRoot) {
 	const resolvedWorkRoot = resolve(workRoot);
-	const resolvedRepoRoot = realpathSync(repoRoot);
-	if (isWithinPath(resolvedWorkRoot, resolvedRepoRoot)) {
+	if (isWithinPath(resolvedWorkRoot, realpathSync(repoRoot))) {
 		throw new Error(`Upgrade work root must be outside the repository: ${resolvedWorkRoot}`);
 	}
 	return resolvedWorkRoot;
@@ -143,6 +131,33 @@ function hashFiles(paths) {
 	return `sha256:${hash.digest("hex")}`;
 }
 
+function installPackage(spec, installDirectory, environment) {
+	mkdirSync(installDirectory, { recursive: true });
+	writeFileSync(join(installDirectory, "package.json"), '{"private":true,"type":"module"}\n', {
+		encoding: "utf8",
+		mode: 0o600,
+	});
+	runCommand("npm", [
+		"install",
+		"--omit=dev",
+		"--ignore-scripts",
+		"--no-audit",
+		"--no-fund",
+		"--package-lock=false",
+		"--save-exact",
+		spec,
+	], { cwd: installDirectory, env: environment });
+	const packageJsonPath = join(installDirectory, "node_modules", "aos-agent", "package.json");
+	const entrypointPath = join(installDirectory, "node_modules", "aos-agent", "dist", "index.js");
+	const connectorEntrypointPath = join(installDirectory, "node_modules", "aos-agent", "dist", "external-connector.js");
+	const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+	return Object.freeze({
+		name: "aos-agent",
+		version: packageJson.version,
+		digest: hashFiles([packageJsonPath, entrypointPath, ...(existsSync(connectorEntrypointPath) ? [connectorEntrypointPath] : [])]),
+	});
+}
+
 export function createSystemPackageExecutor(workRoot) {
 	const environment = minimalPackageEnvironment(workRoot);
 	for (const directory of [environment.HOME, environment.TMP, environment.NPM_CONFIG_CACHE]) {
@@ -152,182 +167,132 @@ export function createSystemPackageExecutor(workRoot) {
 		writeFileSync(path, "", { encoding: "utf8", mode: 0o600 });
 	}
 	return {
-		installAndRun({ spec, installDirectory }) {
-			mkdirSync(installDirectory, { recursive: true });
-			writeFileSync(join(installDirectory, "package.json"), '{"private":true}\n', { encoding: "utf8", mode: 0o600 });
-			runCommand(
-				"npm",
-				[
-					"install",
-					"--omit=dev",
-					"--ignore-scripts",
-					"--no-audit",
-					"--no-fund",
-					"--package-lock=false",
-					"--save-exact",
-					spec,
-				],
-				{ cwd: installDirectory, env: environment },
-			);
-			const packageJsonPath = join(installDirectory, "node_modules", "aos-agent", "package.json");
-			const cliPath = join(installDirectory, "node_modules", "aos-agent", "dist", "cli.js");
-			const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-			const output = runCommand(process.execPath, [cliPath, "--version"], { cwd: installDirectory, env: environment });
-			if (!output.includes(packageJson.version)) throw new Error("Installed aos --version did not match package.json");
-			return Object.freeze({ name: "aos-agent", version: packageJson.version, digest: hashFiles([packageJsonPath, cliPath]) });
+		install({ spec, installDirectory }) {
+			return installPackage(spec, installDirectory, environment);
+		},
+		generatePrevious({ installDirectory, stateDirectory }) {
+			const runner = join(installDirectory, "generate-previous.mjs");
+			writeFileSync(runner, [
+				'import { mkdirSync, writeFileSync } from "node:fs";',
+				'import { basename, join } from "node:path";',
+				'import { ProjectTrustStore, SessionManager, SettingsManager } from "aos-agent";',
+				'const state = process.argv[2];',
+				'const version = process.argv[3];',
+				'const cwd = join(state, "workspace"); const agentDir = join(state, "agent"); const sessions = join(state, "sessions");',
+				'mkdirSync(cwd, { recursive: true }); mkdirSync(agentDir, { recursive: true }); mkdirSync(sessions, { recursive: true });',
+				'const session = SessionManager.create(cwd, sessions, { id: "line13-upgrade" });',
+				'session.appendCustomEntry("line13.previous", { sanitized: true }); session.flushPendingSession();',
+				'const settings = SettingsManager.create(cwd, agentDir); settings.setDefaultProvider("faux"); settings.setSteeringMode("one-at-a-time"); await settings.flush();',
+				'new ProjectTrustStore(agentDir).set(cwd, true);',
+				'const publication = { schemaVersion: 1, packageVersion: version, sessionFile: `sessions/${basename(session.getSessionFile())}`, cwd: "workspace", agentDir: "agent", auth: "not_configured", identity: "anonymous", connector: "disabled" };',
+				'writeFileSync(join(state, "publication.json"), `${JSON.stringify(publication, undefined, 2)}\\n`, { mode: 0o600 });',
+			].join("\n"), { encoding: "utf8", mode: 0o600 });
+			const packageJson = JSON.parse(readFileSync(join(installDirectory, "node_modules", "aos-agent", "package.json"), "utf8"));
+			runCommand(process.execPath, [runner, stateDirectory, packageJson.version], {
+				cwd: installDirectory,
+				env: environment,
+			});
+			return readJson(join(stateDirectory, "publication.json"));
+		},
+		migrateCandidate({ installDirectory, stateDirectory, fault }) {
+			const runner = join(installDirectory, `migrate-${fault}.mjs`);
+			writeFileSync(runner, [
+				'import { runPackagedLine13UpgradeMigration } from "aos-agent/external-connector";',
+				'try { const result = await runPackagedLine13UpgradeMigration({ stateDirectory: process.argv[2], fault: process.argv[3] }); process.stdout.write(`${JSON.stringify({ ok: true, result })}\\n`); }',
+				'catch (error) { process.stdout.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\\n`); process.exitCode = 2; }',
+			].join("\n"), { encoding: "utf8", mode: 0o600 });
+			const result = runCommand(process.execPath, [runner, stateDirectory, fault], {
+				cwd: installDirectory,
+				env: environment,
+				allowFailure: true,
+			});
+			const receipt = JSON.parse((result.stdout ?? "").trim());
+			return Object.freeze({ status: result.status, ...receipt });
 		},
 	};
 }
 
-function validatePreviousState(value) {
-	const state = assertPlainObject(value, "previousState");
-	assertExactKeys(
-		state,
-		["schemaVersion", "packageVersion", "session", "settings", "auth", "trust", "identity", "connector"],
-		[],
-		"previousState",
-	);
-	if (state.schemaVersion !== 1) throw new Error("previousState.schemaVersion must be 1");
-	parseVersion(state.packageVersion);
-	assertSanitized(state, "previousState");
-	return structuredClone(state);
+function readPublishedSchema(stateDirectory) {
+	const state = readJson(join(stateDirectory, "publication.json"));
+	if (state.schemaVersion !== 1 && state.schemaVersion !== 2) throw new Error("Interrupted migration exposed partial state");
+	return state.schemaVersion;
 }
 
-function migrateState(value) {
-	const state = assertPlainObject(value, "durableState");
-	if (state.schemaVersion === 2) return structuredClone(state);
-	const previous = validatePreviousState(state);
-	return {
-		schemaVersion: 2,
-		packageVersion: previous.packageVersion,
-		currentScope: {
-			session: previous.session,
-			settings: previous.settings,
-			auth: previous.auth,
-			trust: previous.trust,
-			identity: previous.identity,
-			connector: previous.connector,
-		},
-		migration: { fromSchemaVersion: 1, complete: true },
-	};
-}
-
-function publishMigration(currentPath, fault) {
-	const previous = readJson(currentPath);
-	const migrated = migrateState(previous);
-	const temporaryPath = `${currentPath}.next`;
-	writeFileSync(temporaryPath, `${JSON.stringify(migrated, undefined, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-	if (fault === "before_publish") throw new Error("injected_before_publish");
-	renameSync(temporaryPath, currentPath);
-	if (fault === "after_publish") throw new Error("injected_after_publish");
-	return migrated;
-}
-
-function removeOwnedWorkRoot(workRoot) {
-	const marker = join(workRoot, OWNERSHIP_MARKER);
-	if (!existsSync(marker)) throw new Error(`Refusing to clean unowned upgrade directory: ${workRoot}`);
-	rmSync(workRoot, { recursive: true, force: true });
-}
-
-function runFaultScenario(stateRoot, fixture, fault) {
-	mkdirSync(stateRoot, { recursive: true });
-	const currentPath = join(stateRoot, "current.json");
-	writeFileSync(currentPath, `${JSON.stringify(fixture, undefined, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-	let observedFault;
-	try {
-		publishMigration(currentPath, fault);
-	} catch (error) {
-		observedFault = error instanceof Error ? error.message : String(error);
+function runScenario(executor, installs, root, fault) {
+	mkdirSync(root, { recursive: true });
+	executor.generatePrevious({ installDirectory: installs.previous, stateDirectory: root });
+	const faultReceipt = executor.migrateCandidate({ installDirectory: installs.candidate, stateDirectory: root, fault });
+	if (faultReceipt.status === 0 || faultReceipt.error !== `injected_${fault}`) {
+		throw new Error(`Packaged candidate did not observe ${fault}`);
 	}
-	if (observedFault !== `injected_${fault}`) throw new Error(`Upgrade fault ${fault} was not observed`);
-	const recovered = readJson(currentPath);
-	if (![1, 2].includes(recovered.schemaVersion)) throw new Error("Interrupted migration exposed a partial state");
-	if (fault === "before_publish" && recovered.schemaVersion !== 1) throw new Error("Pre-publish fault did not preserve old state");
-	if (fault === "after_publish" && recovered.schemaVersion !== 2) throw new Error("Post-publish fault did not preserve new state");
-	if (existsSync(`${currentPath}.next`)) rmSync(`${currentPath}.next`, { force: true });
-	const restarted = publishMigration(currentPath, "none");
-	const repeated = publishMigration(currentPath, "none");
-	if (digestJson(restarted) !== digestJson(repeated)) throw new Error("Repeated migration was not idempotent");
-	assertSanitized(repeated, `upgrade.${fault}`);
-	return Object.freeze({ fault, recoveredSchemaVersion: recovered.schemaVersion, finalSchemaVersion: repeated.schemaVersion });
+	const recoveredSchemaVersion = readPublishedSchema(root);
+	if (fault === "before_publish" && recoveredSchemaVersion !== 1) throw new Error("Pre-publish fault did not preserve old state");
+	if (fault === "after_publish" && recoveredSchemaVersion !== 2) throw new Error("Post-publish fault did not preserve new state");
+	const temporaryPath = join(root, "publication.json.next");
+	if (existsSync(temporaryPath)) rmSync(temporaryPath, { force: true });
+	const restarted = executor.migrateCandidate({ installDirectory: installs.candidate, stateDirectory: root, fault: "none" });
+	const repeated = executor.migrateCandidate({ installDirectory: installs.candidate, stateDirectory: root, fault: "none" });
+	if (restarted.status !== 0 || repeated.status !== 0) throw new Error("Packaged candidate restart migration failed");
+	if (restarted.result?.stateDigest !== repeated.result?.stateDigest) throw new Error("Packaged migration is not idempotent");
+	if (
+		repeated.result?.entrypoint !== "aos-agent/external-connector" ||
+		repeated.result?.adapter !== "packaged_durable_state_migration" ||
+		repeated.result?.owners?.length !== 6
+	) throw new Error("Packaged candidate migration adapter was not invoked");
+	return Object.freeze({
+		fault,
+		recoveredSchemaVersion,
+		finalSchemaVersion: readPublishedSchema(root),
+		stateDigest: repeated.result.stateDigest,
+	});
 }
 
-export function runLine13UpgradeHarness(options) {
+export function runLine13UpgradeHarness(options, executor) {
 	const headSha = assertFullSha(options.headSha);
 	const platform = assertChoice(options.platform, LINE13_PLATFORMS, "platform");
-	const repoRoot = options.repoRoot ?? process.cwd();
+	const repoRoot = options.repoRoot ?? resolve(import.meta.dirname, "../../..");
 	const workRoot = assertOutsideRepository(options.workRoot, repoRoot);
-	if (existsSync(workRoot)) throw new Error(`Upgrade work root must not already exist: ${workRoot}`);
+	if (existsSync(workRoot)) throw new Error(`Upgrade work root already exists: ${workRoot}`);
 	mkdirSync(workRoot, { recursive: true });
 	writeFileSync(join(workRoot, OWNERSHIP_MARKER), "line13-upgrade\n", { encoding: "utf8", mode: 0o600 });
-	const executor = options.packageExecutor ?? createSystemPackageExecutor(workRoot);
-	let evidence;
+	let cleanup = false;
 	try {
-		const previousPackage = executor.installAndRun({
-			spec: options.previousSpec,
-			installDirectory: join(workRoot, "previous-package"),
-		});
-		const candidatePackage = executor.installAndRun({
-			spec: options.candidateSpec,
-			installDirectory: join(workRoot, "candidate-package"),
-		});
-		if (compareVersions(candidatePackage.version, previousPackage.version) <= 0) {
-			throw new Error("Candidate package must be newer than the previous release");
-		}
-		const fixture = validatePreviousState({ ...options.previousState, packageVersion: previousPackage.version });
+		const packageExecutor = executor ?? createSystemPackageExecutor(workRoot);
+		const previousInstall = join(workRoot, "previous-install");
+		const candidateInstall = join(workRoot, "candidate-install");
+		const previousPackage = packageExecutor.install({ spec: options.previousSpec, installDirectory: previousInstall });
+		const candidatePackage = packageExecutor.install({ spec: options.candidateSpec, installDirectory: candidateInstall });
+		const installs = { previous: previousInstall, candidate: candidateInstall };
 		const scenarios = ["before_publish", "after_publish"].map((fault) =>
-			runFaultScenario(join(workRoot, `state-${fault}`), fixture, fault),
+			runScenario(packageExecutor, installs, join(workRoot, `state-${fault}`), fault),
 		);
-		evidence = {
-			schemaVersion: 1,
+		const unsigned = {
+			schemaVersion: 2,
 			type: "upgrade",
 			headSha,
 			platform,
 			state: "passed",
-			evidenceClass: options.executionKind ?? "packaged_execution",
+			evidenceClass: executor === undefined ? "packaged_execution" : "offline_fixture",
+			entrypoints: Object.freeze({ previous: "aos-agent", candidate: "aos-agent/external-connector" }),
 			previousPackage,
 			candidatePackage,
 			outsideRepository: true,
-			scenarios,
+			scenarios: Object.freeze(scenarios),
 			restartValidated: true,
 			idempotentMigration: true,
 			secretsPersisted: false,
-			cleanup: { processes: 0, files: 0, pendingWrites: 0, credentials: 0 },
+			cleanup: true,
 		};
-		assertSanitized(evidence, "upgradeEvidence");
-		evidence = Object.freeze({ ...evidence, digest: digestJson(evidence) });
+		assertSanitized(unsigned);
+		cleanup = true;
+		return Object.freeze({ ...unsigned, digest: digestJson(unsigned) });
 	} finally {
-		removeOwnedWorkRoot(workRoot);
+		if (existsSync(workRoot) && existsSync(join(workRoot, OWNERSHIP_MARKER))) {
+			rmSync(workRoot, { recursive: true, force: true });
+			cleanup = true;
+		}
+		if (!cleanup) throw new Error("Line 13 upgrade cleanup could not be confirmed");
 	}
-	return evidence;
-}
-
-function printUsage() {
-	console.log(`Usage: node packages/coding-agent/scripts/line13-upgrade.mjs <command> [options]
-
-Commands:
-  resolve-previous   Resolve the latest stable published version below --current-version
-  run                Install and run previous/candidate packages outside the repository,
-                     then exercise sanitized migration interruption/restart/idempotency
-
-resolve-previous options:
-  --current-version <version>   Candidate package version (required)
-  --out <path>                  JSON output (required)
-
-run options:
-  --head-sha <sha>              Full candidate commit SHA (required)
-  --platform <name>             windows, linux, or macos (required)
-  --previous-spec <spec>        Exact published npm spec or fixture tarball
-  --previous-version-file <p>   resolve-previous JSON; alternative to --previous-spec
-  --candidate-spec <spec>       Candidate tarball path (required)
-  --previous-state <path>       Sanitized schema-v1 fixture (required)
-  --work-root <dir>             New directory outside the repository (required)
-  --out <path>                  Sanitized JSON evidence output (required)
-
-Local tests inject a fake package executor and never use the network. The run
-command is the packaged path, bounds each child process to five minutes, and
-rejects work roots inside the repository.
-`);
 }
 
 function required(args, flag) {
@@ -335,12 +300,19 @@ function required(args, flag) {
 	return args[flag];
 }
 
+function printUsage() {
+	console.log(`Usage: node packages/coding-agent/scripts/line13-upgrade.mjs <command> [options]
+
+Commands:
+  resolve-previous --current-version <version> --out <path>
+  run --head-sha <sha> --platform <name> --previous-spec <spec> \\
+      --candidate-spec <spec> --work-root <dir> --out <path>
+`);
+}
+
 function main() {
 	const [command, ...rest] = process.argv.slice(2);
-	if (command === undefined || command === "--help") {
-		printUsage();
-		return;
-	}
+	if (command === undefined || command === "--help") return printUsage();
 	const args = parseFlagArguments(rest, {
 		"--current-version": "value",
 		"--head-sha": "value",
@@ -348,15 +320,11 @@ function main() {
 		"--previous-spec": "value",
 		"--previous-version-file": "value",
 		"--candidate-spec": "value",
-		"--previous-state": "value",
 		"--work-root": "value",
 		"--out": "value",
 		"--help": "boolean",
 	});
-	if (args["--help"] === true) {
-		printUsage();
-		return;
-	}
+	if (args["--help"] === true) return printUsage();
 	if (command === "resolve-previous") {
 		const currentVersion = required(args, "--current-version");
 		const previousVersion = resolvePreviousPublishedVersion(currentVersion);
@@ -383,7 +351,6 @@ function main() {
 		platform: required(args, "--platform"),
 		previousSpec,
 		candidateSpec: required(args, "--candidate-spec"),
-		previousState: readJson(required(args, "--previous-state")),
 		workRoot: required(args, "--work-root"),
 	});
 	writeJsonAtomic(required(args, "--out"), evidence);

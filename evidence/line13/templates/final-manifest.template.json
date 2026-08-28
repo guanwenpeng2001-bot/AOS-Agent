@@ -2,8 +2,35 @@
 	"schemaVersion": 1,
 	"type": "line13_final_evidence",
 	"headSha": "0000000000000000000000000000000000000000",
+	"baseSha": "0000000000000000000000000000000000000000",
 	"requestedHeadSha": "0000000000000000000000000000000000000000",
 	"state": "incomplete",
+	"milestoneChain": {
+		"schemaVersion": 1,
+		"type": "milestone_chain",
+		"baseSha": "0000000000000000000000000000000000000000",
+		"headSha": "0000000000000000000000000000000000000000",
+		"state": "incomplete",
+		"commits": [],
+		"inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	},
+	"acOwnerTransitions": {
+		"schemaVersion": 1,
+		"type": "ac_owner_transitions",
+		"baseSha": "0000000000000000000000000000000000000000",
+		"headSha": "0000000000000000000000000000000000000000",
+		"state": "incomplete",
+		"transitions": [],
+		"inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	},
+	"qualityGates": {
+		"schemaVersion": 1,
+		"type": "quality_gates",
+		"headSha": "0000000000000000000000000000000000000000",
+		"state": "incomplete",
+		"gates": [],
+		"inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	},
 	"knownGaps": {
 		"schemaVersion": 1,
 		"type": "known_gaps",

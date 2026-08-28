@@ -8,8 +8,12 @@
 		"schemaVersion",
 		"type",
 		"headSha",
+		"baseSha",
 		"requestedHeadSha",
 		"state",
+		"milestoneChain",
+		"acOwnerTransitions",
+		"qualityGates",
 		"knownGaps",
 		"platforms",
 		"certifications",
@@ -19,8 +23,50 @@
 		"schemaVersion": { "const": 1 },
 		"type": { "const": "line13_final_evidence" },
 		"headSha": { "$ref": "#/$defs/headSha" },
+		"baseSha": { "$ref": "#/$defs/headSha" },
 		"requestedHeadSha": { "$ref": "#/$defs/headSha" },
 		"state": { "enum": ["passed", "incomplete"] },
+		"milestoneChain": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["schemaVersion", "type", "baseSha", "headSha", "state", "commits", "inputDigest"],
+			"properties": {
+				"schemaVersion": { "const": 1 },
+				"type": { "const": "milestone_chain" },
+				"baseSha": { "$ref": "#/$defs/headSha" },
+				"headSha": { "$ref": "#/$defs/headSha" },
+				"state": { "enum": ["passed", "incomplete"] },
+				"commits": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/milestoneCommit" } },
+				"inputDigest": { "$ref": "#/$defs/digest" }
+			}
+		},
+		"acOwnerTransitions": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["schemaVersion", "type", "baseSha", "headSha", "state", "transitions", "inputDigest"],
+			"properties": {
+				"schemaVersion": { "const": 1 },
+				"type": { "const": "ac_owner_transitions" },
+				"baseSha": { "$ref": "#/$defs/headSha" },
+				"headSha": { "$ref": "#/$defs/headSha" },
+				"state": { "enum": ["passed", "incomplete"] },
+				"transitions": { "type": "array", "minItems": 24, "maxItems": 24, "items": { "$ref": "#/$defs/acTransition" } },
+				"inputDigest": { "$ref": "#/$defs/digest" }
+			}
+		},
+		"qualityGates": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["schemaVersion", "type", "headSha", "state", "gates", "inputDigest"],
+			"properties": {
+				"schemaVersion": { "const": 1 },
+				"type": { "const": "quality_gates" },
+				"headSha": { "$ref": "#/$defs/headSha" },
+				"state": { "enum": ["passed", "incomplete"] },
+				"gates": { "type": "array", "minItems": 19, "maxItems": 19, "items": { "$ref": "#/$defs/qualityGate" } },
+				"inputDigest": { "$ref": "#/$defs/digest" }
+			}
+		},
 		"knownGaps": {
 			"type": "object",
 			"additionalProperties": false,
@@ -41,6 +87,63 @@
 	},
 	"$defs": {
 		"headSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-		"digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+		"digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+		"identity": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["id", "digest"],
+			"properties": { "id": { "type": "string" }, "digest": { "$ref": "#/$defs/digest" } }
+		},
+		"milestoneCommit": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["sequence", "commitSha", "parentSha", "gate", "inputDigest"],
+			"properties": {
+				"sequence": { "type": "integer", "minimum": 1 },
+				"commitSha": { "$ref": "#/$defs/headSha" },
+				"parentSha": { "$ref": "#/$defs/headSha" },
+				"gate": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["state", "cancelled", "command", "ciArtifact"],
+					"properties": {
+						"state": { "const": "passed" },
+						"cancelled": { "const": false },
+						"command": { "$ref": "#/$defs/identity" },
+						"ciArtifact": { "$ref": "#/$defs/identity" }
+					}
+				},
+				"inputDigest": { "$ref": "#/$defs/digest" }
+			}
+		},
+		"acTransition": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["id", "from", "to", "owner", "commitSha", "headSha", "state", "inputDigest"],
+			"properties": {
+				"id": { "pattern": "^AC-(0[1-9]|1[0-9]|2[0-4])$" },
+				"from": { "const": "open" },
+				"to": { "const": "closed" },
+				"owner": { "type": "string" },
+				"commitSha": { "$ref": "#/$defs/headSha" },
+				"headSha": { "$ref": "#/$defs/headSha" },
+				"state": { "const": "passed" },
+				"inputDigest": { "$ref": "#/$defs/digest" }
+			}
+		},
+		"qualityGate": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["id", "headSha", "state", "cancelled", "command", "ciArtifact", "inputDigest"],
+			"properties": {
+				"id": { "pattern": "^Q([0-9]|1[0-8])$" },
+				"headSha": { "$ref": "#/$defs/headSha" },
+				"state": { "const": "passed" },
+				"cancelled": { "const": false },
+				"command": { "$ref": "#/$defs/identity" },
+				"ciArtifact": { "$ref": "#/$defs/identity" },
+				"inputDigest": { "$ref": "#/$defs/digest" }
+			}
+		}
 	}
 }

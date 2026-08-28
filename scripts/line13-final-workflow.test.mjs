@@ -10,6 +10,10 @@ test("Line 13 workflow uses native exact-head jobs and failure-safe artifact ass
 	assert.match(workflow, /always\(\) && !cancelled\(\)/u);
 	assert.match(workflow, /git rev-parse HEAD/u);
 	assert.match(workflow, /verify-line13-evidence\.mjs[\s\S]+--records-dir/u);
+	assert.match(workflow, /base_sha:[\s\S]+required: true/u);
+	assert.match(workflow, /milestone_run_id:[\s\S]+milestone_artifact:/u);
+	assert.match(workflow, /actions\/download-artifact@v4[\s\S]+run-id: \$\{\{ inputs\.milestone_run_id \}\}/u);
+	assert.match(workflow, /--expected-base "\$\{\{ inputs\.base_sha \}\}"/u);
 	assert.match(workflow, /actions\/upload-artifact@v4/u);
 });
 
@@ -20,7 +24,10 @@ test("Line 13 workflow installs safely and calls only targeted checks and dedica
 	assert.match(workflow, /line13-pack-smoke\.mjs/u);
 	assert.match(workflow, /line13-upgrade\.mjs run/u);
 	assert.match(workflow, /line13-soak\.mjs/u);
+	assert.match(workflow, /line13-soak\.mjs[\s\S]+--candidate-spec/u);
 	assert.match(workflow, /line13-certification\.mjs/u);
+	assert.doesNotMatch(workflow, /--previous-state/u);
+	assert.doesNotMatch(workflow, /type: milestone_chain|type: ac_owner_transitions|type: quality_gates/u);
 	assert.doesNotMatch(workflow, /\bnpm test\b|\bnpm run build\b/u);
 	assert.doesNotMatch(workflow, /^\s*push:|\bnpm publish\b|\bgit push\b/mu);
 });

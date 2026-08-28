@@ -16,6 +16,10 @@ export const LINE13_REQUIRED_CHECKS = Object.freeze([
 	"q18.runtime-limits-retry-soak",
 	"repository.npm-run-check",
 ]);
+export const LINE13_ACCEPTANCE_CRITERIA = Object.freeze(
+	Array.from({ length: 24 }, (_, index) => `AC-${String(index + 1).padStart(2, "0")}`),
+);
+export const LINE13_QUALITY_GATES = Object.freeze(Array.from({ length: 19 }, (_, index) => `Q${index}`));
 
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;

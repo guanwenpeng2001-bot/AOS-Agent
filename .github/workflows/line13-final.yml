@@ -7,8 +7,21 @@ on:
         description: Full candidate commit SHA to certify
         required: true
         type: string
+      base_sha:
+        description: Full base SHA immediately before the milestone evidence chain
+        required: true
+        type: string
+      milestone_run_id:
+        description: Completed workflow run containing repository-owned milestone, AC, and Q evidence
+        required: true
+        type: string
+      milestone_artifact:
+        description: Artifact name containing milestone-chain, AC-transition, and Q0-Q18 JSON records
+        required: true
+        type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -91,6 +104,8 @@ jobs:
         run: |
           node ../../node_modules/vitest/dist/cli.js --run \
             test/line13-known-gaps.test.ts \
+            test/line13-product-trace.test.ts \
+            test/line13-packaged-upgrade.test.ts \
             test/task-credential-worker.test.ts \
             test/current-session-scope.test.ts \
             test/runtime-shutdown.test.ts \
@@ -136,7 +151,6 @@ jobs:
             --platform "$PLATFORM" \
             --previous-version-file "$RUNNER_TEMP/line13-input/previous-version.json" \
             --candidate-spec "$RUNNER_TEMP/line13-pack/aos-agent.tgz" \
-            --previous-state packages/coding-agent/test/fixtures/line13-upgrade/previous-state.json \
             --work-root "$RUNNER_TEMP/line13-upgrade-$PLATFORM" \
             --out "$RUNNER_TEMP/line13-evidence/$PLATFORM/upgrade.json"
       - name: Run deterministic bounded soak
@@ -145,8 +159,10 @@ jobs:
           node packages/coding-agent/scripts/line13-soak.mjs \
             --head-sha "$EXPECTED_HEAD" \
             --platform "$PLATFORM" \
-            --iterations 224 \
-            --plateau-window 28 \
+            --candidate-spec "$RUNNER_TEMP/line13-pack/aos-agent.tgz" \
+            --work-root "$RUNNER_TEMP/line13-soak-$PLATFORM" \
+            --iterations 28 \
+            --plateau-window 14 \
             --out "$RUNNER_TEMP/line13-evidence/$PLATFORM/soak.json"
       - name: Record fake structural connector evidence
         shell: bash
@@ -217,6 +233,13 @@ jobs:
           pattern: line13-native-*-${{ inputs.head_sha }}
           path: ${{ runner.temp }}/line13-records
           merge-multiple: true
+      - name: Download exact milestone, AC, and Q evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.milestone_artifact }}
+          path: ${{ runner.temp }}/line13-records/milestones
+          run-id: ${{ inputs.milestone_run_id }}
+          github-token: ${{ github.token }}
       - name: Record the final known-gap count
         shell: bash
         run: |
@@ -237,11 +260,13 @@ jobs:
           node scripts/verify-line13-evidence.mjs \
             --records-dir "$RUNNER_TEMP/line13-records" \
             --expected-head "$EXPECTED_HEAD" \
+            --expected-base "${{ inputs.base_sha }}" \
             --out "$RUNNER_TEMP/line13-final/manifest.json"
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           node scripts/verify-line13-evidence.mjs \
             --manifest "$RUNNER_TEMP/line13-final/manifest.json" \
-            --expected-head "$EXPECTED_HEAD"
+            --expected-head "$EXPECTED_HEAD" \
+            --expected-base "${{ inputs.base_sha }}"
       - uses: actions/upload-artifact@v4
         if: ${{ success() }}
         with:
