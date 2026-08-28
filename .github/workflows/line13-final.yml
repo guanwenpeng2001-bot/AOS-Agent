@@ -1,0 +1,251 @@
+name: Line 13 final evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      head_sha:
+        description: Full candidate commit SHA to certify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: line13-final-${{ inputs.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-previous:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      EXPECTED_HEAD: ${{ inputs.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Install without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Resolve previous published release
+        shell: bash
+        run: |
+          node packages/coding-agent/scripts/line13-upgrade.mjs resolve-previous \
+            --current-version "$(node -p "require('./packages/coding-agent/package.json').version")" \
+            --out "$RUNNER_TEMP/line13-input/previous-version.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: line13-previous-version
+          path: ${{ runner.temp }}/line13-input/previous-version.json
+          if-no-files-found: error
+          retention-days: 7
+
+  native:
+    needs: resolve-previous
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      EXPECTED_HEAD: ${{ inputs.head_sha }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+      - name: Capture exact checked-out SHA
+        shell: bash
+        run: |
+          checked_out="$(git rev-parse HEAD)"
+          test "$checked_out" = "$EXPECTED_HEAD"
+          printf '%s' "$checked_out" > "$RUNNER_TEMP/line13-start-head"
+      - name: Install without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Prepare deterministic generated test catalogs
+        run: npm run prepare:test-catalog
+      - name: Run targeted T9 and T10 acceptance tests
+        working-directory: packages/coding-agent
+        shell: bash
+        run: |
+          node ../../node_modules/vitest/dist/cli.js --run \
+            test/line13-known-gaps.test.ts \
+            test/task-credential-worker.test.ts \
+            test/current-session-scope.test.ts \
+            test/runtime-shutdown.test.ts \
+            test/external-process-supervision.test.ts \
+            test/connector-runtime-status.test.ts \
+            test/connector-retry-circuit.test.ts \
+            test/runtime-limits-soak.test.ts \
+            test/acp-connector.test.ts \
+            test/codex-connector.test.ts \
+            test/claude-connector.test.ts
+      - name: Run repository-owned Line 13 harness tests
+        shell: bash
+        run: |
+          node --test \
+            packages/coding-agent/test/line13-soak.test.mjs \
+            packages/coding-agent/test/line13-certification.test.mjs \
+            packages/coding-agent/test/line13-known-gap-count.test.mjs \
+            packages/coding-agent/test/line13-upgrade.test.mjs \
+            scripts/line13-final-workflow.test.mjs \
+            scripts/verify-line13-evidence.test.mjs
+      - name: Run repository check
+        run: npm run check
+      - uses: actions/download-artifact@v4
+        with:
+          name: line13-previous-version
+          path: ${{ runner.temp }}/line13-input
+      # line13-pack-smoke.mjs must accept the five arguments below and write
+      # Node, Bun, and compiled packaged-runtime results plus the candidate tarball.
+      - name: Run packaged smoke outside the repository
+        shell: bash
+        run: |
+          node packages/coding-agent/scripts/line13-pack-smoke.mjs \
+            --head-sha "$EXPECTED_HEAD" \
+            --platform "$PLATFORM" \
+            --work-root "$RUNNER_TEMP/line13-pack-work-$PLATFORM" \
+            --candidate-tarball-out "$RUNNER_TEMP/line13-pack/aos-agent.tgz" \
+            --out "$RUNNER_TEMP/line13-evidence/$PLATFORM/package-smoke.json"
+      - name: Run previous-release migration and restart harness
+        shell: bash
+        run: |
+          node packages/coding-agent/scripts/line13-upgrade.mjs run \
+            --head-sha "$EXPECTED_HEAD" \
+            --platform "$PLATFORM" \
+            --previous-version-file "$RUNNER_TEMP/line13-input/previous-version.json" \
+            --candidate-spec "$RUNNER_TEMP/line13-pack/aos-agent.tgz" \
+            --previous-state packages/coding-agent/test/fixtures/line13-upgrade/previous-state.json \
+            --work-root "$RUNNER_TEMP/line13-upgrade-$PLATFORM" \
+            --out "$RUNNER_TEMP/line13-evidence/$PLATFORM/upgrade.json"
+      - name: Run deterministic bounded soak
+        shell: bash
+        run: |
+          node packages/coding-agent/scripts/line13-soak.mjs \
+            --head-sha "$EXPECTED_HEAD" \
+            --platform "$PLATFORM" \
+            --iterations 224 \
+            --plateau-window 28 \
+            --out "$RUNNER_TEMP/line13-evidence/$PLATFORM/soak.json"
+      - name: Record fake structural connector evidence
+        shell: bash
+        run: |
+          node packages/coding-agent/scripts/line13-certification.mjs structural \
+            --head-sha "$EXPECTED_HEAD" \
+            --platform "$PLATFORM" \
+            --out "$RUNNER_TEMP/line13-evidence/$PLATFORM/certifications-structural.json"
+      - name: Verify head again and record native checks
+        shell: bash
+        run: |
+          checked_out="$(git rev-parse HEAD)"
+          test "$checked_out" = "$EXPECTED_HEAD"
+          test "$(cat "$RUNNER_TEMP/line13-start-head")" = "$checked_out"
+          node scripts/verify-line13-evidence.mjs --record-job \
+            --expected-head "$EXPECTED_HEAD" \
+            --platform "$PLATFORM" \
+            --checked-out-start "$checked_out" \
+            --checked-out-final "$checked_out" \
+            --state passed \
+            --check q10.scheduler-host-credential-recovery \
+            --check q13.activation-readiness-status \
+            --check q14.control-state-session-scope \
+            --check q15.shutdown-supervision-protocol \
+            --check q16.gateway-provenance \
+            --check q17.packaged-cross-platform-upgrade \
+            --check q18.runtime-limits-retry-soak \
+            --check repository.npm-run-check \
+            --out "$RUNNER_TEMP/line13-evidence/$PLATFORM/native-job.json"
+      - uses: actions/upload-artifact@v4
+        if: ${{ success() }}
+        with:
+          name: line13-native-${{ matrix.platform }}-${{ inputs.head_sha }}
+          path: ${{ runner.temp }}/line13-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-exact-head:
+    needs: [resolve-previous, native]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPECTED_HEAD: ${{ inputs.head_sha }}
+      RESOLVE_RESULT: ${{ needs.resolve-previous.result }}
+      NATIVE_RESULT: ${{ needs.native.result }}
+    steps:
+      - name: Require successful prerequisite jobs
+        shell: bash
+        run: |
+          test "$RESOLVE_RESULT" = success
+          test "$NATIVE_RESULT" = success
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify exact checkout
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Install without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: line13-native-*-${{ inputs.head_sha }}
+          path: ${{ runner.temp }}/line13-records
+          merge-multiple: true
+      - name: Record the final known-gap count
+        shell: bash
+        run: |
+          node packages/coding-agent/scripts/line13-known-gap-count.mjs \
+            --head-sha "$EXPECTED_HEAD" \
+            --out "$RUNNER_TEMP/line13-records/known-gaps.json"
+      - name: Record absent authorized product certification
+        shell: bash
+        run: |
+          node packages/coding-agent/scripts/line13-certification.mjs absent \
+            --head-sha "$EXPECTED_HEAD" \
+            --state not_run \
+            --reason-code authorized_run_not_provided \
+            --out "$RUNNER_TEMP/line13-records/certifications-real.json"
+      - name: Assemble and verify one exact-head manifest
+        shell: bash
+        run: |
+          node scripts/verify-line13-evidence.mjs \
+            --records-dir "$RUNNER_TEMP/line13-records" \
+            --expected-head "$EXPECTED_HEAD" \
+            --out "$RUNNER_TEMP/line13-final/manifest.json"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          node scripts/verify-line13-evidence.mjs \
+            --manifest "$RUNNER_TEMP/line13-final/manifest.json" \
+            --expected-head "$EXPECTED_HEAD"
+      - uses: actions/upload-artifact@v4
+        if: ${{ success() }}
+        with:
+          name: line13-final-${{ inputs.head_sha }}
+          path: ${{ runner.temp }}/line13-final/manifest.json
+          if-no-files-found: error
+          retention-days: 30
