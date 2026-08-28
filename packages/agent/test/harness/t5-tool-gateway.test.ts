@@ -21,7 +21,14 @@ const request = {
 };
 
 function route(providerId: string, toolName = "read", revision = 1): ToolGatewayRoute {
-	return { kind: "local", namespace: "mcp-server", toolName, providerId, revision };
+	return {
+		kind: "local",
+		namespace: "mcp-server",
+		toolName,
+		providerId,
+		revision,
+		operation: { resource: "filesystem.read", effects: ["read"] },
+	};
 }
 
 function success(toolCallId: string, toolName: string) {
@@ -77,6 +84,29 @@ describe("T5 immutable Tool Gateway catalog", () => {
 		await runtimeGateway.dispose();
 	});
 
+	it("rejects missing, unknown, and underdeclared route operation contracts", () => {
+		const invalidRoutes = [
+			{ kind: "local", namespace: "mcp-server", toolName: "persist", providerId: "provider-invalid", revision: 1 },
+			{ ...route("provider-invalid"), operation: { resource: "capability.invoke", effects: [] } },
+			{
+				...route("provider-invalid"),
+				operation: { resource: "process.spawn", effects: ["command"], requiresSandbox: true },
+			},
+		] as unknown as ToolGatewayRoute[];
+		for (const [index, invalidRoute] of invalidRoutes.entries()) {
+			const provider = createLocalToolGatewayProvider({
+				providerId: "provider-invalid",
+				revision: 1,
+				routes: [invalidRoute],
+				invoke: async (value) => success(value.toolCallId, value.toolName),
+			});
+			expect(buildToolGatewayCatalog({ gatewayId: `gateway-invalid-${index}`, providers: [provider] })).toMatchObject({
+				ok: false,
+				error: { code: "tool_gateway_catalog_invalid" },
+			});
+		}
+	});
+
 	it("does not publish invalid startup or reload candidates", async () => {
 		const provider = createLocalToolGatewayProvider({
 			providerId: "provider-1",
@@ -111,11 +141,15 @@ describe("T5 immutable Tool Gateway catalog", () => {
 		expect(Object.isFrozen(snapshot.providers[0])).toBe(true);
 		expect(Object.isFrozen(snapshot.routes)).toBe(true);
 		expect(Object.isFrozen(snapshot.routes[0])).toBe(true);
+		expect(Object.isFrozen(snapshot.routes[0]?.operation)).toBe(true);
+		expect(Object.isFrozen(snapshot.routes[0]?.operation.effects)).toBe(true);
 		expect(snapshot.providers[0]).toMatchObject({ providerId: "provider-1", kind: "local", revision: 1 });
 
-		const mutableSourceRoute = sourceRoute as unknown as { toolName: string };
+		const mutableSourceRoute = sourceRoute as unknown as { toolName: string; operation: { effects: string[] } };
 		mutableSourceRoute.toolName = "changed";
+		mutableSourceRoute.operation.effects[0] = "write";
 		expect(snapshot.routes[0]?.toolName).toBe("read");
+		expect(snapshot.routes[0]?.operation.effects).toEqual(["read"]);
 		const mutableSnapshotRoute = snapshot.routes[0] as unknown as { toolName: string };
 		expect(() => {
 			mutableSnapshotRoute.toolName = "changed";
@@ -157,7 +191,14 @@ describe("T5 immutable Tool Gateway catalog", () => {
 		const providerThrow = createSandboxOperationToolGatewayProvider({
 			providerId: sandbox.providerId,
 			revision: 1,
-			routes: [{ kind: "sandbox", namespace: "mcp-server", toolName: "read", providerId: sandbox.providerId, revision: 1 }],
+			routes: [{
+				kind: "sandbox",
+				namespace: "mcp-server",
+				toolName: "read",
+				providerId: sandbox.providerId,
+				revision: 1,
+				operation: { resource: "filesystem.read", effects: ["read"] },
+			}],
 			sandbox,
 		});
 		const providerGateway = createFoundationToolGateway({ gatewayId: "gateway-provider", providers: [providerThrow] });

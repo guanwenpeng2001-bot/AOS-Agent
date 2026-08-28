@@ -506,7 +506,7 @@ describe("ProductPromptIngressV1", () => {
 			streamFunction,
 			workerSandbox: {
 				provider: workerProvider(),
-				routes: [{ kind: "sandbox", toolName: "worker-read", providerId: "test.operation-worker", revision: 1 }],
+				routes: [{ kind: "sandbox", toolName: "worker-read", providerId: "test.operation-worker", revision: 1, operation: { resource: "filesystem.read", effects: ["read"] } }],
 			},
 		});
 		if (!("operationToolGateway" in created)) throw new Error("Expected Worker ToolGateway composition");

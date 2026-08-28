@@ -6,6 +6,7 @@ import {
 	Result,
 	cloneDeepFrozen,
 	fingerprintFoundationValue,
+	isToolGatewayRoute,
 	validateAgentBinding,
 	validateToolExecutionResult,
 	validateToolGatewayRequest,
@@ -266,17 +267,7 @@ function routeCatalogForGateway(
 	const routes: ToolGatewayRoute[] = [];
 	const exactRoutes = new Set<string>();
 	for (const route of routeCatalog) {
-		if (
-			!isConnectorRecord(route) ||
-			(route.kind !== "local" && route.kind !== "mcp" && route.kind !== "sandbox" && route.kind !== "external") ||
-			typeof route.toolName !== "string" ||
-			route.toolName.length === 0 ||
-			(route.namespace !== undefined && (typeof route.namespace !== "string" || route.namespace.length === 0)) ||
-			typeof route.providerId !== "string" ||
-			route.providerId.length === 0 ||
-			!Number.isSafeInteger(route.revision) ||
-			(route.revision as number) < 1
-		) {
+		if (!isToolGatewayRoute(route)) {
 			return Result.err(connectorRegistryError("External connector Tool Gateway catalog is invalid."));
 		}
 		const key = JSON.stringify([route.namespace ?? "", route.toolName]);
@@ -289,7 +280,12 @@ function routeCatalogForGateway(
 			toolName: route.toolName,
 			...(route.namespace === undefined ? {} : { namespace: route.namespace }),
 			providerId: route.providerId,
-			revision: route.revision as number,
+			revision: route.revision,
+			operation: {
+				resource: route.operation.resource,
+				effects: [...route.operation.effects],
+				...(route.operation.requiresSandbox === true ? { requiresSandbox: true } : {}),
+			},
 		});
 	}
 	const frozenRoutes = cloneDeepFrozen(routes);
@@ -304,28 +300,18 @@ function routeCatalogForGateway(
 	});
 }
 
-function routeNames(route: ToolGatewayRoute): readonly string[] {
-	const workspaceLeaf = route.namespace === "workspace"
-		? route.toolName.startsWith("workspace.")
-			? route.toolName.slice("workspace.".length)
-			: route.toolName
-		: undefined;
-	return Object.freeze([
-		route.toolName,
-		...(route.namespace === undefined ? [] : [`${route.namespace}.${route.toolName}`]),
-		...(workspaceLeaf === undefined ? [] : [workspaceLeaf]),
-		...(route.kind === "mcp" && route.namespace !== undefined
-			? [`mcp__${route.namespace}__${route.toolName}`]
-			: []),
-	]);
+function routeBindingName(route: ToolGatewayRoute): string | undefined {
+	if (route.kind !== "mcp") return route.toolName;
+	return route.namespace === undefined ? undefined : `mcp__${route.namespace}__${route.toolName}`;
 }
 
 function routeSelectedByBinding(route: ToolGatewayRoute, binding: AgentBinding): boolean {
 	const selector = binding.capabilitySelector;
-	const names = routeNames(route);
+	const name = routeBindingName(route);
+	if (name === undefined) return false;
 	if (selector.policy === "none") return false;
-	if (selector.policy === "named" && !(selector.named ?? []).some((name) => names.includes(name))) return false;
-	if (selector.policy === "except" && (selector.named ?? []).some((name) => names.includes(name))) return false;
+	if (selector.policy === "named" && !(selector.named ?? []).includes(name)) return false;
+	if (selector.policy === "except" && (selector.named ?? []).includes(name)) return false;
 	if (route.kind !== "mcp") return true;
 	if (route.namespace === undefined) return false;
 	const server = binding.mcpSelection.servers.find((candidate) => candidate.serverId === route.namespace);
@@ -334,37 +320,39 @@ function routeSelectedByBinding(route: ToolGatewayRoute, binding: AgentBinding):
 }
 
 function routeSelectedByPolicy(route: ToolGatewayRoute, policy: PolicyBinding): boolean {
-	const identity = route.toolName.toLowerCase();
-	const leaf = identity.slice(identity.lastIndexOf(".") + 1);
+	if (!isToolGatewayRoute(route)) return false;
 	const workspaceAllowed = (access: "read" | "write"): boolean =>
 		policy.constraints.workspace[access].includes("workspace") &&
 		!policy.constraints.workspace.deny.includes("workspace");
-	if (["read", "find", "grep", "search"].includes(leaf)) return workspaceAllowed("read");
-	if (["write", "create", "edit", "patch", "delete", "remove", "unlink", "move", "rename"].includes(leaf)) {
-		return workspaceAllowed("write");
+	const effects = route.operation.effects;
+	const requiresWrite = effects.some((effect) => ["write", "create", "delete", "move", "commit", "merge"].includes(effect));
+	const requiresProcess = route.operation.resource === "process.spawn" || effects.includes("command");
+	const requiresNetwork = route.operation.resource === "network.connect" || effects.some((effect) => effect === "network" || effect === "push");
+	if (
+		(["filesystem.read", "filesystem.find", "filesystem.grep"].includes(route.operation.resource) && !workspaceAllowed("read")) ||
+		(route.operation.resource === "filesystem.write" && !workspaceAllowed("write")) ||
+		(requiresWrite && !workspaceAllowed("write")) ||
+		(requiresProcess && policy.constraints.process.action === "deny") ||
+		(requiresNetwork && policy.constraints.network.action === "deny")
+	) return false;
+	if (route.operation.requiresSandbox === true) {
+		if (
+			route.kind !== "sandbox" ||
+			policy.sandboxProviderId !== route.providerId ||
+			policy.sandboxStatus !== "ready" ||
+			(requiresWrite && !policy.sandboxCapabilities.filesystem) ||
+			(requiresProcess && !policy.sandboxCapabilities.process) ||
+			(requiresNetwork && !policy.sandboxCapabilities.network)
+		) return false;
 	}
-	if (["bash", "shell", "command", "exec", "run", "spawn"].includes(leaf)) {
-		return (
-			route.kind === "sandbox" &&
-			policy.sandboxProviderId === route.providerId &&
-			policy.sandboxStatus === "ready" &&
-			policy.sandboxCapabilities.filesystem &&
-			policy.sandboxCapabilities.process &&
-			policy.sandboxCapabilities.network &&
-			workspaceAllowed("write") &&
-			policy.constraints.process.action !== "deny" &&
-			policy.constraints.network.action !== "deny"
-		);
-	}
-	if (route.namespace === "git" || identity.startsWith("git.")) {
-		if (["status", "diff", "show", "log", "blame"].includes(leaf)) return workspaceAllowed("read");
-		if (leaf === "push") return policy.constraints.network.action !== "deny";
-		return workspaceAllowed("write") && policy.constraints.process.action !== "deny";
-	}
-	if (["connect", "request", "fetch", "download", "upload"].includes(leaf) || identity.startsWith("network.")) {
-		return policy.constraints.network.action !== "deny";
-	}
-	return true;
+	return [
+		"filesystem.read",
+		"filesystem.write",
+		"filesystem.find",
+		"filesystem.grep",
+		"process.spawn",
+		"network.connect",
+	].includes(route.operation.resource);
 }
 
 function scopedToolGatewayConsumer(

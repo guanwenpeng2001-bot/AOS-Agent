@@ -19,6 +19,7 @@ import {
 	type Result as ResultValue,
 	type ToolGatewayRequest,
 	type ToolGatewayProvider,
+	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
@@ -516,6 +517,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 						toolName: "workspace.read",
 						providerId: PROVIDER_ID,
 						revision: 1,
+						operation: { resource: "filesystem.read", effects: ["read"] },
 					}],
 					invoke: async (request) => {
 						providerEffects += 1;
@@ -764,6 +766,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 						namespace: "workspace",
 						providerId: builtinProviderId,
 						revision: 1,
+						operation: { resource: "filesystem.read", effects: ["read"] },
 					}],
 					invoke: async (request) => {
 						gateway.count += 1;
@@ -857,13 +860,24 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			providers: [createLocalToolGatewayProvider({
 				providerId,
 				revision: 4,
-				routes: ["workspace.read", "workspace.write"].map((toolName) => ({
-					kind: "local" as const,
-					namespace: "workspace",
-					toolName,
-					providerId,
-					revision: 4,
-				})),
+				routes: [
+					{
+						kind: "local" as const,
+						namespace: "workspace",
+						toolName: "workspace.read",
+						providerId,
+						revision: 4,
+						operation: { resource: "filesystem.read" as const, effects: ["read" as const] },
+					},
+					{
+						kind: "local" as const,
+						namespace: "workspace",
+						toolName: "workspace.write",
+						providerId,
+						revision: 4,
+						operation: { resource: "filesystem.write" as const, effects: ["write" as const, "create" as const] },
+					},
+				],
 				invoke: async (request) => {
 					providerEffects += 1;
 					return Result.ok({
@@ -905,13 +919,24 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			providerId,
 			kind: "mcp",
 			revision: 7,
-			routes: ["list", "delete"].map((toolName) => ({
-				kind: "mcp" as const,
-				namespace: "docs",
-				toolName,
-				providerId,
-				revision: 7,
-			})),
+			routes: [
+				{
+					kind: "mcp" as const,
+					namespace: "docs",
+					toolName: "list",
+					providerId,
+					revision: 7,
+					operation: { resource: "filesystem.read" as const, effects: ["read" as const] },
+				},
+				{
+					kind: "mcp" as const,
+					namespace: "docs",
+					toolName: "delete",
+					providerId,
+					revision: 7,
+					operation: { resource: "filesystem.write" as const, effects: ["delete" as const] },
+				},
+			],
 			capabilities: async () => [],
 			execute: async (request) => {
 				providerEffects += 1;
@@ -929,11 +954,11 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			gatewayId: "zeta-scoped-mcp-gateway",
 			providers: [mcpProvider],
 		});
-		const fixture = createSupportedConnector({
+		const selectedFixture = createSupportedConnector({
 			toolGateway: true,
 			driver: new ThirdPartyZetaDriver({
 				emitToolGatewayRequest: true,
-				toolGatewayRequest: { toolName: "delete", namespace: "docs" },
+				toolGatewayRequest: { toolName: "list", namespace: "docs" },
 			}),
 		});
 		const capabilityBinding: CapabilityBinding = {
@@ -955,25 +980,53 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			decisionSummary: { allowed: 2, awaitingApproval: 0, denied: 1 },
 			toolAllowlist: ["mcp__docs__list"],
 		};
-		const registry = createExternalConnectorRegistry({ toolGateway: canonicalToolGateway });
-		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const selectedRegistry = createExternalConnectorRegistry({ toolGateway: canonicalToolGateway });
+		expect(await selectedRegistry.register(registration(selectedFixture))).toMatchObject({ ok: true });
+		const selected = await executeExternalConnectorProductRun(
+			productInput(selectedFixture, selectedRegistry, "run-zeta-exact-mcp-selected", capabilityBinding),
+		);
+		expect(selected.runReceipt.terminalStatus).toBe("completed");
+		expect(providerEffects).toBe(1);
+		await selectedRegistry.dispose();
 
+		const deniedFixture = createSupportedConnector({
+			toolGateway: true,
+			driver: new ThirdPartyZetaDriver({
+				emitToolGatewayRequest: true,
+				toolGatewayRequest: { toolName: "delete", namespace: "docs" },
+			}),
+		});
+		const deniedRegistry = createExternalConnectorRegistry({ toolGateway: canonicalToolGateway });
+		expect(await deniedRegistry.register(registration(deniedFixture))).toMatchObject({ ok: true });
 		const execution = await executeExternalConnectorProductRun(
-			productInput(fixture, registry, "run-zeta-exact-mcp-trim", capabilityBinding),
+			productInput(deniedFixture, deniedRegistry, "run-zeta-exact-mcp-trim", capabilityBinding),
 		);
 
 		expect(execution).toMatchObject({
 			runReceipt: { terminalStatus: "failed", terminalError: { code: "external_tool_route_denied" } },
 			attemptReceipt: { status: "failed", error: { code: "external_tool_route_denied" } },
 		});
-		expect(providerEffects).toBe(0);
-		await registry.dispose();
+		expect(providerEffects).toBe(1);
+		await deniedRegistry.dispose();
 	});
 
-	it("fails a prepared Connector scope closed when the gateway provider revision changes", async () => {
+	it.each([
+		{
+			name: "provider revision",
+			revision: 2,
+			operation: { resource: "filesystem.read", effects: ["read"] },
+		},
+		{
+			name: "same-revision operation widening",
+			revision: 1,
+			operation: { resource: "filesystem.write", effects: ["write", "create"] },
+		},
+	] satisfies readonly { name: string; revision: number; operation: ToolGatewayRoute["operation"] }[])(
+		"fails a prepared Connector scope closed on $name",
+		async ({ revision: replacementRevision, operation: replacementOperation }) => {
 		let providerEffects = 0;
 		const providerId = "builtin.revision-tools";
-		const provider = (revision: number) => createLocalToolGatewayProvider({
+		const provider = (revision: number, operation: ToolGatewayRoute["operation"]) => createLocalToolGatewayProvider({
 			providerId,
 			revision,
 			routes: [{
@@ -982,6 +1035,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				toolName: "workspace.read",
 				providerId,
 				revision,
+				operation,
 			}],
 			invoke: async (request) => {
 				providerEffects += 1;
@@ -996,7 +1050,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		});
 		const canonicalToolGateway = createFoundationToolGateway({
 			gatewayId: "zeta-revision-gateway",
-			providers: [provider(1)],
+			providers: [provider(1, { resource: "filesystem.read", effects: ["read"] })],
 		});
 		const fixture = createSupportedConnector({
 			toolGateway: true,
@@ -1008,7 +1062,9 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			productInput(fixture, registry, "run-zeta-revision-mismatch"),
 		);
 		const prepared = await persistExternalConnectorProductRunAfterAcceptance(admission);
-		expect(canonicalToolGateway.reload({ providers: [provider(2)] })).toMatchObject({ ok: true });
+		expect(canonicalToolGateway.reload({
+			providers: [provider(replacementRevision, replacementOperation)],
+		})).toMatchObject({ ok: true });
 
 		const execution = await executePreparedExternalConnectorProductRun(prepared);
 
@@ -1018,7 +1074,8 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		});
 		expect(providerEffects).toBe(0);
 		await registry.dispose();
-	});
+		},
+	);
 
 	it.each(["route", "policy"] as const)(
 		"projects Tool Gateway %s denial without collapsing it to unknown side effect",
@@ -1037,6 +1094,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 								namespace: "workspace",
 								providerId: PROVIDER_ID,
 								revision: 1,
+								operation: { resource: "filesystem.read", effects: ["read"] },
 							},
 						],
 						invoke: async (request) => {

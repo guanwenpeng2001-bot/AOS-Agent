@@ -82,6 +82,7 @@ function gatewayRequest(toolName: string, originalArguments: ToolGatewayRequest[
 		schemaVersion: 1,
 		toolCallId: `tool-call-${toolName}`,
 		toolName,
+		namespace: "workspace",
 		originalArguments,
 		context: {
 			schemaVersion: 1,
@@ -95,8 +96,15 @@ function gatewayRequest(toolName: string, originalArguments: ToolGatewayRequest[
 	};
 }
 
-function gatewayRoute(kind: ToolGatewayRoute["kind"], toolName: string, providerId = "product-local"): ToolGatewayRoute {
-	return { kind, namespace: "workspace", toolName, providerId, revision: 1 };
+const RAW_COMMAND_EFFECTS = ["write", "create", "delete", "move", "command", "network", "commit", "push", "merge"] as const;
+
+function gatewayRoute(
+	kind: ToolGatewayRoute["kind"],
+	toolName: string,
+	operation: ToolGatewayRoute["operation"],
+	providerId = "product-local",
+): ToolGatewayRoute {
+	return { kind, namespace: "workspace", toolName, providerId, revision: 1, operation };
 }
 
 describe("canonical protected path classification", () => {
@@ -111,7 +119,10 @@ describe("canonical protected path classification", () => {
 		try {
 			const classify = (targetPath: string) => classifyExternalToolPolicyOperation({
 				request: gatewayRequest("workspace.write", { path: targetPath }),
-				route: gatewayRoute("local", "workspace.write"),
+				route: gatewayRoute("local", "workspace.write", {
+					resource: "filesystem.write",
+					effects: ["write", "create"],
+				}),
 				cwd: workspace,
 				roots: { workspace },
 			});
@@ -121,10 +132,44 @@ describe("canonical protected path classification", () => {
 			await expect(classify("escape/nonexistent.txt")).rejects.toMatchObject({ code: "workspace_boundary_violation" });
 			await expect(classify(join(workspace, "existing", "new", "file.txt"))).resolves.toMatchObject({
 				canonicalPath: "existing/new/file.txt",
-				effects: ["create"],
+				effects: ["write", "create"],
 			});
 		} finally {
 			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("uses explicit effects for renamed mutating routes and fails closed without them", async () => {
+		const workspace = await mkdtemp(join(tmpdir(), "aos-renamed-route-"));
+		try {
+			const operation = await classifyExternalToolPolicyOperation({
+				request: gatewayRequest("workspace.persist", { path: ".config/settings.json" }),
+				route: gatewayRoute("mcp", "workspace.persist", {
+					resource: "filesystem.write",
+					effects: ["write", "create"],
+				}),
+				cwd: workspace,
+				roots: { workspace },
+			});
+			expect(operation).toMatchObject({
+				resource: "filesystem.write",
+				effects: ["write", "create"],
+				canonicalPath: ".config/settings.json",
+			});
+			await expect(classifyExternalToolPolicyOperation({
+				request: gatewayRequest("workspace.persist", { path: ".config/settings.json" }),
+				route: {
+					kind: "mcp",
+					namespace: "workspace",
+					toolName: "workspace.persist",
+					providerId: "product-local",
+					revision: 1,
+				} as ToolGatewayRoute,
+				cwd: workspace,
+				roots: { workspace },
+			})).rejects.toMatchObject({ code: "protected_path_invalid" });
+		} finally {
+			await rm(workspace, { recursive: true, force: true });
 		}
 	});
 
@@ -211,10 +256,14 @@ describe("raw Tool Gateway command policy", () => {
 	it("classifies every raw command as potentially mutating and requires the exact ready sandbox", async () => {
 		const workspace = await mkdtemp(join(tmpdir(), "aos-product-command-"));
 		try {
-			const request = gatewayRequest("workspace.bash", { command: "git status" });
+			const request = gatewayRequest("renamed-command", { command: "git status" });
 			const localOperation = await classifyExternalToolPolicyOperation({
 				request,
-				route: gatewayRoute("local", "workspace.bash"),
+				route: gatewayRoute("local", "renamed-command", {
+					resource: "process.spawn",
+					effects: RAW_COMMAND_EFFECTS,
+					requiresSandbox: true,
+				}),
 				cwd: workspace,
 				roots: { workspace },
 			});
@@ -260,12 +309,41 @@ describe("raw Tool Gateway command policy", () => {
 
 			const sandboxOperation = await classifyExternalToolPolicyOperation({
 				request,
-				route: gatewayRoute("sandbox", "workspace.bash", "product-sandbox"),
+				route: gatewayRoute("sandbox", "renamed-command", {
+					resource: "process.spawn",
+					effects: RAW_COMMAND_EFFECTS,
+					requiresSandbox: true,
+				}, "product-sandbox"),
 				cwd: workspace,
 				roots: { workspace },
 			});
 			const allowed = resolveRaw(sandboxOperation);
 			expect(allowed.ok && allowed.decision).toMatchObject({ outcome: "allow" });
+
+			const reviewed = resolveExecutionPolicy({
+				profiles: { [profile.id]: { ...profile, enforcement: "sandbox", sandboxProvider: "product-sandbox" } },
+				defaultProfile: profile.id,
+				runId: "run-product-command-review",
+				workspaceIdentity: "workspace-product-command",
+				createdAt: "2026-08-28T01:00:00.000Z",
+				operation: sandboxOperation,
+				sandbox: {
+					providerConfigured: true,
+					providerId: "product-sandbox",
+					providerStatus: "ready",
+					providerCapabilities: {
+						filesystem: true,
+						process: true,
+						network: true,
+						credentialIsolation: true,
+					},
+				},
+			});
+			expect(reviewed.ok && reviewed.decision).toMatchObject({
+				outcome: "deny",
+				reasonCode: "policy_review_required",
+				effects: RAW_COMMAND_EFFECTS,
+			});
 		} finally {
 			await rm(workspace, { recursive: true, force: true });
 		}

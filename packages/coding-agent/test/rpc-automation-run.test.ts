@@ -1129,9 +1129,10 @@ async function createRuntimeHost(options: {
 							{
 								kind: "local",
 								namespace: "workspace",
-								toolName: "workspace.read",
+								toolName: "read",
 								providerId: RPC_COMPOSITION_TOOL_PROVIDER_ID,
 								revision: 1,
+								operation: { resource: "filesystem.read", effects: ["read"] },
 							},
 						],
 						invoke: async (request) => {
@@ -2038,7 +2039,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				connectorToolGatewayRequest: {
 					schemaVersion: 1,
 					toolCallId: "rpc-tool-call",
-					toolName: "workspace.read",
+					toolName: "read",
 					namespace: "workspace",
 					originalArguments: { path: "docs/evidence.txt", mode: "metadata" },
 					idempotencyKey: "rpc-tool-call-once",
@@ -2081,7 +2082,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const expectedRequest: ToolGatewayRequest = {
 				schemaVersion: 1,
 				toolCallId: "rpc-tool-call",
-				toolName: "workspace.read",
+				toolName: "read",
 				namespace: "workspace",
 				originalArguments: { path: "docs/evidence.txt", mode: "metadata" },
 				idempotencyKey: "rpc-tool-call-once",
@@ -2101,7 +2102,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				{
 					schemaVersion: 1,
 					toolCallId: "rpc-tool-call",
-					toolName: "workspace.read",
+					toolName: "read",
 					ok: true,
 					sideEffectState: "none",
 					toolReceiptRef: "rpc-tool-receipt-rpc-tool-call",
@@ -2178,7 +2179,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const gatewayRequest: Omit<ToolGatewayRequest, "context"> = {
 				schemaVersion: 1,
 				toolCallId: "rpc-composition-crash-call",
-				toolName: "workspace.read",
+				toolName: "read",
 				namespace: "workspace",
 				originalArguments: { path: "docs/composition.txt" },
 				idempotencyKey: "rpc-composition-crash-once",
@@ -2432,7 +2433,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				connectorToolGatewayRequest: {
 					schemaVersion: 1,
 					toolCallId: "rpc-mismatched-tool-call",
-					toolName: "workspace.read",
+					toolName: "read",
 					originalArguments: { path: "docs/evidence.txt" },
 				},
 				connectorToolGatewayAttemptId: "wrong-attempt",
@@ -2477,7 +2478,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				connectorToolGatewayRequest: {
 					schemaVersion: 1,
 					toolCallId: "rpc-callback-failure-tool-call",
-					toolName: "workspace.read",
+					toolName: "read",
 					namespace: "workspace",
 					originalArguments: { path: "docs/evidence.txt" },
 					idempotencyKey: "rpc-callback-failure-once",
@@ -2719,7 +2720,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				toolGatewayRequest: {
 					schemaVersion: 1,
 					toolCallId: "unavailable-tool-call",
-					toolName: "workspace.read",
+					toolName: "read",
 					originalArguments: {},
 				},
 			} as RpcCommand);
@@ -3575,7 +3576,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			const gatewayRequest = {
 				schemaVersion: 1 as const,
 				toolCallId: `tool-${testCase.cutpoint}`,
-				toolName: "workspace.read",
+				toolName: "read",
 				namespace: "workspace",
 				originalArguments: { path: "vendor-raw-canary", mode: "metadata" },
 			};

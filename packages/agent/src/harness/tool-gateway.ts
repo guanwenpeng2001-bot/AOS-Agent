@@ -20,6 +20,39 @@ import { Result } from "./result.ts";
 export type ToolGatewayRouteKind = "local" | "mcp" | "sandbox" | "external";
 const TOOL_GATEWAY_ROUTE_KINDS: readonly ToolGatewayRouteKind[] = ["local", "mcp", "sandbox", "external"];
 
+export const TOOL_GATEWAY_ROUTE_RESOURCES = Object.freeze([
+	"filesystem.read",
+	"filesystem.write",
+	"filesystem.find",
+	"filesystem.grep",
+	"process.spawn",
+	"network.connect",
+] as const);
+export type ToolGatewayRouteResource = (typeof TOOL_GATEWAY_ROUTE_RESOURCES)[number];
+
+export const TOOL_GATEWAY_ROUTE_EFFECTS = Object.freeze([
+	"read",
+	"write",
+	"create",
+	"delete",
+	"move",
+	"command",
+	"network",
+	"commit",
+	"push",
+	"merge",
+] as const);
+export type ToolGatewayRouteEffect = (typeof TOOL_GATEWAY_ROUTE_EFFECTS)[number];
+
+/** Policy identity frozen with a route; provider names never determine effects. */
+export interface ToolGatewayRouteOperation {
+	readonly resource: ToolGatewayRouteResource;
+	/** Complete potential effect set for one invocation of this route. */
+	readonly effects: readonly ToolGatewayRouteEffect[];
+	/** Required for unstructured operations whose effects cannot be narrowed per invocation. */
+	readonly requiresSandbox?: true;
+}
+
 /** Route identity of one tool exposed by one gateway provider. */
 export interface ToolGatewayRoute {
 	readonly kind: ToolGatewayRouteKind;
@@ -29,6 +62,7 @@ export interface ToolGatewayRoute {
 	readonly providerId: string;
 	/** Tool revision frozen on this route. */
 	readonly revision: number;
+	readonly operation: ToolGatewayRouteOperation;
 }
 
 /** Immutable route value published by a Tool Gateway catalog. */
@@ -92,12 +126,77 @@ function isPositiveRevision(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+const TOOL_GATEWAY_ROUTE_KEYS = new Set(["kind", "toolName", "namespace", "providerId", "revision", "operation"]);
+const TOOL_GATEWAY_ROUTE_OPERATION_KEYS = new Set(["resource", "effects", "requiresSandbox"]);
+const FILESYSTEM_WRITE_EFFECTS: ReadonlySet<ToolGatewayRouteEffect> = new Set(["write", "create", "delete", "move"]);
+const NETWORK_EFFECTS: ReadonlySet<ToolGatewayRouteEffect> = new Set(["network", "push"]);
+const RAW_COMMAND_EFFECTS: ReadonlySet<ToolGatewayRouteEffect> = new Set([
+	"write",
+	"create",
+	"delete",
+	"move",
+	"command",
+	"network",
+	"commit",
+	"push",
+	"merge",
+]);
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+	return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isToolGatewayRouteEffect(value: unknown): value is ToolGatewayRouteEffect {
+	return typeof value === "string" && (TOOL_GATEWAY_ROUTE_EFFECTS as readonly string[]).includes(value);
+}
+
+/** Runtime guard used at every catalog boundary before a route becomes visible. */
+export function isToolGatewayRoute(value: unknown): value is ToolGatewayRoute {
+	if (!isRecord(value) || !hasOnlyKeys(value, TOOL_GATEWAY_ROUTE_KEYS) || !Object.hasOwn(value, "operation")) return false;
+	const operation = value.operation;
+	if (
+		!isToolGatewayRouteKind(value.kind) ||
+		typeof value.toolName !== "string" ||
+		value.toolName.length === 0 ||
+		(value.namespace !== undefined && (typeof value.namespace !== "string" || value.namespace.length === 0)) ||
+		typeof value.providerId !== "string" ||
+		value.providerId.length === 0 ||
+		!isPositiveRevision(value.revision) ||
+		!isRecord(operation) ||
+		!hasOnlyKeys(operation, TOOL_GATEWAY_ROUTE_OPERATION_KEYS) ||
+		!(TOOL_GATEWAY_ROUTE_RESOURCES as readonly unknown[]).includes(operation.resource) ||
+		!Array.isArray(operation.effects) ||
+		operation.effects.length === 0 ||
+		!operation.effects.every(isToolGatewayRouteEffect) ||
+		new Set(operation.effects).size !== operation.effects.length ||
+		(operation.requiresSandbox !== undefined && operation.requiresSandbox !== true)
+	) return false;
+	const effects = operation.effects as readonly ToolGatewayRouteEffect[];
+	switch (operation.resource) {
+		case "filesystem.read":
+		case "filesystem.find":
+		case "filesystem.grep":
+			return operation.requiresSandbox === undefined && effects.length === 1 && effects[0] === "read";
+		case "filesystem.write":
+			return operation.requiresSandbox === undefined && effects.every((effect) => FILESYSTEM_WRITE_EFFECTS.has(effect));
+		case "process.spawn":
+			return operation.requiresSandbox === true && effects.length === RAW_COMMAND_EFFECTS.size && effects.every((effect) => RAW_COMMAND_EFFECTS.has(effect));
+		case "network.connect":
+			return operation.requiresSandbox === undefined && effects.includes("network") && effects.every((effect) => NETWORK_EFFECTS.has(effect));
+		default:
+			return false;
+	}
+}
+
 function routeKey(route: Pick<ToolGatewayRoute, "namespace" | "toolName">): string {
 	return canonicalFoundationJson([route.namespace ?? "", route.toolName]);
 }
 
 function freezeRouteSnapshots(routes: readonly ToolGatewayRoute[]): readonly ToolGatewayRouteSnapshot[] {
-	return Object.freeze(routes.map((route) => Object.freeze({ ...route })));
+	return Object.freeze(routes.map((route) => Object.freeze({
+		...route,
+		operation: Object.freeze({ ...route.operation, effects: Object.freeze([...route.operation.effects]) }),
+	})));
 }
 
 /** Defensively clone and freeze a catalog before it is made visible to consumers. */
@@ -153,16 +252,9 @@ function buildToolGatewayCatalogStateUnsafe(options: FoundationToolGatewayOption
 	for (const candidate of providers) {
 		const provider = candidate as unknown as ToolGatewayProvider;
 		for (const routeCandidate of provider.routes) {
-			if (!isRecord(routeCandidate)) return Result.err(catalogInvalid("Tool Gateway route catalog is invalid"));
+			if (!isToolGatewayRoute(routeCandidate)) return Result.err(catalogInvalid("Tool Gateway route catalog is invalid"));
 			const route = routeCandidate as ToolGatewayRoute;
 			if (
-				!isToolGatewayRouteKind(route.kind) ||
-				typeof route.toolName !== "string" ||
-				route.toolName.length === 0 ||
-				(route.namespace !== undefined && (typeof route.namespace !== "string" || route.namespace.length === 0)) ||
-				typeof route.providerId !== "string" ||
-				route.providerId.length === 0 ||
-				!isPositiveRevision(route.revision) ||
 				route.providerId !== provider.providerId ||
 				route.kind !== provider.kind ||
 				route.revision !== provider.revision ||

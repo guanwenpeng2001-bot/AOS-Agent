@@ -145,13 +145,14 @@ function catalogProvider(
 	revision: number,
 	namespace: string,
 	toolName: string,
+	operation: ToolGatewayRoute["operation"],
 	routeRevision = revision,
 ): ToolGatewayProvider {
 	return {
 		kind,
 		providerId,
 		revision,
-		routes: [{ kind, providerId, revision: routeRevision, namespace, toolName }],
+		routes: [{ kind, providerId, revision: routeRevision, namespace, toolName, operation }],
 		capabilities: async () => [],
 		execute: async () => Result.err(new FoundationError("tool_guard_denied", "not exercised")),
 		dispose: async () => {},
@@ -737,16 +738,24 @@ describe("AgentRuntimeComposition", () => {
 				generation += 1;
 				return {
 					gatewayId: "composition-product-gateway",
-					builtinLocalProviders: [catalogProvider("local", "builtin-product", 1, "workspace", "workspace.read")],
+					builtinLocalProviders: [catalogProvider("local", "builtin-product", 1, "workspace", "workspace.read", {
+						resource: "filesystem.read",
+						effects: ["read"],
+					})],
 					mcpProviders: [catalogProvider(
 						"mcp",
 						"mcp-product",
 						2,
 						"docs",
 						"list",
+						{ resource: "filesystem.read", effects: ["read"] },
 						generation === 1 ? 2 : 1,
 					)],
-					sandboxProviders: [catalogProvider("sandbox", "sandbox-product", 3, "workspace", "workspace.bash")],
+					sandboxProviders: [catalogProvider("sandbox", "sandbox-product", 3, "workspace", "workspace.bash", {
+						resource: "process.spawn",
+						effects: ["write", "create", "delete", "move", "command", "network", "commit", "push", "merge"],
+						requiresSandbox: true,
+					})],
 				};
 			},
 		});
@@ -764,9 +773,9 @@ describe("AgentRuntimeComposition", () => {
 			const routes = catalogGateway.getRouteCatalog();
 			expect(Object.isFrozen(routes)).toBe(true);
 			expect(routes).toEqual([
-				{ kind: "local", providerId: "builtin-product", revision: 1, namespace: "workspace", toolName: "workspace.read" },
-				{ kind: "mcp", providerId: "mcp-product", revision: 2, namespace: "docs", toolName: "list" },
-				{ kind: "sandbox", providerId: "sandbox-product", revision: 3, namespace: "workspace", toolName: "workspace.bash" },
+				{ kind: "local", providerId: "builtin-product", revision: 1, namespace: "workspace", toolName: "workspace.read", operation: { resource: "filesystem.read", effects: ["read"] } },
+				{ kind: "mcp", providerId: "mcp-product", revision: 2, namespace: "docs", toolName: "list", operation: { resource: "filesystem.read", effects: ["read"] } },
+				{ kind: "sandbox", providerId: "sandbox-product", revision: 3, namespace: "workspace", toolName: "workspace.bash", operation: { resource: "process.spawn", effects: ["write", "create", "delete", "move", "command", "network", "commit", "push", "merge"], requiresSandbox: true } },
 			]);
 
 			await expect(runtime.newSession()).rejects.toMatchObject({ code: "tool_gateway_catalog_invalid" });

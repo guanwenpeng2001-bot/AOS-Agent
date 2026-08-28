@@ -153,7 +153,7 @@ class Line13CurrentDriver implements ExternalConnectorVendorDriver {
 								const gatewayRequest = (toolCallId: string, path: string): ToolGatewayRequest => ({
 									schemaVersion: 1,
 									toolCallId,
-									toolName: "workspace.read",
+									toolName: "read",
 									namespace: "workspace",
 									originalArguments: { path, mode: "metadata" },
 									idempotencyKey: `${toolCallId}-once`,
@@ -843,10 +843,11 @@ async function createCurrentConnectorFixture(toolGateway = false, crashDuringRea
 					routes: [
 						{
 							kind: "local",
-							toolName: "workspace.read",
+							toolName: "read",
 							namespace: "workspace",
 							providerId: snapshot.providerId,
 							revision: 1,
+							operation: { resource: "filesystem.read", effects: ["read"] },
 						},
 					],
 					invoke: invokeToolGateway,
@@ -1037,10 +1038,11 @@ async function createCanonicalCurrentConnectorFixture(crashDuringRead = false) {
 					routes: [
 						{
 							kind: "local",
-							toolName: "workspace.read",
+							toolName: "read",
 							namespace: "workspace",
 							providerId: snapshot.providerId,
 							revision: 1,
+							operation: { resource: "filesystem.read", effects: ["read"] },
 						},
 					],
 					invoke: async (request: ToolGatewayRequest): Promise<Result<ToolExecutionResult, FoundationError>> => {
@@ -1523,7 +1525,7 @@ export const line13KnownGapCasesAc01Ac08 = defineLine13KnownGapCaseShard({
 					const expectedRequest = (toolCallId: string, path: string): ToolGatewayRequest => ({
 						schemaVersion: 1,
 						toolCallId,
-						toolName: "workspace.read",
+						toolName: "read",
 						namespace: "workspace",
 						originalArguments: { path, mode: "metadata" },
 						idempotencyKey: `${toolCallId}-once`,
