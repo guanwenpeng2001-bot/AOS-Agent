@@ -9,6 +9,7 @@ import {
 } from "@aos-agent/agent-core";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import * as externalConnectorApi from "../src/external-connector.ts";
 import * as publicApi from "../src/index.ts";
 import {
 	isAutomationErrorCode,
@@ -241,6 +242,10 @@ describe("External Connector public exports", () => {
 		expect(typeof publicApi.createAgentRuntimeCompositionFactory).toBe("function");
 		expect(typeof publicApi.gateCanonicalExternalAgentInputBeforeAcceptance).toBe("function");
 		expect(typeof publicApi.projectExternalModelForExecution).toBe("function");
+		expect(typeof publicApi.loadPackagedExternalAgentDriver).toBe("function");
+		expect(typeof publicApi.runPackagedExternalAgentDriverFixture).toBe("function");
+		expect(typeof externalConnectorApi.loadPackagedExternalAgentDriver).toBe("function");
+		expect(typeof externalConnectorApi.runPackagedExternalAgentDriverFixture).toBe("function");
 	});
 
 	it("keeps Tool Gateway consumer authority out of the public resolved selection", () => {
@@ -303,6 +308,17 @@ describe("External Connector public exports", () => {
 		expect(() => require.resolve("aos-agent/core/vendor-drivers/types")).toThrow(
 			/Package subpath|not defined by "exports"/u,
 		);
+	});
+
+	it("keeps private production drivers out of the External Connector subpath", () => {
+		for (const name of [
+			"ExternalConnectorVendorDriver",
+			"createProductionExternalAgentConnector",
+			"createProductionExternalConnectorSupervision",
+			"executeExternalConnectorProductRun",
+		]) {
+			expect(name in externalConnectorApi).toBe(false);
+		}
 	});
 
 	it("documents exactly the public Connector-era external error contract", () => {
