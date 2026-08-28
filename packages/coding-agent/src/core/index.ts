@@ -18,6 +18,7 @@ export {
 	type AgentRuntimeCompositionContext,
 	type AgentRuntimeCompositionFactory,
 	type AgentRuntimeCompositionOptions,
+	type TrustedExternalConnectorProductAuthority,
 	type TrustedExternalConnectorRegistryFactory,
 	type TrustedSchedulerCompositionFactory,
 	type TrustedSchedulerRuntimeOptions,

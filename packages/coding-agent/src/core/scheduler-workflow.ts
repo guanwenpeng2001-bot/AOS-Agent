@@ -131,6 +131,7 @@ export interface SchedulerWorkflowCompensationFactV1 {
 
 export interface SchedulerWorkflowConnectorRetryOptionsV1 {
 	/** Exact trusted provider/target identity expected from Scheduler selection. */
+	readonly providerId: string;
 	readonly targetId: string;
 	/** Omission is intentional fail-closed evidence that the operation is not retry eligible. */
 	readonly guarantee?: ConnectorRetryGuaranteeV1;
@@ -372,6 +373,7 @@ export class SchedulerWorkflowController {
 		this.connectorRetryOptions = options.connectorRetry === undefined
 			? undefined
 			: Object.freeze({
+					providerId: options.connectorRetry.providerId,
 					targetId: options.connectorRetry.targetId,
 					...(options.connectorRetry.guarantee === undefined ? {} : { guarantee: options.connectorRetry.guarantee }),
 					...(options.connectorRetry.policy === undefined
@@ -1188,7 +1190,7 @@ export class SchedulerWorkflowController {
 			this.connectorRetryOptions !== undefined &&
 			dispatched.value.providerClass === "external_connector"
 		) {
-			if (dispatched.value.providerId !== this.connectorRetryOptions.targetId) {
+			if (dispatched.value.providerId !== this.connectorRetryOptions.providerId) {
 				const rejected = await this.connectorRetry.recordFailure({
 					operationId: connectorOperationId,
 					targetId: this.connectorRetryOptions.targetId,
@@ -1322,7 +1324,7 @@ export class SchedulerWorkflowController {
 			this.connectorRetryOptions !== undefined &&
 			(provider === undefined || provider.providerClass === "external_connector")
 		) {
-			const targetMatches = provider === undefined || provider.providerId === this.connectorRetryOptions.targetId;
+			const targetMatches = provider === undefined || provider.providerId === this.connectorRetryOptions.providerId;
 			const decision = await this.connectorRetry.recordFailure({
 				operationId: connectorRetryOperationId(this.task.taskId, workflow.workflowId, step.stepId),
 				targetId: this.connectorRetryOptions.targetId,

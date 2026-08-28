@@ -64,6 +64,7 @@ import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
+import type { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "../src/core/subagent-composition.ts";
 import { createTaskCredentialTestProvider } from "../src/core/task-credential-provider.ts";
@@ -372,7 +373,11 @@ const settleRunAtHost = async () => {
 	throw new Error("No graph work is present");
 };
 
-function createScheduler(context: AgentRuntimeCompositionContext, cwd: string): TrustedSchedulerRuntimeOptions {
+function createScheduler(
+	context: AgentRuntimeCompositionContext,
+	cwd: string,
+	selectionReservations: SchedulerSelectionReservationStore,
+): TrustedSchedulerRuntimeOptions {
 	const targetSessionId = `scheduler-target-${context.sessionId}`;
 	const targetManager = SessionManager.inMemory(cwd, { id: targetSessionId });
 	const targetSession = new Session(createSessionManagerStorage(targetManager));
@@ -390,7 +395,7 @@ function createScheduler(context: AgentRuntimeCompositionContext, cwd: string): 
 			{ now: () => NOW },
 		),
 		ownerId: `composition-scheduler-${context.sessionId}`,
-		registry: new SchedulerExecutorRegistry(),
+		registry: new SchedulerExecutorRegistry({ reservationStore: selectionReservations }),
 		task: currentTask,
 		binding: schedulerBinding(currentTask, context.sessionId),
 		gateLookup: schedulerAdmissionGate,
@@ -406,10 +411,11 @@ function createScheduler(context: AgentRuntimeCompositionContext, cwd: string): 
 function createTestExternalConnectorRegistry(
 	sessionId: string,
 	toolGateway?: ToolGateway,
+	providerId = `external-connector-${sessionId}`,
 ): ExternalConnectorRegistry {
 	const snapshot = createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
-		providerId: `external-connector-${sessionId}`,
+		providerId,
 		revision: 1,
 		protocol: { name: "composition-test", version: "1" },
 		modelAccess: "none",
@@ -478,9 +484,9 @@ function createCompositionFactory(cwd: string, captures: CompositionCaptures): A
 			captures.subagents.push(subagents);
 			return subagents;
 		},
-		scheduler: (context) => {
+		scheduler: (context, selectionReservations) => {
 			captures.contexts.push(context);
-			const scheduler = createScheduler(context, cwd);
+			const scheduler = createScheduler(context, cwd, selectionReservations);
 			captures.schedulers.push(scheduler);
 			return scheduler;
 		},
@@ -948,6 +954,70 @@ describe("AgentRuntimeComposition", () => {
 		expect(composedTarget).toBe(selectedConfig.selectedTarget);
 		expect(selectedRegistry.externalConnectorTarget).toBe(selectedConfig.selectedTarget);
 		expect(selectedRegistry.externalConnectorRegistry).toBeDefined();
+	});
+
+	it("binds one selected Connector target to frozen limits, durable Scheduler selection, and retry", async () => {
+		const fixture = await createRuntimeFixture();
+		const target = externalTargetDefinition(fixture.cwd, "product-target", "product-connector");
+		const targetConfig = buildExternalConnectorTargetConfig({
+			global: { schemaVersion: 1, targets: [target] },
+			explicitTargetId: target.targetId,
+		});
+		let capturedLimits: Parameters<NonNullable<AgentRuntimeCompositionOptions["externalConnectorRegistry"]>>[3] | undefined;
+		const factory = createAgentRuntimeCompositionFactory({
+			externalConnectorTargetConfig: targetConfig,
+			runtimeLimits: {
+				global: { maxRetries: 1, retryBudgetMs: 4_000, maxBacklog: 2, maxConcurrency: 1 },
+			},
+			scheduler: (context, selectionReservations) =>
+				createScheduler(context, fixture.cwd, selectionReservations),
+			externalConnectorRegistry: (context, toolGateway, selectedTarget, authority) => {
+				capturedLimits = authority;
+				if (selectedTarget === undefined) throw new Error("Expected exact selected target");
+				return createTestExternalConnectorRegistry(
+					context.sessionId,
+					toolGateway,
+					selectedTarget.providerId,
+				);
+			},
+		});
+		const created = await createAgentSession({
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			modelRuntime: fixture.services.modelRuntime,
+			modelBroker: fixture.services.modelBroker,
+			settingsManager: fixture.services.settingsManager,
+			resourceLoader: fixture.services.resourceLoader,
+			capabilityRegistry: fixture.services.capabilityRegistry,
+			sessionManager: SessionManager.inMemory(fixture.cwd, { id: "connector-product-composition" }),
+			runtimeComposition: factory,
+			noTools: "all",
+		});
+		try {
+			const composition = created.runtimeComposition;
+			expect(capturedLimits?.runtimeLimits).toBe(composition.runtimeLimits);
+			expect(composition.runtimeLimits.values).toMatchObject({
+				maxRetries: 1,
+				retryBudgetMs: 4_000,
+				maxBacklog: 2,
+				maxConcurrency: 1,
+			});
+			expect(composition.scheduler?.registry.durableSelectionsEnabled()).toBe(true);
+			expect(composition.scheduler?.selectionReservationStore).toBe(
+				composition.schedulerSelectionReservations,
+			);
+			expect(composition.scheduler?.connectorRetry).toMatchObject({
+				providerId: target.providerId,
+				targetId: target.targetId,
+				policy: { maxAttempts: 2, totalRetryTimeMs: 4_000 },
+			});
+			expect(created.session.getExternalConnectorRegistry()?.list()).toMatchObject([
+				{ providerId: target.providerId, providerClass: "external_connector" },
+			]);
+		} finally {
+			await created.session.dispose();
+			await created.session.waitForDispose();
+		}
 	});
 
 	it("publishes one immutable local, MCP, and sandbox catalog and keeps it on invalid replacement", async () => {

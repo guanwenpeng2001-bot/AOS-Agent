@@ -13,13 +13,24 @@ import type {
 	ExternalConnectorRegistry,
 } from "./external-agent-registry.ts";
 import type { TrustedSchedulerCompositionOptions } from "./foundation-control-plane.ts";
+import {
+	DEFAULT_CONNECTOR_RETRY_POLICY,
+	type ConnectorRetryPolicyV1,
+} from "./connector-retry-circuit.ts";
 import type { MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
 import type { ModelBroker } from "./model-broker.ts";
 import type { SandboxProvider } from "./sandbox.ts";
 import type { SessionManager } from "./session-manager.ts";
+import { SchedulerSelectionReservationStore } from "./scheduler-selection-reservations.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
+import {
+	DEFAULT_RUNTIME_LIMITS,
+	resolveRuntimeLimitsSource,
+	type RuntimeLimitsSnapshot,
+	type RuntimeLimitsSource,
+} from "./runtime-limits.ts";
 import {
 	isTrustedExternalConnectorTargetConfig,
 	type ExternalConnectorResolvedTarget,
@@ -94,14 +105,24 @@ export type TrustedSubagentCompositionFactory = (
 ) => TrustedSubagentCompositionOptionsV1;
 export type TrustedSchedulerCompositionFactory = (
 	context: AgentRuntimeCompositionContext,
+	/** Canonical Session-backed exact-selection and capacity authority. */
+	selectionReservations: SchedulerSelectionReservationStore,
 ) => TrustedSchedulerRuntimeOptions;
 export type TrustedSchedulerRuntimeOptions = Omit<TrustedSchedulerCompositionOptions, "runLifecycleSession">;
+export interface TrustedExternalConnectorProductAuthority {
+	/** Reloadable trusted source sampled once for each new Connector Attempt. */
+	readonly runtimeLimitsSource: RuntimeLimitsSource;
+	/** Frozen source identity used by this composition generation. */
+	readonly runtimeLimits: RuntimeLimitsSnapshot;
+}
 export type TrustedExternalConnectorRegistryFactory = (
 	context: AgentRuntimeCompositionContext,
 	/** The same canonical Foundation Tool Gateway exposed to every executor in this Session. */
 	toolGateway: ToolGateway | undefined,
 	/** Explicit target resolved from trusted global/managed definitions plus project/Role narrowing. */
 	target: ExternalConnectorResolvedTarget | undefined,
+	/** Centralized limits shared by readiness, Scheduler retry, and Connector execution. */
+	authority: TrustedExternalConnectorProductAuthority,
 ) => ExternalConnectorRegistry;
 export type TrustedTaskCredentialProviderFactory = (
 	context: AgentRuntimeCompositionContext,
@@ -118,6 +139,8 @@ export interface AgentRuntimeCompositionOptions {
 	/** Immutable target catalog. A catalog without explicit selection remains off. */
 	readonly externalConnectorTargetConfig?: ExternalConnectorTargetConfig;
 	readonly externalConnectorRegistry?: TrustedExternalConnectorRegistryFactory;
+	/** Centralized reloadable limits; omission uses the finite product defaults. */
+	readonly runtimeLimits?: RuntimeLimitsSource;
 	readonly taskCredentialProvider?: TrustedTaskCredentialProviderFactory;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
 }
@@ -137,6 +160,8 @@ export interface AgentRuntimeComposition extends AgentRuntimeCompositionContext 
 	readonly externalConnectorTargetConfig?: ExternalConnectorTargetConfig;
 	readonly externalConnectorTarget?: ExternalConnectorResolvedTarget;
 	readonly externalConnectorRegistry?: ExternalConnectorRegistry;
+	readonly runtimeLimits: RuntimeLimitsSnapshot;
+	readonly schedulerSelectionReservations?: SchedulerSelectionReservationStore;
 	readonly taskCredentialProvider?: TaskCredentialProvider;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
 }
@@ -201,6 +226,24 @@ function createPublicContext(context: AgentRuntimeCompositionContext): AgentRunt
 	});
 }
 
+function connectorRetryPolicy(runtimeLimits: RuntimeLimitsSnapshot): ConnectorRetryPolicyV1 {
+	const totalRetryTimeMs = runtimeLimits.values.retryBudgetMs;
+	const maxDelayMs = Math.min(DEFAULT_CONNECTOR_RETRY_POLICY.maxDelayMs, totalRetryTimeMs);
+	return Object.freeze({
+		maxAttempts: runtimeLimits.values.maxRetries + 1,
+		baseDelayMs: Math.min(DEFAULT_CONNECTOR_RETRY_POLICY.baseDelayMs, maxDelayMs),
+		maxDelayMs,
+		totalRetryTimeMs,
+		jitterPermille: DEFAULT_CONNECTOR_RETRY_POLICY.jitterPermille,
+		failureThreshold: Math.min(
+			DEFAULT_CONNECTOR_RETRY_POLICY.failureThreshold,
+			runtimeLimits.values.maxRetries + 1,
+		),
+		openDurationMs: Math.min(DEFAULT_CONNECTOR_RETRY_POLICY.openDurationMs, maxDelayMs),
+		halfOpenProbeTimeoutMs: Math.min(DEFAULT_CONNECTOR_RETRY_POLICY.halfOpenProbeTimeoutMs, maxDelayMs),
+	});
+}
+
 function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRuntimeCompositionFactory {
 	if (options.toolGateway !== undefined && options.toolGatewayCatalog !== undefined) {
 		throw new TypeError("Trusted Tool Gateway must have one composition source");
@@ -229,6 +272,8 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 		[agentRuntimeCompositionFactoryBrand]: true as const,
 		create(context: AgentRuntimeCompositionContext): AgentRuntimeComposition {
 			const publicContext = createPublicContext(context);
+			const runtimeLimitsSource = snapshot.runtimeLimits ?? DEFAULT_RUNTIME_LIMITS;
+			const runtimeLimits = resolveRuntimeLimitsSource(runtimeLimitsSource);
 			const workerComposition = snapshot.trustedWorkerSandboxFactory?.(publicContext);
 			const workerSandboxProvider = requireFresh(
 				snapshot.workerSandboxProvider ?? (
@@ -266,11 +311,26 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				snapshot.subagents?.(publicContext) ?? snapshot.subagentOptions,
 				"Trusted Subagent composition",
 			);
+			const schedulerSelectionReservations = snapshot.scheduler === undefined
+				? undefined
+				: new SchedulerSelectionReservationStore(publicContext.session, {
+						ownerId: `scheduler-selection:${publicContext.sessionId}`,
+						maxBacklog: runtimeLimits.values.maxBacklog,
+					});
 			const schedulerSource = requireFresh(
-				snapshot.scheduler?.(publicContext) ?? snapshot.schedulerOptions,
+				(snapshot.scheduler === undefined || schedulerSelectionReservations === undefined
+					? undefined
+					: snapshot.scheduler(publicContext, schedulerSelectionReservations)) ?? snapshot.schedulerOptions,
 				"Trusted Scheduler composition",
 			);
-			const scheduler = schedulerSource === undefined ? undefined : withoutPhysicalScheduler(schedulerSource);
+			let scheduler = schedulerSource === undefined ? undefined : withoutPhysicalScheduler(schedulerSource);
+			if (
+				snapshot.scheduler !== undefined &&
+				scheduler !== undefined &&
+				!scheduler.registry.durableSelectionsEnabled()
+			) {
+				throw new TypeError("Trusted Scheduler composition must use the canonical selection reservation store");
+			}
 			const underlyingToolGateway = explicitToolGateway ?? subagents?.toolGateway;
 			requireFresh(underlyingToolGateway, "Trusted Tool Gateway");
 			const toolGateway = underlyingToolGateway === undefined
@@ -282,10 +342,28 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 					: Object.freeze({ ...subagents, toolGateway });
 			const externalConnectorTargetConfig = snapshot.externalConnectorTargetConfig;
 			const externalConnectorTarget = externalConnectorTargetConfig?.selectedTarget;
+			if (scheduler !== undefined && externalConnectorTarget !== undefined) {
+				scheduler = Object.freeze({
+					...scheduler,
+					connectorRetry: Object.freeze({
+						providerId: externalConnectorTarget.providerId,
+						targetId: externalConnectorTarget.targetId,
+						policy: connectorRetryPolicy(runtimeLimits),
+					}),
+					...(schedulerSelectionReservations === undefined
+						? {}
+						: { selectionReservationStore: schedulerSelectionReservations }),
+				});
+			}
 			const externalConnectorRegistry = externalConnectorTargetConfig !== undefined && externalConnectorTarget === undefined
 				? undefined
 				: requireFresh(
-					snapshot.externalConnectorRegistry?.(publicContext, toolGateway, externalConnectorTarget) ??
+					snapshot.externalConnectorRegistry?.(
+						publicContext,
+						toolGateway,
+						externalConnectorTarget,
+						Object.freeze({ runtimeLimitsSource, runtimeLimits }),
+					) ??
 						snapshot.externalConnectorRegistryInstance,
 					"Trusted External Connector registry",
 				);
@@ -306,6 +384,10 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				...(externalConnectorRegistry === undefined
 					? {}
 					: { externalConnectorRegistry }),
+				runtimeLimits,
+				...(schedulerSelectionReservations === undefined
+					? {}
+					: { schedulerSelectionReservations }),
 				...(taskCredentialProvider === undefined
 					? {}
 					: { taskCredentialProvider }),
@@ -332,6 +414,7 @@ export function createAgentRuntimeCompositionFactory(
 		options.scheduler === undefined &&
 		options.externalConnectorTargetConfig === undefined &&
 		options.externalConnectorRegistry === undefined &&
+		options.runtimeLimits === undefined &&
 		options.taskCredentialProvider === undefined &&
 		options.taskCredentialPolicyMaxTtlMs === undefined
 	) {

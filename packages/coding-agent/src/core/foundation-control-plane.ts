@@ -151,10 +151,14 @@ import {
 } from "./runtime-clock.ts";
 import { SchedulerDeadlockController } from "./scheduler-deadlock.ts";
 import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
+import type { SchedulerSelectionReservationStore } from "./scheduler-selection-reservations.ts";
 import type { SchedulerFanInController } from "./scheduler-fan-in.ts";
 import type { SchedulerHandoffController } from "./scheduler-handoff.ts";
 import type { SchedulerMessageOrchestrator } from "./scheduler-messages.ts";
-import { SchedulerWorkflowController } from "./scheduler-workflow.ts";
+import {
+	SchedulerWorkflowController,
+	type SchedulerWorkflowConnectorRetryOptionsV1,
+} from "./scheduler-workflow.ts";
 import {
 	SCHEDULER_HOST_DEFAULT_POLL_INTERVAL_MS,
 	SCHEDULER_HOST_MAX_POLL_INTERVAL_MS,
@@ -242,6 +246,10 @@ export interface TrustedSchedulerCompositionOptions {
 	readonly runLifecycleSession: SessionManager;
 	readonly ownerId: string;
 	readonly registry: SchedulerExecutorRegistry;
+	/** Canonical Session-backed owner shared with the exact-selection registry. */
+	readonly selectionReservationStore?: SchedulerSelectionReservationStore;
+	/** Exact External Connector target and frozen retry policy for this composition generation. */
+	readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
 	readonly task: TaskEnvelope;
 	readonly binding: AgentBinding;
 	readonly gateLookup: TaskGraphGateLookup;
@@ -324,6 +332,7 @@ export class TrustedSchedulerComposition {
 	private readonly sourceSession: Session;
 	private readonly targetSession: Session;
 	private readonly targetSessionId: string;
+	private readonly selectionReservationStore: SchedulerSelectionReservationStore | undefined;
 	private identityProof: Promise<void> | undefined;
 	private unsubscribe: (() => void) | undefined;
 	private timer: RuntimeTimerHandle | undefined;
@@ -352,6 +361,7 @@ export class TrustedSchedulerComposition {
 		this.sourceSession = options.sourceSession;
 		this.targetSession = options.targetSession;
 		this.targetSessionId = options.targetSessionId;
+		this.selectionReservationStore = options.selectionReservationStore;
 		const wake = (): void => this.wake();
 		let unregisterRunHooks: (() => void) | undefined;
 		let dispatchLifecycleHooks: RunSchedulerLifecycleHooks | undefined;
@@ -406,6 +416,7 @@ export class TrustedSchedulerComposition {
 						binding: options.binding,
 						runLifecycleSession: options.runLifecycleSession,
 						runLifecycleHookOwnership: "host" as const,
+						...(options.connectorRetry === undefined ? {} : { connectorRetry: options.connectorRetry }),
 						now,
 					},
 					this.clock,
@@ -599,6 +610,11 @@ export class TrustedSchedulerComposition {
 		this.host.stop();
 		try {
 			await this.workflow.dispose();
+		} catch (error) {
+			failure ??= error;
+		}
+		try {
+			await this.selectionReservationStore?.release();
 		} catch (error) {
 			failure ??= error;
 		}
