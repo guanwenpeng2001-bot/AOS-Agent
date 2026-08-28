@@ -32,6 +32,19 @@ import {
 	type ExternalResolvedModelProjection,
 } from "./external-model-projection.ts";
 import {
+	DEFAULT_EXTERNAL_CONNECTOR_READINESS_TTL_MS,
+	createDescriptorExternalConnectorActivationSource,
+	createExternalConnectorReadinessSnapshot,
+	externalConnectorActivationSourceMatchesCapability,
+	externalConnectorReadinessSnapshotIsCurrent,
+	externalConnectorReadinessSnapshotMatchesSource,
+	sameExternalConnectorActivationSource,
+	validateExternalConnectorActivationSource,
+	type ExternalConnectorActivationSource,
+	type ExternalConnectorReadinessReasonCode,
+	type ExternalConnectorReadinessSnapshot,
+} from "./external-connector-readiness.ts";
+import {
 	getHostSupervisedExternalAgentConnectorImplementation,
 	getHostSupervisedExternalConnectorRecoveryFailureSettler,
 	hasHostSupervisedExternalAgentConnectorProof,
@@ -88,7 +101,7 @@ export interface ExternalConnectorReadinessStatus {
 	readonly providerId: string;
 	readonly trust: "host_configured";
 	readonly status: "ready" | "not_ready" | "quarantined";
-	readonly reasonCode: "ready" | "probe_failed" | "cleanup_unconfirmed";
+	readonly reasonCode: ExternalConnectorReadinessReasonCode;
 }
 
 type ExternalConnectorToolGatewayConsumerBinder = (
@@ -137,6 +150,8 @@ export interface ExternalConnectorRegistry {
 	list(): readonly ExternalConnectorDescriptor[];
 	/** Passive, side-effect-free readiness projection. */
 	readiness(): readonly ExternalConnectorReadinessStatus[];
+	/** Passive immutable readiness facts. No Connector or product operation is invoked. */
+	readinessSnapshots(): readonly ExternalConnectorReadinessSnapshot[];
 	/** Explicit bounded active probe. It never creates a vendor session or Attempt. */
 	probeReadiness(selection: ExternalConnectorSelection): Promise<ExternalConnectorReadinessStatus>;
 	dispose(): Promise<void>;
@@ -145,6 +160,11 @@ export interface ExternalConnectorRegistry {
 export interface ExternalConnectorRegistryOptions {
 	readonly capabilityProbeDeadline?: Partial<ExternalConnectorSegmentDeadline>;
 	readonly clock?: RuntimeClock;
+	/** Trusted Host captures taken before candidate Connectors are constructed. */
+	readonly activationSources?: readonly ExternalConnectorActivationSource[];
+	/** Re-read the trusted Host source before publishing or selecting a candidate. */
+	readonly readActivationSource?: (providerId: string) => unknown;
+	readonly readinessTtlMs?: number;
 	/** Canonical Foundation Tool Gateway for this Session composition. */
 	readonly toolGateway?: ToolGateway;
 }
@@ -183,9 +203,10 @@ interface RegisteredConnector {
 	readonly connector: ExternalAgentConnector;
 	readonly implementation: RegisteredExternalConnectorImplementation;
 	readonly implementationProof: ExternalConnectorImplementationProof;
-	readonly selectedConnector: ExternalAgentConnector;
+	readonly selectedConnectors: WeakMap<ExternalConnectorReadinessSnapshot, ExternalAgentConnector>;
 	readonly capabilitySnapshot: ConnectorCapabilitySnapshot;
 	readonly capabilityTruth: ExternalCapabilityTruthSnapshot;
+	readonly activationSource: ExternalConnectorActivationSource;
 }
 
 interface PendingConnector {
@@ -942,14 +963,130 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	readonly #connectors = new Map<string, RegisteredConnector>();
 	readonly #pendingRegistrations = new Map<string, PendingConnector>();
 	readonly #disposalOperations = new Map<ExternalAgentConnector, Promise<void>>();
-	readonly #readiness = new Map<string, ExternalConnectorReadinessStatus>();
+	readonly #readinessSnapshots = new Map<string, ExternalConnectorReadinessSnapshot>();
+	readonly #activationSources = new Map<string, ExternalConnectorActivationSource>();
 	readonly #lifetime = new AbortController();
 	readonly #options: ExternalConnectorRegistryOptions;
+	readonly #readinessTtlMs: number;
 	#disposed = false;
 	#disposal: Promise<void> | undefined;
 
 	constructor(options: ExternalConnectorRegistryOptions) {
+		const readinessTtlMs = options.readinessTtlMs ?? DEFAULT_EXTERNAL_CONNECTOR_READINESS_TTL_MS;
+		if (!Number.isSafeInteger(readinessTtlMs) || readinessTtlMs <= 0) {
+			throw new RangeError("External Connector readiness TTL must be a positive safe integer");
+		}
+		const activationSources = options.activationSources ?? [];
+		if ((activationSources.length > 0) !== (options.readActivationSource !== undefined)) {
+			throw new TypeError(
+				"External Connector activation source captures and the current-source reader must be configured together",
+			);
+		}
 		this.#options = options;
+		this.#readinessTtlMs = readinessTtlMs;
+		for (const sourceValue of activationSources) {
+			const source = validateExternalConnectorActivationSource(sourceValue);
+			if (source === undefined || this.#activationSources.has(source.providerId)) {
+				throw new TypeError("External Connector activation sources must be valid and unique by provider id");
+			}
+			this.#activationSources.set(source.providerId, source);
+		}
+	}
+
+	#nowMs(): number {
+		return this.#options.clock?.wallNow() ?? Date.now();
+	}
+
+	#createReadinessSnapshot(
+		source: ExternalConnectorActivationSource,
+		status: ExternalConnectorReadinessSnapshot["status"],
+		reasonCode: ExternalConnectorReadinessReasonCode,
+		state: ExternalConnectorReadinessSnapshot["state"],
+		observedAtMs = this.#nowMs(),
+	): ExternalConnectorReadinessSnapshot {
+		return createExternalConnectorReadinessSnapshot({
+			source,
+			status,
+			reasonCode,
+			state,
+			observedAtMs,
+			ttlMs: this.#readinessTtlMs,
+		});
+	}
+
+	#publishReadiness(
+		source: ExternalConnectorActivationSource,
+		status: ExternalConnectorReadinessSnapshot["status"],
+		reasonCode: ExternalConnectorReadinessReasonCode,
+		state: ExternalConnectorReadinessSnapshot["state"],
+	): ExternalConnectorReadinessSnapshot {
+		const snapshot = this.#createReadinessSnapshot(source, status, reasonCode, state);
+		this.#readinessSnapshots.set(source.providerId, snapshot);
+		return snapshot;
+	}
+
+	#descriptorActivationSource(descriptor: ExternalConnectorDescriptor): ExternalConnectorActivationSource {
+		return createDescriptorExternalConnectorActivationSource({
+			providerId: descriptor.providerId,
+			revision: descriptor.revision,
+			capabilityDigest: descriptor.capabilitySnapshotDigest,
+		});
+	}
+
+	#readCurrentActivationSource(providerId: string): ExternalConnectorActivationSource | undefined {
+		const readActivationSource = this.#options.readActivationSource;
+		if (readActivationSource === undefined) return undefined;
+		try {
+			const source = validateExternalConnectorActivationSource(readActivationSource(providerId));
+			return source?.providerId === providerId ? source : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	#captureActivationSource(
+		registration: ExternalConnectorRegistration,
+	): ResultValue<ExternalConnectorActivationSource, FoundationError> {
+		const descriptor = registration.descriptor;
+		const descriptorSource = this.#descriptorActivationSource(descriptor);
+		const supplied = this.#activationSources.get(descriptor.providerId);
+		const current = this.#readCurrentActivationSource(descriptor.providerId);
+		if (this.#options.readActivationSource !== undefined && supplied === undefined) {
+			this.#publishReadiness(descriptorSource, "quarantined", "source_changed", "quarantined");
+			return Result.err(connectorRegistryError("External connector activation source was not captured."));
+		}
+		if (this.#options.readActivationSource !== undefined && current === undefined) {
+			this.#publishReadiness(supplied ?? descriptorSource, "quarantined", "source_changed", "quarantined");
+			return Result.err(connectorRegistryError("External connector activation source is unavailable."));
+		}
+		const source = supplied ?? current ?? descriptorSource;
+		if (
+			!externalConnectorActivationSourceMatchesCapability(source, {
+				providerId: descriptor.providerId,
+				revision: descriptor.revision,
+				digest: descriptor.capabilitySnapshotDigest,
+			})
+		) {
+			this.#publishReadiness(source.providerId === descriptor.providerId ? source : descriptorSource, "quarantined", "source_changed", "quarantined");
+			return Result.err(
+				connectorRegistryError("External connector activation source does not match its pinned descriptor."),
+			);
+		}
+		if (supplied !== undefined && current !== undefined) {
+			if (!sameExternalConnectorActivationSource(source, current)) {
+				this.#publishReadiness(source, "quarantined", "source_changed", "quarantined");
+				return Result.err(
+					connectorRegistryError("External connector activation source changed before candidate admission."),
+				);
+			}
+		}
+		return Result.ok(source);
+	}
+
+	#activationSourceIsCurrent(source: ExternalConnectorActivationSource): boolean {
+		if (this.#options.readActivationSource === undefined) return true;
+		const current = this.#readCurrentActivationSource(source.providerId);
+		return current !== undefined && sameExternalConnectorActivationSource(source, current);
 	}
 
 	async #disposeConnectorOnce(
@@ -983,10 +1120,57 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		}
 	}
 
+	#resolvePublishedReadiness(
+		registered: RegisteredConnector,
+		requireCurrentImplementation: boolean,
+		allowRefresh: boolean,
+		expectedSnapshot?: ExternalConnectorReadinessSnapshot,
+	): ResultValue<ExternalConnectorReadinessSnapshot, FoundationError> {
+		const providerId = registered.descriptor.providerId;
+		const readinessSnapshot = this.#readinessSnapshots.get(providerId);
+		if (
+			this.#disposed ||
+			this.#connectors.get(providerId) !== registered ||
+			readinessSnapshot === undefined ||
+			(expectedSnapshot !== undefined && readinessSnapshot !== expectedSnapshot) ||
+			readinessSnapshot.state === "quarantined" ||
+			(requireCurrentImplementation &&
+				!isCurrentExternalConnectorImplementation(
+					registered.connector,
+					registered.implementation,
+					registered.implementationProof,
+				)) ||
+			registered.implementation.providerClass !== "external_connector" ||
+			registered.implementation.providerId !== providerId
+		) {
+			return Result.err(connectorRegistryError("External connector registry or constructed instance changed."));
+		}
+		if (
+			!externalConnectorReadinessSnapshotMatchesSource(readinessSnapshot, registered.activationSource) ||
+			!this.#activationSourceIsCurrent(registered.activationSource)
+		) {
+			this.#publishReadiness(registered.activationSource, "quarantined", "source_changed", "quarantined");
+			return Result.err(connectorRegistryError("External connector activation source changed after publication."));
+		}
+		if (
+			this.#disposed ||
+			this.#connectors.get(providerId) !== registered ||
+			this.#readinessSnapshots.get(providerId) !== readinessSnapshot
+		) {
+			return Result.err(connectorRegistryError("External connector readiness snapshot was superseded."));
+		}
+		if (!allowRefresh && !externalConnectorReadinessSnapshotIsCurrent(readinessSnapshot, this.#nowMs())) {
+			return Result.err(connectorRegistryError("External connector readiness snapshot is stale or not ready."));
+		}
+		return Result.ok(readinessSnapshot);
+	}
+
 	async #verifyRegisteredConnector(
 		registered: RegisteredConnector,
 		execution?: FoundationProviderExecutionOptions,
 		requireCurrentImplementation = true,
+		refreshReadiness = false,
+		expectedReadinessSnapshot?: ExternalConnectorReadinessSnapshot,
 	): Promise<
 		ResultValue<
 			{
@@ -996,21 +1180,15 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			FoundationError
 		>
 	> {
-		if (
-			this.#disposed ||
-			this.#connectors.get(registered.descriptor.providerId) !== registered ||
-			this.#readiness.get(registered.descriptor.providerId)?.status === "quarantined" ||
-			(requireCurrentImplementation &&
-				!isCurrentExternalConnectorImplementation(
-					registered.connector,
-					registered.implementation,
-					registered.implementationProof,
-				)) ||
-			registered.implementation.providerClass !== "external_connector" ||
-			registered.implementation.providerId !== registered.descriptor.providerId
-		) {
-			return Result.err(connectorRegistryError("External connector registry or constructed instance changed."));
-		}
+		const providerId = registered.descriptor.providerId;
+		const readinessResult = this.#resolvePublishedReadiness(
+			registered,
+			requireCurrentImplementation,
+			refreshReadiness,
+			expectedReadinessSnapshot,
+		);
+		if (!readinessResult.ok) return readinessResult;
+		const readinessSnapshot = readinessResult.value;
 		const snapshotResult = await probeConnector(registered.connector, registered.implementation, {
 			...this.#options,
 			...(execution === undefined ? {} : { execution }),
@@ -1023,17 +1201,17 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 					registered.implementationProof,
 				),
 		});
+		if (!this.#activationSourceIsCurrent(registered.activationSource)) {
+			this.#publishReadiness(registered.activationSource, "quarantined", "source_changed", "quarantined");
+			return Result.err(
+				connectorRegistryError("External connector activation source changed while probing capabilities."),
+			);
+		}
 		if (!snapshotResult.ok) {
-			this.#readiness.set(registered.descriptor.providerId, Object.freeze({
-				schemaVersion: 1,
-				providerId: registered.descriptor.providerId,
-				trust: "host_configured",
-				status: "not_ready",
-				reasonCode: "probe_failed",
-			}));
+			this.#publishReadiness(registered.activationSource, "not_ready", "probe_failed", "current");
 			return snapshotResult;
 		}
-		if (this.#disposed || this.#connectors.get(registered.descriptor.providerId) !== registered) {
+		if (this.#disposed || this.#connectors.get(providerId) !== registered) {
 			return Result.err(
 				connectorRegistryError("External connector registry changed while resolving the selection."),
 			);
@@ -1059,6 +1237,31 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			return Result.err(
 				connectorRegistryError("External connector capability evidence drifted after registration."),
 			);
+		}
+		const observedAtMs = this.#nowMs();
+		if (!this.#activationSourceIsCurrent(registered.activationSource)) {
+			this.#publishReadiness(registered.activationSource, "quarantined", "source_changed", "quarantined");
+			return Result.err(
+				connectorRegistryError("External connector activation source changed before readiness publication."),
+			);
+		}
+		if (
+			this.#disposed ||
+			this.#connectors.get(providerId) !== registered ||
+			this.#readinessSnapshots.get(providerId) !== readinessSnapshot
+		) {
+			return Result.err(connectorRegistryError("External connector readiness snapshot was superseded."));
+		}
+		if (refreshReadiness) {
+			const refreshed = this.#createReadinessSnapshot(
+				registered.activationSource,
+				"ready",
+				"ready",
+				"current",
+				observedAtMs,
+			);
+			this.#readinessSnapshots.set(providerId, refreshed);
+			return Result.ok({ snapshot, truth: truthResult.value });
 		}
 		return Result.ok({ snapshot, truth: truthResult.value });
 	}
@@ -1094,6 +1297,12 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				connectorRegistryError("External connector descriptor identity does not match its constructed instance."),
 			);
 		}
+		const activationSourceResult = this.#captureActivationSource(registration);
+		if (!activationSourceResult.ok) {
+			await this.#disposeConnectorBounded(connector, implementation);
+			return activationSourceResult;
+		}
+		const activationSource = activationSourceResult.value;
 		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
 
 		const pending = Object.freeze({ connector, implementation, implementationProof });
@@ -1107,13 +1316,12 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			});
 			if (!snapshotResult.ok) {
 				const cleaned = await this.#disposeConnectorBounded(connector, implementation);
-				this.#readiness.set(descriptor.providerId, Object.freeze({
-					schemaVersion: 1,
-					providerId: descriptor.providerId,
-					trust: "host_configured",
-					status: cleaned ? "not_ready" : "quarantined",
-					reasonCode: cleaned ? "probe_failed" : "cleanup_unconfirmed",
-				}));
+				this.#publishReadiness(
+					activationSource,
+					cleaned ? "not_ready" : "quarantined",
+					cleaned ? "probe_failed" : "cleanup_unconfirmed",
+					cleaned ? "current" : "quarantined",
+				);
 				return snapshotResult;
 			}
 			if (this.#disposed) {
@@ -1124,7 +1332,14 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				}
 				return Result.err(connectorRegistryError("External connector registry is disposed."));
 			}
-			return this.#registerPrepared(registration, snapshotResult.value);
+			const prepared = this.#registerPrepared(registration, snapshotResult.value, activationSource);
+			if (
+				!prepared.ok &&
+				this.#readinessSnapshots.get(descriptor.providerId)?.reasonCode === "source_changed"
+			) {
+				await this.#disposeConnectorBounded(connector, implementation);
+			}
+			return prepared;
 		} finally {
 			if (this.#pendingRegistrations.get(descriptor.providerId) === pending) {
 				this.#pendingRegistrations.delete(descriptor.providerId);
@@ -1156,11 +1371,13 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (this.#connectors.has(descriptor.providerId) || this.#pendingRegistrations.has(descriptor.providerId)) {
 			return Result.err(connectorRegistryError("External connector provider identity is already registered."));
 		}
+		const activationSourceResult = this.#captureActivationSource(registration);
+		if (!activationSourceResult.ok) return activationSourceResult;
 		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
 		const pending = Object.freeze({ connector, implementation, implementationProof });
 		this.#pendingRegistrations.set(descriptor.providerId, pending);
 		try {
-			return this.#registerPrepared(registration, capabilitySnapshot);
+			return this.#registerPrepared(registration, capabilitySnapshot, activationSourceResult.value);
 		} finally {
 			if (this.#pendingRegistrations.get(descriptor.providerId) === pending) {
 				this.#pendingRegistrations.delete(descriptor.providerId);
@@ -1171,6 +1388,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	#registerPrepared(
 		registration: ExternalConnectorRegistration,
 		capabilitySnapshot: ConnectorCapabilitySnapshot,
+		activationSource: ExternalConnectorActivationSource,
 	): ResultValue<ExternalConnectorDescriptor, FoundationError> {
 		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
 		if (!isExternalConnectorRegistration(registration)) {
@@ -1216,6 +1434,18 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				),
 			);
 		}
+		if (
+			!externalConnectorActivationSourceMatchesCapability(activationSource, {
+				providerId: snapshot.providerId,
+				revision: snapshot.revision,
+				digest: snapshot.digest,
+			})
+		) {
+			this.#publishReadiness(activationSource, "quarantined", "source_changed", "quarantined");
+			return Result.err(
+				connectorRegistryError("External connector activation source does not match its capability probe."),
+			);
+		}
 		const truthResult = capabilityTruth(
 			implementation.providerId,
 			snapshot,
@@ -1227,45 +1457,45 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (this.#disposed || this.#pendingRegistrations.get(descriptor.providerId) !== pending) {
 			return Result.err(connectorRegistryError("External connector registry is disposed."));
 		}
-		let stored: RegisteredConnector | undefined;
-		const selectedConnector = createCapabilityPinnedConnector(
-			connector,
-			implementation,
-			async (options) => {
-				if (stored === undefined) return Result.err(lifecycleCapabilityError());
-				const verified = await this.#verifyRegisteredConnector(stored, options);
-				return verified.ok ? Result.ok(verified.value.snapshot) : Result.err(verified.error);
-			},
-			async (options) => {
-				if (stored === undefined) return Result.err(lifecycleCapabilityError());
-				const verified = await this.#verifyRegisteredConnector(stored, options, false);
-				return verified.ok ? Result.ok(verified.value.snapshot) : Result.err(verified.error);
-			},
-		);
-		stored = {
+		const stored: RegisteredConnector = {
 			descriptor: storedDescriptor,
 			connector,
 			implementation,
 			implementationProof: pending.implementationProof,
-			selectedConnector,
+			selectedConnectors: new WeakMap(),
 			capabilitySnapshot: snapshot,
 			capabilityTruth: truthResult.value,
+			activationSource,
 		};
-		this.#connectors.set(descriptor.providerId, stored);
 		const startupStatus = getProductionExternalConnectorStartupStatus(connector);
-		this.#readiness.set(descriptor.providerId, Object.freeze({
-			schemaVersion: 1,
-			providerId: descriptor.providerId,
-			trust: "host_configured",
-			status: startupStatus?.readiness === "quarantined" ? "quarantined" : "ready",
-			reasonCode: startupStatus?.readiness === "quarantined" ? "cleanup_unconfirmed" : "ready",
-		}));
+		const status = startupStatus?.readiness === "quarantined" ? "quarantined" : "ready";
+		const state = startupStatus?.readiness === "quarantined" ? "quarantined" : "current";
+		const reasonCode = startupStatus?.readiness === "quarantined" ? "cleanup_unconfirmed" : "ready";
+		const observedAtMs = this.#nowMs();
+		if (!this.#activationSourceIsCurrent(activationSource)) {
+			this.#publishReadiness(activationSource, "quarantined", "source_changed", "quarantined");
+			return Result.err(
+				connectorRegistryError("External connector activation source changed before readiness publication."),
+			);
+		}
+		if (this.#disposed || this.#pendingRegistrations.get(descriptor.providerId) !== pending) {
+			return Result.err(connectorRegistryError("External connector registry is disposed."));
+		}
+		const readinessSnapshot = this.#createReadinessSnapshot(
+			activationSource,
+			status,
+			reasonCode,
+			state,
+			observedAtMs,
+		);
+		this.#connectors.set(descriptor.providerId, stored);
+		this.#readinessSnapshots.set(descriptor.providerId, readinessSnapshot);
 		return Result.ok(storedDescriptor);
 	}
 
 	async select(
 		selection: ExternalConnectorSelection,
-		options?: FoundationProviderExecutionOptions,
+		_options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<ExternalConnectorResolvedSelection, FoundationError>> {
 		if (this.#disposed) return Result.err(connectorRegistryError("External connector registry is disposed."));
 		if (!isExternalConnectorSelection(selection)) {
@@ -1285,10 +1515,41 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				connectorRegistryError("External connector selection is unknown or does not match its pinned descriptor."),
 			);
 		}
-		const verified = await this.#verifyRegisteredConnector(registered, options);
-		if (!verified.ok) return verified;
+		const readiness = this.#resolvePublishedReadiness(registered, true, false);
+		if (!readiness.ok) return readiness;
+		const readinessSnapshot = readiness.value;
+		const capabilitySnapshot = registered.capabilitySnapshot;
+		const capabilityTruthSnapshot = registered.capabilityTruth;
+		let selectedConnector = registered.selectedConnectors.get(readinessSnapshot);
+		if (selectedConnector === undefined) {
+			selectedConnector = createCapabilityPinnedConnector(
+				registered.connector,
+				registered.implementation,
+				async (execution) => {
+					const verified = await this.#verifyRegisteredConnector(
+						registered,
+						execution,
+						true,
+						false,
+						readinessSnapshot,
+					);
+					return verified.ok ? Result.ok(verified.value.snapshot) : Result.err(verified.error);
+				},
+				async (execution) => {
+					const verified = await this.#verifyRegisteredConnector(
+						registered,
+						execution,
+						false,
+						false,
+						readinessSnapshot,
+					);
+					return verified.ok ? Result.ok(verified.value.snapshot) : Result.err(verified.error);
+				},
+			);
+			registered.selectedConnectors.set(readinessSnapshot, selectedConnector);
+		}
 		let toolGatewayCatalog: CapturedExternalConnectorToolGatewayCatalog | undefined;
-		if (verified.value.snapshot.toolGateway) {
+		if (capabilitySnapshot.toolGateway) {
 			const toolGateway = this.#options.toolGateway;
 			if (toolGateway === undefined) {
 				return Result.err(new FoundationError("external_connector_not_ready", "External connector Tool Gateway is not ready."));
@@ -1301,7 +1562,13 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			request: ToolGatewayRequest,
 			options?: { readonly signal?: AbortSignal },
 		): Promise<ResultValue<ToolExecutionResult, FoundationError>> => {
-			const current = await this.#verifyRegisteredConnector(registered, options);
+			const current = await this.#verifyRegisteredConnector(
+				registered,
+				options,
+				true,
+				false,
+				readinessSnapshot,
+			);
 			if (!current.ok) return Result.err(lifecycleCapabilityError());
 			if (!current.value.truth.capabilities.toolGateway) {
 				return Result.err(connectorRegistryError("External connector does not support the Tool Gateway bridge."));
@@ -1365,17 +1632,19 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			}
 			return Result.ok(cloneDeepFrozen(checkedResult.value));
 		};
+		const currentReadiness = this.#resolvePublishedReadiness(registered, true, false, readinessSnapshot);
+		if (!currentReadiness.ok) return currentReadiness;
 		const resolvedSelection: ExternalConnectorResolvedSelection = Object.freeze({
 			descriptor: registered.descriptor,
-			connector: registered.selectedConnector,
-			capabilitySnapshot: verified.value.snapshot,
-			capabilityTruth: verified.value.truth,
+			connector: selectedConnector,
+			capabilitySnapshot,
+			capabilityTruth: capabilityTruthSnapshot,
 		});
 		const settleRecoveryFailure = getHostSupervisedExternalConnectorRecoveryFailureSettler(registered.connector);
 		if (settleRecoveryFailure !== undefined) {
 			externalConnectorRecoveryFailureSettlers.set(resolvedSelection, settleRecoveryFailure);
 		}
-		if (verified.value.snapshot.toolGateway) {
+		if (capabilitySnapshot.toolGateway) {
 			if (registered.implementation.bindToolGatewayConsumer === undefined || toolGatewayCatalog === undefined) {
 				return Result.err(
 					new FoundationError(
@@ -1400,24 +1669,79 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	}
 
 	readiness(): readonly ExternalConnectorReadinessStatus[] {
-		return Object.freeze([...this.#readiness.values()]);
+		const nowMs = this.#nowMs();
+		return Object.freeze(
+			[...this.#readinessSnapshots.values()].map((snapshot): ExternalConnectorReadinessStatus =>
+				Object.freeze({
+					schemaVersion: 1,
+					providerId: snapshot.providerId,
+					trust: "host_configured",
+					status:
+						snapshot.status === "ready" && !externalConnectorReadinessSnapshotIsCurrent(snapshot, nowMs)
+							? "not_ready"
+							: snapshot.status,
+					reasonCode:
+						snapshot.status === "ready" && !externalConnectorReadinessSnapshotIsCurrent(snapshot, nowMs)
+							? "snapshot_stale"
+							: snapshot.reasonCode,
+				}),
+			),
+		);
+	}
+
+	readinessSnapshots(): readonly ExternalConnectorReadinessSnapshot[] {
+		return Object.freeze([...this.#readinessSnapshots.values()]);
 	}
 
 	async probeReadiness(selection: ExternalConnectorSelection): Promise<ExternalConnectorReadinessStatus> {
-		const existing = this.#readiness.get(selection.providerId);
-		if (existing?.status === "quarantined") return existing;
-		const selected = await this.select(selection);
-		const current = this.#readiness.get(selection.providerId);
-		if (current?.status === "quarantined") return current;
-		const status: ExternalConnectorReadinessStatus = Object.freeze({
-			schemaVersion: 1,
-			providerId: selection.providerId,
-			trust: "host_configured",
-			status: selected.ok ? "ready" : "not_ready",
-			reasonCode: selected.ok ? "ready" : "probe_failed",
-		});
-		this.#readiness.set(selection.providerId, status);
-		return status;
+		const providerId = selection.providerId;
+		const statusFor = (snapshot: ExternalConnectorReadinessSnapshot): ExternalConnectorReadinessStatus =>
+			Object.freeze({
+				schemaVersion: 1,
+				providerId: snapshot.providerId,
+				trust: "host_configured",
+				status: snapshot.status,
+				reasonCode: snapshot.reasonCode,
+			});
+		const existing = this.#readinessSnapshots.get(providerId);
+		if (existing?.state === "quarantined") return statusFor(existing);
+		if (!isExternalConnectorSelection(selection)) {
+			return Object.freeze({
+				schemaVersion: 1,
+				providerId,
+				trust: "host_configured",
+				status: "not_ready",
+				reasonCode: "probe_failed",
+			});
+		}
+		const registered = this.#connectors.get(providerId);
+		if (
+			registered === undefined ||
+			selection.revision !== registered.descriptor.revision ||
+			!sameFingerprint(selection.capabilitySnapshotDigest, registered.descriptor.capabilitySnapshotDigest)
+		) {
+			return Object.freeze({
+				schemaVersion: 1,
+				providerId: selection.providerId,
+				trust: "host_configured",
+				status: "not_ready",
+				reasonCode: "probe_failed",
+			});
+		}
+		const verified = await this.#verifyRegisteredConnector(registered, undefined, true, true);
+		let current = this.#readinessSnapshots.get(providerId);
+		if (!verified.ok && current === existing && !this.#disposed) {
+			current = this.#publishReadiness(registered.activationSource, "not_ready", "probe_failed", "current");
+		}
+		return current === undefined
+			? Object.freeze({
+					schemaVersion: 1,
+					providerId,
+					trust: "host_configured",
+					status: "not_ready",
+					reasonCode: "probe_failed",
+				})
+			: statusFor(current);
 	}
 
 	dispose(): Promise<void> {
@@ -1434,7 +1758,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		];
 		this.#connectors.clear();
 		this.#pendingRegistrations.clear();
-		this.#readiness.clear();
+		this.#readinessSnapshots.clear();
 		this.#disposal = Promise.all(
 			connectors.map(({ connector, implementation }) => this.#disposeConnectorBounded(connector, implementation)),
 		).then((results) => {
