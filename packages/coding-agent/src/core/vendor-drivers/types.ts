@@ -10,17 +10,21 @@ import {
 	EXTERNAL_ERROR_MESSAGES,
 	FoundationError,
 	validateArtifactRef,
+	validateAttemptReceiptUsage,
 	validatePublicExecutionError,
 	validateToolGatewayRequest,
 	type ArtifactRef,
 	type Attempt,
+	type AttemptReceiptUsage,
 	type ConnectorCapabilitySnapshot,
 	type ExecutionCorrelation,
 	type FoundationJsonValue,
+	type McpSelection,
 	type PublicExecutionError,
 	type SideEffectState,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
+	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import {
 	isCanonicalExternalConnectorMappingTimestamp,
@@ -57,6 +61,10 @@ export interface ExternalConnectorDriverSpawnRequest {
 	readonly capability: ConnectorCapabilitySnapshot;
 	readonly bindingDigest: string;
 	readonly bindingRevision: number;
+	/** Exact MCP authority from the durable AgentBinding for this Attempt. */
+	readonly mcpSelection?: McpSelection;
+	/** Policy-filtered, exact Tool Gateway visibility for this Attempt. */
+	readonly toolGatewayRoutes?: readonly ToolGatewayRoute[];
 	readonly supervisorRef: string;
 	readonly operationNonce: string;
 	readonly signal?: AbortSignal;
@@ -119,6 +127,7 @@ export interface ExternalConnectorTerminalEvidence {
 	readonly operationNonce: string;
 	readonly status: "succeeded" | "failed" | "cancelled" | "suspended";
 	readonly artifacts?: readonly ArtifactRef[];
+	readonly usage?: AttemptReceiptUsage;
 	readonly error?: PublicExecutionError;
 	readonly sideEffectState: SideEffectState;
 	readonly producedAt: string;
@@ -130,6 +139,7 @@ const EXTERNAL_CONNECTOR_TERMINAL_EVIDENCE_KEYS = new Set([
 	"operationNonce",
 	"status",
 	"artifacts",
+	"usage",
 	"error",
 	"sideEffectState",
 	"producedAt",
@@ -453,6 +463,8 @@ export function isExternalConnectorTerminalEvidence(value: unknown): value is Ex
 	) {
 		return false;
 	}
+	if (value.status === "cancelled" && value.sideEffectState !== "none") return false;
+	if (value.usage !== undefined && !validateAttemptReceiptUsage(value.usage).ok) return false;
 	return value.error === undefined || validatePublicExecutionError(value.error).ok;
 }
 
@@ -471,12 +483,17 @@ export function cloneExternalConnectorTerminalEvidence(value: unknown): External
 		return Object.freeze(canonical);
 	});
 	const error = canonicalExternalConnectorTerminalError(value.status, value.sideEffectState, value.error);
+	const usage = value.usage === undefined ? undefined : validateAttemptReceiptUsage(value.usage);
+	if (usage !== undefined && !usage.ok) {
+		throw new FoundationError("foundation_schema_invalid_shape", "External connector terminal usage evidence is invalid");
+	}
 	return Object.freeze({
 		externalSessionId: value.externalSessionId,
 		...(value.externalTurnId === undefined ? {} : { externalTurnId: value.externalTurnId }),
 		operationNonce: value.operationNonce,
 		status: value.status,
 		...(artifacts === undefined ? {} : { artifacts: Object.freeze(artifacts) }),
+		...(usage === undefined ? {} : { usage: Object.freeze({ ...usage.value }) }),
 		...(error === undefined ? {} : { error: Object.freeze(error) }),
 		sideEffectState: value.sideEffectState,
 		producedAt: value.producedAt,
@@ -518,6 +535,8 @@ export function isExternalConnectorDriverLookup(value: unknown): value is Extern
 export interface ExternalConnectorVendorDriver {
 	/** Host-private exact model translation contract. Read only for aos_gateway. */
 	readonly modelSupportMatrix?: ExternalModelSupportMatrix;
+	/** Exact MCP authority required by drivers that expose Tool Gateway MCP tools. */
+	readonly toolGatewayMcpSelection?: McpSelection;
 	spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle>;
 	events(
 		handle: ExternalConnectorDriverHandle,
