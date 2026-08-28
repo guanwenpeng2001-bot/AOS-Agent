@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -12,6 +12,10 @@ import {
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
 
+function readRepositoryEvidence(path: string): string {
+	return readFileSync(resolve(REPOSITORY_ROOT, path), "utf8");
+}
+
 const EXPECTED = {
 	23: {
 		status: "partial",
@@ -23,12 +27,20 @@ const EXPECTED = {
 		claims: ["rpc-stdio-jsonl", "rpc-loopback-tcp-jsonl"],
 		deferred: [{ claim: "rpc-remote-transport-hardening", owner: "14" }],
 	},
-	111: { status: "implemented", claims: ["native-provider-registry", "native-provider-availability"], deferred: [] },
-	113: { status: "implemented", claims: ["internal-continuation", "external-continuation"], deferred: [] },
+	111: {
+		status: "partial",
+		claims: ["native-provider-registry", "native-provider-local-availability"],
+		deferred: [{ claim: "remote-native-provider-availability", owner: "14" }],
+	},
+	113: {
+		status: "partial",
+		claims: ["internal-continuation", "external-continuation"],
+		deferred: [{ claim: "cross-host-continuation", owner: "14" }],
+	},
 	114: {
-		status: "implemented",
+		status: "partial",
 		claims: ["internal-task-executor-admission", "external-task-executor-admission"],
-		deferred: [],
+		deferred: [{ claim: "cross-host-task-executor-fleet", owner: "14" }],
 	},
 	132: {
 		status: "implemented",
@@ -53,7 +65,10 @@ const EXPECTED = {
 	136: {
 		status: "partial",
 		claims: ["worker-credential-target"],
-		deferred: [{ claim: "external-credential-target", owner: "T9" }],
+		deferred: [
+			{ claim: "external-credential-target", owner: "T9" },
+			{ claim: "production-credential-target", owner: "14" },
+		],
 	},
 	138: {
 		status: "implemented",
@@ -81,6 +96,22 @@ function rowById(manifest: Array<Record<string, unknown>>, id: number): Record<s
 	return row;
 }
 
+function evidenceByClaim(row: Record<string, unknown>, claim: string): Record<string, unknown> {
+	const evidence = row.evidence as Array<Record<string, unknown>>;
+	const match = evidence.find((entry) => entry.claim === claim);
+	if (match === undefined) throw new Error(`missing evidence ${claim}`);
+	return match;
+}
+
+function rebuildDescription(row: Record<string, unknown>): void {
+	const evidence = row.evidence as Array<{ behavior: string }>;
+	const deferred = row.deferred as Array<{ behavior: string; owner: string }>;
+	const implemented = `Implemented: ${evidence.map((entry) => entry.behavior).join(" ")}`;
+	row.description = deferred.length === 0
+		? implemented
+		: `${implemented} Deferred: ${deferred.map((entry) => `${entry.behavior} [${entry.owner}]`).join(" ")}`;
+}
+
 describe("Line 13 T5 capability truth manifest", () => {
 	it("records the exact repaired ids, statuses, evidenced claims, and deferred owners", () => {
 		expect(LINE13_T5_CAPABILITY_TRUTH.map((row) => row.id)).toEqual(LINE13_T5_CAPABILITY_IDS);
@@ -96,22 +127,11 @@ describe("Line 13 T5 capability truth manifest", () => {
 				`capability ${row.id} deferred`,
 			).toEqual(expected.deferred);
 		}
-		expect(() => verifyLine13T5CapabilityManifest(LINE13_T5_CAPABILITY_TRUTH)).not.toThrow();
+		expect(() => verifyLine13T5CapabilityManifest(LINE13_T5_CAPABILITY_TRUTH, readRepositoryEvidence)).not.toThrow();
 	});
 
-	it("binds every implemented behavior to existing owner and test paths", () => {
-		for (const row of LINE13_T5_CAPABILITY_TRUTH) {
-			for (const evidence of row.evidence) {
-				expect(
-					existsSync(resolve(REPOSITORY_ROOT, evidence.ownerModule)),
-					`capability ${row.id} owner ${evidence.ownerModule}`,
-				).toBe(true);
-				expect(evidence.tests.length, `capability ${row.id} claim ${evidence.claim}`).toBeGreaterThan(0);
-				for (const test of evidence.tests) {
-					expect(existsSync(resolve(REPOSITORY_ROOT, test)), `capability ${row.id} evidence ${test}`).toBe(true);
-				}
-			}
-		}
+	it("proves every claim from executable owner and focused test semantics", () => {
+		expect(() => verifyLine13T5CapabilityManifest(LINE13_T5_CAPABILITY_TRUTH, readRepositoryEvidence)).not.toThrow();
 	});
 
 	it("keeps the baseline and Line 12A descriptions inside their evidenced scope", () => {
@@ -138,26 +158,69 @@ describe("Line 13 T5 capability truth manifest", () => {
 		);
 	});
 
-	it("rejects description overclaim, missing claims, status inflation, and narrower test evidence", () => {
+	it("rejects description overclaim and missing claims", () => {
 		const overclaim = mutableManifest();
 		rowById(overclaim, 69).description = `${String(rowById(overclaim, 69).description)} WebSocket is implemented.`;
-		expect(() => verifyLine13T5CapabilityManifest(overclaim)).toThrow("description must be derived");
+		expect(() => verifyLine13T5CapabilityManifest(overclaim, readRepositoryEvidence)).toThrow(
+			"description must be derived",
+		);
 
 		const missingClaim = mutableManifest();
 		const mcpRow = rowById(missingClaim, 138);
 		mcpRow.evidence = (mcpRow.evidence as Array<Record<string, unknown>>).slice(0, 3);
-		expect(() => verifyLine13T5CapabilityManifest(missingClaim)).toThrow("implemented claim set");
+		expect(() => verifyLine13T5CapabilityManifest(missingClaim, readRepositoryEvidence)).toThrow(
+			"implemented claim set",
+		);
+	});
 
+	it("rejects partial or unavailable behavior promoted to implemented", () => {
 		const inflated = mutableManifest();
-		rowById(inflated, 136).status = "implemented";
-		expect(() => verifyLine13T5CapabilityManifest(inflated)).toThrow("status must be partial");
+		rowById(inflated, 111).status = "implemented";
+		expect(() => verifyLine13T5CapabilityManifest(inflated, readRepositoryEvidence)).toThrow("status must be partial");
 
-		const narrowerEvidence = mutableManifest();
-		const continuationRow = rowById(narrowerEvidence, 113);
-		const continuationEvidence = continuationRow.evidence as Array<Record<string, unknown>>;
-		const external = continuationEvidence.find((entry) => entry.claim === "external-continuation");
-		if (external === undefined) throw new Error("missing external continuation evidence");
-		external.tests = ["packages/coding-agent/test/subagent-fork-provider.test.ts"];
-		expect(() => verifyLine13T5CapabilityManifest(narrowerEvidence)).toThrow("is missing required test");
+		const unavailable = mutableManifest();
+		const localAvailability = evidenceByClaim(rowById(unavailable, 111), "native-provider-local-availability");
+		localAvailability.behavior = "The remote agent_runtime_host provider is unavailable.";
+		rebuildDescription(rowById(unavailable, 111));
+		expect(() => verifyLine13T5CapabilityManifest(unavailable, readRepositoryEvidence)).toThrow(
+			"describes unavailable behavior as implemented",
+		);
+	});
+
+	it("rejects altered behavior, an existing but wrong owner, and irrelevant existing tests", () => {
+		const alteredBehavior = mutableManifest();
+		const continuation = evidenceByClaim(rowById(alteredBehavior, 113), "external-continuation");
+		continuation.behavior = "External continuation starts a replacement vendor attempt after restart.";
+		rebuildDescription(rowById(alteredBehavior, 113));
+		expect(() => verifyLine13T5CapabilityManifest(alteredBehavior, readRepositoryEvidence)).toThrow(
+			"behavior does not match executable semantics",
+		);
+
+		const wrongOwner = mutableManifest();
+		evidenceByClaim(rowById(wrongOwner, 132), "execution-policy-reference").ownerModule =
+			"packages/coding-agent/src/core/execution-policy.ts";
+		expect(() => verifyLine13T5CapabilityManifest(wrongOwner, readRepositoryEvidence)).toThrow(
+			"owner does not implement the claimed behavior",
+		);
+
+		const irrelevantTests = mutableManifest();
+		evidenceByClaim(rowById(irrelevantTests, 136), "worker-credential-target").tests = [
+			"packages/coding-agent/test/external-agent-integration.test.ts",
+		];
+		expect(() => verifyLine13T5CapabilityManifest(irrelevantTests, readRepositoryEvidence)).toThrow(
+			"tests do not match executable evidence",
+		);
+	});
+
+	it("rejects evidence files whose required behavioral assertion is removed", () => {
+		const targetPath = "packages/coding-agent/test/external-agent-connector-lifecycle.test.ts";
+		const marker = `it("resumes only an existing mapped Attempt when capability is supported"`;
+		const mutatedReader = (path: string): string => {
+			const content = readRepositoryEvidence(path);
+			return path === targetPath ? content.replace(marker, "removed semantic regression") : content;
+		};
+		expect(() => verifyLine13T5CapabilityManifest(LINE13_T5_CAPABILITY_TRUTH, mutatedReader)).toThrow(
+			"is missing semantic marker",
+		);
 	});
 });
