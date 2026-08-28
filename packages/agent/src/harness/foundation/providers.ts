@@ -73,7 +73,7 @@ export interface ExternalAgentConnector extends TaskExecutorProvider {
 }
 export interface ToolGatewayContext { schemaVersion: 1; bindingId: string; bindingEpochId: string; taskId: string; dispatchId?: string; providerId?: string; attemptId?: string; agentInstanceId?: string; operationId?: string; }
 export interface ToolGatewayRequest { schemaVersion: 1; toolCallId: string; toolName: string; namespace?: string; originalArguments: FoundationJsonValue; context: ToolGatewayContext; idempotencyKey?: string; deadlineAt?: number; }
-export interface ToolExecutionResult { schemaVersion: 1; toolCallId: string; toolName: string; ok: boolean; sideEffectState: SideEffectState; artifacts?: readonly ArtifactRef[]; error?: PublicExecutionError; toolReceiptRef?: string; }
+export interface ToolExecutionResult { schemaVersion: 1; toolCallId: string; toolName: string; ok: boolean; sideEffectState: SideEffectState; result?: FoundationJsonValue; artifacts?: readonly ArtifactRef[]; error?: PublicExecutionError; toolReceiptRef?: string; }
 export interface ToolGateway extends FoundationProvider { readonly providerClass: "gateway"; execute(request: ToolGatewayRequest, options?: { signal?: AbortSignal }): Promise<Result<ToolExecutionResult, FoundationError>>; }
 export interface ScopedModelRequest { schemaVersion: 1; requestId: string; modelProfileRevision: RevisionReference; bindingEpochId: string; taskId: string; attemptId?: string; agentInstanceId?: string; input: FoundationJsonValue; }
 export interface ScopedModelResult { schemaVersion: 1; requestId: string; usage: BudgetUsage; stopReason: "stop" | "length" | "tool_use" | "error" | "aborted"; error?: PublicExecutionError; }
@@ -106,7 +106,8 @@ export const ScopedModelRequestSchema = Type.Object({ schemaVersion: Type.Litera
 export const TransportObserverCursorSchema = Type.Object({ schemaVersion: Type.Literal(1), sessionId: Type.String({ minLength: 1 }), sequence: Type.Integer({ minimum: 0 }), catalogVersion: Type.Literal(1) }, { additionalProperties: false });
 export const TransportInitializeResultSchema = Type.Object({ schemaVersion: Type.Literal(1), protocolVersion: Type.Literal(1), features: Type.Array(Type.String({ minLength: 1 })) }, { additionalProperties: false });
 export const ChildSpawnResultSchema = Type.Object({ schemaVersion: Type.Literal(1), attempt: AttemptSchema, agentInstance: AgentInstanceSchema, initialBindingEpoch: BindingEpochSchema }, { additionalProperties: false });
-export const ToolExecutionResultSchema = Type.Object({ schemaVersion: Type.Literal(1), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), ok: Type.Boolean(), sideEffectState: Type.Union([Type.Literal("none"), Type.Literal("unknown"), Type.Literal("side_effect_unknown")]), artifacts: Type.Optional(Type.Array(ArtifactRefSchema)), error: Type.Optional(PublicExecutionErrorSchema), toolReceiptRef: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
+export const TOOL_EXECUTION_RESULT_MAX_BYTES = 1024 * 1024;
+export const ToolExecutionResultSchema = Type.Object({ schemaVersion: Type.Literal(1), toolCallId: Type.String({ minLength: 1 }), toolName: Type.String({ minLength: 1 }), ok: Type.Boolean(), sideEffectState: Type.Union([Type.Literal("none"), Type.Literal("unknown"), Type.Literal("side_effect_unknown")]), result: Type.Optional(FoundationJsonValueSchema), artifacts: Type.Optional(Type.Array(ArtifactRefSchema)), error: Type.Optional(PublicExecutionErrorSchema), toolReceiptRef: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
 export const ScopedModelResultSchema = Type.Object({ schemaVersion: Type.Literal(1), requestId: Type.String({ minLength: 1 }), usage: BudgetUsageSchema, stopReason: Type.Union([Type.Literal("stop"), Type.Literal("length"), Type.Literal("tool_use"), Type.Literal("error"), Type.Literal("aborted")]), error: Type.Optional(PublicExecutionErrorSchema) }, { additionalProperties: false });
 export const ArtifactPutResultSchema = Type.Object({ schemaVersion: Type.Literal(1), ref: Type.String({ minLength: 1 }), sizeBytes: Type.Integer({ minimum: 0 }) }, { additionalProperties: false });
 export const ArtifactVerifyResultSchema = Type.Object({ schemaVersion: Type.Literal(1), digestValid: Type.Boolean() }, { additionalProperties: false });
@@ -141,7 +142,16 @@ export function validateChildSpawnRequest(value: unknown): ResultValue<ChildSpaw
 export function validateToolGatewayRequest(value: unknown): ResultValue<ToolGatewayRequest, FoundationError> { return validateProviderBoundary<ToolGatewayRequest>(ToolGatewayRequestSchema, value, "tool_gateway_request", ["originalArguments"]); }
 export function validateScopedModelRequest(value: unknown): ResultValue<ScopedModelRequest, FoundationError> { return validateProviderBoundary<ScopedModelRequest>(ScopedModelRequestSchema, value, "scoped_model_request", ["modelProfileRevision", "input"]); }
 export function validateChildSpawnResult(value: unknown): ResultValue<ChildSpawnResult, FoundationError> { return validateProviderBoundary<ChildSpawnResult>(ChildSpawnResultSchema, value, "child_spawn_result"); }
-export function validateToolExecutionResult(value: unknown): ResultValue<ToolExecutionResult, FoundationError> { return validateProviderBoundary<ToolExecutionResult>(ToolExecutionResultSchema, value, "tool_execution_result"); }
+export function validateToolExecutionResult(value: unknown): ResultValue<ToolExecutionResult, FoundationError> {
+	const checked = validateProviderBoundary<ToolExecutionResult>(ToolExecutionResultSchema, value, "tool_execution_result", ["result"]);
+	if (!checked.ok || checked.value.result === undefined) return checked;
+	const resultBytes = new TextEncoder().encode(canonicalFoundationJson(checked.value.result)).byteLength;
+	return resultBytes <= TOOL_EXECUTION_RESULT_MAX_BYTES
+		? checked
+		: Result.err(new FoundationError("foundation_schema_invalid_shape", "tool_execution_result result exceeds the bounded JSON size", {
+			details: { resultBytes, maxBytes: TOOL_EXECUTION_RESULT_MAX_BYTES },
+		}));
+}
 export function validateScopedModelResult(value: unknown): ResultValue<ScopedModelResult, FoundationError> { return validateProviderBoundary<ScopedModelResult>(ScopedModelResultSchema, value, "scoped_model_result"); }
 export function validateArtifactPutResult(value: unknown): ResultValue<ArtifactPutResult, FoundationError> { return validateProviderBoundary<ArtifactPutResult>(ArtifactPutResultSchema, value, "artifact_put_result"); }
 export function validateArtifactVerifyResult(value: unknown): ResultValue<ArtifactVerifyResult, FoundationError> { return validateProviderBoundary<ArtifactVerifyResult>(ArtifactVerifyResultSchema, value, "artifact_verify_result"); }
@@ -166,8 +176,15 @@ export function serializeScopedModelRequest(value: ScopedModelRequest): string {
 export function parseScopedModelRequest(text: string): ResultValue<ScopedModelRequest, FoundationError> { return parseExactShape(ScopedModelRequestSchema, text, "scoped_model_request"); }
 export function serializeChildSpawnResult(value: ChildSpawnResult): string { return serializeExactShape(ChildSpawnResultSchema, value, "child_spawn_result"); }
 export function parseChildSpawnResult(text: string): ResultValue<ChildSpawnResult, FoundationError> { return parseExactShape(ChildSpawnResultSchema, text, "child_spawn_result"); }
-export function serializeToolExecutionResult(value: ToolExecutionResult): string { return serializeExactShape(ToolExecutionResultSchema, value, "tool_execution_result"); }
-export function parseToolExecutionResult(text: string): ResultValue<ToolExecutionResult, FoundationError> { return parseExactShape(ToolExecutionResultSchema, text, "tool_execution_result"); }
+export function serializeToolExecutionResult(value: ToolExecutionResult): string {
+	const checked = validateToolExecutionResult(value);
+	if (!checked.ok) throw checked.error;
+	return serializeExactShape(ToolExecutionResultSchema, checked.value, "tool_execution_result");
+}
+export function parseToolExecutionResult(text: string): ResultValue<ToolExecutionResult, FoundationError> {
+	const parsed = parseExactShape<ToolExecutionResult>(ToolExecutionResultSchema, text, "tool_execution_result");
+	return parsed.ok ? validateToolExecutionResult(parsed.value) : parsed;
+}
 export function serializeScopedModelResult(value: ScopedModelResult): string { return serializeExactShape(ScopedModelResultSchema, value, "scoped_model_result"); }
 export function parseScopedModelResult(text: string): ResultValue<ScopedModelResult, FoundationError> { return parseExactShape(ScopedModelResultSchema, text, "scoped_model_result"); }
 export function serializeFoundationProviderCapability(value: FoundationProviderCapability): string { return serializeExactShape(FoundationProviderCapabilitySchema, value, "provider_capability"); }

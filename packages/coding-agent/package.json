@@ -43,6 +43,7 @@
 		"prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
 	},
 	"dependencies": {
+		"@agentclientprotocol/sdk": "1.4.0",
 		"@aos-agent/agent-core": "^0.84.3",
 		"@aos-agent/ai": "^0.84.3",
 		"@aos-agent/client": "^0.84.3",

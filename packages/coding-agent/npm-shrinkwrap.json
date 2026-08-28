@@ -9,6 +9,7 @@
 			"version": "0.84.3",
 			"license": "MIT",
 			"dependencies": {
+				"@agentclientprotocol/sdk": "1.4.0",
 				"@aos-agent/agent-core": "^0.84.3",
 				"@aos-agent/ai": "^0.84.3",
 				"@aos-agent/client": "^0.84.3",
@@ -40,6 +41,15 @@
 			},
 			"engines": {
 				"node": ">=22.19.0"
+			}
+		},
+		"node_modules/@agentclientprotocol/sdk": {
+			"version": "1.4.0",
+			"resolved": "https://registry.npmjs.org/@agentclientprotocol/sdk/-/sdk-1.4.0.tgz",
+			"integrity": "sha512-/eufudw+aFY1LKLolT6yFE6UMmYRl7fMJ/DEONSIyR6wI3slHWITBsANRGqXEY8FRzqUxwh7QEaGiZHcJPVThg==",
+			"license": "Apache-2.0",
+			"peerDependencies": {
+				"zod": "^3.25.0 || ^4.0.0"
 			}
 		},
 		"node_modules/@anthropic-ai/sdk": {

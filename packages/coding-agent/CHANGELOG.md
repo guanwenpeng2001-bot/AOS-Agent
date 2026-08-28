@@ -12,6 +12,7 @@
 
 ### Added
 
+- Private, explicit-opt-in ACP stable-v1 driver composition using the pinned official SDK. ACP session lifecycle and client operations translate through the existing durable External Connector and Tool Gateway/Policy path with bounded transport, canonical workspace paths, and no default activation or public ACP export.
 - Open External Connector registry with trusted constructed-instance admission, pinned descriptor revisions and capability digests, required handler evidence, and provider-neutral selection/conformance.
 - Public RuntimeSession surface adapters for TUI, print, headless JSON, RPC, SDK, and Automation Host. Each adapter delegates to the same canonical AgentSession and records its surface on the durable ProductPrompt ingress fact before the existing Task, Binding, Dispatch, AttemptReceipt, TaskResult, and RunReceipt chain.
 - Foundation Prompt Task composition root: the single coding-agent adapter now persists the Task before resolving exact Context/Model/Capability/MCP/Policy/Sandbox/Audit/Run/Gate/Graph/Credential/External-Agent binding facts, then delegates the correlated Dispatch, Attempt, Harness run, and three-layer receipt chain to AgentHarness. Missing, mismatched, or unfingerprinted dependencies fail closed before provider execution.
