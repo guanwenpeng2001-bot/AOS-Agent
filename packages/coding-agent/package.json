@@ -76,8 +76,9 @@
 	},
 	"optionalDependencies": {
 		"@anthropic-ai/claude-agent-sdk": "0.3.246",
+		"@anthropic-ai/sdk": "0.120.0",
 		"@mariozechner/clipboard": "0.3.9",
-		"zod": "3.25.76"
+		"zod": "4.4.3"
 	},
 	"devDependencies": {
 		"@types/cross-spawn": "6.0.6",

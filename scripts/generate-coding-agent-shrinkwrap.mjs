@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { satisfies, validRange } from "semver";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -38,6 +39,13 @@ function packageDependencies(entry) {
 		...(entry.dependencies ?? {}),
 		...(entry.optionalDependencies ?? {}),
 	};
+}
+
+function prioritizedPackageDependencies(entry) {
+	return [
+		...Object.entries(entry.optionalDependencies ?? {}),
+		...Object.entries(entry.dependencies ?? {}),
+	];
 }
 
 function sortedObject(object) {
@@ -133,6 +141,42 @@ function registryTarballUrl(packageName, version) {
 	return `https://registry.npmjs.org/${packageName}/-/${tarballName}-${version}.tgz`;
 }
 
+function projectLockPath(lockPath, workspaceOutputPaths) {
+	const marker = "/node_modules/";
+	const markerIndex = lockPath.indexOf(marker);
+	if (markerIndex === -1) {
+		return lockPath;
+	}
+
+	const workspaceLockPath = lockPath.slice(0, markerIndex);
+	const workspaceOutputPath = workspaceOutputPaths.get(workspaceLockPath);
+	if (workspaceOutputPath === undefined) {
+		return lockPath;
+	}
+
+	const dependencyPath = lockPath.slice(markerIndex + marker.length);
+	return workspaceOutputPath ? `${workspaceOutputPath}/node_modules/${dependencyPath}` : `node_modules/${dependencyPath}`;
+}
+
+function matchesDependencySpec(entry, spec) {
+	if (!spec) {
+		return true;
+	}
+	if (!entry || typeof entry.version !== "string") {
+		return false;
+	}
+	if (entry.version === spec) {
+		return true;
+	}
+
+	try {
+		const range = validRange(spec);
+		return range !== null && satisfies(entry.version, range, { includePrerelease: true });
+	} catch {
+		return false;
+	}
+}
+
 function getInternalWorkspaces(lockPackages) {
 	const workspaces = new Map();
 
@@ -146,6 +190,8 @@ function getInternalWorkspaces(lockPackages) {
 
 		workspaces.set(entry.name, {
 			lockPath,
+			sourceLockPath:
+				lockPath === "packages/coding-agent" ? lockPath : `packages/coding-agent/node_modules/${entry.name}`,
 			packageJson: readJson(join(repoRoot, lockPath, "package.json")),
 		});
 	}
@@ -153,7 +199,7 @@ function getInternalWorkspaces(lockPackages) {
 	return workspaces;
 }
 
-function resolveExternalDependency(lockPackages, packageName, fromLockPath) {
+function resolveExternalDependency(lockPackages, packageName, fromLockPath, requestedSpec, allowFallback = true) {
 	const candidateDirs = [];
 	let current = fromLockPath;
 
@@ -176,14 +222,22 @@ function resolveExternalDependency(lockPackages, packageName, fromLockPath) {
 		tried.add(candidate);
 
 		const entry = lockPackages[candidate];
-		if (entry && !entry.link) {
+		if (entry && !entry.link && matchesDependencySpec(entry, requestedSpec)) {
 			return candidate;
 		}
+	}
+	if (!allowFallback) {
+		throw new Error(`Cannot resolve ${packageName} from ${fromLockPath || "root"}. No matching lockfile entry found.`);
 	}
 
 	const suffix = `node_modules/${packageName}`;
 	const matches = Object.entries(lockPackages)
-		.filter(([lockPath, entry]) => !entry.link && (lockPath === suffix || lockPath.endsWith(`/${suffix}`)))
+		.filter(
+			([lockPath, entry]) =>
+				!entry.link &&
+				(lockPath === suffix || lockPath.endsWith(`/${suffix}`)) &&
+				matchesDependencySpec(entry, requestedSpec),
+		)
 		.map(([lockPath]) => lockPath);
 
 	if (matches.length === 1) {
@@ -191,37 +245,68 @@ function resolveExternalDependency(lockPackages, packageName, fromLockPath) {
 	}
 
 	throw new Error(
-		`Cannot resolve ${packageName} from ${fromLockPath || "root"}. ` +
+		`Cannot resolve ${packageName}${requestedSpec ? `@${requestedSpec}` : ""} from ${fromLockPath || "root"}. ` +
 			(matches.length > 1 ? `Matches: ${matches.join(", ")}` : "No matching lockfile entry found."),
 	);
 }
 
-function addInternalWorkspace(shrinkwrapPackages, addedPaths, queue, name, workspace) {
+function addInternalWorkspace(shrinkwrapPackages, addedPaths, sourceByOutputPath, queue, name, workspace) {
 	const packageJson = workspace.packageJson;
 	const outputPath = `node_modules/${name}`;
+	const existingSourcePath = sourceByOutputPath.get(outputPath);
+	if (existingSourcePath !== undefined && existingSourcePath !== workspace.lockPath) {
+		throw new Error(`Cannot project ${workspace.lockPath} to ${outputPath}; already mapped from ${existingSourcePath}.`);
+	}
+	sourceByOutputPath.set(outputPath, workspace.lockPath);
 	const entry = copyPackageJsonEntry(packageJson, { includeName: false });
 	entry.resolved = registryTarballUrl(name, packageJson.version);
 
 	shrinkwrapPackages[outputPath] = sortedPackageEntry(entry);
 	addedPaths.add(outputPath);
 
-	for (const dependencyName of Object.keys(packageDependencies(packageJson))) {
-		queue.push({ name: dependencyName, from: outputPath });
+	for (const [dependencyName, dependencySpec] of prioritizedPackageDependencies(packageJson)) {
+		queue.push({ name: dependencyName, spec: dependencySpec, from: workspace.sourceLockPath });
 	}
 }
 
-function addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue, name, from) {
-	const lockPath = resolveExternalDependency(lockPackages, name, from);
-	if (addedPaths.has(lockPath)) {
+function addExternalPackage(
+	lockPackages,
+	shrinkwrapPackages,
+	addedPaths,
+	sourceByOutputPath,
+	workspaceOutputPaths,
+	queue,
+	name,
+	spec,
+	from,
+) {
+	const projectedFrom = projectLockPath(from, workspaceOutputPaths);
+	try {
+		const existingOutputPath = resolveExternalDependency(shrinkwrapPackages, name, projectedFrom, spec, false);
+		if (sourceByOutputPath.has(existingOutputPath)) {
+			return;
+		}
+	} catch {
+		// Resolve the dependency from the authoritative workspace lock below.
+	}
+
+	const lockPath = resolveExternalDependency(lockPackages, name, from, spec);
+	const outputPath = projectLockPath(lockPath, workspaceOutputPaths);
+	if (addedPaths.has(outputPath)) {
+		const existingSourcePath = sourceByOutputPath.get(outputPath);
+		if (existingSourcePath !== undefined && existingSourcePath !== lockPath) {
+			throw new Error(`Cannot project ${lockPath} to ${outputPath}; already mapped from ${existingSourcePath}.`);
+		}
 		return;
 	}
 
 	const entry = lockPackages[lockPath];
-	shrinkwrapPackages[lockPath] = copyLockEntry(entry);
-	addedPaths.add(lockPath);
+	shrinkwrapPackages[outputPath] = copyLockEntry(entry);
+	addedPaths.add(outputPath);
+	sourceByOutputPath.set(outputPath, lockPath);
 
-	for (const dependencyName of Object.keys(packageDependencies(entry))) {
-		queue.push({ name: dependencyName, from: lockPath });
+	for (const [dependencyName, dependencySpec] of Object.entries(packageDependencies(entry))) {
+		queue.push({ name: dependencyName, spec: dependencySpec, from: lockPath });
 	}
 }
 
@@ -232,6 +317,9 @@ function validateShrinkwrap(shrinkwrap, internalNames) {
 	const seenAllowedInstallScriptPackages = new Set();
 
 	for (const [lockPath, entry] of Object.entries(shrinkwrap.packages)) {
+		if (lockPath && !lockPath.startsWith("node_modules/")) {
+			errors.push(`${lockPath} is not projected into the package install layout`);
+		}
 		const packageName = packageNameFromLockPath(lockPath);
 		if (packageName) {
 			includedPackageNames.add(packageName);
@@ -300,12 +388,19 @@ function generateShrinkwrap() {
 	const lockPackages = rootLock.packages;
 	const codingAgentPackage = readJson(join(codingAgentDir, "package.json"));
 	const internalWorkspaces = getInternalWorkspaces(lockPackages);
+	const workspaceOutputPaths = new Map(
+		[...internalWorkspaces.values()].map((workspace) => [
+			workspace.lockPath,
+			workspace.lockPath === "packages/coding-agent" ? "" : `node_modules/${workspace.packageJson.name}`,
+		]),
+	);
 	const shrinkwrapPackages = {
 		"": copyPackageJsonEntry(codingAgentPackage, { includeName: true }),
 	};
 	const addedPaths = new Set([""]);
+	const sourceByOutputPath = new Map([["", ""]]);
 	const internalNames = new Set();
-	const queue = Object.keys(packageDependencies(codingAgentPackage)).map((name) => ({ name, from: "" }));
+	const queue = prioritizedPackageDependencies(codingAgentPackage).map(([name, spec]) => ({ name, spec, from: "" }));
 
 	while (queue.length > 0) {
 		const item = queue.shift();
@@ -318,12 +413,22 @@ function generateShrinkwrap() {
 			const outputPath = `node_modules/${item.name}`;
 			internalNames.add(item.name);
 			if (!addedPaths.has(outputPath)) {
-				addInternalWorkspace(shrinkwrapPackages, addedPaths, queue, item.name, workspace);
+				addInternalWorkspace(shrinkwrapPackages, addedPaths, sourceByOutputPath, queue, item.name, workspace);
 			}
 			continue;
 		}
 
-		addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue, item.name, item.from);
+		addExternalPackage(
+			lockPackages,
+			shrinkwrapPackages,
+			addedPaths,
+			sourceByOutputPath,
+			workspaceOutputPaths,
+			queue,
+			item.name,
+			item.spec,
+			item.from,
+		);
 	}
 
 	const shrinkwrap = {
