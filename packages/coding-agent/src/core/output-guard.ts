@@ -1,3 +1,5 @@
+import { BoundedProtocolWriter, DEFAULT_BOUNDED_PROTOCOL_LIMITS } from "./bounded-protocol.ts";
+
 interface StdoutTakeoverState {
 	rawStdoutWrite: (chunk: string, callback?: (error?: Error | null) => void) => boolean;
 	rawStderrWrite: (chunk: string, callback?: (error?: Error | null) => void) => boolean;
@@ -8,8 +10,6 @@ let stdoutTakeoverState: StdoutTakeoverState | undefined;
 
 const RAW_STDOUT_RETRY_DELAY_MS = 10;
 
-let rawStdoutWriteTail: Promise<void> = Promise.resolve();
-
 function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
 	if (stdoutTakeoverState) {
 		return stdoutTakeoverState.rawStdoutWrite;
@@ -17,17 +17,27 @@ function getRawStdoutWrite(): StdoutTakeoverState["rawStdoutWrite"] {
 	return process.stdout.write.bind(process.stdout) as StdoutTakeoverState["rawStdoutWrite"];
 }
 
-async function writeRawStdoutChunk(text: string): Promise<void> {
+async function writeRawStdoutChunk(text: string, signal: AbortSignal): Promise<void> {
 	while (true) {
+		if (signal.aborted) throw abortReason(signal);
 		try {
 			await new Promise<void>((resolve, reject) => {
+				let settled = false;
+				const finish = (error?: Error): void => {
+					if (settled) return;
+					settled = true;
+					signal.removeEventListener("abort", onAbort);
+					if (error === undefined) resolve();
+					else reject(error);
+				};
+				const onAbort = (): void => finish(abortReason(signal));
+				signal.addEventListener("abort", onAbort, { once: true });
 				try {
 					getRawStdoutWrite()(text, (error) => {
-						if (error) reject(error);
-						else resolve();
+						finish(error ?? undefined);
 					});
 				} catch (error) {
-					reject(error instanceof Error ? error : new Error(String(error)));
+					finish(error instanceof Error ? error : new Error(String(error)));
 				}
 			});
 			return;
@@ -37,10 +47,27 @@ async function writeRawStdoutChunk(text: string): Promise<void> {
 			if (code !== "ENOBUFS" && code !== "EAGAIN" && code !== "EWOULDBLOCK") {
 				throw writeError;
 			}
-			await new Promise<void>((resolve) => setTimeout(resolve, RAW_STDOUT_RETRY_DELAY_MS));
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					signal.removeEventListener("abort", onAbort);
+					resolve();
+				}, RAW_STDOUT_RETRY_DELAY_MS);
+				const onAbort = (): void => {
+					clearTimeout(timer);
+					signal.removeEventListener("abort", onAbort);
+					reject(abortReason(signal));
+				};
+				signal.addEventListener("abort", onAbort, { once: true });
+			});
 		}
 	}
 }
+
+const rawStdoutProtocol = new BoundedProtocolWriter<string>({
+	...DEFAULT_BOUNDED_PROTOCOL_LIMITS,
+	byteLength: (text) => Buffer.byteLength(text, "utf8"),
+	write: (text, signal) => writeRawStdoutChunk(text, signal),
+});
 
 export function takeOverStdout(): void {
 	if (stdoutTakeoverState) {
@@ -86,23 +113,26 @@ export function writeRawStdout(text: string): void {
 	if (text.length === 0) {
 		return;
 	}
-	rawStdoutWriteTail = rawStdoutWriteTail.then(() => writeRawStdoutChunk(text));
-	void rawStdoutWriteTail.catch(() => {
-		process.exit(1);
+	const pending = rawStdoutProtocol.write(text);
+	void pending.catch(async () => {
+		await rawStdoutProtocol.close().catch(() => {});
+		try {
+			process.exit(1);
+		} catch {
+			// Tests and embedders may replace process.exit with a throwing sentinel.
+		}
 	});
 }
 
 export async function waitForRawStdoutBackpressure(): Promise<void> {
-	while (true) {
-		const tail = rawStdoutWriteTail;
-		await tail;
-		if (tail === rawStdoutWriteTail) {
-			return;
-		}
-	}
+	await rawStdoutProtocol.waitForDrain();
 }
 
 export async function flushRawStdout(): Promise<void> {
-	await waitForRawStdoutBackpressure();
-	await writeRawStdoutChunk("");
+	const marker = rawStdoutProtocol.write("");
+	await Promise.all([marker, rawStdoutProtocol.waitForDrain()]);
+}
+
+function abortReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("Raw stdout write aborted");
 }
