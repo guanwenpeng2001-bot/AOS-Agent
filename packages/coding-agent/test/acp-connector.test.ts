@@ -476,6 +476,34 @@ describe("private ACP stable-v1 connector driver", () => {
 		}).ok).toBe(false);
 	});
 
+	it("settles a rejected permission gateway request as cancelled", async () => {
+		const cwd = await workspace();
+		let resolvePermission: ((value: unknown) => void) | undefined;
+		const permission = new Promise<unknown>((resolve) => {
+			resolvePermission = resolve;
+		});
+		const fixture = fakeAgent({
+			onPrompt: async ({ client }) => {
+				resolvePermission?.(await client.request(CLIENT_METHODS.session_request_permission, {
+					sessionId,
+					toolCall: { toolCallId: "permission-timeout", title: "write", kind: "edit" },
+					options: [{ optionId: "allow-once", name: "Allow", kind: "allow_once" }],
+				}));
+				return { stopReason: "end_turn" };
+			},
+		});
+		const driver = new PrivateAcpStableV1Driver(driverOptions(cwd, transportFactory(fixture.app), {
+			limits: { requestTimeoutMs: 250 },
+		}));
+		const handle = await driver.spawn(spawnRequest({ operationNonce: "nonce-permission-timeout" }));
+		const iterator = driver.events(handle)[Symbol.asyncIterator]();
+		expect((await nextDriverEvent(iterator)).type).toBe("started");
+		expect((await nextToolEvent(iterator)).request.toolName).toBe("acp.permission.request");
+		await expect(permission).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+		await expect(driver.read(handle)).rejects.toMatchObject({ code: "external_resource_limit_exceeded" });
+		await driver.dispose();
+	}, 2_000);
+
 	it("loads a stable mapped session on resume and reports crash reconciliation as ambiguous", async () => {
 		const cwd = await workspace();
 		const fixture = fakeAgent();
@@ -513,8 +541,8 @@ describe("private ACP stable-v1 connector driver", () => {
 		await driver.dispose();
 	});
 
-	it("cancels before and after a routed side effect without inventing terminal authority", async () => {
-		for (const phase of ["before", "after"] as const) {
+	it("cancels before, during, and after a routed side effect without inventing terminal authority", async () => {
+		for (const phase of ["before", "pending", "after"] as const) {
 			const cwd = await workspace();
 			let completeCancellation: (() => void) | undefined;
 			const cancelled = new Promise<void>((resolve) => {
@@ -522,12 +550,16 @@ describe("private ACP stable-v1 connector driver", () => {
 			});
 			const fixture = fakeAgent({
 				onPrompt: async ({ client }) => {
-					if (phase === "after") {
-						await client.request(CLIENT_METHODS.fs_write_text_file, {
-							sessionId,
-							path: path.join(cwd, "cancelled.txt"),
-							content: "effect",
-						});
+					if (phase !== "before") {
+						try {
+							await client.request(CLIENT_METHODS.fs_write_text_file, {
+								sessionId,
+								path: path.join(cwd, "cancelled.txt"),
+								content: "effect",
+							});
+						} catch (error) {
+							if (phase !== "pending") throw error;
+						}
 					}
 					await cancelled;
 					return { stopReason: "cancelled" };
@@ -536,15 +568,17 @@ describe("private ACP stable-v1 connector driver", () => {
 			});
 			const driver = new PrivateAcpStableV1Driver(driverOptions(cwd, transportFactory(fixture.app)));
 			const handle = await driver.spawn(spawnRequest({ operationNonce: `nonce-${phase}` }));
-			if (phase === "after") {
+			if (phase !== "before") {
 				const iterator = driver.events(handle)[Symbol.asyncIterator]();
 				expect((await nextDriverEvent(iterator)).type).toBe("started");
 				const effect = await nextToolEvent(iterator);
-				await settleTool(driver, handle, effect, undefined, undefined, "side_effect_unknown");
+				if (phase === "after") {
+					await settleTool(driver, handle, effect, undefined, undefined, "side_effect_unknown");
+				}
 			}
 			await expect(driver.cancel(handle)).resolves.toMatchObject({
 				status: "cancelled",
-				sideEffectState: phase === "after" ? "side_effect_unknown" : "none",
+				sideEffectState: phase === "before" ? "none" : "side_effect_unknown",
 			});
 			expect(fixture.state.cancelNotifications).toBe(1);
 			await driver.dispose();

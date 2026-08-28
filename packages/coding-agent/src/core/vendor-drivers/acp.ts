@@ -82,6 +82,12 @@ const ACP_TOOL_NAMES = Object.freeze({
 	waitForTerminalExit: "acp.terminal.wait_for_exit",
 	killTerminal: "acp.terminal.kill",
 });
+const ACP_SIDE_EFFECTING_TOOL_NAMES: ReadonlySet<string> = new Set([
+	ACP_TOOL_NAMES.writeTextFile,
+	ACP_TOOL_NAMES.createTerminal,
+	ACP_TOOL_NAMES.releaseTerminal,
+	ACP_TOOL_NAMES.killTerminal,
+]);
 
 export const PRIVATE_ACP_STABLE_V1_LIMITS = Object.freeze({
 	maxFrameBytes: 256 * 1024,
@@ -169,6 +175,7 @@ interface Deferred<T> {
 interface PendingClientOperation {
 	readonly toolName: string;
 	readonly permission: boolean;
+	readonly sideEffecting: boolean;
 	readonly accept: (result: ToolExecutionResult) => void;
 	readonly reject: (error: unknown) => void;
 	readonly cancelPermission?: () => void;
@@ -1160,6 +1167,9 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 	): Promise<ExternalConnectorTerminalEvidence | undefined> {
 		const operation = this.#requireOperation(handle);
 		operation.cancelRequested = true;
+		if ([...operation.pending.values()].some((pending) => pending.sideEffecting)) {
+			operation.sideEffectState = "side_effect_unknown";
+		}
 		for (const pending of operation.pending.values()) {
 			if (pending.permission) pending.cancelPermission?.();
 			pending.reject(RequestError.requestCancelled());
@@ -1340,6 +1350,7 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 		operation.pending.set(toolCallId, {
 			toolName,
 			permission: options.permission === true,
+			sideEffecting: ACP_SIDE_EFFECTING_TOOL_NAMES.has(toolName),
 			accept: result.resolve,
 			reject: result.reject,
 			...(options.cancelPermission === undefined ? {} : { cancelPermission: options.cancelPermission }),
@@ -1382,7 +1393,7 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 		const outcome = await Promise.race([
 			gateway.then(
 				(result) => permissionResponse(params, result),
-				() => cancelled.promise,
+				() => ({ outcome: { outcome: "cancelled" as const } }),
 			),
 			cancelled.promise,
 		]);
