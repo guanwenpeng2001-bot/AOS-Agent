@@ -60,6 +60,11 @@ import {
 	runExternalConnectorHostOperation,
 	type ExternalConnectorSegmentDeadline,
 } from "./external-connector-supervisor.ts";
+import {
+	projectConnectorRuntimeStatus,
+	type ConnectorRuntimeStatus,
+	type ConnectorRuntimeStatusSource,
+} from "./connector-runtime-status.ts";
 import type { RuntimeClock } from "./runtime-clock.ts";
 
 /** The only current provider class admitted by the open connector registry. */
@@ -152,6 +157,8 @@ export interface ExternalConnectorRegistry {
 	readiness(): readonly ExternalConnectorReadinessStatus[];
 	/** Passive immutable readiness facts. No Connector or product operation is invoked. */
 	readinessSnapshots(): readonly ExternalConnectorReadinessSnapshot[];
+	/** Passive immutable runtime projection from readiness and a trusted aggregate source. */
+	runtimeStatus(): readonly ConnectorRuntimeStatus[];
 	/** Explicit bounded active probe. It never creates a vendor session or Attempt. */
 	probeReadiness(selection: ExternalConnectorSelection): Promise<ExternalConnectorReadinessStatus>;
 	dispose(): Promise<void>;
@@ -165,6 +172,8 @@ export interface ExternalConnectorRegistryOptions {
 	/** Re-read the trusted Host source before publishing or selecting a candidate. */
 	readonly readActivationSource?: (providerId: string) => unknown;
 	readonly readinessTtlMs?: number;
+	/** Passive in-memory aggregate source populated by later product composition. */
+	readonly runtimeStatusSource?: ConnectorRuntimeStatusSource;
 	/** Canonical Foundation Tool Gateway for this Session composition. */
 	readonly toolGateway?: ToolGateway;
 }
@@ -982,6 +991,9 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				"External Connector activation source captures and the current-source reader must be configured together",
 			);
 		}
+		if (options.runtimeStatusSource !== undefined && typeof options.runtimeStatusSource.read !== "function") {
+			throw new TypeError("External Connector runtime status source must expose a passive read method");
+		}
 		this.#options = options;
 		this.#readinessTtlMs = readinessTtlMs;
 		for (const sourceValue of activationSources) {
@@ -1691,6 +1703,29 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 
 	readinessSnapshots(): readonly ExternalConnectorReadinessSnapshot[] {
 		return Object.freeze([...this.#readinessSnapshots.values()]);
+	}
+
+	runtimeStatus(): readonly ConnectorRuntimeStatus[] {
+		const nowMs = this.#nowMs();
+		const source = this.#options.runtimeStatusSource;
+		return Object.freeze(
+			[...this.#readinessSnapshots.values()]
+				.sort((left, right) => left.providerId.localeCompare(right.providerId))
+				.map((readinessSnapshot) => {
+					let runtimeSnapshot: unknown;
+					try {
+						runtimeSnapshot = source?.read(readinessSnapshot.providerId);
+					} catch {
+						runtimeSnapshot = null;
+					}
+					return projectConnectorRuntimeStatus({
+						providerId: readinessSnapshot.providerId,
+						readinessSnapshot,
+						runtimeSnapshot,
+						nowMs,
+					});
+				}),
+		);
 	}
 
 	async probeReadiness(selection: ExternalConnectorSelection): Promise<ExternalConnectorReadinessStatus> {
