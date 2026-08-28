@@ -24,6 +24,7 @@ import {
 } from "../src/core/capability-registry.ts";
 import { assertSnapshotMetadataOnly } from "../src/core/context-engine.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "../src/core/resource-loader.ts";
+import type { ExecutionPolicyProfile } from "../src/core/execution-policy.ts";
 import type { SandboxHandle, SandboxProvider } from "../src/core/sandbox.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -165,6 +166,7 @@ function executionPolicySettings(options?: {
 	credentialApproval?: "allow" | "ask" | "deny";
 	credentialNames?: ReadonlyArray<string>;
 	environmentNames?: ReadonlyArray<string>;
+	protectedPaths?: ExecutionPolicyProfile["protectedPaths"];
 }) {
 	const profileId = options?.profileId ?? "locked";
 	const profile = {
@@ -200,6 +202,7 @@ function executionPolicySettings(options?: {
 				? {}
 				: { credentials: options?.credentialApproval ?? options?.credentialAction ?? ("allow" as const) }),
 		},
+		...(options?.protectedPaths === undefined ? {} : { protectedPaths: options.protectedPaths }),
 		rules:
 			options?.extensionInvoke === undefined
 				? []
@@ -1594,7 +1597,7 @@ describe("AgentSession capability binding integration", () => {
 							});
 						}
 					})(),
-				).rejects.toMatchObject({ code: "policy_denied" });
+				).rejects.toMatchObject({ code: "sandbox_required" });
 				expect(extensionHandlerCalls).toBe(0);
 			} finally {
 				session.dispose();
@@ -1622,7 +1625,7 @@ describe("AgentSession capability binding integration", () => {
 							},
 						},
 					}),
-				).rejects.toMatchObject({ code: "policy_denied" });
+				).rejects.toMatchObject({ code: "sandbox_required" });
 				expect(execStarted).toBe(false);
 			} finally {
 				session.dispose();
@@ -1657,12 +1660,64 @@ describe("AgentSession capability binding integration", () => {
 			try {
 				const command = session.extensionRunner.getCommand("exec-deny")!;
 				await expect(command.handler("", session.extensionRunner.createCommandContext())).rejects.toMatchObject({
-					code: "policy_denied",
+					code: "sandbox_required",
 				});
 				expect(existsSync(markerPath)).toBe(false);
 			} finally {
 				session.dispose();
 				if (existsSync(markerPath)) rmSync(markerPath, { force: true });
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("requires the strict raw-command path for every production caller", async () => {
+			let extensionExecCalls = 0;
+			let hostExecCalls = 0;
+			const extensionsResult = await createTestExtensionsResult([
+				{
+					name: "raw-command-host",
+					factory: (agent) => {
+						agent.registerCommand("raw-exec-host", {
+							handler: async (_args, ctx) => {
+								extensionExecCalls++;
+								await ctx.exec("raw-command", []);
+							},
+						});
+					},
+				},
+			]);
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({ process: "allow" }),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader({ extensionsResult }),
+				settingsManager: sessionSettings,
+			});
+			try {
+				await expect(
+					session.executeBash("raw-bash", undefined, {
+						id: "raw-bash-host",
+						operations: {
+							exec: async () => {
+								hostExecCalls++;
+								return { exitCode: 0 };
+							},
+						},
+					}),
+				).rejects.toMatchObject({ code: "sandbox_required" });
+				await expect(session.authorizeUserBashExtension("raw-authorize", { id: "raw-authorize-host" })).rejects.toMatchObject({
+					code: "sandbox_required",
+				});
+				const command = session.extensionRunner.getCommand("raw-exec-host");
+				expect(command).toBeDefined();
+				await expect(command!.handler("", session.extensionRunner.createCommandContext())).rejects.toMatchObject({
+					code: "sandbox_required",
+				});
+				expect(extensionExecCalls).toBe(1);
+				expect(hostExecCalls).toBe(0);
+				expect(session.getPendingExecutionPolicyApprovals()).toHaveLength(0);
+			} finally {
+				session.dispose();
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 			}
 		});
@@ -1732,6 +1787,105 @@ describe("AgentSession capability binding integration", () => {
 			}
 		});
 
+		it("requires reviewer evidence for potentially mutating raw commands from every production caller", async () => {
+			const rawCommandEffects = ["write", "create", "delete", "move", "command", "network", "commit", "push", "merge"] as const;
+			const protectedPaths = {
+				rules: [{
+					id: "raw-command-review",
+					pattern: ".config/**",
+					effects: rawCommandEffects,
+					requirement: "reviewer",
+					reviewerIds: ["alice"],
+				}],
+			} as const;
+			const fake = createFakeSandboxProvider({ onExecute: async () => ({ content: "sandboxed\n" }) });
+			let hostExecCalls = 0;
+			let extensionExecCalls = 0;
+			let extensionOutput = "";
+			const extensionsResult = await createTestExtensionsResult([
+				{
+					name: "raw-command-review",
+					factory: (agent) => {
+						agent.registerCommand("raw-exec-review", {
+							handler: async (_args, ctx) => {
+								extensionExecCalls++;
+								const result = await ctx.exec("raw-command", ["--flag"]);
+								extensionOutput = result.stdout;
+							},
+						});
+					},
+				},
+			]);
+			const sessionSettings = SettingsManager.inMemory({
+				executionPolicy: executionPolicySettings({
+					enforcement: "sandbox",
+					sandboxProvider: "fake-sandbox",
+					protectedPaths,
+				}),
+			});
+			const { session, dir } = await createControlledSession({
+				resourceLoader: createTestResourceLoader({ extensionsResult }),
+				settingsManager: sessionSettings,
+				sandboxProviders: [fake.provider],
+			});
+			const approvePendingReview = (source: "user_bash" | "extension"): void => {
+				const approval = session.getPendingExecutionPolicyApprovals()[0];
+				if (approval === undefined) throw new Error("raw command review approval is required");
+				expect(session.getPendingExecutionPolicyApprovals()).toHaveLength(1);
+				expect(approval).toMatchObject({
+					source,
+					resource: "process.spawn",
+					reasonCode: "policy_review_required",
+					reviewRequirement: "reviewer",
+					scope: { effectCount: rawCommandEffects.length, pathCount: 1 },
+				});
+				session.resolveExecutionPolicyReview(
+					approval.id,
+					{ kind: "user", id: "alice" },
+					"approved",
+					new Date(Date.parse(approval.createdAt) + 1_000).toISOString(),
+				);
+				expect(session.getPendingExecutionPolicyApprovals()).toHaveLength(0);
+			};
+			try {
+				const bashOptions = {
+					id: "raw-bash-review",
+					operations: {
+						exec: async () => {
+							hostExecCalls++;
+							return { exitCode: 0 };
+						},
+					},
+				};
+				await expect(session.executeBash("raw-bash", undefined, bashOptions)).rejects.toMatchObject({
+					code: "policy_review_required",
+				});
+				expect(fake.state.invocations).toHaveLength(0);
+				expect(hostExecCalls).toBe(0);
+				approvePendingReview("user_bash");
+				await expect(session.executeBash("raw-bash", undefined, bashOptions)).resolves.toMatchObject({ output: "sandboxed\n" });
+
+				await expect(session.authorizeUserBashExtension("raw-authorize", { id: "raw-authorize-review" })).resolves.toBe(false);
+				expect(fake.state.invocations).toHaveLength(1);
+
+				const command = session.extensionRunner.getCommand("raw-exec-review");
+				expect(command).toBeDefined();
+				const runCommand = () => command!.handler("", session.extensionRunner.createCommandContext());
+				await expect(runCommand()).rejects.toMatchObject({ code: "policy_review_required" });
+				expect(fake.state.invocations).toHaveLength(1);
+				approvePendingReview("extension");
+				await expect(runCommand()).resolves.toBeUndefined();
+				expect(fake.state.invocations).toHaveLength(2);
+				expect(fake.state.invocations[0]?.resource).toBe("process.spawn");
+				expect(fake.state.invocations[1]?.resource).toBe("process.spawn");
+				expect(extensionExecCalls).toBe(2);
+				expect(extensionOutput).toBe("sandboxed\n");
+			} finally {
+				session.dispose();
+				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
 		it("disposes the old strict handle before a policy rebind and never reuses it", async () => {
 			const firstSettings = executionPolicySettings({
 				profileId: "strict-first",
@@ -1790,7 +1944,7 @@ describe("AgentSession capability binding integration", () => {
 			}
 		});
 
-		it("preserves allowed host extension ctx.exec result semantics", async () => {
+		it("fails closed for host extension ctx.exec without a sandbox", async () => {
 			const extensionsResult = await createTestExtensionsResult([
 				{
 					name: "exec-tool",
@@ -1824,8 +1978,7 @@ describe("AgentSession capability binding integration", () => {
 			try {
 				await session.whenCapabilitiesReady();
 				const tool = session.agent.state.tools.find((candidate) => candidate.name === "exec_helper")!;
-				const result = await tool.execute("exec-allow", {});
-				expect(result.details).toEqual({ stdout: "out", stderr: "err", code: 7, killed: false });
+				await expect(tool.execute("exec-allow", {})).rejects.toMatchObject({ code: "sandbox_required" });
 			} finally {
 				session.dispose();
 				if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });

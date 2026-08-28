@@ -46,6 +46,7 @@ import {
 	type PolicyApprovalSource,
 	type PolicyBinding,
 	type PolicyDecision,
+	type PolicyOperationRequest,
 	type PolicyOperationSource,
 	type PolicyReviewDecision,
 	type PolicyReviewEvidence,
@@ -728,6 +729,45 @@ function externalToolRouteNames(route: ToolGatewayRoute): readonly string[] {
 function isCanonicalWorkerTimestamp(value: string): boolean {
 	const timestamp = Date.parse(value);
 	return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+const RAW_COMMAND_EFFECTS = Object.freeze([
+	"write",
+	"create",
+	"delete",
+	"move",
+	"command",
+	"network",
+	"commit",
+	"push",
+	"merge",
+] as const);
+
+function rawCommandPolicyOperation(input: {
+	readonly source: "extension" | "user_bash";
+	readonly id: string;
+	readonly command: string;
+	readonly args?: ReadonlyArray<string>;
+	readonly cwd: string;
+	readonly environmentNames: ReadonlyArray<string>;
+	readonly sandboxed: boolean;
+	readonly sandboxProviderId?: string;
+}): PolicyOperationRequest {
+	return {
+		resource: "process.spawn",
+		source: input.source,
+		id: input.id,
+		command: input.command,
+		...(input.args === undefined ? {} : { args: input.args }),
+		cwd: input.cwd,
+		scope: "workspace",
+		effects: RAW_COMMAND_EFFECTS,
+		canonicalPath: ".",
+		requiresSandbox: true,
+		sandboxed: input.sandboxed,
+		...(input.sandboxProviderId === undefined ? {} : { sandboxProviderId: input.sandboxProviderId }),
+		environmentNames: input.environmentNames,
+	};
 }
 
 export class FoundationControlPlane {
@@ -1443,6 +1483,36 @@ export class FoundationControlPlane {
 			operation: { resource: "capability.invoke", source, id: requestId, ...(descriptor === undefined ? {} : { capabilityId: descriptor.id }) },
 			capabilityBinding: this.policyCapabilityBinding(),
 		});
+		this.recordDecision(decision);
+		this.assertDecisionAllowed(decision);
+	}
+
+	private authorizeRawCommandOperation(operation: PolicyOperationRequest): void {
+		const profile = this.policyProfile;
+		const binding = this.policyBinding;
+		if (profile === undefined || binding === undefined) throw new PolicyError("policy_binding_failed");
+		const initialDecision = authorizePolicyOperation({
+			profile,
+			binding,
+			operation,
+			capabilityBinding: this.policyCapabilityBinding(),
+		});
+		const decision =
+			(initialDecision.reviewRequirement === "reviewer" || initialDecision.reviewRequirement === "team_enforced") &&
+			initialDecision.requestId !== undefined &&
+			initialDecision.scopeDigest !== undefined
+				? authorizePolicyOperation({
+					profile,
+					binding,
+					operation,
+					reviewEvidence: this.policyLedger.reviewEvidence({
+						requestId: initialDecision.requestId,
+						bindingId: binding.id,
+						scopeDigest: initialDecision.scopeDigest,
+					}),
+					capabilityBinding: this.policyCapabilityBinding(),
+				})
+				: initialDecision;
 		this.recordDecision(decision);
 		this.assertDecisionAllowed(decision);
 	}
@@ -2398,23 +2468,16 @@ export class FoundationControlPlane {
 		const environmentNames = profile.enforcement === "legacy" || profile.process.inheritEnvironment
 			? Object.keys(requestedEnv)
 			: Object.keys(requestedEnv).filter((name) => profile.process.allowEnvironment.includes(name));
-		const decision = authorizePolicyOperation({
-			profile,
-			binding,
-			operation: {
-				resource: "process.spawn",
-				source: "extension",
-				id: "extension-exec",
-				command,
-				args,
-				cwd,
-				scope: "workspace",
-				environmentNames,
-			},
-			capabilityBinding: this.policyCapabilityBinding(),
-		});
-		this.recordDecision(decision);
-		this.assertDecisionAllowed(decision);
+		this.authorizeRawCommandOperation(rawCommandPolicyOperation({
+			source: "extension",
+			id: "extension-exec",
+			command,
+			args,
+			cwd,
+			environmentNames,
+			sandboxed: this.sandboxHandle !== undefined,
+			...(this.sandboxHandle === undefined ? {} : { sandboxProviderId: binding.sandboxProviderId }),
+		}));
 		if (this.sandboxHandle !== undefined) {
 			const stdoutChunks: string[] = [];
 			const result = await this.sandboxHandle.execute({
@@ -2463,22 +2526,15 @@ export class FoundationControlPlane {
 			const environmentNames = profile.enforcement === "legacy" || profile.process.inheritEnvironment
 				? Object.keys(process.env)
 				: profile.process.allowEnvironment.filter((name) => process.env[name] !== undefined);
-			const decision = authorizePolicyOperation({
-				profile,
-				binding,
-				operation: {
-					resource: "process.spawn",
-					source: "user_bash",
-					id: options?.id ?? "user-bash",
-					command,
-					cwd: this.cwd,
-					scope: "workspace",
-					environmentNames,
-				},
-				capabilityBinding: this.policyCapabilityBinding(),
-			});
-			this.recordDecision(decision);
-			this.assertDecisionAllowed(decision);
+			this.authorizeRawCommandOperation(rawCommandPolicyOperation({
+				source: "user_bash",
+				id: options?.id ?? "user-bash",
+				command,
+				cwd: this.cwd,
+				environmentNames,
+				sandboxed: this.sandboxHandle !== undefined,
+				...(this.sandboxHandle === undefined ? {} : { sandboxProviderId: binding.sandboxProviderId }),
+			}));
 			return await executeBashWithOperations(command, this.cwd, options?.operations ?? createLocalBashOperations(), {
 				onChunk,
 				signal: controller.signal,
@@ -2500,22 +2556,15 @@ export class FoundationControlPlane {
 		const environmentNames = profile.enforcement === "legacy" || profile.process.inheritEnvironment
 			? Object.keys(process.env)
 			: profile.process.allowEnvironment.filter((name) => process.env[name] !== undefined);
-		const decision = authorizePolicyOperation({
-			profile,
-			binding,
-			operation: {
-				resource: "process.spawn",
-				source: "user_bash",
-				id: requestId ?? "user-bash",
-				command,
-				cwd: this.cwd,
-				scope: "workspace",
-				environmentNames,
-			},
-			capabilityBinding: this.policyCapabilityBinding(),
-		});
-		this.recordDecision(decision);
-		this.assertDecisionAllowed(decision);
+		this.authorizeRawCommandOperation(rawCommandPolicyOperation({
+			source: "user_bash",
+			id: requestId ?? "user-bash",
+			command,
+			cwd: this.cwd,
+			environmentNames,
+			sandboxed: this.sandboxHandle !== undefined,
+			...(this.sandboxHandle === undefined ? {} : { sandboxProviderId: binding.sandboxProviderId }),
+		}));
 		return this.sandboxHandle === undefined;
 	}
 	get isBashRunning(): boolean { return this.bashControllers.size > 0; }
