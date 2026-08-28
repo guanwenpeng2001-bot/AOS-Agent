@@ -12,6 +12,7 @@ import {
 	type AgentHarness,
 	type FoundationEventEnvelope,
 	type HarnessTool,
+	type McpToolRoute,
 	type Session,
 	type TaskEnvelope,
 	type ToolGatewayRequest,
@@ -1727,6 +1728,15 @@ export class FoundationControlPlane {
 	}
 
 	getActiveCapabilityBinding(): CapabilityBinding | undefined { return this.capabilityBinding; }
+	getMcpToolRoutes(): readonly McpToolRoute[] {
+		return Object.freeze(this.mcpTools.map(({ mapping }) => Object.freeze({
+			kind: "mcp" as const,
+			namespace: mapping.serverId,
+			toolName: mapping.toolName,
+			providerId: mapping.sourceIdentity,
+			revision: 1,
+		})));
+	}
 	getCapabilityBindingId(): string | undefined { return this.capabilityBinding?.id; }
 	inspectCapabilityCatalog(): CapabilityCatalogView { return this.capabilityRegistry.inspectCatalog() ?? { version: 1, descriptors: [] }; }
 	getCapabilityContextMetadata(): {
