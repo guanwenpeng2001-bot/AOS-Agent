@@ -4,8 +4,11 @@ import {
 	type Attempt,
 	type AttemptReceipt,
 	type BudgetUsage,
+	createAgentInstance,
 	createAttempt,
+	createBindingEpoch,
 	createConnectorCapabilitySnapshot,
+	createExecutionCorrelation,
 	createModelProfileRevision,
 	createRoleRevision,
 	type Dispatch,
@@ -46,6 +49,9 @@ import {
 	bindSchedulerInProcessTaskExecutorV1,
 	SchedulerDispatchController,
 	schedulerDispatchIdentityV1,
+	type SchedulerNativeAgentBridgeV1,
+	type SchedulerNativeAgentResolutionV1,
+	type SchedulerNativeAgentResolveInputV1,
 } from "../src/core/scheduler-dispatch.ts";
 import {
 	createSchedulerExecutorRuntimeSnapshotV1,
@@ -388,6 +394,162 @@ class ResumableTaskExecutor extends ScriptedTaskExecutor {
 	}
 }
 
+class NativeAgentTaskExecutor implements TaskExecutorProvider {
+	readonly schemaVersion = 1 as const;
+	readonly providerId = "native.scheduler.dispatch";
+	readonly providerClass = "agent" as const;
+	runCount = 0;
+
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
+		return [CAPABILITY];
+	}
+
+	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
+		if (context?.agentInstance === undefined) {
+			return Result.err(
+				new FoundationError("agent_instance_required_for_agent_provider", "Native AgentInstance required"),
+			);
+		}
+		return createAttempt({
+			attemptId: context.initialBindingEpoch.attemptId,
+			dispatch,
+			providerId: this.providerId,
+			initialBindingEpoch: context.initialBindingEpoch,
+			providerClass: "agent",
+			agentInstanceId: context.agentInstance.agentInstanceId,
+			now: () => NOW,
+		});
+	}
+
+	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
+		this.runCount += 1;
+		const correlation = options?.correlation;
+		if (correlation === undefined || attempt.agentInstanceId === undefined) {
+			return Result.err(new FoundationError("invalid_correlation", "Native correlation required"));
+		}
+		const attemptReceiptId = `attempt_receipt_${attempt.attemptId}`;
+		return validateAttemptReceiptForProvider(
+			{
+				schemaVersion: 1,
+				attemptReceiptId,
+				taskId: attempt.taskId,
+				dispatchId: attempt.dispatchId,
+				attemptId: attempt.attemptId,
+				providerId: attempt.providerId,
+				agentInstanceId: attempt.agentInstanceId,
+				bindingId: attempt.bindingId,
+				bindingEpochIds: [...attempt.bindingEpochIds],
+				status: "succeeded",
+				workerReceiptRefs: [],
+				artifacts: [ARTIFACT],
+				provenance: {
+					producerKind: "agent_executor",
+					providerId: attempt.providerId,
+					producedAt: NOW,
+					correlation: { ...correlation, attemptReceiptId },
+				},
+				sideEffectState: "none",
+			},
+			{ providerId: this.providerId, providerClass: this.providerClass },
+		);
+	}
+
+	async cancelAttempt(_attemptId: string) {
+		return Result.ok(undefined);
+	}
+
+	async dispose(): Promise<void> {}
+}
+
+class TestNativeAgentBridge implements SchedulerNativeAgentBridgeV1 {
+	readonly session: Session;
+	readonly provider: NativeAgentTaskExecutor;
+	resolveCount = 0;
+	revalidateCount = 0;
+	failRevalidation = false;
+	spoofProvider = false;
+	spoofInstance = false;
+	omitInstance = false;
+
+	constructor(session: Session, provider: NativeAgentTaskExecutor) {
+		this.session = session;
+		this.provider = provider;
+	}
+
+	async resolve(input: SchedulerNativeAgentResolveInputV1) {
+		this.resolveCount += 1;
+		const instance = createAgentInstance({
+			agentInstanceId: this.spoofInstance ? "agent_scheduler_spoof" : input.agentInstanceId,
+			providerId: this.spoofProvider ? "native.scheduler.spoof" : input.provider.providerId,
+			providerDeclaredAgent: true,
+			roleRevision: roleRevision(),
+			taskId: input.entry.taskId,
+			now: () => input.now,
+		});
+		if (!instance.ok) return instance;
+		const epoch = createBindingEpoch({
+			bindingEpochId: input.bindingEpochId,
+			taskId: input.entry.taskId,
+			attemptId: input.attemptId,
+			agentInstanceId: input.agentInstanceId,
+			bindingId: input.binding.bindingId,
+			activationReason: "attempt_started",
+			activatedByCommandId: input.activatedByCommandId,
+			now: () => input.now,
+		});
+		if (!epoch.ok) return epoch;
+		const resolution: SchedulerNativeAgentResolutionV1 = {
+			schemaVersion: 1 as const,
+			providerId: input.provider.providerId,
+			dispatch: {
+				schemaVersion: 1 as const,
+				dispatchId: input.dispatchId,
+				taskId: input.entry.taskId,
+				bindingId: input.binding.bindingId,
+				taskExecutorProviderId: input.provider.providerId,
+				status: "pending" as const,
+				createdAt: input.now,
+				...(input.entry.deadlineAt === undefined ? {} : { deadlineAt: input.entry.deadlineAt }),
+			},
+			agentInstance: instance.value,
+			initialBindingEpoch: epoch.value,
+			correlation: createExecutionCorrelation(input.sessionId, input.laneId, {
+				revision: 0,
+				taskId: input.entry.taskId,
+				dispatchId: input.dispatchId,
+				attemptId: input.attemptId,
+				bindingId: input.binding.bindingId,
+				bindingEpochId: input.bindingEpochId,
+				agentInstanceId: input.agentInstanceId,
+				providerId: input.provider.providerId,
+			}),
+		};
+		return Result.ok(
+			this.omitInstance
+				? ({ ...resolution, agentInstance: undefined } as unknown as SchedulerNativeAgentResolutionV1)
+				: resolution,
+		);
+	}
+
+	async revalidate(input: Parameters<SchedulerNativeAgentBridgeV1["revalidate"]>[0]) {
+		this.revalidateCount += 1;
+		const durable = await this.session.getFoundationObject(
+			"attempt",
+			input.resolution.initialBindingEpoch.attemptId,
+		);
+		if (durable?.kind !== "fact") {
+			return Result.err(new FoundationError("invalid_correlation", "Attempt was not durable before revalidation"));
+		}
+		if (this.failRevalidation) {
+			return Result.err(new FoundationError("subagent_conflict", "Injected stale BindingEpoch"));
+		}
+		if (input.provider !== this.provider) {
+			return Result.err(new FoundationError("subagent_conflict", "Provider object changed"));
+		}
+		return Result.ok(undefined);
+	}
+}
+
 async function registerScripted(registry: SchedulerExecutorRegistry, provider: TaskExecutorProvider): Promise<void> {
 	const registered = await registry.register({
 		entry: {
@@ -611,6 +773,139 @@ describe("scheduler dispatch assembly", () => {
 			assembleSchedulerDispatchV1({ ...input, providerClass: "agent" }),
 			"agent_instance_required_for_agent_provider",
 		);
+	});
+});
+
+describe("scheduler native AgentInstance bridge", () => {
+	async function nativeFixture(options: { readonly bridge?: boolean } = {}) {
+		const harness = await claimedHarness();
+		const provider = new NativeAgentTaskExecutor();
+		const registry = new SchedulerExecutorRegistry();
+		await registerScripted(registry, provider);
+		const bridge = new TestNativeAgentBridge(harness.session, provider);
+		const controller = new SchedulerDispatchController({
+			session: harness.session,
+			queue: harness.queue,
+			registry,
+			sessionId: "session_dispatch_1",
+			ownerId: OWNER_ID,
+			requiredCapabilities: [],
+			now: () => NOW,
+			...(options.bridge === false ? {} : { nativeAgentBridge: bridge }),
+		});
+		return { ...harness, provider, bridge, controller };
+	}
+
+	it("captures and revalidates the native provider, AgentInstance, and BindingEpoch before run", async () => {
+		const fixture = await nativeFixture();
+		const result = await fixture.controller.dispatchClaimed({
+			queueEntryId: "queue_dispatch_1",
+			fencingToken: fixture.claim.fencingToken,
+			binding: fixture.binding,
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		const ids = schedulerDispatchIdentityV1("queue_dispatch_1", fixture.claim.claimId);
+		expect(fixture.bridge.resolveCount).toBe(1);
+		expect(fixture.bridge.revalidateCount).toBe(1);
+		expect(fixture.provider.runCount).toBe(1);
+		expect(result.value.attempt.agentInstanceId).toBe(ids.agentInstanceId);
+		expect(result.value.receipt.agentInstanceId).toBe(ids.agentInstanceId);
+		expect(result.value.receipt.bindingEpochIds).toEqual([ids.bindingEpochId]);
+		expect(result.value.receipt.provenance.correlation).toMatchObject({
+			providerId: fixture.provider.providerId,
+			agentInstanceId: ids.agentInstanceId,
+			bindingEpochId: ids.bindingEpochId,
+		});
+	});
+
+	it("fails closed when the bridge is absent, stale, or returns another provider identity", async () => {
+		const missing = await nativeFixture({ bridge: false });
+		expectCode(
+			await missing.controller.dispatchClaimed({
+				queueEntryId: "queue_dispatch_1",
+				fencingToken: missing.claim.fencingToken,
+				binding: missing.binding,
+			}),
+			"agent_instance_required_for_agent_provider",
+		);
+		expect(missing.provider.runCount).toBe(0);
+
+		const spoofed = await nativeFixture();
+		spoofed.bridge.spoofProvider = true;
+		expectCode(
+			await spoofed.controller.dispatchClaimed({
+				queueEntryId: "queue_dispatch_1",
+				fencingToken: spoofed.claim.fencingToken,
+				binding: spoofed.binding,
+			}),
+			"invalid_correlation",
+		);
+		expect(spoofed.provider.runCount).toBe(0);
+
+		const spoofedInstance = await nativeFixture();
+		spoofedInstance.bridge.spoofInstance = true;
+		expectCode(
+			await spoofedInstance.controller.dispatchClaimed({
+				queueEntryId: "queue_dispatch_1",
+				fencingToken: spoofedInstance.claim.fencingToken,
+				binding: spoofedInstance.binding,
+			}),
+			"invalid_correlation",
+		);
+		expect(spoofedInstance.provider.runCount).toBe(0);
+
+		const missingInstance = await nativeFixture();
+		missingInstance.bridge.omitInstance = true;
+		expectCode(
+			await missingInstance.controller.dispatchClaimed({
+				queueEntryId: "queue_dispatch_1",
+				fencingToken: missingInstance.claim.fencingToken,
+				binding: missingInstance.binding,
+			}),
+			"invalid_correlation",
+		);
+		expect(missingInstance.provider.runCount).toBe(0);
+
+		const stale = await nativeFixture();
+		stale.bridge.failRevalidation = true;
+		expectCode(
+			await stale.controller.dispatchClaimed({
+				queueEntryId: "queue_dispatch_1",
+				fencingToken: stale.claim.fencingToken,
+				binding: stale.binding,
+			}),
+			"subagent_conflict",
+		);
+		expect(stale.provider.runCount).toBe(0);
+		const ids = schedulerDispatchIdentityV1("queue_dispatch_1", stale.claim.claimId);
+		expect((await stale.session.getFoundationObject("attempt", ids.attemptId))?.kind).toBe("fact");
+	});
+
+	it("does not consult the native bridge for a task-executor provider", async () => {
+		const harness = await claimedHarness();
+		const provider = new ScriptedTaskExecutor("success");
+		const registry = new SchedulerExecutorRegistry();
+		await registerScripted(registry, provider);
+		const nativeProvider = new NativeAgentTaskExecutor();
+		const bridge = new TestNativeAgentBridge(harness.session, nativeProvider);
+		const controller = new SchedulerDispatchController({
+			session: harness.session,
+			queue: harness.queue,
+			registry,
+			sessionId: "session_dispatch_1",
+			ownerId: OWNER_ID,
+			nativeAgentBridge: bridge,
+			now: () => NOW,
+		});
+		const result = await controller.dispatchClaimed({
+			queueEntryId: "queue_dispatch_1",
+			fencingToken: harness.claim.fencingToken,
+			binding: harness.binding,
+		});
+		expect(result.ok).toBe(true);
+		expect(bridge.resolveCount).toBe(0);
+		expect(bridge.revalidateCount).toBe(0);
 	});
 });
 

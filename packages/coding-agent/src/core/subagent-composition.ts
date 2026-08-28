@@ -1,6 +1,7 @@
 import {
 	canonicalFoundationJson,
 	cloneDeepFrozen,
+	createExecutionCorrelation,
 	createTaskEnvelope,
 	fingerprintFoundationValue,
 	FoundationError,
@@ -28,6 +29,9 @@ import {
 	type TaskResult,
 	type ModelProfile,
 	type ToolGateway,
+	validateAgentInstance,
+	validateBindingEpoch,
+	validateDispatch,
 } from "@aos-agent/agent-core";
 import {
 	SubagentContextIngressV1,
@@ -56,6 +60,7 @@ import {
 	FORK_PROVIDER,
 	IN_PROCESS_PROVIDER,
 	SubagentProviderRegistryV1,
+	type ExecutableSubagentProviderV1,
 	type SubagentProviderDescriptorV1,
 	type SubagentProviderKindV1,
 } from "./subagent-registry.ts";
@@ -83,10 +88,24 @@ import type {
 	PromptTaskSubagentSpawnInputV1,
 	PromptTaskSubagentSpawnResultV1,
 } from "./prompt-task-adapter.ts";
+import type {
+	SchedulerNativeAgentBridgeV1,
+	SchedulerNativeAgentResolutionV1,
+	SchedulerNativeAgentResolveInputV1,
+	SchedulerNativeAgentRevalidateInputV1,
+} from "./scheduler-dispatch.ts";
 
 type ExecutableChildProviderV1 = ChildAgentProvider & TaskExecutorProvider & {
 	close(attemptId: string): Promise<ResultValue<void, FoundationError>>;
 };
+
+export interface TrustedSchedulerNativeAgentPlannerV1 {
+	readonly schemaVersion: 1;
+	plan(
+		input: SchedulerNativeAgentResolveInputV1,
+		descriptor: SubagentProviderDescriptorV1,
+	): Promise<ResultValue<PlanSubagentSpawnInputV1, FoundationError>>;
+}
 
 /** Trusted product-only lane projection over the canonical parent writer lease. */
 class TrustedChildLaneSessionLedgerWriterV1 extends SessionLedgerWriter {
@@ -330,6 +349,7 @@ export class TrustedSubagentCompositionV1 {
 	private readonly executionWorkspaces = new Map<string, string>();
 	private readonly worktreeRecords = new Map<string, ChildWorktreeRecordV1>();
 	private readonly planByChild = new Map<string, SubagentSpawnPlanV1>();
+	private readonly schedulerPlanByAttempt = new Map<string, SubagentSpawnPlanV1>();
 	private readonly parentByRun = new Map<string, { readonly toAgentInstanceId: string; readonly byAttemptId: string }>();
 	private recovery: Promise<ResultValue<void, FoundationError>>;
 	private disposed = false;
@@ -492,11 +512,332 @@ export class TrustedSubagentCompositionV1 {
 			["in_process", inProcess],
 			["fork", fork],
 		]);
+		this.registry.bindExecutable(inProcess);
+		this.registry.bindExecutable(fork);
 		this.recovery = this.recoverDurableState();
 	}
 
 	providerDescriptors(): readonly SubagentProviderDescriptorV1[] {
 		return Object.freeze([this.registry.get(IN_PROCESS_PROVIDER.descriptor.providerId), this.registry.get(FORK_PROVIDER.descriptor.providerId)]);
+	}
+
+	/** Exact trusted runtime objects that a Scheduler executor registry may register. */
+	schedulerAgentProviders(): readonly TaskExecutorProvider[] {
+		return Object.freeze([...this.providers.values()]);
+	}
+
+	/** Build the explicit default-off Scheduler bridge over this composition's exact Native runtimes. */
+	schedulerNativeAgentBridge(planner: TrustedSchedulerNativeAgentPlannerV1): SchedulerNativeAgentBridgeV1 {
+		if (planner.schemaVersion !== 1 || typeof planner.plan !== "function") {
+			throw new FoundationError("subagent_spawn_invalid", "Trusted Scheduler Native Agent planner is invalid");
+		}
+		return Object.freeze({
+			resolve: (input: SchedulerNativeAgentResolveInputV1) => this.resolveSchedulerNativeAgent(input, planner),
+			revalidate: (input: SchedulerNativeAgentRevalidateInputV1) =>
+				this.revalidateSchedulerNativeAgent(input),
+		});
+	}
+
+	private async resolveSchedulerNativeAgent(
+		input: SchedulerNativeAgentResolveInputV1,
+		planner: TrustedSchedulerNativeAgentPlannerV1,
+	): Promise<ResultValue<SchedulerNativeAgentResolutionV1, FoundationError>> {
+		if (this.disposed) {
+			return Result.err(new FoundationError("subagent_provider_unavailable", "Trusted subagent composition is disposed"));
+		}
+		const recovered = await this.recovery;
+		if (!recovered.ok) return recovered;
+		let provider: ExecutableSubagentProviderV1;
+		let descriptor: SubagentProviderDescriptorV1;
+		try {
+			provider = this.registry.resolveExecutable(input.provider);
+			descriptor = this.registry.resolve(provider.providerId);
+		} catch (error) {
+			return Result.err(
+				error instanceof FoundationError
+					? error
+					: new FoundationError("subagent_provider_unavailable", "Native Subagent runtime resolution failed"),
+			);
+		}
+		if (
+			input.schemaVersion !== 1 ||
+			input.sessionId !== this.sessionId ||
+			input.provider.providerClass !== "agent" ||
+			input.provider.providerId !== descriptor.descriptor.providerId ||
+			input.entry.taskId !== input.binding.taskId ||
+			input.claim.taskId !== input.entry.taskId ||
+			input.claim.queueEntryId !== input.entry.queueEntryId
+		) {
+			return Result.err(new FoundationError("invalid_correlation", "Scheduler Native Agent request is not canonical"));
+		}
+
+		const cached = this.schedulerPlanByAttempt.get(input.attemptId);
+		if (cached !== undefined) return this.schedulerResolutionFromPlan(input, cached);
+		const durable = await this.loadDurableSchedulerNativeResolution(input);
+		if (!durable.ok) return durable;
+		if (durable.value !== undefined) return Result.ok(durable.value);
+		if (this.supervisor.get(input.agentInstanceId) !== undefined) {
+			return Result.err(
+				new FoundationError(
+					"agent_spawn_recovery_required",
+					"Native Subagent control exists without the immutable Scheduler execution facts",
+					{ details: { agentInstanceId: input.agentInstanceId, attemptId: input.attemptId } },
+				),
+			);
+		}
+
+		const plannedInput = await planner.plan(input, descriptor);
+		if (!plannedInput.ok) return plannedInput;
+		if (
+			plannedInput.value.schemaVersion !== 1 ||
+			plannedInput.value.childAgentInstanceId !== input.agentInstanceId ||
+			plannedInput.value.dispatchId !== input.dispatchId ||
+			plannedInput.value.attemptId !== input.attemptId ||
+			plannedInput.value.bindingEpochId !== input.bindingEpochId ||
+			plannedInput.value.activatedByCommandId !== input.activatedByCommandId ||
+			plannedInput.value.childLaneId !== input.laneId ||
+			plannedInput.value.childBinding.bindingId !== input.binding.bindingId ||
+			canonicalFoundationJson(plannedInput.value.childBinding) !== canonicalFoundationJson(input.binding) ||
+			canonicalFoundationJson(plannedInput.value.providerDescriptor) !== canonicalFoundationJson(descriptor) ||
+			plannedInput.value.request.spawnId !== input.spawnId ||
+			plannedInput.value.request.taskEnvelope.taskId !== input.entry.taskId ||
+			plannedInput.value.request.roleRevision.roleRevisionId !== input.binding.roleRevision.id ||
+			plannedInput.value.request.roleRevision.revision !== input.binding.roleRevision.revision ||
+			plannedInput.value.request.modelProfile.modelProfileId !== input.binding.modelProfileRevision.id ||
+			plannedInput.value.request.modelProfile.revision !== input.binding.modelProfileRevision.revision ||
+			(plannedInput.value.request.parentSpawn?.providerId !== undefined &&
+				plannedInput.value.request.parentSpawn.providerId !== input.provider.providerId)
+		) {
+			return Result.err(
+				new FoundationError(
+					"subagent_conflict",
+					"Trusted Scheduler planner returned a different provider, instance, epoch, or binding",
+				),
+			);
+		}
+		const plan = await this.supervisor.planSpawn(plannedInput.value);
+		if (!plan.ok) return plan;
+		const resolution = this.schedulerResolutionFromPlan(input, plan.value);
+		if (!resolution.ok) return resolution;
+		this.schedulerPlanByAttempt.set(input.attemptId, plan.value);
+		return resolution;
+	}
+
+	private async revalidateSchedulerNativeAgent(
+		input: SchedulerNativeAgentRevalidateInputV1,
+	): Promise<ResultValue<void, FoundationError>> {
+		if (this.disposed) {
+			return Result.err(new FoundationError("subagent_provider_unavailable", "Trusted subagent composition is disposed"));
+		}
+		const recovered = await this.recovery;
+		if (!recovered.ok) return recovered;
+		let provider: ExecutableSubagentProviderV1;
+		try {
+			provider = this.registry.resolveExecutable(input.provider);
+		} catch (error) {
+			return Result.err(
+				error instanceof FoundationError
+					? error
+					: new FoundationError("subagent_provider_unavailable", "Native Subagent runtime revalidation failed"),
+			);
+		}
+		const resolution = input.resolution;
+		const record = this.supervisor.get(resolution.agentInstance.agentInstanceId);
+		if (
+			input.schemaVersion !== 1 ||
+			resolution.providerId !== provider.providerId ||
+			resolution.agentInstance.providerId !== provider.providerId ||
+			resolution.agentInstance.taskId !== input.binding.taskId ||
+			resolution.initialBindingEpoch.agentInstanceId !== resolution.agentInstance.agentInstanceId ||
+			resolution.initialBindingEpoch.bindingId !== input.binding.bindingId ||
+			resolution.initialBindingEpoch.attemptId !== resolution.correlation.attemptId ||
+			resolution.initialBindingEpoch.bindingEpochId !== resolution.correlation.bindingEpochId ||
+			record === undefined ||
+			record.providerId !== provider.providerId ||
+			record.childAgentInstanceId !== resolution.agentInstance.agentInstanceId ||
+			record.taskId !== resolution.agentInstance.taskId ||
+			record.attemptId !== resolution.initialBindingEpoch.attemptId ||
+			record.bindingId !== input.binding.bindingId
+		) {
+			return Result.err(
+				new FoundationError(
+					"subagent_conflict",
+					"Native Subagent instance or BindingEpoch changed before Scheduler execution",
+				),
+			);
+		}
+
+		const plan = this.schedulerPlanByAttempt.get(resolution.initialBindingEpoch.attemptId);
+		if (plan !== undefined && canonicalFoundationJson(plan.childBinding) !== canonicalFoundationJson(input.binding)) {
+			return Result.err(new FoundationError("subagent_conflict", "Native Subagent binding changed before execution"));
+		}
+		if (plan !== undefined && record.status === "spawning") {
+			if (
+				canonicalFoundationJson(plan.agentInstance) !== canonicalFoundationJson(resolution.agentInstance) ||
+				canonicalFoundationJson(plan.initialBindingEpoch) !==
+					canonicalFoundationJson(resolution.initialBindingEpoch) ||
+				canonicalFoundationJson(plan.dispatch) !== canonicalFoundationJson(resolution.dispatch) ||
+				canonicalFoundationJson(plan.correlation) !== canonicalFoundationJson(resolution.correlation)
+			) {
+				return Result.err(new FoundationError("subagent_conflict", "Native Subagent plan changed before execution"));
+			}
+			const spawned = await this.supervisor.executeSpawn(
+				plan,
+				provider,
+				this.settlementForLane(plan.childLaneId),
+			);
+			if (!spawned.ok) return spawned;
+			if (!this.schedulerSpawnMatchesResolution(spawned.value, resolution)) {
+				return Result.err(new FoundationError("subagent_lost", "Native Subagent spawned a different identity"));
+			}
+			return Result.ok(undefined);
+		}
+
+		if (provider.lookupSpawn === undefined) {
+			return Result.err(
+				new FoundationError(
+					"agent_spawn_recovery_required",
+					"Native Subagent provider cannot revalidate a durable Scheduler spawn",
+				),
+			);
+		}
+		const found = await provider.lookupSpawn(record.spawnId, input.signal === undefined ? undefined : { signal: input.signal });
+		if (!found.ok) return found;
+		if (found.value === undefined || !this.schedulerSpawnMatchesResolution(found.value, resolution)) {
+			return Result.err(
+				new FoundationError(
+					"agent_spawn_recovery_required",
+					"Native Subagent provider cannot recover the captured Scheduler instance and BindingEpoch",
+					{ details: { agentInstanceId: resolution.agentInstance.agentInstanceId } },
+				),
+			);
+		}
+		return Result.ok(undefined);
+	}
+
+	private schedulerResolutionFromPlan(
+		input: SchedulerNativeAgentResolveInputV1,
+		plan: SubagentSpawnPlanV1,
+	): ResultValue<SchedulerNativeAgentResolutionV1, FoundationError> {
+		if (
+			plan.providerId !== input.provider.providerId ||
+			plan.dispatch.dispatchId !== input.dispatchId ||
+			plan.dispatch.taskId !== input.entry.taskId ||
+			plan.dispatch.bindingId !== input.binding.bindingId ||
+			plan.dispatch.taskExecutorProviderId !== input.provider.providerId ||
+			plan.dispatch.deadlineAt !== input.entry.deadlineAt ||
+			plan.agentInstance.agentInstanceId !== input.agentInstanceId ||
+			plan.agentInstance.providerId !== input.provider.providerId ||
+			plan.initialBindingEpoch.bindingEpochId !== input.bindingEpochId ||
+			plan.initialBindingEpoch.attemptId !== input.attemptId ||
+			plan.initialBindingEpoch.agentInstanceId !== input.agentInstanceId ||
+			plan.initialBindingEpoch.activatedByCommandId !== input.activatedByCommandId ||
+			plan.correlation.sessionId !== input.sessionId ||
+			plan.correlation.laneId !== input.laneId ||
+			plan.correlation.providerId !== input.provider.providerId
+		) {
+			return Result.err(
+				new FoundationError("subagent_conflict", "Native Subagent plan does not match Scheduler identity"),
+			);
+		}
+		return Result.ok(
+			cloneDeepFrozen({
+				schemaVersion: 1 as const,
+				providerId: plan.providerId,
+				dispatch: plan.dispatch,
+				agentInstance: plan.agentInstance,
+				initialBindingEpoch: plan.initialBindingEpoch,
+				correlation: plan.correlation,
+			}),
+		);
+	}
+
+	private async loadDurableSchedulerNativeResolution(
+		input: SchedulerNativeAgentResolveInputV1,
+	): Promise<ResultValue<SchedulerNativeAgentResolutionV1 | undefined, FoundationError>> {
+		const [agentRecord, epochRecord, dispatchRecord] = await Promise.all([
+			this.session.getFoundationObject("agent_instance", input.agentInstanceId),
+			this.session.getFoundationObject("binding_epoch", input.bindingEpochId),
+			this.session.getFoundationObject("dispatch", input.dispatchId),
+		]);
+		if (agentRecord === undefined && epochRecord === undefined && dispatchRecord === undefined) {
+			return Result.ok(undefined);
+		}
+		if (
+			agentRecord?.kind !== "fact" ||
+			epochRecord?.kind !== "fact" ||
+			dispatchRecord?.kind !== "fact"
+		) {
+			return Result.err(
+				new FoundationError("agent_spawn_recovery_required", "Native Scheduler identity facts are incomplete"),
+			);
+		}
+		const agent = validateAgentInstance(agentRecord.payload);
+		const epoch = validateBindingEpoch(epochRecord.payload);
+		const dispatch = validateDispatch(dispatchRecord.payload);
+		if (!agent.ok || !epoch.ok || !dispatch.ok) {
+			return Result.err(new FoundationError("invalid_correlation", "Native Scheduler identity facts are invalid"));
+		}
+		if (
+			agent.value.agentInstanceId !== input.agentInstanceId ||
+			agent.value.providerId !== input.provider.providerId ||
+			agent.value.taskId !== input.entry.taskId ||
+			agent.value.roleRevision.id !== input.binding.roleRevision.id ||
+			agent.value.roleRevision.revision !== input.binding.roleRevision.revision ||
+			epoch.value.bindingEpochId !== input.bindingEpochId ||
+			epoch.value.attemptId !== input.attemptId ||
+			epoch.value.agentInstanceId !== input.agentInstanceId ||
+			epoch.value.bindingId !== input.binding.bindingId ||
+			dispatch.value.dispatchId !== input.dispatchId ||
+			dispatch.value.taskId !== input.entry.taskId ||
+			dispatch.value.bindingId !== input.binding.bindingId ||
+			dispatch.value.taskExecutorProviderId !== input.provider.providerId
+		) {
+			return Result.err(new FoundationError("subagent_conflict", "Durable Native Scheduler identity is stale"));
+		}
+		const correlation = createExecutionCorrelation(input.sessionId, input.laneId, {
+			revision: 0,
+			taskId: input.entry.taskId,
+			dispatchId: input.dispatchId,
+			attemptId: input.attemptId,
+			bindingId: input.binding.bindingId,
+			bindingEpochId: input.bindingEpochId,
+			agentInstanceId: input.agentInstanceId,
+			providerId: input.provider.providerId,
+			...(agent.value.lineage.parentId === undefined ? {} : { parentId: agent.value.lineage.parentId }),
+			...(agent.value.lineage.ancestorIds === undefined
+				? {}
+				: { ancestorIds: agent.value.lineage.ancestorIds }),
+		});
+		return Result.ok({
+			schemaVersion: 1,
+			providerId: input.provider.providerId,
+			dispatch: dispatch.value,
+			agentInstance: agent.value,
+			initialBindingEpoch: epoch.value,
+			correlation,
+		});
+	}
+
+	private schedulerSpawnMatchesResolution(
+		spawn: ChildSpawnResult,
+		resolution: SchedulerNativeAgentResolutionV1,
+	): boolean {
+		return (
+			spawn.attempt.attemptId === resolution.initialBindingEpoch.attemptId &&
+			spawn.attempt.dispatchId === resolution.dispatch.dispatchId &&
+			spawn.attempt.providerId === resolution.providerId &&
+			spawn.attempt.agentInstanceId === resolution.agentInstance.agentInstanceId &&
+			spawn.agentInstance.agentInstanceId === resolution.agentInstance.agentInstanceId &&
+			spawn.agentInstance.providerId === resolution.agentInstance.providerId &&
+			spawn.agentInstance.taskId === resolution.agentInstance.taskId &&
+			spawn.agentInstance.roleRevision.id === resolution.agentInstance.roleRevision.id &&
+			spawn.agentInstance.roleRevision.revision === resolution.agentInstance.roleRevision.revision &&
+			canonicalFoundationJson(spawn.agentInstance.lineage) ===
+				canonicalFoundationJson(resolution.agentInstance.lineage) &&
+			canonicalFoundationJson(spawn.initialBindingEpoch) ===
+				canonicalFoundationJson(resolution.initialBindingEpoch)
+		);
 	}
 
 	productPromptRoles(): PromptTaskCompositionRootOptions["subagentRoles"] {

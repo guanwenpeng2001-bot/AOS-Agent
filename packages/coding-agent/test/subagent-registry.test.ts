@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { FoundationError } from "../../agent/src/harness/foundation/errors.ts";
 import {
+	Result,
+	type ChildAgentProvider,
+	type TaskExecutorProvider,
+} from "@aos-agent/agent-core";
+import {
 	AGENT_RUNTIME_HOST_PROVIDER,
 	FORK_PROVIDER,
 	IN_PROCESS_PROVIDER,
@@ -8,7 +13,57 @@ import {
 	SubagentProviderRegistryV1,
 } from "../src/core/subagent-registry.ts";
 
+type NativeExecutable = ChildAgentProvider & TaskExecutorProvider;
+
+function nativeExecutable(providerId: string): NativeExecutable {
+	return {
+		schemaVersion: 1,
+		providerId,
+		providerClass: "agent",
+		capabilities: async () => [],
+		spawn: async () => Result.err(new FoundationError("subagent_lost", "not run")),
+		lookupSpawn: async () => Result.ok(undefined),
+		resume: async () => Result.err(new FoundationError("subagent_lost", "not run")),
+		cancel: async () => Result.ok(undefined),
+		createAttempt: async () => Result.err(new FoundationError("subagent_lost", "not run")),
+		runAttempt: async () => Result.err(new FoundationError("subagent_lost", "not run")),
+		cancelAttempt: async () => Result.ok(undefined),
+		dispose: async () => {},
+	};
+}
+
 describe("SubagentProviderRegistryV1", () => {
+	it("binds only the exact trusted executable at the current descriptor revision", () => {
+		const registry = new SubagentProviderRegistryV1();
+		registry.register(IN_PROCESS_PROVIDER);
+		const current = nativeExecutable(IN_PROCESS_PROVIDER.descriptor.providerId);
+		const spoof = nativeExecutable(IN_PROCESS_PROVIDER.descriptor.providerId);
+		expect(() => registry.resolveExecutable(current)).toThrowError(
+			new FoundationError(
+				"subagent_provider_unavailable",
+				"Provider native.in_process is not the trusted current Native Subagent runtime.",
+			),
+		);
+		registry.bindExecutable(current);
+		expect(registry.resolveExecutable(current)).toBe(current);
+		expect(() => registry.resolveExecutable(spoof)).toThrowError(
+			new FoundationError(
+				"subagent_provider_unavailable",
+				"Provider native.in_process is not the trusted current Native Subagent runtime.",
+			),
+		);
+
+		registry.register({ ...IN_PROCESS_PROVIDER, revision: 2 });
+		expect(() => registry.resolveExecutable(current)).toThrowError(
+			new FoundationError(
+				"subagent_provider_unavailable",
+				"Provider native.in_process is not the trusted current Native Subagent runtime.",
+			),
+		);
+		registry.bindExecutable(spoof, 2);
+		expect(registry.resolveExecutable(spoof)).toBe(spoof);
+	});
+
 	it("registers valid agent providers", () => {
 		const registry = new SubagentProviderRegistryV1();
 		registry.register(IN_PROCESS_PROVIDER);
