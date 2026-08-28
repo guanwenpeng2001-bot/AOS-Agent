@@ -1,43 +1,56 @@
 import {
-	FoundationError,
-	Result,
+	type AgentBinding,
+	type AgentInstance,
+	type ArtifactRef,
+	type Attempt,
+	type AttemptReceipt,
+	type BudgetUsage,
+	type ConnectorCapabilitySnapshot,
 	createAttempt,
 	createBindingEpoch,
 	createConnectorCapabilitySnapshot,
 	createDurableEvent,
 	createExecutionCorrelation,
 	createRoleRevision,
-	executeDispatch,
-	fingerprintFoundationValue,
-	resolveAgentBinding,
-	validateAttemptReceiptForProvider,
-	validateDurableEvent,
-	type AgentBinding,
-	type AgentInstance,
-	type ArtifactRef,
-	type AttemptReceipt,
-	type Attempt,
-	type ConnectorCapabilitySnapshot,
 	type Dispatch,
-	type WorkerReceiptRef,
+	executeDispatch,
+	FoundationError,
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
+	fingerprintFoundationValue,
+	InMemorySessionStorage,
 	type ModelProfile,
-	type BudgetUsage,
 	type QuotaAttribution,
 	type QuotaProvider,
 	type QuotaReservation,
+	Result,
 	type Result as ResultValue,
 	type RevisionReference,
+	resolveAgentBinding,
+	resolveMcpSelection,
 	type SchedulerSelectionEventPayload,
 	type SchedulerTaskExecutorProvider,
+	Session,
 	type TaskEnvelope,
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
+	validateAttemptReceiptForProvider,
+	validateDurableEvent,
+	type WorkerReceiptRef,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import { BUILTIN_CODING_AGENT_PROVIDER_ID } from "../src/core/product-prompt-ingress.ts";
 import {
+	parseSchedulerExecutorEntry,
+	type SchedulerExecutorEntryV1,
+	type SchedulerQueueEntryV1,
+	schedulerErrorRetryable,
+	serializeSchedulerSelectionFact,
+} from "../src/core/scheduler.ts";
+import {
+	createSchedulerExecutorRuntimeSnapshotV1,
+	executorPassesHardFiltersV1,
+	projectSchedulerSelectionFactV1,
 	SCHEDULER_EXECUTOR_SCORE_AFFINITY_SESSION,
 	SCHEDULER_EXECUTOR_SCORE_AFFINITY_WORKSPACE,
 	SCHEDULER_EXECUTOR_SCORE_COST_LOCAL,
@@ -47,25 +60,27 @@ import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SCHEDULER_IN_PROCESS_PROVIDER_ID,
 	SchedulerExecutorRegistry,
+	type SchedulerExecutorRuntimeSnapshotV1,
+	type SchedulerHostAttemptRunnerV1,
 	SchedulerInProcessTaskExecutorProvider,
-	executorPassesHardFiltersV1,
-	projectSchedulerSelectionFactV1,
+	schedulerBindingRequirementDigestV1,
 	schedulerQuotaOwnerKind,
 	scoreSchedulerExecutorV1,
 	selectSchedulerExecutorV1,
-	type SchedulerHostAttemptRunnerV1,
 } from "../src/core/scheduler-executors.ts";
-import {
-	parseSchedulerExecutorEntry,
-	serializeSchedulerSelectionFact,
-	schedulerErrorRetryable,
-	type SchedulerExecutorEntryV1,
-	type SchedulerQueueEntryV1,
-} from "../src/core/scheduler.ts";
+import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 
 const NOW = "2026-08-21T12:00:00.000Z";
-const TASK_CAPABILITY: FoundationProviderCapability = { schemaVersion: 1, id: SCHEDULER_IN_PROCESS_CAPABILITY_ID, version: 1 };
-const AGENT_CAPABILITY: FoundationProviderCapability = { schemaVersion: 1, id: "foundation.agent-executor", version: 1 };
+const TASK_CAPABILITY: FoundationProviderCapability = {
+	schemaVersion: 1,
+	id: SCHEDULER_IN_PROCESS_CAPABILITY_ID,
+	version: 1,
+};
+const AGENT_CAPABILITY: FoundationProviderCapability = {
+	schemaVersion: 1,
+	id: "foundation.agent-executor",
+	version: 1,
+};
 const WORKSPACE_DIGEST = fingerprintFoundationValue("workspace_sched_t3");
 const HOST_ARTIFACT: ArtifactRef = {
 	schemaVersion: 1,
@@ -84,7 +99,15 @@ type FakeKind = "in_process" | "agent" | "acp_sdk" | "external";
 type FakeMode = "success" | "slow" | "cancel_ack" | "lost" | "invalid_receipt" | "resume_false" | "quota_reject";
 
 const FAKE_KINDS: readonly FakeKind[] = ["in_process", "agent", "acp_sdk", "external"];
-const FAKE_MODES: readonly FakeMode[] = ["success", "slow", "cancel_ack", "lost", "invalid_receipt", "resume_false", "quota_reject"];
+const FAKE_MODES: readonly FakeMode[] = [
+	"success",
+	"slow",
+	"cancel_ack",
+	"lost",
+	"invalid_receipt",
+	"resume_false",
+	"quota_reject",
+];
 
 function expectCode(result: { ok: false; error: { code: string } } | { ok: true }, code: string): void {
 	expect(result.ok).toBe(false);
@@ -122,7 +145,8 @@ function hostAttemptRunner(
 	mutate?: (receipt: AttemptReceipt) => AttemptReceipt,
 ): SchedulerHostAttemptRunnerV1 {
 	return async (attempt, options) => {
-		const receipt = mutate === undefined ? hostAttemptReceipt(attempt, options) : mutate(hostAttemptReceipt(attempt, options));
+		const receipt =
+			mutate === undefined ? hostAttemptReceipt(attempt, options) : mutate(hostAttemptReceipt(attempt, options));
 		onRun?.(receipt);
 		return Result.ok({ usage, receipt });
 	};
@@ -151,7 +175,8 @@ function executorEntry(
 	return {
 		schemaVersion: 1,
 		descriptor: { schemaVersion: 1, providerId, providerClass },
-		capabilities: providerClass === "task_executor" || providerClass === "scheduler" ? [TASK_CAPABILITY] : [AGENT_CAPABILITY],
+		capabilities:
+			providerClass === "task_executor" || providerClass === "scheduler" ? [TASK_CAPABILITY] : [AGENT_CAPABILITY],
 		costClass: "local",
 		registeredAt: NOW,
 		...overrides,
@@ -202,7 +227,15 @@ function roleRevision() {
 }
 
 function modelProfile(): ModelProfile {
-	const base = { schemaVersion: 1 as const, modelProfileId: "profile_1", provider: "none", model: "none", budget: {}, revision: 1, createdAt: NOW };
+	const base = {
+		schemaVersion: 1 as const,
+		modelProfileId: "profile_1",
+		provider: "none",
+		model: "none",
+		budget: {},
+		revision: 1,
+		createdAt: NOW,
+	};
 	return { ...base, fingerprint: fingerprintFoundationValue(base) };
 }
 
@@ -220,6 +253,111 @@ function binding(): AgentBinding {
 	});
 	if (!resolved.ok) throw resolved.error;
 	return resolved.value;
+}
+
+function bindingWithTool(): AgentBinding {
+	const role = createRoleRevision({
+		definition: {
+			schemaVersion: 1,
+			roleId: "role_tools",
+			scope: "project",
+			slug: "tool-worker",
+			name: "Tool worker",
+			description: "Runs one exact tool",
+			revision: 1,
+			persona: "You run the task.",
+			modelProfileRef: { schemaVersion: 1, type: "model_profile", id: "profile_1", revision: 1 },
+			capabilitySelector: { policy: "all" },
+			skillSelector: { policy: "none" },
+			mcpSelector: { policy: "named", named: ["server"] },
+		},
+		now: () => NOW,
+	});
+	const mcpSelection = resolveMcpSelection({
+		selector: role.mcpSelector,
+		capabilityBinding: {
+			id: "capability_1",
+			descriptors: [
+				{ id: "descriptor_server", revision: "1", kind: "mcp_server", name: "server", mcpServerId: "server" },
+				{
+					id: "descriptor_tool",
+					revision: "1",
+					kind: "mcp_tool",
+					name: "read",
+					exposedToolName: "mcp__server__read",
+					parentId: "descriptor_server",
+					mcpServerId: "server",
+				},
+			],
+			toolAllowlist: ["mcp__server__read"],
+		},
+		routeCatalog: [{ kind: "mcp", namespace: "server", toolName: "read", providerId: "tool.gateway", revision: 1 }],
+	});
+	if (!mcpSelection.ok) throw mcpSelection.error;
+	const resolved = resolveAgentBinding({
+		task: taskEnvelope(),
+		roleRevision: role,
+		modelProfile: modelProfile(),
+		contextRevision: immutableBindingFact("external_agent_binding", "external_1"),
+		capabilityRevision: immutableBindingFact("capability_binding", "capability_1"),
+		modelBrokerBindingRevision: immutableBindingFact("model_broker_binding", "model_broker_1"),
+		policyRevision: immutableBindingFact("policy_binding", "policy_1"),
+		mcpSelection: mcpSelection.value,
+		newBindingId: "binding_tools",
+		now: () => NOW,
+	});
+	if (!resolved.ok) throw resolved.error;
+	return resolved.value;
+}
+
+function runtimeSnapshotFor(
+	providerId: string,
+	options: {
+		readonly bindingValue?: AgentBinding;
+		readonly revision?: number;
+		readonly resume?: boolean;
+		readonly modelAccess?: ConnectorCapabilitySnapshot["modelAccess"];
+		readonly toolGateway?: boolean;
+		readonly bindingRequirementDigests?: readonly ReturnType<typeof fingerprintFoundationValue>[];
+		readonly toolSelectionDigests?: readonly ReturnType<typeof fingerprintFoundationValue>[];
+		readonly policyRevisionDigests?: readonly ReturnType<typeof fingerprintFoundationValue>[];
+		readonly reviewRevisionDigests?: readonly ReturnType<typeof fingerprintFoundationValue>[];
+		readonly credentialTargetRefs?: readonly string[];
+		readonly sandboxTargetRefs?: readonly string[];
+		readonly configRevision?: ReturnType<typeof fingerprintFoundationValue>;
+		readonly expiresAt?: string;
+	} = {},
+): SchedulerExecutorRuntimeSnapshotV1 {
+	const bindingValue = options.bindingValue ?? binding();
+	const bindingDigest = schedulerBindingRequirementDigestV1(bindingValue);
+	if (!bindingDigest.ok) throw bindingDigest.error;
+	if (bindingValue.policyRevision.fingerprint === undefined) throw new Error("policy fingerprint missing");
+	const capabilitySnapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId,
+		revision: options.revision ?? 1,
+		protocol: { name: "scheduler-test", version: "1" },
+		modelAccess: options.modelAccess ?? "aos_gateway",
+		resume: options.resume ?? true,
+		toolGateway: options.toolGateway ?? true,
+		artifacts: true,
+		images: false,
+	});
+	const created = createSchedulerExecutorRuntimeSnapshotV1({
+		schemaVersion: 1,
+		capabilitySnapshot,
+		configRevision: options.configRevision ?? fingerprintFoundationValue(`config:${providerId}:1`),
+		bindingRequirementDigests: options.bindingRequirementDigests ?? [bindingDigest.value],
+		toolSelectionDigests: options.toolSelectionDigests ?? [bindingValue.mcpSelection.digest],
+		policyRevisionDigests: options.policyRevisionDigests ?? [bindingValue.policyRevision.fingerprint],
+		reviewRevisionDigests: options.reviewRevisionDigests ?? [],
+		credentialTargetRefs: options.credentialTargetRefs ?? ["credential:test"],
+		sandboxTargetRefs: options.sandboxTargetRefs ?? ["sandbox:test"],
+		observedAt: NOW,
+		expiresAt: options.expiresAt ?? "2026-08-21T14:00:00.000Z",
+	});
+	if (!created.ok) throw created.error;
+	return created.value;
 }
 
 function dispatchFor(providerId: string): Dispatch {
@@ -301,6 +439,8 @@ class ScriptedQuota implements QuotaProvider {
 	readonly providerClass = "quota" as const;
 	lastAttribution: QuotaAttribution | undefined;
 	lastUsage: BudgetUsage | undefined;
+	reserveCount = 0;
+	settleCount = 0;
 	reject: boolean;
 	constructor(reject = false) {
 		this.reject = reject;
@@ -309,11 +449,19 @@ class ScriptedQuota implements QuotaProvider {
 		return [];
 	}
 	async reserve(attribution: QuotaAttribution, budget: QuotaReservation["budget"]) {
+		this.reserveCount += 1;
 		this.lastAttribution = attribution;
 		if (this.reject) return Result.err(new FoundationError("quota_exceeded", "Quota exceeded"));
-		return Result.ok({ schemaVersion: 1 as const, reservationId: "reservation_1", attribution, budget, grantedAt: NOW });
+		return Result.ok({
+			schemaVersion: 1 as const,
+			reservationId: "reservation_1",
+			attribution,
+			budget,
+			grantedAt: NOW,
+		});
 	}
 	async settle(_reservation: QuotaReservation, usage: BudgetUsage) {
+		this.settleCount += 1;
 		this.lastUsage = usage;
 		return Result.ok(usage);
 	}
@@ -370,10 +518,16 @@ class SchedulerExecutorFake implements TaskExecutorProvider {
 	}
 
 	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
-		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "fake requires attempt context"));
+		if (context === undefined)
+			return Result.err(new FoundationError("invalid_correlation", "fake requires attempt context"));
 		if (this.providerClass === "agent") {
 			if (context.initialBindingEpoch.agentInstanceId === undefined) {
-				return Result.err(new FoundationError("agent_instance_required_for_agent_provider", "Agent fake requires an AgentInstance"));
+				return Result.err(
+					new FoundationError(
+						"agent_instance_required_for_agent_provider",
+						"Agent fake requires an AgentInstance",
+					),
+				);
 			}
 			return createAttempt({
 				attemptId: context.initialBindingEpoch.attemptId,
@@ -386,7 +540,12 @@ class SchedulerExecutorFake implements TaskExecutorProvider {
 			});
 		}
 		if (context.initialBindingEpoch.agentInstanceId !== undefined || context.agentInstance !== undefined) {
-			return Result.err(new FoundationError("agent_instance_forbidden_for_provider", "Non-agent fake cannot carry an AgentInstance"));
+			return Result.err(
+				new FoundationError(
+					"agent_instance_forbidden_for_provider",
+					"Non-agent fake cannot carry an AgentInstance",
+				),
+			);
 		}
 		return createAttempt({
 			attemptId: context.initialBindingEpoch.attemptId,
@@ -416,7 +575,13 @@ class SchedulerExecutorFake implements TaskExecutorProvider {
 			};
 			const reserved = await this.quota.reserve(attribution, {});
 			if (!reserved.ok) {
-				return Result.err(new FoundationError("scheduler_budget_exhausted_wait", "Scheduler concurrency or quota is exhausted; keep the entry queued.", { retryable: true, cause: reserved.error }));
+				return Result.err(
+					new FoundationError(
+						"scheduler_budget_exhausted_wait",
+						"Scheduler concurrency or quota is exhausted; keep the entry queued.",
+						{ retryable: true, cause: reserved.error },
+					),
+				);
 			}
 		}
 		if (this.mode === "success" || this.mode === "slow" || this.mode === "resume_false") {
@@ -430,10 +595,14 @@ class SchedulerExecutorFake implements TaskExecutorProvider {
 			await this.quota.reserve(attribution, {});
 		}
 		const attemptReceiptId = `attempt_receipt_${attempt.attemptId}`;
-		const cancelled = this.mode === "cancel_ack" || this.cancelled.has(attempt.attemptId) || options?.signal?.aborted === true;
+		const cancelled =
+			this.mode === "cancel_ack" || this.cancelled.has(attempt.attemptId) || options?.signal?.aborted === true;
 		const receipt = this.receipt(attempt, attemptReceiptId, options, cancelled ? "cancelled" : "succeeded");
 		if (this.mode === "invalid_receipt") return Result.ok(receipt);
-		return validateAttemptReceiptForProvider(receipt, { providerId: this.providerId, providerClass: this.providerClass });
+		return validateAttemptReceiptForProvider(receipt, {
+			providerId: this.providerId,
+			providerClass: this.providerClass,
+		});
 	}
 
 	async cancelAttempt(attemptId: string) {
@@ -445,14 +614,10 @@ class SchedulerExecutorFake implements TaskExecutorProvider {
 	}
 
 	async start() {
-		return this.createAttempt(
-			dispatchFor(this.providerId),
-			binding(),
-			{
-				initialBindingEpoch: epoch("attempt_1", this.providerClass === "agent" ? "agent_instance_1" : undefined),
-				correlation: correlation("attempt_1", this.providerClass === "agent" ? "agent_instance_1" : undefined),
-			},
-		);
+		return this.createAttempt(dispatchFor(this.providerId), binding(), {
+			initialBindingEpoch: epoch("attempt_1", this.providerClass === "agent" ? "agent_instance_1" : undefined),
+			correlation: correlation("attempt_1", this.providerClass === "agent" ? "agent_instance_1" : undefined),
+		});
 	}
 
 	async resume(_attemptId: string): Promise<ResultValue<AttemptReceipt, FoundationError>> {
@@ -468,15 +633,16 @@ class SchedulerExecutorFake implements TaskExecutorProvider {
 
 	async dispose(): Promise<void> {}
 
-	private receipt(attempt: Attempt, attemptReceiptId: string, options: FoundationProviderExecutionOptions | undefined, status: "succeeded" | "cancelled"): AttemptReceipt {
+	private receipt(
+		attempt: Attempt,
+		attemptReceiptId: string,
+		options: FoundationProviderExecutionOptions | undefined,
+		status: "succeeded" | "cancelled",
+	): AttemptReceipt {
 		const invalid = this.mode === "invalid_receipt";
 		const agentClass = this.providerClass === "agent";
-		const agentInstanceId = invalid
-			? agentClass ? undefined : "agent_instance_1"
-			: attempt.agentInstanceId;
-		const producerKind = invalid
-			? agentClass ? "scheduler" : "agent_executor"
-			: producerKindOf(this.kind);
+		const agentInstanceId = invalid ? (agentClass ? undefined : "agent_instance_1") : attempt.agentInstanceId;
+		const producerKind = invalid ? (agentClass ? "scheduler" : "agent_executor") : producerKindOf(this.kind);
 		const baseCorrelation = options?.correlation ?? correlation(attempt.attemptId, attempt.agentInstanceId);
 		return {
 			schemaVersion: 1,
@@ -498,12 +664,16 @@ class SchedulerExecutorFake implements TaskExecutorProvider {
 				correlation: { ...baseCorrelation, attemptReceiptId },
 			},
 			sideEffectState: "none",
-			...(status === "succeeded" ? {} : { error: { code: "cancelled", message: "Attempt cancelled", retryable: false } }),
+			...(status === "succeeded"
+				? {}
+				: { error: { code: "cancelled", message: "Attempt cancelled", retryable: false } }),
 		};
 	}
 }
 
-async function executeFake(fake: SchedulerExecutorFake): Promise<ResultValue<{ attempt: Attempt; receipt: AttemptReceipt }, FoundationError>> {
+async function executeFake(
+	fake: SchedulerExecutorFake,
+): Promise<ResultValue<{ attempt: Attempt; receipt: AttemptReceipt }, FoundationError>> {
 	const agentClass = fake.providerClass === "agent";
 	const attemptId = "attempt_1";
 	const instance = agentClass ? agentInstance(fake.providerId) : undefined;
@@ -615,7 +785,9 @@ describe("scheduler executor deterministic scoring and catalog projection", () =
 		expect(scoreSchedulerExecutorV1(localIdle, {})).toBe(
 			SCHEDULER_EXECUTOR_SCORE_COST_LOCAL + SCHEDULER_EXECUTOR_SCORE_LATENCY_MAX + SCHEDULER_EXECUTOR_SCORE_LOAD_MAX,
 		);
-		expect(scoreSchedulerExecutorV1(remoteAffinity, { sessionId: "session_a", workspaceDigest: WORKSPACE_DIGEST })).toBe(
+		expect(
+			scoreSchedulerExecutorV1(remoteAffinity, { sessionId: "session_a", workspaceDigest: WORKSPACE_DIGEST }),
+		).toBe(
 			SCHEDULER_EXECUTOR_SCORE_COST_REMOTE +
 				SCHEDULER_EXECUTOR_SCORE_LATENCY_MAX +
 				SCHEDULER_EXECUTOR_SCORE_LOAD_MAX +
@@ -831,7 +1003,10 @@ describe("scheduler in-process TaskExecutor provider", () => {
 			return {
 				...receipt,
 				attemptId: "attempt_other",
-				provenance: { ...receipt.provenance, correlation: { ...provenanceCorrelation, attemptId: "attempt_other" } },
+				provenance: {
+					...receipt.provenance,
+					correlation: { ...provenanceCorrelation, attemptId: "attempt_other" },
+				},
 			};
 		});
 		expectCode(mismatchedAttempt.ran, "invalid_correlation");
@@ -850,7 +1025,10 @@ describe("scheduler in-process TaskExecutor provider", () => {
 			return {
 				...receipt,
 				bindingEpochIds: ["epoch_other"],
-				provenance: { ...receipt.provenance, correlation: { ...provenanceCorrelation, bindingEpochId: "epoch_other" } },
+				provenance: {
+					...receipt.provenance,
+					correlation: { ...provenanceCorrelation, bindingEpochId: "epoch_other" },
+				},
 			};
 		});
 		expectCode(mismatchedEpoch.ran, "invalid_correlation");
@@ -859,7 +1037,10 @@ describe("scheduler in-process TaskExecutor provider", () => {
 			if (provenanceCorrelation === undefined) return receipt;
 			return {
 				...receipt,
-				provenance: { ...receipt.provenance, correlation: { ...provenanceCorrelation, sessionId: "session_other" } },
+				provenance: {
+					...receipt.provenance,
+					correlation: { ...provenanceCorrelation, sessionId: "session_other" },
+				},
 			};
 		});
 		expectCode(mismatchedCorrelation.ran, "invalid_correlation");
@@ -931,7 +1112,12 @@ describe("scheduler in-process TaskExecutor provider", () => {
 		expect(cancelled.value.status).toBe("cancelled");
 		expect(cancelled.value.provenance.producerKind).toBe("scheduler");
 		expect(cancelled.value.agentInstanceId).toBeUndefined();
-		expect(validateAttemptReceiptForProvider(cancelled.value, { providerId: provider.providerId, providerClass: "task_executor" }).ok).toBe(true);
+		expect(
+			validateAttemptReceiptForProvider(cancelled.value, {
+				providerId: provider.providerId,
+				providerClass: "task_executor",
+			}).ok,
+		).toBe(true);
 		const again = await provider.runAttempt(started.value, { correlation: correlation("attempt_1") });
 		expectCode(again, "scheduler_executor_unavailable");
 	});
@@ -940,7 +1126,9 @@ describe("scheduler in-process TaskExecutor provider", () => {
 describe("scheduler executor public-contract fake matrix", () => {
 	it("does not treat fabricated in-process fake success as production Host evidence", () => {
 		expect(providerIdOf("in_process")).not.toBe(SCHEDULER_IN_PROCESS_PROVIDER_ID);
-		expect(new SchedulerInProcessTaskExecutorProvider({ now: () => NOW }).providerId).toBe(SCHEDULER_IN_PROCESS_PROVIDER_ID);
+		expect(new SchedulerInProcessTaskExecutorProvider({ now: () => NOW }).providerId).toBe(
+			SCHEDULER_IN_PROCESS_PROVIDER_ID,
+		);
 	});
 
 	it.each(FAKE_KINDS.flatMap((kind) => FAKE_MODES.map((mode) => [kind, mode] as const)))(
@@ -954,7 +1142,11 @@ describe("scheduler executor public-contract fake matrix", () => {
 				expect(fake.providerClass).toBe("task_executor");
 				expect((fake as SchedulerTaskExecutorProvider).providerClass).not.toBe("agent");
 			}
-			if (kind === "acp_sdk") expect(fake.connectorSnapshot()).toMatchObject({ protocol: { name: "acp", version: "1" }, resume: mode !== "resume_false" });
+			if (kind === "acp_sdk")
+				expect(fake.connectorSnapshot()).toMatchObject({
+					protocol: { name: "acp", version: "1" },
+					resume: mode !== "resume_false",
+				});
 			if (mode === "resume_false") {
 				expectCode(await fake.resume("attempt_1"), "foundation_schema_unknown_record");
 			}
@@ -1003,7 +1195,8 @@ describe("scheduler executor public-contract fake matrix", () => {
 				if (!executed.ok) return;
 				expect(executed.value.receipt.status).toBe("cancelled");
 				expect(executed.value.receipt.provenance.producerKind).toBe(producerKindOf(kind));
-				if (kind === "in_process" || kind === "external") expect(executed.value.receipt.agentInstanceId).toBeUndefined();
+				if (kind === "in_process" || kind === "external")
+					expect(executed.value.receipt.agentInstanceId).toBeUndefined();
 				else expect(executed.value.receipt.agentInstanceId).toBe("agent_instance_1");
 				return;
 			}
@@ -1012,7 +1205,8 @@ describe("scheduler executor public-contract fake matrix", () => {
 			if (!executed.ok) return;
 			expect(executed.value.receipt.provenance.producerKind).toBe(producerKindOf(kind));
 			expect(executed.value.receipt.status).toBe("succeeded");
-			if (kind === "in_process" || kind === "external") expect(executed.value.receipt.agentInstanceId).toBeUndefined();
+			if (kind === "in_process" || kind === "external")
+				expect(executed.value.receipt.agentInstanceId).toBeUndefined();
 			else expect(executed.value.receipt.agentInstanceId).toBe("agent_instance_1");
 			expect(fake.quota.lastAttribution?.ownerKind).toBe(schedulerQuotaOwnerKind(fake.providerClass));
 			const checked = validateAttemptReceiptForProvider(executed.value.receipt, {
@@ -1120,5 +1314,266 @@ describe("scheduler executor registry selection wiring", () => {
 			latencyMs: 0,
 		});
 		expectCode(missing, "scheduler_no_executor");
+	});
+});
+
+describe("scheduler durable exact selection", () => {
+	it("rejects exact requirements at the first ordered mismatch without downgrade", async () => {
+		const plainBinding = binding();
+		const toolBinding = bindingWithTool();
+		const cases: readonly {
+			readonly name: string;
+			readonly bindingValue: AgentBinding;
+			readonly snapshot: (providerId: string) => SchedulerExecutorRuntimeSnapshotV1;
+			readonly expectedStage: string;
+		}[] = [
+			{
+				name: "resume before all later mismatches",
+				bindingValue: plainBinding,
+				snapshot: (providerId) =>
+					runtimeSnapshotFor(providerId, {
+						resume: false,
+						modelAccess: "agent_owned",
+						bindingRequirementDigests: [fingerprintFoundationValue("wrong-binding")],
+						policyRevisionDigests: [fingerprintFoundationValue("wrong-policy")],
+						credentialTargetRefs: [],
+					}),
+				expectedStage: "resume_replay",
+			},
+			{
+				name: "model access is exact, not a strength-based fallback",
+				bindingValue: plainBinding,
+				snapshot: (providerId) => runtimeSnapshotFor(providerId, { modelAccess: "agent_owned" }),
+				expectedStage: "model_access",
+			},
+			{
+				name: "tool gateway follows the immutable binding",
+				bindingValue: toolBinding,
+				snapshot: (providerId) => runtimeSnapshotFor(providerId, { bindingValue: toolBinding, toolGateway: false }),
+				expectedStage: "binding_tools",
+			},
+			{
+				name: "policy follows binding and review",
+				bindingValue: plainBinding,
+				snapshot: (providerId) =>
+					runtimeSnapshotFor(providerId, {
+						policyRevisionDigests: [fingerprintFoundationValue("wrong-policy")],
+					}),
+				expectedStage: "policy_review",
+			},
+			{
+				name: "credential and sandbox are checked last",
+				bindingValue: plainBinding,
+				snapshot: (providerId) => runtimeSnapshotFor(providerId, { credentialTargetRefs: [] }),
+				expectedStage: "credential_sandbox",
+			},
+		];
+		for (const [index, testCase] of cases.entries()) {
+			const providerId = `strict.reject.${index}`;
+			const session = new Session(new InMemorySessionStorage({ id: `strict-reject-${index}`, createdAt: 1 }));
+			const store = new SchedulerSelectionReservationStore(session, {
+				ownerId: `strict-reject-${index}`,
+				now: () => NOW,
+			});
+			const registry = new SchedulerExecutorRegistry({ reservationStore: store });
+			const provider = new SchedulerInProcessTaskExecutorProvider({ providerId, now: () => NOW });
+			const registered = await registry.register({
+				entry: executorEntry(providerId, "task_executor"),
+				provider,
+				trusted: true,
+				latencyMs: 0,
+				runtimeSnapshot: testCase.snapshot(providerId),
+			});
+			expect(registered.ok, testCase.name).toBe(true);
+			const selected = await registry.select({
+				queueEntry: queueEntry({ queueEntryId: `queue_reject_${index}` }),
+				requiredCapabilities: [TASK_CAPABILITY],
+				decidedAt: NOW,
+				exactRequirements: {
+					binding: testCase.bindingValue,
+					attemptId: `attempt_reject_${index}`,
+					bindingEpochId: `epoch_reject_${index}`,
+					requireResume: true,
+					modelAccess: "aos_gateway",
+					credentialTargetRefs: ["credential:test"],
+					sandboxTargetRefs: ["sandbox:test"],
+				},
+			});
+			expectCode(selected, "scheduler_no_executor");
+			if (!selected.ok) {
+				const details = selected.error.details as { rejections?: readonly { stage?: string }[] } | undefined;
+				expect(details?.rejections?.[0]?.stage, testCase.name).toBe(testCase.expectedStage);
+			}
+			await store.release();
+		}
+	});
+
+	it("replays the immutable durable fact and rejects a stale chosen capability", async () => {
+		const storage = new InMemorySessionStorage({ id: "strict-replay", createdAt: 1 });
+		const bindingValue = binding();
+		const exactRequirements = {
+			binding: bindingValue,
+			attemptId: "attempt_replay",
+			bindingEpochId: "epoch_replay",
+			requireResume: true,
+			modelAccess: "aos_gateway" as const,
+			credentialTargetRefs: ["credential:test"],
+			sandboxTargetRefs: ["sandbox:test"],
+		};
+		const store1 = new SchedulerSelectionReservationStore(new Session(storage), {
+			ownerId: "replay-1",
+			now: () => NOW,
+		});
+		const registry1 = new SchedulerExecutorRegistry({ reservationStore: store1 });
+		for (const [providerId, latencyMs] of [
+			["strict.a", 0],
+			["strict.b", 1_000],
+		] as const) {
+			const provider = new SchedulerInProcessTaskExecutorProvider({ providerId, now: () => NOW });
+			const registered = await registry1.register({
+				entry: executorEntry(providerId, "task_executor"),
+				provider,
+				trusted: true,
+				latencyMs,
+				maxConcurrency: 2,
+				runtimeSnapshot: runtimeSnapshotFor(providerId, { bindingValue }),
+			});
+			expect(registered.ok).toBe(true);
+		}
+		const selected = await registry1.select({
+			queueEntry: queueEntry({ queueEntryId: "queue_replay" }),
+			requiredCapabilities: [TASK_CAPABILITY],
+			decidedAt: NOW,
+			exactRequirements,
+		});
+		expect(selected.ok).toBe(true);
+		if (!selected.ok) return;
+		expect(selected.value.provider.providerId).toBe("strict.a");
+		expect(selected.value.durableFact?.reservationId).toMatch(/^scheduler_reservation_/);
+		await store1.release();
+
+		const store2 = new SchedulerSelectionReservationStore(new Session(storage), {
+			ownerId: "replay-2",
+			now: () => NOW,
+		});
+		const registry2 = new SchedulerExecutorRegistry({ reservationStore: store2 });
+		for (const [providerId, latencyMs] of [
+			["strict.a", 2_000],
+			["strict.b", 0],
+		] as const) {
+			const provider = new SchedulerInProcessTaskExecutorProvider({ providerId, now: () => NOW });
+			const registered = await registry2.register({
+				entry: executorEntry(providerId, "task_executor"),
+				provider,
+				trusted: true,
+				latencyMs,
+				maxConcurrency: 2,
+				runtimeSnapshot: runtimeSnapshotFor(providerId, { bindingValue }),
+			});
+			expect(registered.ok).toBe(true);
+		}
+		const replayed = await registry2.select({
+			queueEntry: queueEntry({ queueEntryId: "queue_replay" }),
+			requiredCapabilities: [TASK_CAPABILITY],
+			decidedAt: "2026-08-21T12:30:00.000Z",
+			exactRequirements,
+		});
+		expect(replayed.ok).toBe(true);
+		if (!replayed.ok) return;
+		expect(replayed.value.provider.providerId).toBe("strict.a");
+		expect(replayed.value.durableFact).toEqual(selected.value.durableFact);
+		await store2.release();
+
+		const store3 = new SchedulerSelectionReservationStore(new Session(storage), {
+			ownerId: "replay-3",
+			now: () => NOW,
+		});
+		const registry3 = new SchedulerExecutorRegistry({ reservationStore: store3 });
+		const staleProvider = new SchedulerInProcessTaskExecutorProvider({ providerId: "strict.a", now: () => NOW });
+		const staleRegistered = await registry3.register({
+			entry: executorEntry("strict.a", "task_executor"),
+			provider: staleProvider,
+			trusted: true,
+			latencyMs: 0,
+			maxConcurrency: 2,
+			runtimeSnapshot: runtimeSnapshotFor("strict.a", { bindingValue, revision: 2 }),
+		});
+		expect(staleRegistered.ok).toBe(true);
+		const stale = await registry3.select({
+			queueEntry: queueEntry({ queueEntryId: "queue_replay" }),
+			requiredCapabilities: [TASK_CAPABILITY],
+			decidedAt: "2026-08-21T12:45:00.000Z",
+			exactRequirements,
+		});
+		expectCode(stale, "scheduler_executor_unavailable");
+		const reconciled = await registry3.reservationRecord("queue_replay");
+		expect(reconciled.ok).toBe(true);
+		if (reconciled.ok) expect(reconciled.value?.status).toBe("settled");
+		await store3.release();
+	});
+
+	it("atomically admits only one concurrent selection at maxConcurrency one", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "strict-capacity", createdAt: 1 }));
+		const store = new SchedulerSelectionReservationStore(session, { ownerId: "capacity", now: () => NOW });
+		const registry = new SchedulerExecutorRegistry({ reservationStore: store });
+		const providerId = "strict.capacity";
+		const provider = new SchedulerInProcessTaskExecutorProvider({ providerId, now: () => NOW });
+		const registered = await registry.register({
+			entry: executorEntry(providerId, "task_executor"),
+			provider,
+			trusted: true,
+			latencyMs: 0,
+			maxConcurrency: 1,
+			runtimeSnapshot: runtimeSnapshotFor(providerId),
+		});
+		expect(registered.ok).toBe(true);
+		const select = (queueEntryId: string, attemptId: string) =>
+			registry.select({
+				queueEntry: queueEntry({ queueEntryId }),
+				requiredCapabilities: [TASK_CAPABILITY],
+				decidedAt: NOW,
+				exactRequirements: {
+					binding: binding(),
+					attemptId,
+					bindingEpochId: `epoch_${attemptId}`,
+					requireResume: true,
+					modelAccess: "aos_gateway",
+				},
+			});
+		const results = await Promise.all([
+			select("queue_capacity_1", "attempt_capacity_1"),
+			select("queue_capacity_2", "attempt_capacity_2"),
+		]);
+		expect(results.filter((result) => result.ok)).toHaveLength(1);
+		const rejected = results.find((result) => !result.ok);
+		if (rejected !== undefined) expectCode(rejected, "scheduler_backpressure");
+		const records = await store.list();
+		expect(records.ok).toBe(true);
+		if (records.ok) expect(records.value.filter((record) => record.status === "reserved")).toHaveLength(1);
+		await store.release();
+	});
+});
+
+describe("scheduler quota terminal cleanup", () => {
+	it("settles quota exactly once when the Host runner throws", async () => {
+		const quota = new ScriptedQuota();
+		const provider = new SchedulerInProcessTaskExecutorProvider({
+			quota,
+			now: () => NOW,
+			hostAttemptRunner: async () => {
+				throw new Error("runner exploded");
+			},
+		});
+		const created = await provider.createAttempt(dispatchFor(provider.providerId), binding(), {
+			initialBindingEpoch: epoch("attempt_throw"),
+			correlation: correlation("attempt_throw"),
+		});
+		expect(created.ok).toBe(true);
+		if (!created.ok) return;
+		const run = await provider.runAttempt(created.value, { correlation: correlation("attempt_throw") });
+		expectCode(run, "scheduler_executor_unavailable");
+		expect(quota.reserveCount).toBe(1);
+		expect(quota.settleCount).toBe(1);
+		expect(quota.lastUsage).toEqual({});
 	});
 });
