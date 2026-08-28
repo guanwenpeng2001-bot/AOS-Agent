@@ -25,6 +25,15 @@ import {
 	type ExternalConnectorSupervisorLimits,
 } from "./external-connector-supervisor.ts";
 import type { RuntimeClock } from "./runtime-clock.ts";
+import {
+	resolveRuntimeLimitsSource,
+	runtimeLimitsFromSupervisorOptions,
+	runtimeLimitsReadinessDeadline,
+	runtimeLimitsShutdownDeadline,
+	runtimeLimitsSupervisorDeadlines,
+	runtimeLimitsSupervisorLimits,
+	type RuntimeLimitsSource,
+} from "./runtime-limits.ts";
 import type { ExternalConnectorVendorDriver } from "./vendor-drivers/types.ts";
 
 export interface ProductionExternalConnectorSupervisionOptions {
@@ -32,12 +41,13 @@ export interface ProductionExternalConnectorSupervisionOptions {
 	readonly process: TrustedProductionExternalConnectorProcess;
 	readonly deadlines?: ExternalConnectorSupervisorDeadlineOverrides;
 	readonly limits?: Partial<ExternalConnectorSupervisorLimits>;
+	readonly runtimeLimits?: RuntimeLimitsSource;
 	readonly clock?: RuntimeClock;
 }
 
 export type ProductionExternalAgentConnectorRuntimeOptions = Omit<
 	ExternalAgentConnectorRuntimeOptions,
-	"supervision"
+	"runtimeLimits" | "supervision"
 > & ProductionExternalConnectorSupervisionOptions;
 
 export interface ProductionExternalConnectorStartupStatus {
@@ -211,6 +221,9 @@ function bindProductionVendorDriver(
 export function createProductionExternalConnectorSupervision(
 	options: ProductionExternalConnectorSupervisionOptions,
 ): ExternalAgentConnectorRuntimeOptions["supervision"] {
+	const runtimeLimits = resolveRuntimeLimitsSource(
+		options.runtimeLimits ?? runtimeLimitsFromSupervisorOptions(options.deadlines, options.limits),
+	);
 	return Object.freeze({
 		containment: externalConnectorProcessContainment(),
 		processController: new ProductionExternalConnectorProcessController({
@@ -218,8 +231,8 @@ export function createProductionExternalConnectorSupervision(
 			...(options.clock === undefined ? {} : { clock: options.clock }),
 		}),
 		privateStateStore: new FileExternalConnectorSupervisorPrivateStateStore(options.privateStatePath),
-		...(options.deadlines === undefined ? {} : { deadlines: options.deadlines }),
-		...(options.limits === undefined ? {} : { limits: options.limits }),
+		deadlines: runtimeLimitsSupervisorDeadlines(runtimeLimits),
+		limits: runtimeLimitsSupervisorLimits(runtimeLimits),
 		...(options.clock === undefined ? {} : { clock: options.clock }),
 	});
 }
@@ -231,6 +244,9 @@ export async function createProductionExternalAgentConnector(
 	if (typeof options.capabilityProbe !== "function") {
 		throw new TypeError("Production External Connector requires an explicit capability probe.");
 	}
+	const runtimeLimitsSource =
+		options.runtimeLimits ?? runtimeLimitsFromSupervisorOptions(options.deadlines, options.limits);
+	const startupRuntimeLimits = resolveRuntimeLimitsSource(runtimeLimitsSource);
 	const driverBinding = bindProductionVendorDriver(options.driver, options.process);
 	const connector = createDurableExternalAgentConnector({
 		providerId: options.providerId,
@@ -238,7 +254,12 @@ export async function createProductionExternalAgentConnector(
 		capabilityProbe: options.capabilityProbe,
 		store: options.store,
 		driver: driverBinding,
-		supervision: createProductionExternalConnectorSupervision({ ...options, process: driverBinding.process }),
+		supervision: createProductionExternalConnectorSupervision({
+			...options,
+			process: driverBinding.process,
+			runtimeLimits: startupRuntimeLimits,
+		}),
+		runtimeLimits: runtimeLimitsSource,
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.operationNonce === undefined ? {} : { operationNonce: options.operationNonce }),
 	});
@@ -247,7 +268,7 @@ export async function createProductionExternalAgentConnector(
 			"start",
 			(signal) => connector.probeCapabilities({ signal }),
 			{
-				...(options.deadlines?.start === undefined ? {} : { deadline: options.deadlines.start }),
+				deadline: runtimeLimitsReadinessDeadline(startupRuntimeLimits),
 				...(options.clock === undefined ? {} : { clock: options.clock }),
 			},
 		);
@@ -282,7 +303,7 @@ export async function createProductionExternalAgentConnector(
 	} catch (error) {
 		try {
 			await runExternalConnectorHostDispose(() => connector.dispose(), {
-				...(options.deadlines?.dispose === undefined ? {} : { deadline: options.deadlines.dispose }),
+				deadline: runtimeLimitsShutdownDeadline(startupRuntimeLimits),
 				...(options.clock === undefined ? {} : { clock: options.clock }),
 			});
 		} catch {
