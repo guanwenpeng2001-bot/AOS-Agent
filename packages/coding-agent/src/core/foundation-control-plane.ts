@@ -807,6 +807,7 @@ function rawCommandPolicyOperation(input: {
 	readonly args?: ReadonlyArray<string>;
 	readonly cwd: string;
 	readonly environmentNames: ReadonlyArray<string>;
+	readonly requiresSandbox: boolean;
 	readonly sandboxed: boolean;
 	readonly sandboxProviderId?: string;
 }): PolicyOperationRequest {
@@ -820,7 +821,7 @@ function rawCommandPolicyOperation(input: {
 		scope: "workspace",
 		effects: RAW_COMMAND_EFFECTS,
 		canonicalPath: ".",
-		requiresSandbox: true,
+		requiresSandbox: input.requiresSandbox,
 		sandboxed: input.sandboxed,
 		...(input.sandboxProviderId === undefined ? {} : { sandboxProviderId: input.sandboxProviderId }),
 		environmentNames: input.environmentNames,
@@ -2542,6 +2543,7 @@ export class FoundationControlPlane {
 			args,
 			cwd,
 			environmentNames,
+			requiresSandbox: profile.enforcement !== "legacy",
 			sandboxed: this.sandboxHandle !== undefined,
 			...(this.sandboxHandle === undefined ? {} : { sandboxProviderId: binding.sandboxProviderId }),
 		}));
@@ -2599,6 +2601,7 @@ export class FoundationControlPlane {
 				command,
 				cwd: this.cwd,
 				environmentNames,
+				requiresSandbox: profile.enforcement !== "legacy",
 				sandboxed: this.sandboxHandle !== undefined,
 				...(this.sandboxHandle === undefined ? {} : { sandboxProviderId: binding.sandboxProviderId }),
 			}));
@@ -2629,6 +2632,7 @@ export class FoundationControlPlane {
 			command,
 			cwd: this.cwd,
 			environmentNames,
+			requiresSandbox: profile.enforcement !== "legacy",
 			sandboxed: this.sandboxHandle !== undefined,
 			...(this.sandboxHandle === undefined ? {} : { sandboxProviderId: binding.sandboxProviderId }),
 		}));

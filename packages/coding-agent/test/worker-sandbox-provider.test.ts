@@ -415,7 +415,7 @@ function realWorkerProvider(root: string, policyBindingId: string, runId: string
 				environment: { AOS_WORKER_SANDBOX_ROOT: root, AOS_WORKER_RUN_ID: runId },
 				// The test launcher compiles TypeScript before protocol stdout exists. Keep that
 				// Windows full-suite bootstrap inside the Host-owned operation deadline.
-				readyTimeoutMs: 9_000,
+				readyTimeoutMs: 20_000,
 				heartbeatTimeoutMs: 3_000,
 				cancelTimeoutMs: 120,
 				terminateTimeoutMs: 500,
@@ -436,7 +436,7 @@ function realWorkerProvider(root: string, policyBindingId: string, runId: string
 				profileId: "real-worker-sandbox",
 				profileRevision: 1,
 				capabilitySummary: capabilities,
-				deadlineAt: request.deadlineAt ?? Date.now() + 10_000,
+				deadlineAt: request.deadlineAt ?? Date.now() + 30_000,
 				credentialTargetRefs: [],
 				requestFingerprint: createWorkerRequestFingerprintV1(request),
 			},
@@ -3643,5 +3643,5 @@ describe("WorkerSandboxProviderV1", () => {
 		expect(created).toBe(0);
 	});
 
-	it("spawns the independent real-sandbox child for filesystem and process operations", assertIndependentRealSandboxChild);
+	it("spawns the independent real-sandbox child for filesystem and process operations", assertIndependentRealSandboxChild, 60_000);
 });
