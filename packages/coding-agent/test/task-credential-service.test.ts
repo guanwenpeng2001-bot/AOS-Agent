@@ -30,6 +30,8 @@ import {
 import {
 	createTaskCredentialTestProvider,
 	type TaskCredentialProviderReceipt,
+	type TaskCredentialProviderRenewRequest,
+	type TaskCredentialProviderRevokeRequest,
 	type TaskCredentialTargetCapabilities,
 	type TaskCredentialTargetCapabilitiesRequest,
 	type TaskCredentialTargetRenewRequest,
@@ -91,6 +93,8 @@ const SCOPES: ReadonlyArray<TaskCredentialScope> = [
 /** Material-receiving target adapter; records projections and answers statuses. */
 class RecordingTarget {
 	received: Array<{ leaseId: string; material: Readonly<Record<string, string>> }> = [];
+	renewals: TaskCredentialTargetRenewRequest[] = [];
+	revocations: TaskCredentialTargetRevokeRequest[] = [];
 	status: "succeeded" | "failed" | "unknown" = "succeeded";
 
 	project(request: {
@@ -131,6 +135,7 @@ class RecordingTarget {
 	}
 
 	renew(request: TaskCredentialTargetRenewRequest): TaskCredentialProviderReceipt {
+		this.renewals.push(request);
 		return {
 			schemaVersion: 1,
 			leaseId: request.leaseId,
@@ -142,6 +147,7 @@ class RecordingTarget {
 	}
 
 	revoke(request: TaskCredentialTargetRevokeRequest): TaskCredentialProviderReceipt {
+		this.revocations.push(request);
 		return {
 			schemaVersion: 1,
 			leaseId: request.leaseId,
@@ -736,7 +742,8 @@ describe("session shutdown", () => {
 
 describe("renew / heartbeat facade", () => {
 	it("renews an active lease: strictly increasing sequence, immutable scope/target, no material", () => {
-		const harness = makeService();
+		const target = new RecordingTarget();
+		const harness = makeService({ provider: makeProvider({ target }) });
 		const { leaseId, grantId, bindingId } = issuedLease(harness);
 		const before = harness.service.get(leaseId);
 		expect(before?.status).toBe("active");
@@ -778,6 +785,120 @@ describe("renew / heartbeat facade", () => {
 				entry.type === "custom" && (entry.data as { action?: string }).action === "renewed",
 		);
 		expect(renewed).toHaveLength(1);
+		// Non-external leases preserve the default-off target lifecycle.
+		expect(target.renewals).toEqual([]);
+	});
+
+	it("restores external target lifecycle from the exact target kind after service reconstruction", () => {
+		const target = new RecordingTarget();
+		const base = makeProvider({ target });
+		const issuerRenewals: TaskCredentialProviderRenewRequest[] = [];
+		const issuerRevocations: TaskCredentialProviderRevokeRequest[] = [];
+		const provider: TaskCredentialTestProvider = {
+			issuer: {
+				issue: (request) => base.issuer.issue(request),
+				renew: (request) => {
+					issuerRenewals.push(request);
+					return base.issuer.renew(request);
+				},
+				revoke: (request) => {
+					issuerRevocations.push(request);
+					return base.issuer.revoke(request);
+				},
+			},
+			target: base.target,
+			records: base.records,
+		};
+		const harness = makeService({ provider });
+		const externalScopes: ReadonlyArray<TaskCredentialScope> = [{
+			credentialName: "package_registry",
+			purpose: "dependency_read",
+			resource: "registry.internal",
+			operations: ["read"],
+			targetKinds: ["external_connector"],
+		}];
+		const initialContext = issueContext({
+			targetId: "target_external",
+			targetKind: "external_connector",
+			targetLifecycle: "external_connector",
+			scopes: externalScopes,
+		});
+		const issued = harness.service.issueForTaskRun(initialContext);
+		expect(issued.ok).toBe(true);
+		if (!issued.ok) return;
+
+		const restarted = new TaskCredentialService({
+			session: harness.session,
+			provider,
+			preflight: makePreflightResolver(),
+			policyMaxTtlMs: 300_000,
+			now: () => new Date(harness.clock.nowMs).toISOString(),
+		});
+		// Replay the durable issue from its exact validated target kind. The
+		// host-only lifecycle assertion is intentionally absent after restart.
+		const replayed = restarted.issueForTaskRun(issueContext({
+			targetId: "target_external",
+			targetKind: "external_connector",
+			scopes: externalScopes,
+		}));
+		expect(replayed).toMatchObject({ ok: true, idempotent: true });
+		harness.advance(10_000);
+
+		const renewed = restarted.renew({
+			leaseId: issued.leaseId,
+			grantId: issued.grant.grantId,
+			bindingId: issued.bindingId,
+			heartbeatSequence: 1,
+			requestedTtlMs: 120_000,
+			clientRequestId: "req_external_renew_after_restart",
+			nodeAttached: true,
+		});
+		expect(renewed).toMatchObject({ ok: true, grant: { heartbeatSequence: 1 } });
+		expect(issuerRenewals).toHaveLength(1);
+		expect(target.renewals).toHaveLength(1);
+		expect(issuerRenewals[0]).toMatchObject({
+			leaseId: issued.leaseId,
+			grantId: issued.grant.grantId,
+			bindingId: issued.bindingId,
+			requestedTtlMs: 120_000,
+		});
+		expect(target.renewals[0]).toMatchObject({
+			leaseId: issued.leaseId,
+			grantId: issued.grant.grantId,
+			bindingId: issued.bindingId,
+			targetId: "target_external",
+			requestedTtlMs: 120_000,
+		});
+		expect(target.renewals[0]?.requestedAt).toBe(issuerRenewals[0]?.requestedAt);
+
+		const reference = {
+			schemaVersion: 1 as const,
+			leaseId: issued.leaseId,
+			grantId: issued.grant.grantId,
+			bindingId: issued.bindingId,
+			clientRequestId: initialContext.clientRequestId,
+		};
+		const released = restarted.releaseDeliveredLease({
+			reference,
+			targetId: "target_external",
+			reasonCode: "run_interrupted",
+		});
+		expect(released).toMatchObject({ ok: true, idempotent: false, grant: { status: "settled" } });
+		const replayedRelease = restarted.releaseDeliveredLease({
+			reference,
+			targetId: "target_external",
+			reasonCode: "run_interrupted",
+		});
+		expect(replayedRelease).toMatchObject({ ok: true, idempotent: true, grant: { status: "settled" } });
+		expect(issuerRevocations).toHaveLength(1);
+		expect(target.revocations).toHaveLength(1);
+		expect(target.revocations[0]).toMatchObject({
+			leaseId: issued.leaseId,
+			grantId: issued.grant.grantId,
+			bindingId: issued.bindingId,
+			targetId: "target_external",
+			reasonCode: "run_interrupted",
+		});
 	});
 
 	it("replays the same clientRequestId without appending a second transition", () => {

@@ -187,6 +187,8 @@ export interface TaskCredentialStoreRenewRequest {
 	readonly requestedTtlMs: number;
 	readonly ttlBounds: TaskCredentialTtlBounds;
 	readonly clientRequestId: string;
+	/** Also renew the exact external material target; default-off. */
+	readonly targetLifecycle?: "external_connector";
 }
 
 export interface TaskCredentialStoreProjectRequest {
@@ -205,6 +207,8 @@ export interface TaskCredentialStoreRevokeRequest {
 	 * Must be exactly `true` when present; `false` is rejected.
 	 */
 	readonly providerConfirmedRevoke?: boolean;
+	/** Also revoke the exact external material target; default-off. */
+	readonly targetLifecycle?: "external_connector";
 }
 
 export interface TaskCredentialStoreSettleRequest {
@@ -237,9 +241,22 @@ export interface TaskCredentialStoreOptions {
 }
 
 const ISSUE_KEYS = new Set(["leaseId", "grantId", "binding", "scopes", "requestedTtlMs", "ttlBounds", "clientRequestId"]);
-const RENEW_KEYS = new Set(["leaseId", "heartbeatSequence", "requestedTtlMs", "ttlBounds", "clientRequestId"]);
+const RENEW_KEYS = new Set([
+	"leaseId",
+	"heartbeatSequence",
+	"requestedTtlMs",
+	"ttlBounds",
+	"clientRequestId",
+	"targetLifecycle",
+]);
 const PROJECT_KEYS = new Set(["leaseId", "targetId", "clientRequestId"]);
-const REVOKE_KEYS = new Set(["leaseId", "reasonCode", "clientRequestId", "providerConfirmedRevoke"]);
+const REVOKE_KEYS = new Set([
+	"leaseId",
+	"reasonCode",
+	"clientRequestId",
+	"providerConfirmedRevoke",
+	"targetLifecycle",
+]);
 const SETTLE_KEYS = new Set(["leaseId", "reasonCode", "clientRequestId"]);
 const TTL_BOUNDS_KEYS = new Set(["minTtlMs", "maxTtlMs", "deadlineAtMs"]);
 const TRANSITION_KEYS = new Set([
@@ -875,6 +892,9 @@ function validateStoreRenewRequest(input: TaskCredentialStoreRenewRequest): void
 	if (!isPositiveSafeInteger(input.requestedTtlMs) || !isTaskCredentialTtlBounds(input.ttlBounds)) {
 		throw new TaskCredentialError("task_credential_invalid");
 	}
+	if (input.targetLifecycle !== undefined && input.targetLifecycle !== "external_connector") {
+		throw new TaskCredentialError("task_credential_invalid");
+	}
 }
 
 function validateStoreProjectRequest(input: TaskCredentialStoreProjectRequest): void {
@@ -903,6 +923,9 @@ function validateStoreRevokeRequest(input: TaskCredentialStoreRevokeRequest): vo
 	// The confirmation flag is all-or-nothing: only the literal `true` is
 	// accepted, mirroring the T1 transition option guard.
 	if (input.providerConfirmedRevoke !== undefined && input.providerConfirmedRevoke !== true) {
+		throw new TaskCredentialError("task_credential_invalid");
+	}
+	if (input.targetLifecycle !== undefined && input.targetLifecycle !== "external_connector") {
 		throw new TaskCredentialError("task_credential_invalid");
 	}
 	if (
@@ -1288,6 +1311,7 @@ export class TaskCredentialStore {
 			ttlMs: input.requestedTtlMs,
 			ttlBounds: input.ttlBounds,
 		});
+		const requestedAt = this.nextTimestamp();
 		const receipt = this.callIssuer("renew", input.leaseId, grant.grantId, grant.bindingId, () =>
 			this.provider.issuer.renew({
 				schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
@@ -1295,9 +1319,30 @@ export class TaskCredentialStore {
 				grantId: grant.grantId,
 				bindingId: grant.bindingId,
 				requestedTtlMs: input.requestedTtlMs,
-				requestedAt: this.nextTimestamp(),
+				requestedAt,
 			}),
 		);
+		// The issuer is the renewal authority, but the exact material target
+		// must also acknowledge the same bounded extension before it is made
+		// durable. A target failure is fail-closed; the service tears the lease
+		// down instead of leaving a partially renewed projection in use.
+		if (input.targetLifecycle === "external_connector") {
+			try {
+				this.callIssuer("renew", input.leaseId, grant.grantId, grant.bindingId, () =>
+					this.provider.target.renew({
+						schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
+						leaseId: input.leaseId,
+						grantId: grant.grantId,
+						bindingId: grant.bindingId,
+						...(grant.targetId === undefined ? {} : { targetId: grant.targetId }),
+						requestedTtlMs: input.requestedTtlMs,
+						requestedAt,
+					}),
+				);
+			} catch {
+				throw new TaskCredentialError("task_credential_delivery_failed");
+			}
+		}
 		this.refresh();
 		const freshGrant = this.fold.byLeaseId.get(input.leaseId);
 		if (freshGrant === undefined) throw new TaskCredentialError("task_credential_not_found");
@@ -1431,16 +1476,35 @@ export class TaskCredentialStore {
 		const reconcile = input.providerConfirmedRevoke === true;
 		const denied = reconcile ? canReconcileTaskLease(grant) : canRevokeTaskLease(grant);
 		if (denied !== undefined) throw new TaskCredentialError(denied);
-		const receipt = this.callRevoke(input.leaseId, grant.grantId, grant.bindingId, () =>
+		const requestedAt = this.nextTimestamp();
+		const targetReceipt =
+			input.targetLifecycle === "external_connector"
+				? this.callRevoke(input.leaseId, grant.grantId, grant.bindingId, () =>
+						this.provider.target.revoke({
+							schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
+							leaseId: input.leaseId,
+							grantId: grant.grantId,
+							bindingId: grant.bindingId,
+							...(grant.targetId === undefined ? {} : { targetId: grant.targetId }),
+							...(input.reasonCode === undefined ? {} : { reasonCode: input.reasonCode }),
+							requestedAt,
+						}),
+					)
+				: undefined;
+		const issuerReceipt = this.callRevoke(input.leaseId, grant.grantId, grant.bindingId, () =>
 			this.provider.issuer.revoke({
 				schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
 				leaseId: input.leaseId,
 				grantId: grant.grantId,
 				bindingId: grant.bindingId,
 				...(input.reasonCode === undefined ? {} : { reasonCode: input.reasonCode }),
-				requestedAt: this.nextTimestamp(),
+				requestedAt,
 			}),
 		);
+		const receipt =
+			(targetReceipt === undefined || targetReceipt.status === "revoked") && issuerReceipt.status === "revoked"
+				? issuerReceipt
+				: this.revocationUnknownReceipt(input.leaseId, grant.grantId, grant.bindingId);
 		if (reconcile && receipt.status !== "revoked") {
 			// The confirmed retry did not confirm; the lease stays quarantined
 			// in `revocation_unknown` and no new transition is legal.
@@ -1556,6 +1620,16 @@ export class TaskCredentialStore {
 		this.refresh();
 		const grant = this.fold.byLeaseId.get(leaseId);
 		return grant === undefined ? undefined : serializeTaskCredentialGrant(grant);
+	}
+
+	/** Latest safe delivery receipt for one lease. Read-only; never appends. */
+	getDeliveryReceipt(leaseId: string): TaskCredentialDeliveryReceipt | undefined {
+		if (!isBoundedIdentifier(leaseId, TASK_CREDENTIAL_IDENTIFIER_MAX_LENGTH)) {
+			throw new TaskCredentialError("task_credential_invalid");
+		}
+		this.refresh();
+		const receipt = this.fold.deliveryByLeaseId.get(leaseId);
+		return receipt === undefined ? undefined : serializeTaskCredentialDeliveryReceipt(receipt);
 	}
 
 	/** Read the current grant by opaque grant id. Read-only; never appends. */
