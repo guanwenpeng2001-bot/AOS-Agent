@@ -47,18 +47,27 @@ import {
 	type PolicyBinding,
 	type PolicyDecision,
 	type PolicyOperationSource,
+	type PolicyReviewDecision,
+	type PolicyReviewEvidence,
+	type PolicyReviewerIdentity,
 	type PublicPolicySummary,
 	resolveTaskCredentialPreflight,
 	taskCredentialPolicyResource,
 	type TaskCredentialPreflightResult,
 	type TaskCredentialSandboxPreflight,
 	authorizePolicyOperation,
+	createPolicyReviewEvidence,
 	createWorkspaceIdentity,
+	resolvePolicyReviewEvidence,
 	resolveExecutionPolicyProfile,
 	toPolicyBindingHandle,
 	toPublicPolicySummary,
 } from "./execution-policy.ts";
-import { createExecutionPolicyLedger } from "./execution-policy-ledger.ts";
+import {
+	createExecutionPolicyLedger,
+	POLICY_DECISION_CUSTOM_TYPE,
+	type PolicyDecisionLedgerRecord,
+} from "./execution-policy-ledger.ts";
 import { classifyExternalToolPolicyOperation } from "./external-tool-policy-operation.ts";
 import {
 	createMCPDefaultTransportFactory,
@@ -1547,19 +1556,35 @@ export class FoundationControlPlane {
 				}
 			}
 
-			const decision = authorizePolicyOperation({
+			const operation = await classifyExternalToolPolicyOperation({
+				request,
+				route,
+				cwd: this.cwd,
+				roots: { workspace: this.cwd, agentInternal: [this.agentDir] },
+				...(descriptor?.id === undefined ? {} : { capabilityId: descriptor.id }),
+			});
+			const initialDecision = authorizePolicyOperation({
 				profile: this.policyProfile,
 				binding: durablePolicyBinding,
-				operation: await classifyExternalToolPolicyOperation({
-					request,
-					route,
-					cwd: this.cwd,
-					roots: { workspace: this.cwd, agentInternal: [this.agentDir] },
-					...(descriptor?.id === undefined ? {} : { capabilityId: descriptor.id }),
-				}),
+				operation,
 				capabilityBinding: this.policyCapabilityBinding(),
-				reviewEvidence: this.policyLedger.reviewEvidence({ bindingId: durablePolicyBinding.id }),
 			});
+			const decision =
+				(initialDecision.reviewRequirement === "reviewer" || initialDecision.reviewRequirement === "team_enforced") &&
+				initialDecision.requestId !== undefined &&
+				initialDecision.scopeDigest !== undefined
+					? authorizePolicyOperation({
+						profile: this.policyProfile,
+						binding: durablePolicyBinding,
+						operation,
+						capabilityBinding: this.policyCapabilityBinding(),
+						reviewEvidence: this.policyLedger.reviewEvidence({
+							requestId: initialDecision.requestId,
+							bindingId: durablePolicyBinding.id,
+							scopeDigest: initialDecision.scopeDigest,
+						}),
+					})
+					: initialDecision;
 			this.recordDecision(decision);
 			this.assertDecisionAllowed(decision);
 		} catch (error) {
@@ -2061,9 +2086,98 @@ export class FoundationControlPlane {
 	getPendingExecutionPolicyApprovalsMap(): Map<string, PolicyApprovalRequest> { return this.policyApprovals; }
 	approveExecutionPolicyRequest(requestId: string, source: PolicyApprovalSource = "interactive"): void { this.resolvePolicyApproval(requestId, "approved", source); }
 	rejectExecutionPolicyRequest(requestId: string, source: PolicyApprovalSource = "interactive"): void { this.resolvePolicyApproval(requestId, "rejected", source); }
+	resolveExecutionPolicyReview(
+		requestId: string,
+		reviewer: PolicyReviewerIdentity,
+		decision: PolicyReviewDecision,
+		resolvedAt: string,
+		source: PolicyApprovalSource = "system",
+	): PolicyReviewEvidence {
+		const approval = this.policyApprovals.get(requestId);
+		const profile = this.policyProfile;
+		if (
+			approval === undefined ||
+			(approval.reviewRequirement !== "reviewer" && approval.reviewRequirement !== "team_enforced") ||
+			approval.scopeDigest === undefined ||
+			profile?.protectedPaths === undefined
+		) {
+			throw new PolicyError("policy_review_evidence_invalid");
+		}
+
+		let reviewDecision: PolicyDecisionLedgerRecord | undefined;
+		for (const event of this.policyLedger.query({
+			customType: POLICY_DECISION_CUSTOM_TYPE,
+			bindingId: approval.bindingId,
+		})) {
+			if (event.customType !== POLICY_DECISION_CUSTOM_TYPE) continue;
+			if (
+				event.record.requestId === requestId &&
+				event.record.scopeDigest === approval.scopeDigest &&
+				event.record.reviewRequirement === approval.reviewRequirement &&
+				event.record.reasonCode === "policy_review_required"
+			) {
+				reviewDecision = event.record;
+			}
+		}
+		if (
+			reviewDecision?.effects === undefined ||
+			reviewDecision.protectedPathCount === undefined ||
+			reviewDecision.matchedProtectedRuleIds === undefined ||
+			reviewDecision.profileId !== profile.id ||
+			reviewDecision.profileRevision !== this.policyBinding?.profileRevision
+		) {
+			throw new PolicyError("policy_review_evidence_invalid");
+		}
+
+		let evidence: PolicyReviewEvidence;
+		try {
+			evidence = createPolicyReviewEvidence({
+				requestId,
+				bindingId: approval.bindingId,
+				requirement: approval.reviewRequirement,
+				reviewer,
+				decision,
+				resolvedAt,
+				scopeDigest: approval.scopeDigest,
+			});
+		} catch {
+			throw new PolicyError("policy_review_evidence_invalid");
+		}
+		const existing = this.policyLedger.reviewEvidence({
+			requestId,
+			bindingId: approval.bindingId,
+			scopeDigest: approval.scopeDigest,
+		});
+		if (existing.some((item) => item.reviewer.kind === reviewer.kind && item.reviewer.id === reviewer.id)) {
+			throw new PolicyError("policy_review_evidence_invalid");
+		}
+		const resolution = resolvePolicyReviewEvidence({
+			policy: profile.protectedPaths,
+			classification: {
+				protected: true,
+				reasonCode: "protected_path_match",
+				effects: reviewDecision.effects,
+				pathCount: reviewDecision.protectedPathCount,
+				matchedRuleIds: reviewDecision.matchedProtectedRuleIds,
+				requirement: approval.reviewRequirement,
+				scopeDigest: approval.scopeDigest,
+			},
+			bindingId: approval.bindingId,
+			requestId,
+			requestCreatedAt: approval.createdAt,
+			evidence: [...existing, evidence],
+		});
+		if (resolution.status === "invalid") throw new PolicyError("policy_review_evidence_invalid");
+		this.policyLedger.appendReviewOutcome(approval, evidence, source);
+		if (resolution.status !== "missing") this.policyApprovals.delete(requestId);
+		return evidence;
+	}
 	private resolvePolicyApproval(requestId: string, outcome: "approved" | "rejected", source: PolicyApprovalSource): void {
 		const approval = this.policyApprovals.get(requestId);
 		if (approval === undefined) throw new PolicyError("policy_denied");
+		if (approval.reviewRequirement === "reviewer" || approval.reviewRequirement === "team_enforced") {
+			throw new PolicyError("policy_review_evidence_invalid");
+		}
 		this.policyLedger.appendApprovalOutcome(approval, { outcome, source });
 		if (outcome === "approved") this.approvedPolicyRequests = [...this.approvedPolicyRequests, requestId];
 		else this.rejectedPolicyRequests = [...this.rejectedPolicyRequests, requestId];
