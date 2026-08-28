@@ -763,7 +763,7 @@ export class CanonicalAgentSessionServices {
 						throw new Error("Product Prompt MCP selection requires the current Tool Gateway route catalog");
 					}
 					routeCatalog = catalog.getRouteCatalog();
-				}
+				} else routeCatalog = this.controlPlane.getMcpToolRoutes();
 				return {
 					capabilityBinding: {
 						id: binding.id,
