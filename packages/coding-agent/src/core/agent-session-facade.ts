@@ -18,6 +18,8 @@ import {
 	type HarnessTool,
 	type HarnessContextPreparationInput,
 	type HarnessModelCallBoundaryInput,
+	type McpCapabilityBinding,
+	type McpToolRoute,
 	type Entry,
 	type FoundationJsonValue,
 	type ProvisionedEntry,
@@ -25,6 +27,7 @@ import {
 	type QueueMode,
 	type StreamFn,
 	type ThinkingLevel,
+	type ToolGatewayRouteCatalog,
 	createCompactionSummaryMessage,
 } from "@aos-agent/agent-core";
 import {
@@ -735,6 +738,41 @@ export class CanonicalAgentSessionServices {
 				return model;
 			},
 			currentThinkingLevel: () => this.thinkingLevel,
+			mcpSelectionSource: () => {
+				const binding = this.controlPlane.getActiveCapabilityBinding();
+				if (binding === undefined) throw new Error("Product Prompt MCP selection requires an active CapabilityBinding");
+				const descriptors: McpCapabilityBinding["descriptors"] = binding.descriptors.map((descriptor) => {
+					if (descriptor.kind === undefined || descriptor.name === undefined) {
+						throw new Error("Product Prompt MCP selection requires exact CapabilityBinding descriptors");
+					}
+					return {
+						id: descriptor.id,
+						revision: descriptor.revision,
+						kind: descriptor.kind,
+						name: descriptor.name,
+						...(descriptor.exposedToolName === undefined ? {} : { exposedToolName: descriptor.exposedToolName }),
+						...(descriptor.parentId === undefined ? {} : { parentId: descriptor.parentId }),
+						...(descriptor.mcpServerId === undefined ? {} : { mcpServerId: descriptor.mcpServerId }),
+					};
+				});
+				const gateway = this.runtimeComposition.toolGateway;
+				let routeCatalog: readonly McpToolRoute[] = [];
+				if (gateway !== undefined) {
+					const catalog = gateway as typeof gateway & Partial<ToolGatewayRouteCatalog>;
+					if (typeof catalog.getRouteCatalog !== "function") {
+						throw new Error("Product Prompt MCP selection requires the current Tool Gateway route catalog");
+					}
+					routeCatalog = catalog.getRouteCatalog();
+				}
+				return {
+					capabilityBinding: {
+						id: binding.id,
+						descriptors,
+						toolAllowlist: binding.toolAllowlist,
+					},
+					routeCatalog,
+				};
+			},
 			dependencySnapshot: (name, context) => this.productPromptDependencySnapshot(name, context),
 			...(subagents === undefined ? {} : { subagents }),
 		});

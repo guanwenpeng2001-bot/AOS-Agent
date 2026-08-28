@@ -18,6 +18,7 @@ import { ProductPromptIngressV1 } from "../src/core/product-prompt-ingress.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const MODEL = getModel("openai", "gpt-4o-mini");
+const EMPTY_CAPABILITY_BINDING_ID = "capability-binding-t2-empty";
 
 function assistant(stopReason: "stop" | "error", errorMessage?: string): AssistantMessage {
 	if (MODEL === undefined) throw new Error("Test model is unavailable");
@@ -82,7 +83,13 @@ async function createFixture(mode: "pending" | "error") {
 				cwd: "C:/workspace",
 				currentModel: () => MODEL,
 				currentThinkingLevel: () => "off",
-				dependencySnapshot: (name, context): FoundationJsonValue => ({ name, runId: context.runId, state: "active" }),
+				mcpSelectionSource: () => ({
+					capabilityBinding: { id: EMPTY_CAPABILITY_BINDING_ID, descriptors: [], toolAllowlist: [] },
+					routeCatalog: [],
+				}),
+				dependencySnapshot: (name, context): FoundationJsonValue => name === "capability"
+					? { name, state: "active", bindingId: EMPTY_CAPABILITY_BINDING_ID }
+					: { name, runId: context.runId, state: "active" },
 				now: () => NOW,
 			}),
 		};

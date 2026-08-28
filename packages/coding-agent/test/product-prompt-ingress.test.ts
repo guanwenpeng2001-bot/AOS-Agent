@@ -12,6 +12,8 @@ import {
 	type FoundationJsonValue,
 	type AgentBinding,
 	type ArtifactStoreProvider,
+	type McpCapabilityBinding,
+	type McpToolRoute,
 	type QuotaProvider,
 	type SandboxOperationProvider,
 	type SandboxOperationRequest,
@@ -35,6 +37,23 @@ import { TrustedSubagentCompositionV1 } from "../src/core/subagent-composition.t
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 
 const MODEL = getModel("openai", "gpt-4o-mini");
+const EMPTY_CAPABILITY_BINDING_ID = "capability-binding-product-empty";
+
+function emptyMcpSelectionSource() {
+	return {
+		capabilityBinding: { id: EMPTY_CAPABILITY_BINDING_ID, descriptors: [], toolAllowlist: [] },
+		routeCatalog: [],
+	};
+}
+
+function activeDependencySnapshot(
+	name: string,
+	context: { readonly runId: string },
+): FoundationJsonValue {
+	if (name === "capability") return { name, state: "active", bindingId: EMPTY_CAPABILITY_BINDING_ID };
+	if (name === "policy") return { name, state: "active" };
+	return { name, runId: context.runId, state: "active" };
+}
 
 class LeaseCountingStorage extends InMemorySessionStorage {
 	acquireCount = 0;
@@ -261,7 +280,8 @@ describe("ProductPromptIngressV1", () => {
 			cwd: "C:/workspace",
 			currentModel: () => MODEL,
 			currentThinkingLevel: () => "off",
-			dependencySnapshot: (name, context): FoundationJsonValue => ({ name, runId: context.runId, state: "active" }),
+			mcpSelectionSource: emptyMcpSelectionSource,
+			dependencySnapshot: activeDependencySnapshot,
 			subagents: composition,
 			now: () => "2026-08-20T00:00:00.000Z",
 		});
@@ -378,10 +398,8 @@ describe("ProductPromptIngressV1", () => {
 			cwd: "C:/workspace",
 			currentModel: () => MODEL,
 			currentThinkingLevel: () => "off",
-			dependencySnapshot: (name, context): FoundationJsonValue =>
-				name === "capability" || name === "policy"
-					? { name, state: "active" }
-					: { name, runId: context.runId, state: "active" },
+			mcpSelectionSource: emptyMcpSelectionSource,
+			dependencySnapshot: activeDependencySnapshot,
 			now: () => "2026-08-20T00:00:00.000Z",
 		});
 
@@ -455,6 +473,81 @@ describe("ProductPromptIngressV1", () => {
 		}
 	});
 
+	it("freezes the permitted exact MCP server and current Tool Gateway route set into AgentBinding", async () => {
+		if (MODEL === undefined) throw new Error("Test model is unavailable");
+		const session = new Session(new InMemorySessionStorage({ id: "product-prompt-mcp-selection", createdAt: 1 }));
+		const baseModels = createModels();
+		const models = Object.create(baseModels) as typeof baseModels;
+		const originalGetModel = baseModels.getModel.bind(baseModels);
+		models.getModel = (provider, id) => provider === MODEL.provider && id === MODEL.id ? MODEL : originalGetModel(provider, id);
+		let streamCalls = 0;
+		const streamFunction: StreamFn = () => {
+			streamCalls += 1;
+			const stream = createAssistantMessageEventStream();
+			const message = response("mcp-selection");
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		};
+		const created = await AgentHarness.create({ session, models, model: MODEL, drive: "automatic", streamFunction });
+		const persistedCapabilityBindingId = "capability-binding-product-mcp";
+		const exactCapabilityBinding: McpCapabilityBinding = {
+			id: persistedCapabilityBindingId,
+			descriptors: [
+				{ id: "descriptor-mcp-docs", revision: "server-revision-3", kind: "mcp_server", name: "docs", mcpServerId: "docs" },
+				{ id: "descriptor-mcp-docs-list", revision: "tool-revision-5", kind: "mcp_tool", name: "list", exposedToolName: "mcp__docs__list", parentId: "descriptor-mcp-docs", mcpServerId: "docs" },
+			],
+			toolAllowlist: ["mcp__docs__list"],
+		};
+		let currentCapabilityBinding = exactCapabilityBinding;
+		let routeCatalog: readonly McpToolRoute[] = [
+			{ kind: "mcp", namespace: "docs", toolName: "list", providerId: "mcp-provider-docs", revision: 7 },
+		];
+		const ingress = new ProductPromptIngressV1({
+			session,
+			harness: created.harness,
+			models,
+			cwd: "C:/workspace",
+			currentModel: () => MODEL,
+			currentThinkingLevel: () => "off",
+			mcpSelectionSource: () => ({ capabilityBinding: currentCapabilityBinding, routeCatalog }),
+			dependencySnapshot: (name, context): FoundationJsonValue => name === "capability"
+				? { name, state: "active", bindingId: persistedCapabilityBindingId }
+				: { name, runId: context.runId, state: "active" },
+			now: () => "2026-08-20T00:00:00.000Z",
+		});
+		try {
+			const execution = await ingress.execute({ prompt: "use the permitted docs server", surface: "sdk", runId: "product-run-mcp-selection" });
+			expect(execution.binding.mcpSelection.servers).toEqual([{
+				serverId: "docs",
+				descriptorId: "descriptor-mcp-docs",
+				descriptorRevision: "server-revision-3",
+				tools: [{
+					toolId: "list",
+					descriptorId: "descriptor-mcp-docs-list",
+					descriptorRevision: "tool-revision-5",
+					providerId: "mcp-provider-docs",
+					routeRevision: 7,
+				}],
+			}]);
+			expect(Object.isFrozen(execution.binding.mcpSelection.servers[0]?.tools)).toBe(true);
+
+			routeCatalog = [{ kind: "mcp", namespace: "docs", toolName: "search", providerId: "mcp-provider-docs", revision: 8 }];
+			await expect(ingress.execute({ prompt: "reject a stale route", surface: "sdk", runId: "product-run-mcp-route-mismatch" }))
+				.rejects.toMatchObject({ code: "prompt_task_binding_invalid", dependency: "mcp" });
+
+			routeCatalog = [{ kind: "mcp", namespace: "docs", toolName: "list", providerId: "mcp-provider-docs", revision: 7 }];
+			currentCapabilityBinding = { ...exactCapabilityBinding, id: "capability-binding-product-mismatch" };
+			await expect(ingress.execute({ prompt: "reject a stale capability", surface: "sdk", runId: "product-run-mcp-capability-mismatch" }))
+				.rejects.toMatchObject({ code: "prompt_task_dependency_invalid", dependency: "mcp" });
+			expect(streamCalls).toBe(1);
+		} finally {
+			await created.harness.close();
+		}
+	});
+
 	it("persists the production sandbox ToolExecutionResult chain into Host Attempt, Task, and Run receipts", async () => {
 		if (MODEL === undefined) throw new Error("Test model is unavailable");
 		const runId = "product-run-worker-chain";
@@ -518,7 +611,8 @@ describe("ProductPromptIngressV1", () => {
 			cwd: process.cwd(),
 			currentModel: () => MODEL,
 			currentThinkingLevel: () => "off",
-			dependencySnapshot: (name, context): FoundationJsonValue => ({ name, runId: context.runId, state: "active" }),
+			mcpSelectionSource: emptyMcpSelectionSource,
+			dependencySnapshot: activeDependencySnapshot,
 			now: () => "2026-08-21T00:00:00.000Z",
 		});
 		try {
