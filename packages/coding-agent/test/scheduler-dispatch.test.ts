@@ -1,59 +1,63 @@
 import {
-	DurableLedgerError,
-	FoundationError,
-	InMemorySessionStorage,
-	Result,
-	Session,
-	SessionLedger,
-	createAttempt,
-	createModelProfileRevision,
-	createRoleRevision,
-	fingerprintFoundationValue,
-	resolveAgentBinding,
-	validateAttemptReceiptForProvider,
 	type AgentBinding,
 	type AppendFoundationRecordResult,
-	type AttemptReceipt,
 	type Attempt,
+	type AttemptReceipt,
 	type BudgetUsage,
+	createAttempt,
+	createConnectorCapabilitySnapshot,
+	createModelProfileRevision,
+	createRoleRevision,
 	type Dispatch,
 	type DurableLedgerApi,
+	DurableLedgerError,
+	FoundationError,
 	type FoundationObjectResult,
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
-	type FoundationRecordQuery,
 	type FoundationRecord,
+	type FoundationRecordQuery,
 	type FoundationRetentionPolicy,
+	fingerprintFoundationValue,
+	InMemorySessionStorage,
 	type LedgerWriterLease,
 	type ModelProfile,
 	type ProvisionedFoundationRecord,
 	type QuotaAttribution,
 	type QuotaProvider,
 	type QuotaReservation,
+	Result,
 	type Result as ResultValue,
 	type RevisionReference,
+	resolveAgentBinding,
+	Session,
+	SessionLedger,
 	type SetRetentionPolicyOptions,
 	type TaskEnvelope,
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
+	validateAttemptReceiptForProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
+import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
+import type { SchedulerClaimV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
 import {
-	SchedulerDispatchController,
 	assembleSchedulerDispatchV1,
 	bindSchedulerInProcessTaskExecutorV1,
+	SchedulerDispatchController,
 	schedulerDispatchIdentityV1,
 } from "../src/core/scheduler-dispatch.ts";
 import {
+	createSchedulerExecutorRuntimeSnapshotV1,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SCHEDULER_IN_PROCESS_PROVIDER_ID,
 	SchedulerExecutorRegistry,
+	schedulerBindingRequirementDigestV1,
 } from "../src/core/scheduler-executors.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
-import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
+import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
-import type { SchedulerClaimV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
 
 const NOW = "2026-08-22T10:00:00.000Z";
 const LATER = "2026-08-22T10:20:00.000Z";
@@ -213,7 +217,8 @@ function providerReceipt(
 ): AttemptReceipt {
 	const attemptReceiptId = `attempt_receipt_${attempt.attemptId}`;
 	const correlation = options?.correlation;
-	if (correlation === undefined) throw new FoundationError("invalid_correlation", "Test provider requires correlation");
+	if (correlation === undefined)
+		throw new FoundationError("invalid_correlation", "Test provider requires correlation");
 	return {
 		schemaVersion: 1,
 		attemptReceiptId,
@@ -226,6 +231,13 @@ function providerReceipt(
 		status,
 		workerReceiptRefs: [],
 		artifacts: status === "succeeded" ? [ARTIFACT] : [],
+		usage: {
+			inputTokens: 2,
+			outputTokens: 3,
+			cacheReadInputTokens: 1,
+			cacheCreationInputTokens: 1,
+			costUsd: 0.5,
+		},
 		provenance: {
 			producerKind: "scheduler",
 			providerId: attempt.providerId,
@@ -245,6 +257,7 @@ class RecordingQuota implements QuotaProvider {
 	readonly providerClass = "quota" as const;
 	reserved: QuotaAttribution | undefined;
 	settled: BudgetUsage | undefined;
+	settleCount = 0;
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [];
 	}
@@ -259,6 +272,7 @@ class RecordingQuota implements QuotaProvider {
 		});
 	}
 	async settle(_reservation: QuotaReservation, usage: BudgetUsage) {
+		this.settleCount += 1;
 		this.settled = usage;
 		return Result.ok(usage);
 	}
@@ -272,6 +286,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 	readonly providerId = "task_executor_scheduler_dispatch";
 	readonly providerClass = "task_executor" as const;
 	mode: ScriptedMode;
+	cancelFails = false;
 	runCount = 0;
 	cancelCount = 0;
 	readonly started: Promise<void>;
@@ -291,7 +306,8 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 	}
 
 	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
-		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "Attempt context required"));
+		if (context === undefined)
+			return Result.err(new FoundationError("invalid_correlation", "Attempt context required"));
 		return createAttempt({
 			attemptId: context.initialBindingEpoch.attemptId,
 			dispatch,
@@ -311,9 +327,8 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 				this.releaseRun = resolve;
 			});
 		}
-		const status = this.cancelled.has(attempt.attemptId) || options?.signal?.aborted === true
-			? "cancelled"
-			: "succeeded";
+		const status =
+			this.cancelled.has(attempt.attemptId) || options?.signal?.aborted === true ? "cancelled" : "succeeded";
 		return validateAttemptReceiptForProvider(providerReceipt(attempt, options, status), {
 			providerId: this.providerId,
 			providerClass: this.providerClass,
@@ -322,9 +337,14 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 
 	async cancelAttempt(attemptId: string) {
 		this.cancelCount += 1;
+		if (this.cancelFails) return Result.err(new FoundationError("worker_lost", "Injected cancellation failure"));
 		this.cancelled.add(attemptId);
 		this.releaseRun();
 		return Result.ok(undefined);
+	}
+
+	finish(): void {
+		this.releaseRun();
 	}
 
 	async dispose(): Promise<void> {}
@@ -386,6 +406,38 @@ async function registerScripted(registry: SchedulerExecutorRegistry, provider: T
 		latencyMs: 0,
 	});
 	if (!registered.ok) throw registered.error;
+}
+
+function runtimeSnapshot(providerId: string, bindingValue: AgentBinding) {
+	const bindingDigest = schedulerBindingRequirementDigestV1(bindingValue);
+	if (!bindingDigest.ok) throw bindingDigest.error;
+	if (bindingValue.policyRevision.fingerprint === undefined) throw new Error("policy fingerprint missing");
+	const capabilitySnapshot = createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId,
+		revision: 1,
+		protocol: { name: "scheduler-dispatch-test", version: "1" },
+		modelAccess: "aos_gateway",
+		resume: true,
+		toolGateway: true,
+		artifacts: true,
+		images: false,
+	});
+	const created = createSchedulerExecutorRuntimeSnapshotV1({
+		schemaVersion: 1,
+		capabilitySnapshot,
+		configRevision: fingerprintFoundationValue(`config:${providerId}:1`),
+		bindingRequirementDigests: [bindingDigest.value],
+		toolSelectionDigests: [bindingValue.mcpSelection.digest],
+		policyRevisionDigests: [bindingValue.policyRevision.fingerprint],
+		reviewRevisionDigests: [],
+		credentialTargetRefs: [],
+		sandboxTargetRefs: [],
+		observedAt: NOW,
+		expiresAt: "2026-08-22T12:00:00.000Z",
+	});
+	if (!created.ok) throw created.error;
+	return created.value;
 }
 
 class FailDispatchedEntryLedger implements DurableLedgerApi {
@@ -452,19 +504,22 @@ class FailDispatchedEntryLedger implements DurableLedgerApi {
 	}
 }
 
-async function claimedHarness(options: {
-	readonly deadlineAt?: string;
-	readonly session?: Session;
-	readonly ledger?: DurableLedgerApi;
-	readonly now?: () => string;
-	readonly cancelAttempt?: (attemptId: string) => Promise<ResultValue<void, FoundationError>>;
-} = {}): Promise<{
+async function claimedHarness(
+	options: {
+		readonly deadlineAt?: string;
+		readonly session?: Session;
+		readonly ledger?: DurableLedgerApi;
+		readonly now?: () => string;
+		readonly cancelAttempt?: (attemptId: string) => Promise<ResultValue<void, FoundationError>>;
+	} = {},
+): Promise<{
 	readonly session: Session;
 	readonly queue: SchedulerQueueStore;
 	readonly binding: AgentBinding;
 	readonly claim: SchedulerClaimV1;
 }> {
-	const session = options.session ?? new Session(new InMemorySessionStorage({ id: "session_dispatch_1", createdAt: 1 }));
+	const session =
+		options.session ?? new Session(new InMemorySessionStorage({ id: "session_dispatch_1", createdAt: 1 }));
 	const ledger = options.ledger ?? session;
 	const currentBinding = binding();
 	await seedBindingFacts(session, currentBinding);
@@ -540,14 +595,11 @@ describe("scheduler dispatch assembly", () => {
 		for (const id of Object.values(schedulerDispatchIdentityV1("q".repeat(256), "c".repeat(256)))) {
 			expect(id.length).toBeLessThanOrEqual(256);
 		}
-		expect(
-			schedulerDispatchIdentityV1(entry.queueEntryId, claim.claimId),
-		).not.toEqual(schedulerDispatchIdentityV1(entry.queueEntryId, "claim_dispatch_2"));
-		const invalidEntry = { ...entry, prompt: "forbidden" };
-		expectCode(
-			assembleSchedulerDispatchV1({ ...input, entry: invalidEntry }),
-			"scheduler_queue_invalid",
+		expect(schedulerDispatchIdentityV1(entry.queueEntryId, claim.claimId)).not.toEqual(
+			schedulerDispatchIdentityV1(entry.queueEntryId, "claim_dispatch_2"),
 		);
+		const invalidEntry = { ...entry, prompt: "forbidden" };
+		expectCode(assembleSchedulerDispatchV1({ ...input, entry: invalidEntry }), "scheduler_queue_invalid");
 		expectCode(
 			assembleSchedulerDispatchV1({
 				...input,
@@ -578,7 +630,8 @@ describe("scheduler dispatch controller", () => {
 				const snapshot = await harness.queue.snapshot();
 				if (!snapshot.ok) return snapshot;
 				observedQueueState = snapshot.value.entries[0]?.state;
-				observedAttempt = (await harness.session.getFoundationObject("attempt", attempt.attemptId))?.kind === "fact";
+				observedAttempt =
+					(await harness.session.getFoundationObject("attempt", attempt.attemptId))?.kind === "fact";
 				return Result.ok({
 					usage: { tokens: 7, wallClockMs: 12 },
 					receipt: providerReceipt(attempt, options),
@@ -761,10 +814,7 @@ describe("scheduler dispatch controller", () => {
 			binding: explicit.binding,
 		});
 		await blockingProvider.started;
-		const cancelled = await explicitController.cancelDispatch(
-			"queue_dispatch_1",
-			explicit.claim.fencingToken,
-		);
+		const cancelled = await explicitController.cancelDispatch("queue_dispatch_1", explicit.claim.fencingToken);
 		expect(cancelled.ok).toBe(true);
 		const explicitOutcome = await pending;
 		expect(explicitOutcome.ok).toBe(true);
@@ -794,6 +844,73 @@ describe("scheduler dispatch controller", () => {
 			expect(deadlineOutcome.value.receipt.status).toBe("cancelled");
 		}
 		expect(deadlineProvider.cancelCount).toBe(1);
+	});
+
+	it("retains a durable reservation when provider cancellation is non-terminal", async () => {
+		const harness = await claimedHarness();
+		const store = new SchedulerSelectionReservationStore(harness.session, {
+			ownerId: OWNER_ID,
+			now: () => NOW,
+		});
+		const registry = new SchedulerExecutorRegistry({ reservationStore: store });
+		const quota = new RecordingQuota();
+		const provider = new ScriptedTaskExecutor("block");
+		provider.cancelFails = true;
+		const registered = await registry.register({
+			entry: {
+				schemaVersion: 1,
+				descriptor: {
+					schemaVersion: 1,
+					providerId: provider.providerId,
+					providerClass: provider.providerClass,
+				},
+				capabilities: [CAPABILITY],
+				costClass: "local",
+				registeredAt: NOW,
+			},
+			provider,
+			trusted: true,
+			latencyMs: 0,
+			maxConcurrency: 1,
+			runtimeSnapshot: runtimeSnapshot(provider.providerId, harness.binding),
+			quota,
+			budget: { tokens: 100 },
+		});
+		expect(registered.ok).toBe(true);
+		const controller = new SchedulerDispatchController({
+			session: harness.session,
+			queue: harness.queue,
+			registry,
+			sessionId: "session_dispatch_1",
+			ownerId: OWNER_ID,
+			now: () => NOW,
+		});
+		const pending = controller.dispatchClaimed({
+			queueEntryId: "queue_dispatch_1",
+			fencingToken: harness.claim.fencingToken,
+			binding: harness.binding,
+			executorRequirements: { requireResume: true, modelAccess: "aos_gateway" },
+		});
+		await provider.started;
+		const cancelled = await controller.cancelDispatch("queue_dispatch_1", harness.claim.fencingToken);
+		expectCode(cancelled, "worker_lost");
+		expect(quota.settleCount).toBe(0);
+		const retained = await registry.reservationRecord("queue_dispatch_1");
+		expect(retained.ok).toBe(true);
+		if (retained.ok) expect(retained.value?.status).toBe("reserved");
+		const activeReconcile = await registry.reconcileReservations(["queue_dispatch_1"]);
+		expect(activeReconcile.ok).toBe(true);
+		expect(quota.settleCount).toBe(0);
+
+		provider.finish();
+		const completed = await pending;
+		expect(completed.ok).toBe(true);
+		expect(quota.settleCount).toBe(1);
+		expect(quota.settled).toEqual({ tokens: 7, costUsd: 0.5 });
+		const terminal = await registry.reservationRecord("queue_dispatch_1");
+		expect(terminal.ok).toBe(true);
+		if (terminal.ok) expect(terminal.value?.status).toBe("settled");
+		await store.release();
 	});
 
 	it("routes Run cancellation through the registered observer to provider cancelAttempt", async () => {
@@ -920,9 +1037,7 @@ describe("scheduler dispatch controller", () => {
 				receipt: { status: "completed" },
 			});
 			expect(
-				runSession
-					.getEntries()
-					.filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
+				runSession.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "automation.run"),
 			).toHaveLength(0);
 		} finally {
 			controller.dispose();
@@ -935,14 +1050,17 @@ describe("scheduler dispatch controller", () => {
 		const foreignRunSession = SessionManager.inMemory("/workspace/scheduler-run-foreign", {
 			id: "session_dispatch_foreign",
 		});
-		expect(() => new SchedulerDispatchController({
-			session: harness.session,
-			queue: harness.queue,
-			registry,
-			sessionId: "session_dispatch_1",
-			ownerId: OWNER_ID,
-			runLifecycleSession: foreignRunSession,
-		})).toThrow(expect.objectContaining({ code: "service_conflict" }));
+		expect(
+			() =>
+				new SchedulerDispatchController({
+					session: harness.session,
+					queue: harness.queue,
+					registry,
+					sessionId: "session_dispatch_1",
+					ownerId: OWNER_ID,
+					runLifecycleSession: foreignRunSession,
+				}),
+		).toThrow(expect.objectContaining({ code: "service_conflict" }));
 
 		const runSession = SessionManager.inMemory("/workspace/scheduler-run-owner", {
 			id: "session_dispatch_1",
@@ -956,14 +1074,17 @@ describe("scheduler dispatch controller", () => {
 			runLifecycleSession: runSession,
 		});
 		try {
-			expect(() => new SchedulerDispatchController({
-				session: harness.session,
-				queue: harness.queue,
-				registry,
-				sessionId: "session_dispatch_1",
-				ownerId: OWNER_ID,
-				runLifecycleSession: runSession,
-			})).toThrow(expect.objectContaining({ code: "service_conflict" }));
+			expect(
+				() =>
+					new SchedulerDispatchController({
+						session: harness.session,
+						queue: harness.queue,
+						registry,
+						sessionId: "session_dispatch_1",
+						ownerId: OWNER_ID,
+						runLifecycleSession: runSession,
+					}),
+			).toThrow(expect.objectContaining({ code: "service_conflict" }));
 		} finally {
 			owner.dispose();
 		}

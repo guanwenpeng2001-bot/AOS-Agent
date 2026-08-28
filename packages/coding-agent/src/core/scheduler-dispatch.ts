@@ -17,54 +17,48 @@
  * Task Graph, write TaskResult/RunReceipt, or register a production Scheduler.
  */
 import {
-	FoundationError,
-	LayeredResultSettlement,
-	Result,
+	type AgentBinding,
+	type Attempt,
+	type AttemptReceipt,
+	type BindingEpoch,
+	type Budget,
+	type ConnectorCapabilitySnapshot,
 	createBindingEpoch,
 	createExecutionCorrelation,
+	type Dispatch,
+	type DispatchExecutionResult,
+	type DispatchStartResult,
+	type ExecutionCorrelation,
+	type Fingerprint,
+	FoundationError,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
 	fingerprintFoundationValue,
+	LayeredResultSettlement,
+	type QuotaProvider,
+	Result,
+	type Result as ResultValue,
+	type Session,
+	type TaskExecutorProvider,
 	validateAttempt,
 	validateBindingEpoch,
 	validateDispatch,
 	validateImmutableAgentBinding,
-	type AgentBinding,
-	type AttemptReceipt,
-	type Attempt,
-	type BindingEpoch,
-	type Budget,
-	type DispatchExecutionResult,
-	type DispatchStartResult,
-	type Dispatch,
-	type ExecutionCorrelation,
-	type Fingerprint,
-	type FoundationProviderCapability,
-	type FoundationProviderExecutionOptions,
-	type QuotaProvider,
-	type Result as ResultValue,
-	type Session,
-	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
-import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
-import {
-	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
-	SchedulerInProcessTaskExecutorProvider,
-	type SchedulerExecutorRegistry,
-	type SchedulerHostAttemptRunnerV1,
-} from "./scheduler-executors.ts";
 import {
 	RUN_LEDGER_CUSTOM_TYPE,
-	registerRunSchedulerLifecycleHooks,
 	type RunId,
 	type RunLedgerSession,
 	type RunSchedulerLifecycleHooks,
+	registerRunSchedulerLifecycleHooks,
 } from "./run-lifecycle.ts";
-import type { SchedulerCancelAttemptV1, SchedulerQueueStore } from "./scheduler-queue.ts";
+import { type RuntimeClock, type RuntimeTimerHandle, runtimeClockFor } from "./runtime-clock.ts";
 import {
-	SCHEDULER_ERROR_CODES,
 	assertSchedulerFencingToken,
 	parseSchedulerClaim,
 	parseSchedulerDispatchRecord,
 	parseSchedulerQueueEntry,
+	SCHEDULER_ERROR_CODES,
 	type SchedulerClaimV1,
 	type SchedulerDispatchRecordV1,
 	type SchedulerErrorCodeV1,
@@ -73,6 +67,15 @@ import {
 	type SchedulerQueueEntryV1,
 	type SchedulerSelectionFactV1,
 } from "./scheduler.ts";
+import {
+	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
+	type SchedulerExecutorRegistry,
+	type SchedulerExecutorRuntimeSnapshotV1,
+	type SchedulerHostAttemptRunnerV1,
+	SchedulerInProcessTaskExecutorProvider,
+} from "./scheduler-executors.ts";
+import type { SchedulerCancelAttemptV1, SchedulerQueueStore } from "./scheduler-queue.ts";
+import type { SchedulerSelectionSettlementReasonV1 } from "./scheduler-selection-reservations.ts";
 
 const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
 	scheduler_queue_invalid: "Scheduler queue entry is invalid.",
@@ -130,7 +133,17 @@ export interface SchedulerDispatchRequestV1 {
 	readonly binding: AgentBinding;
 	readonly requiredCapabilities?: readonly FoundationProviderCapability[];
 	readonly workspaceDigest?: Fingerprint;
+	/** Explicit exact requirements activate durable selection; omission preserves the legacy path. */
+	readonly executorRequirements?: SchedulerDispatchExecutorRequirementsV1;
 	readonly signal?: AbortSignal;
+}
+
+export interface SchedulerDispatchExecutorRequirementsV1 {
+	readonly requireResume: boolean;
+	readonly modelAccess: ConnectorCapabilitySnapshot["modelAccess"];
+	readonly reviewRevision?: Fingerprint;
+	readonly credentialTargetRefs?: readonly string[];
+	readonly sandboxTargetRefs?: readonly string[];
 }
 
 /**
@@ -182,6 +195,7 @@ export interface SchedulerInProcessHostBindingOptionsV1 {
 	readonly workspaceDigest?: Fingerprint;
 	readonly latencyMs?: number;
 	readonly trusted?: boolean;
+	readonly runtimeSnapshot?: SchedulerExecutorRuntimeSnapshotV1;
 }
 
 interface SchedulerProviderResumeSurfaceV1 extends TaskExecutorProvider {
@@ -209,6 +223,7 @@ interface SchedulerPreparedDispatchV1 {
 }
 
 interface SchedulerDurableAttemptV1 {
+	readonly queueEntryId: string;
 	readonly provider: TaskExecutorProvider;
 	readonly dispatch: Dispatch;
 	readonly binding: AgentBinding;
@@ -258,7 +273,12 @@ export function schedulerProviderResumeSupportedV1(provider: TaskExecutorProvide
 export function schedulerDispatchIdentityV1(
 	queueEntryId: string,
 	claimId: string,
-): { readonly dispatchId: string; readonly attemptId: string; readonly bindingEpochId: string; readonly commandId: string } {
+): {
+	readonly dispatchId: string;
+	readonly attemptId: string;
+	readonly bindingEpochId: string;
+	readonly commandId: string;
+} {
 	const digest = fingerprintFoundationValue({ schemaVersion: 1, queueEntryId, claimId }).value;
 	return {
 		dispatchId: `dispatch_${digest}`,
@@ -286,7 +306,8 @@ export function assembleSchedulerDispatchV1(
 	const claim = parsedClaim.value;
 	const binding = checkedBinding.value;
 	if (entry.sessionId !== input.sessionId) return fail("scheduler_queue_invalid");
-	if (claim.queueEntryId !== entry.queueEntryId || claim.taskId !== entry.taskId) return fail("scheduler_queue_invalid");
+	if (claim.queueEntryId !== entry.queueEntryId || claim.taskId !== entry.taskId)
+		return fail("scheduler_queue_invalid");
 	if (binding.taskId !== entry.taskId) {
 		return Result.err(
 			new FoundationError("binding_task_before_binding", "Binding references a different durable TaskEnvelope", {
@@ -337,9 +358,13 @@ export function assembleSchedulerDispatchV1(
 	if (!epoch.ok) return epoch;
 	if (epoch.value.agentInstanceId !== undefined) {
 		return Result.err(
-			new FoundationError("agent_instance_forbidden_for_provider", "Non-agent provider dispatch cannot carry an AgentInstance", {
-				details: { providerId: input.providerId },
-			}),
+			new FoundationError(
+				"agent_instance_forbidden_for_provider",
+				"Non-agent provider dispatch cannot carry an AgentInstance",
+				{
+					details: { providerId: input.providerId },
+				},
+			),
 		);
 	}
 	const correlation = createExecutionCorrelation(input.sessionId, input.laneId, {
@@ -353,15 +378,17 @@ export function assembleSchedulerDispatchV1(
 		bindingId: binding.bindingId,
 		bindingEpochId: ids.bindingEpochId,
 		providerId: input.providerId,
-		...(entry.goalId === undefined && binding.goalId === undefined
-			? {}
-			: { goalId: entry.goalId ?? binding.goalId }),
+		...(entry.goalId === undefined && binding.goalId === undefined ? {} : { goalId: entry.goalId ?? binding.goalId }),
 	});
 	if (correlation.agentInstanceId !== undefined) {
 		return Result.err(
-			new FoundationError("agent_instance_forbidden_for_provider", "Non-agent provider dispatch cannot carry an AgentInstance", {
-				details: { providerId: input.providerId },
-			}),
+			new FoundationError(
+				"agent_instance_forbidden_for_provider",
+				"Non-agent provider dispatch cannot carry an AgentInstance",
+				{
+					details: { providerId: input.providerId },
+				},
+			),
 		);
 	}
 	return Result.ok({
@@ -441,11 +468,58 @@ function schedulerRunLedgerStateV1(
 	return terminal ? "terminal" : "live";
 }
 
-function schedulerRunDispatchSignalV1(
-	requestSignal: AbortSignal | undefined,
-	runSignal: AbortSignal,
-): AbortSignal {
+function schedulerRunDispatchSignalV1(requestSignal: AbortSignal | undefined, runSignal: AbortSignal): AbortSignal {
 	return requestSignal === undefined ? runSignal : AbortSignal.any([requestSignal, runSignal]);
+}
+
+function schedulerSelectionFailureReasonV1(
+	error: FoundationError,
+	signal: AbortSignal | undefined,
+	deadlineAt: string | undefined,
+	nowIso: string,
+): SchedulerSelectionSettlementReasonV1 {
+	const details = error.details;
+	if (
+		details !== null &&
+		typeof details === "object" &&
+		!Array.isArray(details) &&
+		(details as { schedulerFailure?: unknown }).schedulerFailure === "runner_throw"
+	) {
+		return "runner_throw";
+	}
+	if (signal?.aborted === true) {
+		if (
+			(signal.reason instanceof FoundationError && signal.reason.code === "scheduler_claim_expired") ||
+			(deadlineAt !== undefined && Date.parse(deadlineAt) <= Date.parse(nowIso))
+		) {
+			return "timeout";
+		}
+		return "cancelled";
+	}
+	if (
+		error.code === "scheduler_persistence_failed" ||
+		error.code === "session_transition_failed" ||
+		error.code === "control_state_write_failed" ||
+		error.code.startsWith("session_writer_")
+	) {
+		return "persistence_failure";
+	}
+	if (
+		error.code === "scheduler_settlement_rejected" ||
+		error.code === "external_review_rejected" ||
+		error.code === "external_review_required" ||
+		error.code === "external_tool_route_denied"
+	) {
+		return "rejected";
+	}
+	return "failed";
+}
+
+function schedulerSelectionOutcomeReasonV1(receipt: AttemptReceipt): SchedulerSelectionSettlementReasonV1 | undefined {
+	if (receipt.status === "suspended") return undefined;
+	if (receipt.status === "succeeded") return "succeeded";
+	if (receipt.status === "cancelled") return "cancelled";
+	return "failed";
 }
 
 /** Bind the real in-process TaskExecutor Host runner seam. A missing runner is a type error; registration still fails closed if the provider cannot run. */
@@ -454,9 +528,10 @@ export async function bindSchedulerInProcessTaskExecutorV1(
 	options: SchedulerInProcessHostBindingOptionsV1,
 ): Promise<ResultValue<SchedulerExecutorEntryV1, FoundationError>> {
 	const nowIso = (options.now ?? (() => new Date().toISOString()))();
+	const durableSelection = registry.durableSelectionsEnabled();
 	const provider = new SchedulerInProcessTaskExecutorProvider({
 		hostAttemptRunner: options.hostAttemptRunner,
-		...(options.quota === undefined ? {} : { quota: options.quota }),
+		...(options.quota === undefined || durableSelection ? {} : { quota: options.quota }),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.budget === undefined ? {} : { budget: options.budget }),
 	});
@@ -483,6 +558,11 @@ export async function bindSchedulerInProcessTaskExecutorV1(
 		provider,
 		trusted: options.trusted ?? true,
 		latencyMs: options.latencyMs ?? 0,
+		...(options.runtimeSnapshot === undefined ? {} : { runtimeSnapshot: options.runtimeSnapshot }),
+		...(durableSelection && options.quota !== undefined ? { quota: options.quota } : {}),
+		...(durableSelection && options.quota !== undefined && options.budget !== undefined
+			? { budget: options.budget }
+			: {}),
 	});
 }
 
@@ -528,9 +608,10 @@ export class SchedulerDispatchController {
 			onRunDeadlineExceeded: (runId: RunId) => this.observeRunCancellation(runId),
 			onRunTerminal: (runId: RunId) => this.observeRunCancellation(runId, true),
 		});
-		this.unregisterRunLifecycleHooks = options.runLifecycleSession === undefined || options.runLifecycleHookOwnership === "host"
-			? undefined
-			: registerRunSchedulerLifecycleHooks(options.runLifecycleSession, this.schedulerLifecycleHooks);
+		this.unregisterRunLifecycleHooks =
+			options.runLifecycleSession === undefined || options.runLifecycleHookOwnership === "host"
+				? undefined
+				: registerRunSchedulerLifecycleHooks(options.runLifecycleSession, this.schedulerLifecycleHooks);
 		this.laneId = options.laneId ?? "main";
 		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.requiredCapabilities = options.requiredCapabilities ?? [inProcessCapability()];
@@ -594,10 +675,9 @@ export class SchedulerDispatchController {
 			queueEntryId: request.queueEntryId,
 			fencingToken: request.fencingToken,
 			binding: request.binding,
-			...(request.requiredCapabilities === undefined
-				? {}
-				: { requiredCapabilities: request.requiredCapabilities }),
+			...(request.requiredCapabilities === undefined ? {} : { requiredCapabilities: request.requiredCapabilities }),
 			...(request.workspaceDigest === undefined ? {} : { workspaceDigest: request.workspaceDigest }),
+			...(request.executorRequirements === undefined ? {} : { executorRequirements: request.executorRequirements }),
 			signal: schedulerRunDispatchSignalV1(request.signal, association.controller.signal),
 		};
 		let result: ResultValue<SchedulerDispatchOutcomeV1, FoundationError> | undefined;
@@ -615,29 +695,63 @@ export class SchedulerDispatchController {
 	): Promise<ResultValue<SchedulerDispatchOutcomeV1, FoundationError>> {
 		const prepared = await this.prepareClaimed(request);
 		if (!prepared.ok) return prepared;
-		const dispatchRecord = prepared.value.dispatchRecord;
-		if (dispatchRecord?.status === "in_flight") {
-			if (prepared.value.entry.state === "claimed") {
-				const repaired = await this.queue.markDispatched({
-					queueEntryId: prepared.value.entry.queueEntryId,
-					fencingToken: prepared.value.claim.fencingToken,
-					dispatchId: prepared.value.assembly.dispatchId,
-					attemptId: prepared.value.assembly.attemptId,
-					providerId: prepared.value.selection.providerId,
-					providerClass: prepared.value.selection.providerClass,
-				});
-				if (!repaired.ok) return repaired;
-				return this.resumePrepared(request, {
-					...prepared.value,
-					entry: repaired.value.entry,
-					claim: repaired.value.claim,
-					dispatchRecord: repaired.value.dispatch,
-				}, runAssociation);
+		let result: ResultValue<SchedulerDispatchOutcomeV1, FoundationError>;
+		try {
+			const dispatchRecord = prepared.value.dispatchRecord;
+			if (dispatchRecord?.status === "in_flight") {
+				if (prepared.value.entry.state === "claimed") {
+					const repaired = await this.queue.markDispatched({
+						queueEntryId: prepared.value.entry.queueEntryId,
+						fencingToken: prepared.value.claim.fencingToken,
+						dispatchId: prepared.value.assembly.dispatchId,
+						attemptId: prepared.value.assembly.attemptId,
+						providerId: prepared.value.selection.providerId,
+						providerClass: prepared.value.selection.providerClass,
+					});
+					result = repaired.ok
+						? await this.resumePrepared(
+								request,
+								{
+									...prepared.value,
+									entry: repaired.value.entry,
+									claim: repaired.value.claim,
+									dispatchRecord: repaired.value.dispatch,
+								},
+								runAssociation,
+							)
+						: repaired;
+				} else {
+					result = await this.resumePrepared(request, prepared.value, runAssociation);
+				}
+			} else if (prepared.value.entry.state === "dispatched") {
+				result = fail("scheduler_dispatch_invalid");
+			} else {
+				result = await this.executePrepared(request, prepared.value, runAssociation);
 			}
-			return this.resumePrepared(request, prepared.value, runAssociation);
+		} catch (error) {
+			result = Result.err(
+				new FoundationError(
+					"scheduler_executor_unavailable",
+					"Scheduler executor threw outside its Result boundary.",
+					{ details: { schedulerFailure: "runner_throw" }, cause: error },
+				),
+			);
 		}
-		if (prepared.value.entry.state === "dispatched") return fail("scheduler_dispatch_invalid");
-		return this.executePrepared(request, prepared.value, runAssociation);
+		const reason = result.ok
+			? schedulerSelectionOutcomeReasonV1(result.value.receipt)
+			: schedulerSelectionFailureReasonV1(
+					result.error,
+					request.signal,
+					prepared.value.assembly.dispatch.deadlineAt,
+					this.nowIso(),
+				);
+		if (reason === undefined) return result;
+		const settled = await this.registry.settleSelection(
+			prepared.value.entry.queueEntryId,
+			reason,
+			result.ok ? (result.value.receipt.usage ?? {}) : {},
+		);
+		return settled.ok ? result : Result.err(settled.error);
 	}
 
 	async cancelAttempt(attemptId: string): Promise<ResultValue<void, FoundationError>> {
@@ -650,17 +764,14 @@ export class SchedulerDispatchController {
 			initialBindingEpoch: loaded.value.initialBindingEpoch,
 			correlation: loaded.value.correlation,
 		});
-		if (cancelled.ok) {
-			const association = this.attemptRunDispatches.get(attemptId);
-			if (association !== undefined) this.releaseRunDispatchAssociation(association);
-		}
-		return cancelled;
+		if (!cancelled.ok) return cancelled;
+		const association = this.attemptRunDispatches.get(attemptId);
+		if (association !== undefined) this.releaseRunDispatchAssociation(association);
+		const settled = await this.registry.settleSelection(loaded.value.queueEntryId, "cancelled", {});
+		return settled.ok ? cancelled : Result.err(settled.error);
 	}
 
-	async cancelDispatch(
-		queueEntryId: string,
-		fencingToken: string,
-	): Promise<ResultValue<void, FoundationError>> {
+	async cancelDispatch(queueEntryId: string, fencingToken: string): Promise<ResultValue<void, FoundationError>> {
 		const entry = await this.queue.getEntry(queueEntryId);
 		if (!entry.ok) return entry;
 		if (entry.value.sessionId !== this.sessionId) return fail("scheduler_queue_invalid");
@@ -730,9 +841,9 @@ export class SchedulerDispatchController {
 
 	private beginRunDispatchCancellation(association: SchedulerRunDispatchCancellationV1): void {
 		if (!association.durable || association.cancel === undefined || association.cancellation !== undefined) return;
-		const cancellation: Promise<ResultValue<void, FoundationError>> = association.cancel().catch(() =>
-			fail("scheduler_settlement_rejected"),
-		);
+		const cancellation: Promise<ResultValue<void, FoundationError>> = association
+			.cancel()
+			.catch(() => fail("scheduler_settlement_rejected"));
 		association.cancellation = cancellation.then((result) => {
 			if (result.ok) this.releaseRunDispatchAssociation(association);
 			return result;
@@ -751,10 +862,7 @@ export class SchedulerDispatchController {
 	}
 
 	private releaseRunDispatchAssociation(association: SchedulerRunDispatchCancellationV1): void {
-		if (
-			association.attemptId !== undefined &&
-			this.attemptRunDispatches.get(association.attemptId) === association
-		) {
+		if (association.attemptId !== undefined && this.attemptRunDispatches.get(association.attemptId) === association) {
 			this.attemptRunDispatches.delete(association.attemptId);
 		}
 		const runDispatches = this.runDispatches.get(association.runId);
@@ -783,6 +891,7 @@ export class SchedulerDispatchController {
 		const nowIso = this.nowIso();
 		const fenced = assertSchedulerFencingToken(claimResult.value, request.fencingToken, nowIso);
 		if (!fenced.ok) return fenced;
+		const identity = schedulerDispatchIdentityV1(entry.queueEntryId, fenced.value.claimId);
 		const selected = await this.registry.select({
 			queueEntry: entry,
 			requiredCapabilities: request.requiredCapabilities ?? this.requiredCapabilities,
@@ -791,8 +900,40 @@ export class SchedulerDispatchController {
 			...(request.workspaceDigest === undefined && this.workspaceDigest === undefined
 				? {}
 				: { workspaceDigest: request.workspaceDigest ?? this.workspaceDigest }),
+			...(request.executorRequirements === undefined
+				? {}
+				: {
+						exactRequirements: {
+							binding: request.binding,
+							attemptId: identity.attemptId,
+							bindingEpochId: identity.bindingEpochId,
+							requireResume: request.executorRequirements.requireResume,
+							modelAccess: request.executorRequirements.modelAccess,
+							...(request.executorRequirements.reviewRevision === undefined
+								? {}
+								: { reviewRevision: request.executorRequirements.reviewRevision }),
+							...(request.executorRequirements.credentialTargetRefs === undefined
+								? {}
+								: { credentialTargetRefs: request.executorRequirements.credentialTargetRefs }),
+							...(request.executorRequirements.sandboxTargetRefs === undefined
+								? {}
+								: { sandboxTargetRefs: request.executorRequirements.sandboxTargetRefs }),
+						},
+					}),
+			...(request.signal === undefined ? {} : { signal: request.signal }),
 		});
 		if (!selected.ok) return selected;
+		const rejectSelected = async <T>(
+			failure: ResultValue<T, FoundationError>,
+		): Promise<ResultValue<T, FoundationError>> => {
+			if (failure.ok) return failure;
+			const released = await this.registry.settleSelection(
+				entry.queueEntryId,
+				schedulerSelectionFailureReasonV1(failure.error, request.signal, entry.deadlineAt, this.nowIso()),
+				{},
+			);
+			return released.ok ? failure : Result.err(released.error);
+		};
 		const providerClass = selected.value.provider.providerClass;
 		if (
 			providerClass !== "scheduler" &&
@@ -800,14 +941,14 @@ export class SchedulerDispatchController {
 			providerClass !== "agent" &&
 			providerClass !== "external_connector"
 		) {
-			return fail("scheduler_executor_unavailable");
+			return rejectSelected(fail("scheduler_executor_unavailable"));
 		}
 		if (
 			selected.value.fact.chosenProviderId !== selected.value.provider.providerId ||
 			selected.value.entry.descriptor.providerId !== selected.value.provider.providerId ||
 			selected.value.entry.descriptor.providerClass !== providerClass
 		) {
-			return fail("scheduler_executor_unavailable");
+			return rejectSelected(fail("scheduler_executor_unavailable"));
 		}
 		const assembly = assembleSchedulerDispatchV1({
 			entry,
@@ -819,9 +960,9 @@ export class SchedulerDispatchController {
 			laneId: this.laneId,
 			now: nowIso,
 		});
-		if (!assembly.ok) return assembly;
+		if (!assembly.ok) return rejectSelected(assembly);
 		const live = await this.liveDispatch(entry.queueEntryId);
-		if (!live.ok) return live;
+		if (!live.ok) return rejectSelected(live);
 		if (live.value !== undefined) {
 			if (
 				live.value.dispatchId !== assembly.value.dispatchId ||
@@ -829,7 +970,7 @@ export class SchedulerDispatchController {
 				live.value.providerClass !== providerClass ||
 				(live.value.attemptId !== undefined && live.value.attemptId !== assembly.value.attemptId)
 			) {
-				return fail("scheduler_dispatch_invalid");
+				return rejectSelected(fail("scheduler_dispatch_invalid"));
 			}
 		}
 		return Result.ok({
@@ -911,11 +1052,18 @@ export class SchedulerDispatchController {
 		const cancelled = pendingCancellation === undefined ? undefined : await pendingCancellation;
 		if (cancelled !== undefined && !cancelled.ok) return cancelled;
 		if (!executed.ok) return executed;
-		if (executed.value.attempt.agentInstanceId !== undefined || executed.value.receipt.agentInstanceId !== undefined) {
+		if (
+			executed.value.attempt.agentInstanceId !== undefined ||
+			executed.value.receipt.agentInstanceId !== undefined
+		) {
 			return Result.err(
-				new FoundationError("agent_instance_forbidden_for_provider", "Non-agent provider dispatch cannot carry an AgentInstance", {
-					details: { attemptId: executed.value.attempt.attemptId },
-				}),
+				new FoundationError(
+					"agent_instance_forbidden_for_provider",
+					"Non-agent provider dispatch cannot carry an AgentInstance",
+					{
+						details: { attemptId: executed.value.attempt.attemptId },
+					},
+				),
 			);
 		}
 		return this.completeOutcome(prepared, executed.value.attempt, executed.value.receipt);
@@ -969,7 +1117,10 @@ export class SchedulerDispatchController {
 		if (cancelled !== undefined && !cancelled.ok) return cancelled;
 		if (!resumed.ok) return resumed;
 		if (resumed.value.receipt !== undefined) {
-			if (resumed.value.attempt.agentInstanceId !== undefined || resumed.value.receipt.agentInstanceId !== undefined) {
+			if (
+				resumed.value.attempt.agentInstanceId !== undefined ||
+				resumed.value.receipt.agentInstanceId !== undefined
+			) {
 				return Result.err(
 					new FoundationError(
 						"agent_instance_forbidden_for_provider",
@@ -1007,9 +1158,13 @@ export class SchedulerDispatchController {
 		if (!checked.ok) return checked;
 		if (checked.value.agentInstanceId !== undefined) {
 			return Result.err(
-				new FoundationError("agent_instance_forbidden_for_provider", "Non-agent Attempt cannot carry an AgentInstance", {
-					details: { attemptId: checked.value.attemptId },
-				}),
+				new FoundationError(
+					"agent_instance_forbidden_for_provider",
+					"Non-agent Attempt cannot carry an AgentInstance",
+					{
+						details: { attemptId: checked.value.attemptId },
+					},
+				),
 			);
 		}
 		if (
@@ -1022,9 +1177,13 @@ export class SchedulerDispatchController {
 			checked.value.bindingEpochIds[0] !== prepared.assembly.bindingEpochId
 		) {
 			return Result.err(
-				new FoundationError("invalid_correlation", "Provider-created Attempt does not match its Dispatch, Binding, or epoch", {
-					details: { attemptId: checked.value.attemptId, dispatchId: prepared.assembly.dispatchId },
-				}),
+				new FoundationError(
+					"invalid_correlation",
+					"Provider-created Attempt does not match its Dispatch, Binding, or epoch",
+					{
+						details: { attemptId: checked.value.attemptId, dispatchId: prepared.assembly.dispatchId },
+					},
+				),
 			);
 		}
 		const marked = await this.queue.markDispatched({
@@ -1092,9 +1251,7 @@ export class SchedulerDispatchController {
 		const queueSnapshot = await this.queue.snapshot();
 		if (!queueSnapshot.ok) return queueSnapshot;
 		const queueDispatches = queueSnapshot.value.dispatches.filter(
-			(record) =>
-				record.attemptId === attemptId &&
-				(record.status === "in_flight" || record.status === "prepared"),
+			(record) => record.attemptId === attemptId && (record.status === "in_flight" || record.status === "prepared"),
 		);
 		if (queueDispatches.length !== 1) return fail("scheduler_not_found");
 		const queueDispatchResult = parseSchedulerDispatchRecord(queueDispatches[0]);
@@ -1131,9 +1288,13 @@ export class SchedulerDispatchController {
 		}
 		if (checkedAttempt.value.agentInstanceId !== undefined) {
 			return Result.err(
-				new FoundationError("agent_instance_forbidden_for_provider", "Non-agent Attempt cannot carry an AgentInstance", {
-					details: { attemptId: checkedAttempt.value.attemptId },
-				}),
+				new FoundationError(
+					"agent_instance_forbidden_for_provider",
+					"Non-agent Attempt cannot carry an AgentInstance",
+					{
+						details: { attemptId: checkedAttempt.value.attemptId },
+					},
+				),
 			);
 		}
 		const dispatchRecord = await this.session.getFoundationObject("dispatch", checkedAttempt.value.dispatchId);
@@ -1206,6 +1367,7 @@ export class SchedulerDispatchController {
 				: { goalId: queueEntry.goalId ?? checkedBinding.value.goalId }),
 		});
 		return Result.ok({
+			queueEntryId: queueEntry.queueEntryId,
 			provider: registered.provider,
 			dispatch: checkedDispatch.value,
 			binding: checkedBinding.value,
