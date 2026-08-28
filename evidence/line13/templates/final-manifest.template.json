@@ -1,12 +1,13 @@
 {
-	"schemaVersion": 1,
+	"schemaVersion": 2,
 	"type": "line13_final_evidence",
 	"headSha": "0000000000000000000000000000000000000000",
 	"baseSha": "0000000000000000000000000000000000000000",
 	"requestedHeadSha": "0000000000000000000000000000000000000000",
 	"state": "incomplete",
+	"ciProvenance": null,
 	"milestoneChain": {
-		"schemaVersion": 1,
+		"schemaVersion": 2,
 		"type": "milestone_chain",
 		"baseSha": "0000000000000000000000000000000000000000",
 		"headSha": "0000000000000000000000000000000000000000",
@@ -24,7 +25,7 @@
 		"inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	},
 	"qualityGates": {
-		"schemaVersion": 1,
+		"schemaVersion": 2,
 		"type": "quality_gates",
 		"headSha": "0000000000000000000000000000000000000000",
 		"state": "incomplete",

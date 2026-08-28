@@ -20,6 +20,7 @@ import {
 } from "../packages/coding-agent/scripts/line13-soak.mjs";
 import {
 	assembleLine13EvidenceManifest,
+	createCiProvenanceRecord,
 	createNativeJobRecord,
 	validateLine13EvidenceManifest,
 } from "./verify-line13-evidence.mjs";
@@ -28,6 +29,12 @@ const HEAD_SHA = "a".repeat(40);
 const OTHER_HEAD_SHA = "b".repeat(40);
 const BASE_SHA = "0".repeat(40);
 const MIDDLE_SHA = "c".repeat(40);
+const WORKFLOW_PATH = ".github/workflows/ci.yml";
+const WORKFLOW_ID = 101;
+const RUN_ID = 202;
+const ARTIFACT_ID = 303;
+const ARTIFACT_NAME = "line13-milestone-evidence";
+const ARTIFACT_DIGEST = `sha256:${"9".repeat(64)}`;
 
 function withInputDigest(value) {
 	return { ...value, inputDigest: digestJson(value) };
@@ -37,23 +44,56 @@ function identity(id, character) {
 	return { id, digest: `sha256:${character.repeat(64)}` };
 }
 
+function ciArtifactReference() {
+	return { runId: RUN_ID, artifactId: ARTIFACT_ID, digest: ARTIFACT_DIGEST };
+}
+
+function ciProvenance(overrides = {}) {
+	return createCiProvenanceRecord({
+		repository: "aos-agent/aos-agent",
+		expectedHead: HEAD_SHA,
+		expectedBase: BASE_SHA,
+		expectedWorkflow: WORKFLOW_PATH,
+		expectedRunId: RUN_ID,
+		expectedArtifactId: ARTIFACT_ID,
+		expectedArtifactName: ARTIFACT_NAME,
+		run: {
+			id: RUN_ID,
+			workflow_id: WORKFLOW_ID,
+			head_sha: HEAD_SHA,
+			status: "completed",
+			conclusion: "success",
+			...overrides.run,
+		},
+		workflow: { id: WORKFLOW_ID, path: WORKFLOW_PATH, ...overrides.workflow },
+		artifact: {
+			id: ARTIFACT_ID,
+			name: ARTIFACT_NAME,
+			digest: ARTIFACT_DIGEST,
+			expired: false,
+			workflow_run: { id: RUN_ID, head_sha: HEAD_SHA },
+			...overrides.artifact,
+		},
+	});
+}
+
 function milestoneRecords() {
 	const commits = [
 		withInputDigest({
 			sequence: 1,
 			commitSha: MIDDLE_SHA,
 			parentSha: BASE_SHA,
-			gate: { state: "passed", cancelled: false, command: identity("check.middle", "1"), ciArtifact: identity("artifact.middle", "2") },
+			gate: { state: "passed", cancelled: false, command: identity("check.middle", "1"), ciArtifact: ciArtifactReference() },
 		}),
 		withInputDigest({
 			sequence: 2,
 			commitSha: HEAD_SHA,
 			parentSha: MIDDLE_SHA,
-			gate: { state: "passed", cancelled: false, command: identity("check.head", "3"), ciArtifact: identity("artifact.head", "4") },
+			gate: { state: "passed", cancelled: false, command: identity("check.head", "3"), ciArtifact: ciArtifactReference() },
 		}),
 	];
 	const milestone = withInputDigest({
-		schemaVersion: 1,
+		schemaVersion: 2,
 		type: "milestone_chain",
 		baseSha: BASE_SHA,
 		headSha: HEAD_SHA,
@@ -83,9 +123,9 @@ function milestoneRecords() {
 		state: "passed",
 		cancelled: false,
 		command: identity(`command.${id.toLowerCase()}`, String((index % 8) + 1)),
-		ciArtifact: identity(`artifact.${id.toLowerCase()}`, String(((index + 1) % 8) + 1)),
+		ciArtifact: ciArtifactReference(),
 	}));
-	const quality = withInputDigest({ schemaVersion: 1, type: "quality_gates", headSha: HEAD_SHA, state: "passed", gates });
+	const quality = withInputDigest({ schemaVersion: 2, type: "quality_gates", headSha: HEAD_SHA, state: "passed", gates });
 	return [milestone, ac, quality];
 }
 
@@ -160,7 +200,7 @@ function validManifest() {
 		state: "passed",
 		count: 0,
 		totalAcceptanceCriteria: 24,
-	}, ...milestoneRecords()];
+	}, ciProvenance(), ...milestoneRecords()];
 	for (const platform of LINE13_PLATFORMS) {
 		records.push(createNativeJobRecord({
 			headSha: HEAD_SHA,
@@ -185,7 +225,7 @@ function validManifest() {
 			reasonCode: "authorized_run_not_provided",
 		}));
 	}
-	return assembleLine13EvidenceManifest(records, HEAD_SHA, BASE_SHA, [MIDDLE_SHA, HEAD_SHA]);
+	return assembleLine13EvidenceManifest(records, HEAD_SHA, BASE_SHA, WORKFLOW_PATH, [MIDDLE_SHA, HEAD_SHA]);
 }
 
 function rejectMutation(mutate, pattern) {
@@ -193,7 +233,7 @@ function rejectMutation(mutate, pattern) {
 	delete manifest.digest;
 	mutate(manifest);
 	assert.throws(
-		() => validateLine13EvidenceManifest(manifest, HEAD_SHA, BASE_SHA, [MIDDLE_SHA, HEAD_SHA]),
+		() => validateLine13EvidenceManifest(manifest, HEAD_SHA, BASE_SHA, WORKFLOW_PATH, [MIDDLE_SHA, HEAD_SHA]),
 		pattern,
 	);
 }
@@ -278,12 +318,12 @@ test("exact-head verifier accepts a product-ready claim only for an authorized p
 		source: "authorized_external_run",
 	});
 	assert.equal(
-		validateLine13EvidenceManifest(manifest, HEAD_SHA, BASE_SHA, [MIDDLE_SHA, HEAD_SHA]).certifications[0].productReady,
+		validateLine13EvidenceManifest(manifest, HEAD_SHA, BASE_SHA, WORKFLOW_PATH, [MIDDLE_SHA, HEAD_SHA]).certifications[0].productReady,
 		true,
 	);
 	claim.productReady = false;
 	assert.throws(
-		() => validateLine13EvidenceManifest(manifest, HEAD_SHA, BASE_SHA, [MIDDLE_SHA, HEAD_SHA]),
+		() => validateLine13EvidenceManifest(manifest, HEAD_SHA, BASE_SHA, WORKFLOW_PATH, [MIDDLE_SHA, HEAD_SHA]),
 		/product-ready claim/u,
 	);
 });
@@ -313,4 +353,68 @@ test("exact milestone evidence rejects duplicate and input-digest drift", () => 
 	rejectMutation((manifest) => {
 		manifest.qualityGates.gates[0].command.id = "drifted.command";
 	}, /inputDigest drifted/u);
+});
+
+test("CI provenance is built from matching successful GitHub API metadata", () => {
+	const provenance = ciProvenance();
+	assert.equal(provenance.source, "github_actions_api");
+	assert.equal(provenance.workflow.path, WORKFLOW_PATH);
+	assert.equal(provenance.run.id, RUN_ID);
+	assert.equal(provenance.run.cancelled, false);
+	assert.equal(provenance.artifact.id, ARTIFACT_ID);
+	assert.equal(provenance.artifact.digest, ARTIFACT_DIGEST);
+});
+
+test("CI provenance creation rejects stale, failed, cancelled, cross-run, workflow, and artifact metadata", () => {
+	assert.throws(() => ciProvenance({ run: { head_sha: OTHER_HEAD_SHA } }), /stale head/u);
+	assert.throws(() => ciProvenance({ run: { conclusion: "failure" } }), /failed, cancelled, or incomplete/u);
+	assert.throws(() => ciProvenance({ run: { conclusion: "cancelled" } }), /failed, cancelled, or incomplete/u);
+	assert.throws(() => ciProvenance({ workflow: { path: ".github/workflows/other.yml" } }), /expected workflow/u);
+	assert.throws(() => ciProvenance({ artifact: { id: ARTIFACT_ID + 1 } }), /requested artifact/u);
+	assert.throws(() => ciProvenance({ artifact: { workflow_run: { id: RUN_ID + 1, head_sha: HEAD_SHA } } }), /different workflow run/u);
+});
+
+test("exact-head verifier rejects missing or synthetic CI provenance", () => {
+	rejectMutation((manifest) => {
+		delete manifest.ciProvenance;
+	}, /ciProvenance/u);
+	rejectMutation((manifest) => {
+		manifest.milestoneChain.commits[0].gate.ciArtifact = identity("synthetic.artifact", "2");
+	}, /ciArtifact/u);
+});
+
+test("exact-head verifier binds provenance to workflow, head, base, successful run, and artifact", () => {
+	const manifest = structuredClone(validManifest());
+	delete manifest.digest;
+	assert.throws(
+		() => validateLine13EvidenceManifest(
+			manifest,
+			HEAD_SHA,
+			BASE_SHA,
+			".github/workflows/other.yml",
+			[MIDDLE_SHA, HEAD_SHA],
+		),
+		/wrong workflow/u,
+	);
+	rejectMutation((candidate) => {
+		candidate.ciProvenance.headSha = OTHER_HEAD_SHA;
+	}, /stale head/u);
+	rejectMutation((candidate) => {
+		candidate.ciProvenance.baseSha = OTHER_HEAD_SHA;
+	}, /stale base/u);
+	rejectMutation((candidate) => {
+		candidate.ciProvenance.run.conclusion = "failure";
+	}, /failed, cancelled, or incomplete/u);
+	rejectMutation((candidate) => {
+		candidate.ciProvenance.run.cancelled = true;
+	}, /failed, cancelled, or incomplete/u);
+	rejectMutation((candidate) => {
+		candidate.qualityGates.gates[0].ciArtifact.runId = RUN_ID + 1;
+	}, /different workflow run/u);
+	rejectMutation((candidate) => {
+		candidate.milestoneChain.commits[0].gate.ciArtifact.artifactId = ARTIFACT_ID + 1;
+	}, /different artifact/u);
+	rejectMutation((candidate) => {
+		candidate.milestoneChain.commits[0].gate.ciArtifact.digest = `sha256:${"8".repeat(64)}`;
+	}, /attested artifact/u);
 });

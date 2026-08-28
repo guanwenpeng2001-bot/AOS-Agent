@@ -11,6 +11,7 @@
 		"baseSha",
 		"requestedHeadSha",
 		"state",
+		"ciProvenance",
 		"milestoneChain",
 		"acOwnerTransitions",
 		"qualityGates",
@@ -19,19 +20,31 @@
 		"certifications",
 		"createdBy"
 	],
+	"allOf": [
+		{
+			"if": { "properties": { "state": { "const": "passed" } }, "required": ["state"] },
+			"then": { "properties": { "ciProvenance": { "$ref": "#/$defs/ciProvenance" } } }
+		}
+	],
 	"properties": {
-		"schemaVersion": { "const": 1 },
+		"schemaVersion": { "const": 2 },
 		"type": { "const": "line13_final_evidence" },
 		"headSha": { "$ref": "#/$defs/headSha" },
 		"baseSha": { "$ref": "#/$defs/headSha" },
 		"requestedHeadSha": { "$ref": "#/$defs/headSha" },
 		"state": { "enum": ["passed", "incomplete"] },
+		"ciProvenance": {
+			"oneOf": [
+				{ "$ref": "#/$defs/ciProvenance" },
+				{ "type": "null" }
+			]
+		},
 		"milestoneChain": {
 			"type": "object",
 			"additionalProperties": false,
 			"required": ["schemaVersion", "type", "baseSha", "headSha", "state", "commits", "inputDigest"],
 			"properties": {
-				"schemaVersion": { "const": 1 },
+				"schemaVersion": { "const": 2 },
 				"type": { "const": "milestone_chain" },
 				"baseSha": { "$ref": "#/$defs/headSha" },
 				"headSha": { "$ref": "#/$defs/headSha" },
@@ -59,7 +72,7 @@
 			"additionalProperties": false,
 			"required": ["schemaVersion", "type", "headSha", "state", "gates", "inputDigest"],
 			"properties": {
-				"schemaVersion": { "const": 1 },
+				"schemaVersion": { "const": 2 },
 				"type": { "const": "quality_gates" },
 				"headSha": { "$ref": "#/$defs/headSha" },
 				"state": { "enum": ["passed", "incomplete"] },
@@ -94,6 +107,65 @@
 			"required": ["id", "digest"],
 			"properties": { "id": { "type": "string" }, "digest": { "$ref": "#/$defs/digest" } }
 		},
+		"ciArtifactReference": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["runId", "artifactId", "digest"],
+			"properties": {
+				"runId": { "type": "integer", "minimum": 1 },
+				"artifactId": { "type": "integer", "minimum": 1 },
+				"digest": { "$ref": "#/$defs/digest" }
+			}
+		},
+		"ciProvenance": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["schemaVersion", "type", "source", "repository", "baseSha", "headSha", "workflow", "run", "artifact", "digest"],
+			"properties": {
+				"schemaVersion": { "const": 1 },
+				"type": { "const": "ci_provenance" },
+				"source": { "const": "github_actions_api" },
+				"repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+				"baseSha": { "$ref": "#/$defs/headSha" },
+				"headSha": { "$ref": "#/$defs/headSha" },
+				"workflow": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["id", "path"],
+					"properties": {
+						"id": { "type": "integer", "minimum": 1 },
+						"path": { "type": "string", "pattern": "^\\.github/workflows/[^/@]+\\.ya?ml$" }
+					}
+				},
+				"run": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["id", "workflowId", "headSha", "status", "conclusion", "cancelled"],
+					"properties": {
+						"id": { "type": "integer", "minimum": 1 },
+						"workflowId": { "type": "integer", "minimum": 1 },
+						"headSha": { "$ref": "#/$defs/headSha" },
+						"status": { "const": "completed" },
+						"conclusion": { "const": "success" },
+						"cancelled": { "const": false }
+					}
+				},
+				"artifact": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["id", "name", "runId", "headSha", "digest", "expired"],
+					"properties": {
+						"id": { "type": "integer", "minimum": 1 },
+						"name": { "type": "string", "minLength": 1, "maxLength": 255 },
+						"runId": { "type": "integer", "minimum": 1 },
+						"headSha": { "$ref": "#/$defs/headSha" },
+						"digest": { "$ref": "#/$defs/digest" },
+						"expired": { "const": false }
+					}
+				},
+				"digest": { "$ref": "#/$defs/digest" }
+			}
+		},
 		"milestoneCommit": {
 			"type": "object",
 			"additionalProperties": false,
@@ -110,7 +182,7 @@
 						"state": { "const": "passed" },
 						"cancelled": { "const": false },
 						"command": { "$ref": "#/$defs/identity" },
-						"ciArtifact": { "$ref": "#/$defs/identity" }
+						"ciArtifact": { "$ref": "#/$defs/ciArtifactReference" }
 					}
 				},
 				"inputDigest": { "$ref": "#/$defs/digest" }
@@ -141,7 +213,7 @@
 				"state": { "const": "passed" },
 				"cancelled": { "const": false },
 				"command": { "$ref": "#/$defs/identity" },
-				"ciArtifact": { "$ref": "#/$defs/identity" },
+				"ciArtifact": { "$ref": "#/$defs/ciArtifactReference" },
 				"inputDigest": { "$ref": "#/$defs/digest" }
 			}
 		}

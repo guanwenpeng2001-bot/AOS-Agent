@@ -15,8 +15,16 @@ on:
         description: Completed workflow run containing repository-owned milestone, AC, and Q evidence
         required: true
         type: string
+      milestone_workflow:
+        description: Exact repository workflow path that produced the milestone evidence
+        required: true
+        type: string
+      milestone_artifact_id:
+        description: Exact immutable GitHub artifact ID containing the milestone evidence
+        required: true
+        type: string
       milestone_artifact:
-        description: Artifact name containing milestone-chain, AC-transition, and Q0-Q18 JSON records
+        description: Expected name of the exact milestone evidence artifact
         required: true
         type: string
 
@@ -233,10 +241,49 @@ jobs:
           pattern: line13-native-*-${{ inputs.head_sha }}
           path: ${{ runner.temp }}/line13-records
           merge-multiple: true
+      - name: Attest exact milestone evidence provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          EXPECTED_BASE: ${{ inputs.base_sha }}
+          EXPECTED_WORKFLOW: ${{ inputs.milestone_workflow }}
+          EXPECTED_RUN_ID: ${{ inputs.milestone_run_id }}
+          EXPECTED_ARTIFACT_ID: ${{ inputs.milestone_artifact_id }}
+          EXPECTED_ARTIFACT_NAME: ${{ inputs.milestone_artifact }}
+        run: |
+          [[ "$EXPECTED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          mkdir -p "$RUNNER_TEMP/line13-ci-api" "$RUNNER_TEMP/line13-records"
+          gh api \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/actions/runs/$EXPECTED_RUN_ID" \
+            > "$RUNNER_TEMP/line13-ci-api/run.json"
+          workflow_id="$(jq -er '.workflow_id | select(type == "number")' "$RUNNER_TEMP/line13-ci-api/run.json")"
+          gh api \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/actions/workflows/$workflow_id" \
+            > "$RUNNER_TEMP/line13-ci-api/workflow.json"
+          gh api \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$REPOSITORY/actions/artifacts/$EXPECTED_ARTIFACT_ID" \
+            > "$RUNNER_TEMP/line13-ci-api/artifact.json"
+          node scripts/verify-line13-evidence.mjs --record-ci-provenance \
+            --repository "$REPOSITORY" \
+            --run-metadata "$RUNNER_TEMP/line13-ci-api/run.json" \
+            --workflow-metadata "$RUNNER_TEMP/line13-ci-api/workflow.json" \
+            --artifact-metadata "$RUNNER_TEMP/line13-ci-api/artifact.json" \
+            --expected-head "$EXPECTED_HEAD" \
+            --expected-base "$EXPECTED_BASE" \
+            --expected-workflow "$EXPECTED_WORKFLOW" \
+            --expected-run-id "$EXPECTED_RUN_ID" \
+            --expected-artifact-id "$EXPECTED_ARTIFACT_ID" \
+            --expected-artifact-name "$EXPECTED_ARTIFACT_NAME" \
+            --out "$RUNNER_TEMP/line13-records/ci-provenance.json"
       - name: Download exact milestone, AC, and Q evidence
         uses: actions/download-artifact@v4
         with:
-          name: ${{ inputs.milestone_artifact }}
+          artifact-ids: ${{ inputs.milestone_artifact_id }}
           path: ${{ runner.temp }}/line13-records/milestones
           run-id: ${{ inputs.milestone_run_id }}
           github-token: ${{ github.token }}
@@ -261,12 +308,14 @@ jobs:
             --records-dir "$RUNNER_TEMP/line13-records" \
             --expected-head "$EXPECTED_HEAD" \
             --expected-base "${{ inputs.base_sha }}" \
+            --expected-workflow "${{ inputs.milestone_workflow }}" \
             --out "$RUNNER_TEMP/line13-final/manifest.json"
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           node scripts/verify-line13-evidence.mjs \
             --manifest "$RUNNER_TEMP/line13-final/manifest.json" \
             --expected-head "$EXPECTED_HEAD" \
-            --expected-base "${{ inputs.base_sha }}"
+            --expected-base "${{ inputs.base_sha }}" \
+            --expected-workflow "${{ inputs.milestone_workflow }}"
       - uses: actions/upload-artifact@v4
         if: ${{ success() }}
         with:

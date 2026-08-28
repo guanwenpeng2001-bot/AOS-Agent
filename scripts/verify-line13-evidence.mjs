@@ -327,6 +327,165 @@ function validateEvidenceIdentity(value, context) {
 	return identity;
 }
 
+function assertPositiveInteger(value, context) {
+	if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${context} must be a positive safe integer`);
+	return value;
+}
+
+function parsePositiveInteger(value, context) {
+	if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) {
+		throw new TypeError(`${context} must be a positive integer`);
+	}
+	return assertPositiveInteger(Number(value), context);
+}
+
+function validateWorkflowPath(value, context) {
+	if (typeof value !== "string" || !/^\.github\/workflows\/[^/@]+\.ya?ml$/u.test(value)) {
+		throw new TypeError(`${context} must identify a repository workflow file`);
+	}
+	return value;
+}
+
+function validateCiProvenance(value, expectedHead, expectedBase, expectedWorkflow, context) {
+	const provenance = assertPlainObject(value, context);
+	assertExactKeys(
+		provenance,
+		["schemaVersion", "type", "source", "repository", "baseSha", "headSha", "workflow", "run", "artifact", "digest"],
+		[],
+		context,
+	);
+	if (provenance.schemaVersion !== 1 || provenance.type !== "ci_provenance" || provenance.source !== "github_actions_api") {
+		throw new Error(`${context} is not GitHub Actions API provenance`);
+	}
+	if (typeof provenance.repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(provenance.repository)) {
+		throw new TypeError(`${context}.repository must be an owner/repository name`);
+	}
+	if (assertFullSha(provenance.baseSha, `${context}.baseSha`) !== expectedBase) throw new Error(`${context} has a stale base`);
+	if (assertFullSha(provenance.headSha, `${context}.headSha`) !== expectedHead) throw new Error(`${context} has a stale head`);
+
+	const workflow = assertPlainObject(provenance.workflow, `${context}.workflow`);
+	assertExactKeys(workflow, ["id", "path"], [], `${context}.workflow`);
+	assertPositiveInteger(workflow.id, `${context}.workflow.id`);
+	if (validateWorkflowPath(workflow.path, `${context}.workflow.path`) !== expectedWorkflow) {
+		throw new Error(`${context} came from the wrong workflow`);
+	}
+
+	const run = assertPlainObject(provenance.run, `${context}.run`);
+	assertExactKeys(run, ["id", "workflowId", "headSha", "status", "conclusion", "cancelled"], [], `${context}.run`);
+	assertPositiveInteger(run.id, `${context}.run.id`);
+	if (assertPositiveInteger(run.workflowId, `${context}.run.workflowId`) !== workflow.id) {
+		throw new Error(`${context}.run belongs to a different workflow`);
+	}
+	if (assertFullSha(run.headSha, `${context}.run.headSha`) !== expectedHead) throw new Error(`${context}.run has a stale head`);
+	if (run.status !== "completed" || run.conclusion !== "success" || run.cancelled !== false) {
+		throw new Error(`${context}.run is failed, cancelled, or incomplete`);
+	}
+
+	const artifact = assertPlainObject(provenance.artifact, `${context}.artifact`);
+	assertExactKeys(artifact, ["id", "name", "runId", "headSha", "digest", "expired"], [], `${context}.artifact`);
+	assertPositiveInteger(artifact.id, `${context}.artifact.id`);
+	if (typeof artifact.name !== "string" || artifact.name.length < 1 || artifact.name.length > 255) {
+		throw new TypeError(`${context}.artifact.name must be non-empty`);
+	}
+	if (assertPositiveInteger(artifact.runId, `${context}.artifact.runId`) !== run.id) {
+		throw new Error(`${context}.artifact belongs to a different run`);
+	}
+	if (assertFullSha(artifact.headSha, `${context}.artifact.headSha`) !== expectedHead) {
+		throw new Error(`${context}.artifact has a stale head`);
+	}
+	assertSha256(artifact.digest, `${context}.artifact.digest`);
+	if (artifact.expired !== false) throw new Error(`${context}.artifact is expired`);
+	assertSha256(provenance.digest, `${context}.digest`);
+	const unsigned = { ...provenance };
+	delete unsigned.digest;
+	if (provenance.digest !== digestJson(unsigned)) throw new Error(`${context}.digest does not match its API attestation`);
+	return provenance;
+}
+
+function validateCiArtifactReference(value, provenance, context) {
+	const reference = assertPlainObject(value, context);
+	assertExactKeys(reference, ["runId", "artifactId", "digest"], [], context);
+	if (assertPositiveInteger(reference.runId, `${context}.runId`) !== provenance.run.id) {
+		throw new Error(`${context} belongs to a different workflow run`);
+	}
+	if (assertPositiveInteger(reference.artifactId, `${context}.artifactId`) !== provenance.artifact.id) {
+		throw new Error(`${context} identifies a different artifact`);
+	}
+	assertSha256(reference.digest, `${context}.digest`);
+	if (reference.digest !== provenance.artifact.digest) throw new Error(`${context}.digest does not match the attested artifact`);
+	return reference;
+}
+
+export function createCiProvenanceRecord({
+	repository,
+	expectedHead,
+	expectedBase,
+	expectedWorkflow,
+	expectedRunId,
+	expectedArtifactId,
+	expectedArtifactName,
+	run: runValue,
+	workflow: workflowValue,
+	artifact: artifactValue,
+}) {
+	const run = assertPlainObject(runValue, "runMetadata");
+	const workflow = assertPlainObject(workflowValue, "workflowMetadata");
+	const artifact = assertPlainObject(artifactValue, "artifactMetadata");
+	const runId = assertPositiveInteger(expectedRunId, "expectedRunId");
+	const artifactId = assertPositiveInteger(expectedArtifactId, "expectedArtifactId");
+	const headSha = assertFullSha(expectedHead, "expectedHead");
+	const baseSha = assertFullSha(expectedBase, "expectedBase");
+	const workflowPath = validateWorkflowPath(expectedWorkflow, "expectedWorkflow");
+	if (run.id !== runId) throw new Error("GitHub run metadata does not match the requested run ID");
+	if (run.head_sha !== headSha) throw new Error("GitHub run metadata has a stale head");
+	if (run.status !== "completed" || run.conclusion !== "success") {
+		throw new Error("GitHub workflow run is failed, cancelled, or incomplete");
+	}
+	if (workflow.id !== run.workflow_id || workflow.path !== workflowPath) {
+		throw new Error("GitHub workflow run identity does not match the expected workflow");
+	}
+	if (artifact.id !== artifactId || artifact.name !== expectedArtifactName) {
+		throw new Error("GitHub artifact metadata does not match the requested artifact");
+	}
+	if (artifact.expired !== false) throw new Error("GitHub artifact is expired");
+	assertSha256(artifact.digest, "artifactMetadata.digest");
+	const artifactRun = assertPlainObject(artifact.workflow_run, "artifactMetadata.workflow_run");
+	if (artifactRun.id !== runId) throw new Error("GitHub artifact belongs to a different workflow run");
+	if (artifactRun.head_sha !== headSha) throw new Error("GitHub artifact has a stale head");
+	const unsigned = {
+		schemaVersion: 1,
+		type: "ci_provenance",
+		source: "github_actions_api",
+		repository,
+		baseSha,
+		headSha,
+		workflow: { id: workflow.id, path: workflow.path },
+		run: {
+			id: run.id,
+			workflowId: run.workflow_id,
+			headSha: run.head_sha,
+			status: run.status,
+			conclusion: run.conclusion,
+			cancelled: run.conclusion === "cancelled",
+		},
+		artifact: {
+			id: artifact.id,
+			name: artifact.name,
+			runId: artifactRun.id,
+			headSha: artifactRun.head_sha,
+			digest: artifact.digest,
+			expired: artifact.expired,
+		},
+	};
+	return Object.freeze(validateCiProvenance(
+		{ ...unsigned, digest: digestJson(unsigned) },
+		headSha,
+		baseSha,
+		workflowPath,
+		"ciProvenance",
+	));
+}
+
 function validateInputDigest(record, context) {
 	assertSha256(record.inputDigest, `${context}.inputDigest`);
 	const unsigned = { ...record };
@@ -353,10 +512,10 @@ function resolveGitMilestoneCommitChain(expectedBase, expectedHead) {
 	return commits;
 }
 
-function validateMilestoneChain(value, expectedBase, expectedHead, expectedCommits, context) {
+function validateMilestoneChain(value, expectedBase, expectedHead, expectedCommits, provenance, context) {
 	const chain = assertPlainObject(value, context);
 	assertExactKeys(chain, ["schemaVersion", "type", "baseSha", "headSha", "state", "commits", "inputDigest"], [], context);
-	if (chain.schemaVersion !== 1 || chain.type !== "milestone_chain" || chain.state !== PASS_STATE) {
+	if (chain.schemaVersion !== 2 || chain.type !== "milestone_chain" || chain.state !== PASS_STATE) {
 		throw new Error(`${context} is not a passed milestone chain`);
 	}
 	if (assertFullSha(chain.baseSha, `${context}.baseSha`) !== expectedBase) throw new Error(`${context} has a stale base`);
@@ -382,7 +541,7 @@ function validateMilestoneChain(value, expectedBase, expectedHead, expectedCommi
 			throw new Error(`${context}.commits[${index}] gate is cancelled, pending, or non-passing`);
 		}
 		validateEvidenceIdentity(gate.command, `${context}.commits[${index}].gate.command`);
-		validateEvidenceIdentity(gate.ciArtifact, `${context}.commits[${index}].gate.ciArtifact`);
+		validateCiArtifactReference(gate.ciArtifact, provenance, `${context}.commits[${index}].gate.ciArtifact`);
 		validateInputDigest(commit, `${context}.commits[${index}]`);
 		parentSha = commitSha;
 	}
@@ -423,10 +582,10 @@ function validateAcOwnerTransitions(value, expectedBase, expectedHead, chain, co
 	return evidence;
 }
 
-function validateQualityGates(value, expectedHead, context) {
+function validateQualityGates(value, expectedHead, provenance, context) {
 	const evidence = assertPlainObject(value, context);
 	assertExactKeys(evidence, ["schemaVersion", "type", "headSha", "state", "gates", "inputDigest"], [], context);
-	if (evidence.schemaVersion !== 1 || evidence.type !== "quality_gates" || evidence.state !== PASS_STATE) {
+	if (evidence.schemaVersion !== 2 || evidence.type !== "quality_gates" || evidence.state !== PASS_STATE) {
 		throw new Error(`${context} is not a passed Q0-Q18 evidence set`);
 	}
 	if (evidence.headSha !== expectedHead) throw new Error(`${context} is stale`);
@@ -443,14 +602,14 @@ function validateQualityGates(value, expectedHead, context) {
 			throw new Error(`${context}.${id} is stale, cancelled, pending, or non-passing`);
 		}
 		validateEvidenceIdentity(record.command, `${context}.${id}.command`);
-		validateEvidenceIdentity(record.ciArtifact, `${context}.${id}.ciArtifact`);
+		validateCiArtifactReference(record.ciArtifact, provenance, `${context}.${id}.ciArtifact`);
 		validateInputDigest(record, `${context}.${id}`);
 	}
 	validateInputDigest(evidence, context);
 	return evidence;
 }
 
-export function validateLine13EvidenceManifest(value, expectedHead, expectedBase, expectedCommitChain) {
+export function validateLine13EvidenceManifest(value, expectedHead, expectedBase, expectedWorkflow, expectedCommitChain) {
 	const manifest = assertPlainObject(value, "manifest");
 	assertExactKeys(
 		manifest,
@@ -461,6 +620,7 @@ export function validateLine13EvidenceManifest(value, expectedHead, expectedBase
 			"baseSha",
 			"requestedHeadSha",
 			"state",
+			"ciProvenance",
 			"milestoneChain",
 			"acOwnerTransitions",
 			"qualityGates",
@@ -472,7 +632,7 @@ export function validateLine13EvidenceManifest(value, expectedHead, expectedBase
 		["digest"],
 		"manifest",
 	);
-	if (manifest.schemaVersion !== 1 || manifest.type !== "line13_final_evidence") {
+	if (manifest.schemaVersion !== 2 || manifest.type !== "line13_final_evidence") {
 		throw new Error("manifest has the wrong schema");
 	}
 	const headSha = assertFullSha(manifest.headSha, "manifest.headSha");
@@ -493,11 +653,14 @@ export function validateLine13EvidenceManifest(value, expectedHead, expectedBase
 		throw new Error("manifest is not a completed repository-verifier record");
 	}
 	rejectCancelledOrPartial(manifest, "manifest");
+	const workflowPath = validateWorkflowPath(expectedWorkflow, "expectedWorkflow");
+	const provenance = validateCiProvenance(manifest.ciProvenance, headSha, baseSha, workflowPath, "manifest.ciProvenance");
 	const milestoneChain = validateMilestoneChain(
 		manifest.milestoneChain,
 		baseSha,
 		headSha,
 		milestoneCommits,
+		provenance,
 		"manifest.milestoneChain",
 	);
 	validateAcOwnerTransitions(
@@ -507,7 +670,7 @@ export function validateLine13EvidenceManifest(value, expectedHead, expectedBase
 		milestoneChain,
 		"manifest.acOwnerTransitions",
 	);
-	validateQualityGates(manifest.qualityGates, headSha, "manifest.qualityGates");
+	validateQualityGates(manifest.qualityGates, headSha, provenance, "manifest.qualityGates");
 	validateKnownGaps(manifest.knownGaps, headSha, "manifest.knownGaps");
 	if (!Array.isArray(manifest.platforms)) throw new TypeError("manifest.platforms must be an array");
 	if (manifest.platforms.length !== LINE13_PLATFORMS.length) {
@@ -584,7 +747,7 @@ function exactlyOne(records, type, platform) {
 	return matches[0];
 }
 
-export function assembleLine13EvidenceManifest(records, expectedHead, expectedBase, expectedCommitChain) {
+export function assembleLine13EvidenceManifest(records, expectedHead, expectedBase, expectedWorkflow, expectedCommitChain) {
 	const headSha = assertFullSha(expectedHead, "expectedHead");
 	const baseSha = assertFullSha(expectedBase, "expectedBase");
 	const certifications = records.filter((record) => record?.type === "connector_certification");
@@ -600,12 +763,13 @@ export function assembleLine13EvidenceManifest(records, expectedHead, expectedBa
 		structuralCertifications: structuralCertifications.filter((record) => record.platform === platform),
 	}));
 	const manifest = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		type: "line13_final_evidence",
 		headSha,
 		baseSha,
 		requestedHeadSha: headSha,
 		state: "passed",
+		ciProvenance: exactlyOne(records, "ci_provenance"),
 		milestoneChain: exactlyOne(records, "milestone_chain"),
 		acOwnerTransitions: exactlyOne(records, "ac_owner_transitions"),
 		qualityGates: exactlyOne(records, "quality_gates"),
@@ -620,7 +784,7 @@ export function assembleLine13EvidenceManifest(records, expectedHead, expectedBa
 		}),
 		createdBy: "repository_verifier",
 	};
-	return validateLine13EvidenceManifest(manifest, headSha, baseSha, expectedCommitChain);
+	return validateLine13EvidenceManifest(manifest, headSha, baseSha, expectedWorkflow, expectedCommitChain);
 }
 
 function collectJsonRecords(directory) {
@@ -662,10 +826,12 @@ Modes:
   --manifest <path>       Verify one exact-head final manifest
   --records-dir <dir>     Assemble and verify records, then require --out
   --record-job            Emit one native job/check record, then require --out
+  --record-ci-provenance  Validate GitHub API metadata and emit its attestation
 
 Common:
   --expected-head <sha>   Full requested candidate SHA (required)
   --expected-base <sha>   Full base SHA before the milestone chain (final modes)
+  --expected-workflow <path>  Exact source workflow path (final/provenance modes)
   --out <path>            Output for assembly or record generation
 
 --record-job:
@@ -675,9 +841,18 @@ Common:
   --state passed
   --check <id>            Repeat for every required T9/T10 check
 
+--record-ci-provenance:
+  --repository <owner/repo>
+  --run-metadata <path>       GitHub Actions run API response
+  --workflow-metadata <path>  GitHub Actions workflow API response
+  --artifact-metadata <path>  GitHub Actions artifact API response
+  --expected-run-id <id>
+  --expected-artifact-id <id>
+  --expected-artifact-name <name>
+
 The verifier rejects stale or mixed heads, cancelled/partial records, nonzero
-known gaps, missing native OS/runtime evidence, offline upgrade fixtures, and
-fake records used as real product certification.
+known gaps, unbound or failed CI artifacts, missing native OS/runtime evidence,
+offline upgrade fixtures, and fake records used as real product certification.
 `);
 }
 
@@ -691,8 +866,17 @@ function main() {
 		"--manifest": "value",
 		"--records-dir": "value",
 		"--record-job": "boolean",
+		"--record-ci-provenance": "boolean",
 		"--expected-head": "value",
 		"--expected-base": "value",
+		"--expected-workflow": "value",
+		"--repository": "value",
+		"--run-metadata": "value",
+		"--workflow-metadata": "value",
+		"--artifact-metadata": "value",
+		"--expected-run-id": "value",
+		"--expected-artifact-id": "value",
+		"--expected-artifact-name": "value",
 		"--platform": "value",
 		"--checked-out-start": "value",
 		"--checked-out-final": "value",
@@ -718,11 +902,28 @@ function main() {
 		writeJsonAtomic(required(args, "--out"), record);
 		return;
 	}
+	if (args["--record-ci-provenance"] === true) {
+		const record = createCiProvenanceRecord({
+			repository: required(args, "--repository"),
+			expectedHead,
+			expectedBase: required(args, "--expected-base"),
+			expectedWorkflow: required(args, "--expected-workflow"),
+			expectedRunId: parsePositiveInteger(required(args, "--expected-run-id"), "--expected-run-id"),
+			expectedArtifactId: parsePositiveInteger(required(args, "--expected-artifact-id"), "--expected-artifact-id"),
+			expectedArtifactName: required(args, "--expected-artifact-name"),
+			run: readJson(required(args, "--run-metadata")),
+			workflow: readJson(required(args, "--workflow-metadata")),
+			artifact: readJson(required(args, "--artifact-metadata")),
+		});
+		writeJsonAtomic(required(args, "--out"), record);
+		return;
+	}
 	if (args["--manifest"] !== undefined) {
 		const manifest = validateLine13EvidenceManifest(
 			readJson(args["--manifest"]),
 			expectedHead,
 			required(args, "--expected-base"),
+			required(args, "--expected-workflow"),
 		);
 		console.log(`Line 13 exact-head evidence verified: ${manifest.digest}`);
 		return;
@@ -732,12 +933,13 @@ function main() {
 			collectJsonRecords(args["--records-dir"]),
 			expectedHead,
 			required(args, "--expected-base"),
+			required(args, "--expected-workflow"),
 		);
 		writeJsonAtomic(required(args, "--out"), manifest);
 		console.log(`Line 13 exact-head evidence assembled and verified: ${manifest.digest}`);
 		return;
 	}
-	throw new Error("Select --manifest, --records-dir, or --record-job; use --help for arguments");
+	throw new Error("Select --manifest, --records-dir, --record-job, or --record-ci-provenance; use --help for arguments");
 }
 
 if (isMain(import.meta.url)) {

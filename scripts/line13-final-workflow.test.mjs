@@ -11,10 +11,28 @@ test("Line 13 workflow uses native exact-head jobs and failure-safe artifact ass
 	assert.match(workflow, /git rev-parse HEAD/u);
 	assert.match(workflow, /verify-line13-evidence\.mjs[\s\S]+--records-dir/u);
 	assert.match(workflow, /base_sha:[\s\S]+required: true/u);
-	assert.match(workflow, /milestone_run_id:[\s\S]+milestone_artifact:/u);
-	assert.match(workflow, /actions\/download-artifact@v4[\s\S]+run-id: \$\{\{ inputs\.milestone_run_id \}\}/u);
+	assert.match(workflow, /milestone_run_id:[\s\S]+milestone_workflow:[\s\S]+milestone_artifact_id:[\s\S]+milestone_artifact:/u);
+	assert.match(workflow, /artifact-ids: \$\{\{ inputs\.milestone_artifact_id \}\}[\s\S]+run-id: \$\{\{ inputs\.milestone_run_id \}\}/u);
 	assert.match(workflow, /--expected-base "\$\{\{ inputs\.base_sha \}\}"/u);
+	assert.match(workflow, /--expected-workflow "\$\{\{ inputs\.milestone_workflow \}\}"/u);
 	assert.match(workflow, /actions\/upload-artifact@v4/u);
+});
+
+test("Line 13 workflow attests GitHub API run, workflow, and exact artifact metadata before download", () => {
+	const attestIndex = workflow.indexOf("- name: Attest exact milestone evidence provenance");
+	const downloadIndex = workflow.indexOf("- name: Download exact milestone, AC, and Q evidence");
+	assert.notEqual(attestIndex, -1);
+	assert.notEqual(downloadIndex, -1);
+	assert.ok(attestIndex < downloadIndex);
+	const attestation = workflow.slice(attestIndex, downloadIndex);
+	assert.match(attestation, /actions\/runs\/\$EXPECTED_RUN_ID/u);
+	assert.match(attestation, /actions\/workflows\/\$workflow_id/u);
+	assert.match(attestation, /actions\/artifacts\/\$EXPECTED_ARTIFACT_ID/u);
+	assert.match(attestation, /--record-ci-provenance/u);
+	assert.match(attestation, /--expected-head "\$EXPECTED_HEAD"/u);
+	assert.match(attestation, /--expected-workflow "\$EXPECTED_WORKFLOW"/u);
+	assert.match(attestation, /--expected-artifact-id "\$EXPECTED_ARTIFACT_ID"/u);
+	assert.doesNotMatch(attestation, /type: ci_provenance/u);
 });
 
 test("Line 13 workflow installs safely and calls only targeted checks and dedicated harnesses", () => {
