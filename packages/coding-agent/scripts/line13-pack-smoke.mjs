@@ -215,6 +215,9 @@ function assertTrace(value) {
 			"credentialMode",
 			"networkMode",
 			"events",
+			"receipts",
+			"toolResult",
+			"lifecycle",
 		],
 		[],
 		"trace",
@@ -228,9 +231,77 @@ function assertTrace(value) {
 		trace.credentialMode !== "none" ||
 		trace.networkMode !== "disabled" ||
 		!Array.isArray(trace.events) ||
-		trace.events.map((event) => event?.kind).join(",") !== "start,tool,resume,cancel"
+		trace.events.map((event) => event?.kind).join(",") !== "capabilities,start,tool,resume,cancel"
 	) {
 		throw new Error("Packaged fake Connector trace is invalid");
+	}
+	for (const [index, eventValue] of trace.events.entries()) {
+		const event = assertPlainObject(eventValue, `trace.events[${index}]`);
+		assertExactKeys(event, ["sequence", "kind", "input", "output"], [], `trace.events[${index}]`);
+		if (
+			event.sequence !== index + 1 ||
+			typeof event.input !== "string" ||
+			event.input.length === 0 ||
+			typeof event.output !== "string" ||
+			event.output.length === 0
+		) throw new Error(`Packaged fake Connector event ${index + 1} is invalid`);
+	}
+	if (!Array.isArray(trace.receipts) || trace.receipts.length !== 3) {
+		throw new Error("Packaged fake Connector receipt trace is incomplete");
+	}
+	const expectedReceipts = [
+		["run", "suspended"],
+		["resume", "succeeded"],
+		["cancel", "cancelled"],
+	];
+	for (const [index, receiptValue] of trace.receipts.entries()) {
+		const receipt = assertPlainObject(receiptValue, `trace.receipts[${index}]`);
+		assertExactKeys(
+			receipt,
+			["phase", "attemptReceiptId", "attemptId", "providerId", "status", "sideEffectState"],
+			[],
+			`trace.receipts[${index}]`,
+		);
+		if (
+			receipt.phase !== expectedReceipts[index][0] ||
+			receipt.status !== expectedReceipts[index][1] ||
+			receipt.providerId !== "line13.fake-connector" ||
+			receipt.sideEffectState !== "none" ||
+			typeof receipt.attemptReceiptId !== "string" ||
+			receipt.attemptReceiptId.length === 0 ||
+			typeof receipt.attemptId !== "string" ||
+			receipt.attemptId.length === 0
+		) throw new Error(`Packaged fake Connector receipt ${index + 1} is invalid`);
+	}
+	const toolResult = assertPlainObject(trace.toolResult, "trace.toolResult");
+	assertExactKeys(
+		toolResult,
+		["toolCallId", "toolName", "ok", "sideEffectState", "output"],
+		[],
+		"trace.toolResult",
+	);
+	if (
+		toolResult.toolCallId !== "line13-tool-call" ||
+		toolResult.toolName !== "fixture.echo" ||
+		toolResult.ok !== true ||
+		toolResult.sideEffectState !== "none" ||
+		toolResult.output !== "echo:deterministic"
+	) throw new Error("Packaged fake Connector tool result is invalid");
+	const lifecycle = assertPlainObject(trace.lifecycle, "trace.lifecycle");
+	const expectedLifecycle = {
+		capabilities: 1,
+		probeCapabilities: 1,
+		createAttempt: 2,
+		runAttempt: 1,
+		tool: 1,
+		resumeAttempt: 1,
+		cancelAttempt: 1,
+		reconcileAttempt: 1,
+		dispose: 1,
+	};
+	assertExactKeys(lifecycle, Object.keys(expectedLifecycle), [], "trace.lifecycle");
+	if (Object.entries(expectedLifecycle).some(([key, count]) => lifecycle[key] !== count)) {
+		throw new Error("Packaged fake Connector lifecycle counters are invalid");
 	}
 	return trace;
 }
@@ -288,14 +359,14 @@ function bunIsAvailable(environment, cwd) {
 function writeRuntimeProbes(installDirectory) {
 	const source = [
 		'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector";',
-		'const trace = runPackagedExternalAgentDriverFixture();',
+		'const trace = await runPackagedExternalAgentDriverFixture();',
 		'const resolved = import.meta.resolve("aos-agent/external-connector");',
 		'process.stdout.write(`${JSON.stringify({ resolved, trace })}\\n`);',
 		"",
 	].join("\n");
 	const compiledSource = [
 		'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector";',
-		'const trace = runPackagedExternalAgentDriverFixture();',
+		'const trace = await runPackagedExternalAgentDriverFixture();',
 		'process.stdout.write(`${JSON.stringify({ trace })}\\n`);',
 		"",
 	].join("\n");
@@ -443,16 +514,17 @@ function validateDryRunInputs(repoRoot) {
 		join(repoRoot, "packages", "coding-agent", "src", "core", "external-connector-assets", "fake-connector.json"),
 		"utf8",
 	));
-	assertTrace({
-		schemaVersion: fixture.schemaVersion,
-		fixtureId: fixture.fixtureId,
-		providerId: fixture.providerId,
-		fauxProviderId: fixture.fauxProviderId,
-		defaultEnabled: fixture.defaultEnabled,
-		credentialMode: fixture.credentialMode,
-		networkMode: fixture.networkMode,
-		events: fixture.operations,
-	});
+	if (
+		fixture.schemaVersion !== 1 ||
+		fixture.fixtureId !== "line13-fake-connector" ||
+		fixture.providerId !== "line13.fake-connector" ||
+		fixture.fauxProviderId !== "line13.faux-provider" ||
+		fixture.defaultEnabled !== false ||
+		fixture.credentialMode !== "none" ||
+		fixture.networkMode !== "disabled" ||
+		!Array.isArray(fixture.operations) ||
+		fixture.operations.map((operation) => operation?.kind).join(",") !== "start,tool,resume,cancel"
+	) throw new Error("Packaged fake Connector fixture metadata is invalid");
 }
 
 export function runLine13PackSmoke(options) {

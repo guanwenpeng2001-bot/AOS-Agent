@@ -39,9 +39,12 @@ export {
 	runPackagedExternalAgentDriverFixture,
 	type PackagedExternalAgentDriver,
 	type PackagedExternalAgentDriverAssetErrorCode,
+	type PackagedExternalAgentDriverLifecycle,
 	type PackagedExternalAgentDriverName,
 	type PackagedExternalAgentDriverOperation,
 	type PackagedExternalAgentDriverOperationKind,
+	type PackagedExternalAgentDriverReceipt,
+	type PackagedExternalAgentDriverToolResult,
 	type PackagedExternalAgentDriverTrace,
 } from "./core/packaged-external-agent-driver.ts";
 export {

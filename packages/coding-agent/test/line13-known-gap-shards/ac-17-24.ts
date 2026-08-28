@@ -547,7 +547,7 @@ const ac22 = defineLine13ResolvedCase({
 			missingCode: "",
 			isolatedOwnerPassed: false,
 		}),
-		setup: (fixture) => {
+		setup: async (fixture) => {
 			const packageDirectory = getPackageDir();
 			const manifest = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8")) as {
 				readonly scripts?: Record<string, unknown>;
@@ -563,12 +563,14 @@ const ac22 = defineLine13ResolvedCase({
 				String(manifest.scripts?.["copy-binary-assets"] ?? "").includes("fake-connector");
 
 			const driver = loadPackagedExternalAgentDriver("fake-connector");
-			const trace = runPackagedExternalAgentDriverFixture();
+			const trace = await runPackagedExternalAgentDriverFixture();
 			fixture.assetTrace =
 				driver.defaultEnabled === false &&
 				driver.networkMode === "disabled" &&
-				trace.events.map(({ output }) => output).join("|") ===
-					"attempt:started|tool:ok|attempt:completed|attempt:cancelled";
+				trace.events.map(({ kind }) => kind).join("|") === "capabilities|start|tool|resume|cancel" &&
+				trace.receipts.map(({ phase, status }) => `${phase}:${status}`).join("|") ===
+					"run:suspended|resume:succeeded|cancel:cancelled" &&
+				trace.lifecycle.createAttempt === 2;
 			try {
 				loadPackagedExternalAgentDriver("line13-missing-connector");
 			} catch (error) {

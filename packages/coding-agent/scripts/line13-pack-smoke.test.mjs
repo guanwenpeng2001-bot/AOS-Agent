@@ -46,6 +46,41 @@ function run(command, args, cwd) {
 	return result.stdout;
 }
 
+function assertExecutedTrace(trace) {
+	assert.equal(trace.defaultEnabled, false);
+	assert.equal(trace.networkMode, "disabled");
+	assert.deepEqual(trace.events.map(({ kind }) => kind), [
+		"capabilities",
+		"start",
+		"tool",
+		"resume",
+		"cancel",
+	]);
+	assert.deepEqual(trace.receipts.map(({ phase, status }) => ({ phase, status })), [
+		{ phase: "run", status: "suspended" },
+		{ phase: "resume", status: "succeeded" },
+		{ phase: "cancel", status: "cancelled" },
+	]);
+	assert.deepEqual(trace.toolResult, {
+		toolCallId: "line13-tool-call",
+		toolName: "fixture.echo",
+		ok: true,
+		sideEffectState: "none",
+		output: "echo:deterministic",
+	});
+	assert.deepEqual(trace.lifecycle, {
+		capabilities: 1,
+		probeCapabilities: 1,
+		createAttempt: 2,
+		runAttempt: 1,
+		tool: 1,
+		resumeAttempt: 1,
+		cancelAttempt: 1,
+		reconcileAttempt: 1,
+		dispose: 1,
+	});
+}
+
 function createStagedPackage(root) {
 	const staged = join(root, "staged-package");
 	const distCore = join(staged, "dist", "core");
@@ -59,7 +94,10 @@ function createStagedPackage(root) {
 		},
 	});
 	writeFileSync(join(distCore, "packaged-external-agent-driver.js"), transpiled.outputText);
-	writeFileSync(join(distCore, "packaged-external-agent-driver.d.ts"), "export declare function loadPackagedExternalAgentDriver(name: string): unknown;\n");
+	writeFileSync(
+		join(distCore, "packaged-external-agent-driver.d.ts"),
+		"export declare function loadPackagedExternalAgentDriver(name: string): unknown;\nexport declare function runPackagedExternalAgentDriverFixture(): Promise<unknown>;\n",
+	);
 	writeFileSync(
 		join(staged, "dist", "external-connector.js"),
 		'export { loadPackagedExternalAgentDriver, runPackagedExternalAgentDriverFixture } from "./core/packaged-external-agent-driver.js";\n',
@@ -155,7 +193,7 @@ test("outside-repository validation rejects a link or junction targeting the rep
 	}
 });
 
-test("external npm install loads only the packed public subpath and fixture", () => {
+test("external npm install executes the packed public subpath in Node, Bun, and a compiled binary", () => {
 	const root = mkdtempSync(join(tmpdir(), "aos-line13-pack-test-"));
 	try {
 		assertOutsideRepository(root, repoRoot);
@@ -181,15 +219,40 @@ test("external npm install loads only the packed public subpath and fixture", ()
 			[
 				'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector";',
 				'const resolved = import.meta.resolve("aos-agent/external-connector");',
-				'process.stdout.write(`${JSON.stringify({ resolved, trace: runPackagedExternalAgentDriverFixture() })}\\n`);',
+				'const trace = await runPackagedExternalAgentDriverFixture();',
+				'process.stdout.write(`${JSON.stringify({ resolved, trace })}\\n`);',
 				"",
 			].join("\n"),
 		);
-		const output = JSON.parse(run(process.execPath, [runner], install));
-		assert.match(output.resolved, /external-install[\\/]node_modules[\\/]aos-agent[\\/]dist[\\/]external-connector\.js$/u);
-		assert.equal(output.trace.defaultEnabled, false);
-		assert.equal(output.trace.networkMode, "disabled");
-		assert.deepEqual(output.trace.events.map(({ kind }) => kind), ["start", "tool", "resume", "cancel"]);
+		for (const command of [process.execPath, "bun"]) {
+			const output = JSON.parse(run(command, [runner], install));
+			assert.match(output.resolved, /external-install[\\/]node_modules[\\/]aos-agent[\\/]dist[\\/]external-connector\.js$/u);
+			assertExecutedTrace(output.trace);
+		}
+
+		const compiledDirectory = join(install, "compiled");
+		mkdirSync(join(compiledDirectory, "external-connector-assets"), { recursive: true });
+		const executable = join(compiledDirectory, process.platform === "win32" ? "packaged-smoke.exe" : "packaged-smoke");
+		const compiledRunner = join(install, "compiled-runner.mjs");
+		writeFileSync(
+			compiledRunner,
+			[
+				'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector";',
+				'const trace = await runPackagedExternalAgentDriverFixture();',
+				'process.stdout.write(`${JSON.stringify({ trace })}\\n`);',
+				"",
+			].join("\n"),
+		);
+		run(
+			"bun",
+			["build", "--compile", "--no-compile-autoload-bunfig", compiledRunner, "--outfile", executable],
+			install,
+		);
+		copyFileSync(
+			join(install, "node_modules", "aos-agent", "dist", "core", "external-connector-assets", "fake-connector.json"),
+			join(compiledDirectory, "external-connector-assets", "fake-connector.json"),
+		);
+		assertExecutedTrace(JSON.parse(run(executable, [], compiledDirectory)).trace);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
