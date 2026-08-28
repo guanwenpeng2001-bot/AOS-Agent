@@ -70,6 +70,7 @@ vi.mock("@aos-agent/ai/providers/all", () => ({}));
 const T0 = "2026-08-22T12:00:00.000Z";
 const T1 = "2026-08-22T12:01:00.000Z";
 const T2 = "2026-08-22T12:02:00.000Z";
+const T_EXPIRED = "2026-08-22T12:11:00.000Z";
 const RUN_MODEL = { provider: "host", id: "host", thinkingLevel: "off" as const };
 const OWNER_ID = "workflow_owner";
 const EXECUTOR_OWNER_ID = "workflow_executor";
@@ -269,7 +270,35 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 	nextSideEffect: SideEffectState = "none";
 	runCount = 0;
 	resumeCount = 0;
+	cancelCount = 0;
 	readonly queueEntryIds: string[] = [];
+	private blockNextRun = false;
+	private blockedRun: Promise<void> | undefined;
+	private signalBlockedRun: (() => void) | undefined;
+	private releaseBlockedRun: (() => void) | undefined;
+	private readonly cancelledAttemptIds = new Set<string>();
+
+	blockNextAttempt(): Promise<void> {
+		if (this.blockNextRun || this.blockedRun !== undefined) {
+			throw new Error("A workflow attempt is already blocked");
+		}
+		this.blockNextRun = true;
+		const started = new Promise<void>((resolve) => {
+			this.signalBlockedRun = resolve;
+		});
+		this.blockedRun = new Promise<void>((resolve) => {
+			this.releaseBlockedRun = resolve;
+		});
+		return started;
+	}
+
+	releaseBlockedAttempt(): void {
+		const release = this.releaseBlockedRun;
+		this.blockedRun = undefined;
+		this.signalBlockedRun = undefined;
+		this.releaseBlockedRun = undefined;
+		release?.();
+	}
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [CAPABILITY];
@@ -292,9 +321,17 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		this.runCount += 1;
 		this.queueEntryIds.push(attempt.dispatchId);
-		const fail = this.failuresRemaining > 0;
+		if (this.blockNextRun) {
+			this.blockNextRun = false;
+			const blockedRun = this.blockedRun;
+			this.signalBlockedRun?.();
+			if (blockedRun === undefined) throw new Error("Blocked workflow attempt has no release signal");
+			await blockedRun;
+		}
+		const cancelled = this.cancelledAttemptIds.has(attempt.attemptId);
+		const fail = !cancelled && this.failuresRemaining > 0;
 		if (fail) this.failuresRemaining -= 1;
-		const status = fail ? "failed" : "succeeded";
+		const status = cancelled ? "cancelled" : fail ? "failed" : "succeeded";
 		const sideEffectState = fail ? this.nextSideEffect : "none";
 		const correlation = options?.correlation;
 		if (correlation === undefined) {
@@ -324,9 +361,13 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 				? {}
 				: {
 						error: {
-							code: sideEffectState === "side_effect_unknown" ? "side_effect_unknown" : "worker_lost",
-							message: "Injected workflow executor failure",
-							retryable: sideEffectState !== "side_effect_unknown",
+							code: cancelled
+								? "cancelled"
+								: sideEffectState === "side_effect_unknown"
+									? "side_effect_unknown"
+									: "worker_lost",
+							message: cancelled ? "Workflow attempt cancelled" : "Injected workflow executor failure",
+							retryable: !cancelled && sideEffectState !== "side_effect_unknown",
 						},
 					}),
 		};
@@ -344,7 +385,9 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 		return Result.err(new FoundationError("scheduler_attempt_recovery_failed", "Implicit replay is forbidden"));
 	}
 
-	async cancelAttempt(_attemptId: string) {
+	async cancelAttempt(attemptId: string) {
+		this.cancelCount += 1;
+		this.cancelledAttemptIds.add(attemptId);
 		return Result.ok(undefined);
 	}
 
@@ -796,6 +839,80 @@ describe("scheduler T7 production Workflow controller", () => {
 		expect(reclaim).toHaveBeenCalled();
 		expect((await recovered.store.get(workflow.workflowId)).status).toBe("completed");
 		await recovered.dispose();
+	});
+
+	it("cancels an expired dispatched Attempt after reopen and does not double-settle on replay", async () => {
+		const harness = await createHarness({ enabled: true });
+		const started = harness.provider.blockNextAttempt();
+		const workflow = await createActiveWorkflow(
+			harness,
+			[toolStep("tool1", 0)],
+			"workflow_dispatch_recovery",
+		);
+		const interruptedTick = harness.controller.tick();
+		await started;
+		const beforeRestart = await harness.controller.queue.snapshot();
+		expect(beforeRestart.ok).toBe(true);
+		if (!beforeRestart.ok) throw beforeRestart.error;
+		const expiredEntry = beforeRestart.value.entries.find((entry) => entry.state === "dispatched");
+		const expiredDispatch = beforeRestart.value.dispatches.find((dispatch) => dispatch.status === "in_flight");
+		expect(expiredEntry).toBeDefined();
+		expect(expiredDispatch).toBeDefined();
+		if (expiredEntry === undefined || expiredDispatch === undefined) {
+			throw new Error("Expected a durable in-flight workflow dispatch before reopen");
+		}
+
+		await harness.controller.dispose();
+		harness.setNow(T_EXPIRED);
+		const reopened = await reopenController(harness);
+		try {
+			const recovered = await reopened.queue.recoverExpired();
+			expect(recovered.ok).toBe(true);
+			if (!recovered.ok) return;
+			expect(recovered.value).toHaveLength(1);
+			expect(recovered.value[0]).toMatchObject({
+				action: "requeued",
+				cancelledAttemptId: expiredDispatch.attemptId,
+				entry: { queueEntryId: expiredEntry.queueEntryId, state: "queued", attemptsUsed: 1 },
+			});
+			expect(harness.provider.cancelCount).toBe(1);
+
+			const replayed = await reopened.queue.recoverExpired();
+			expect(replayed.ok).toBe(true);
+			if (!replayed.ok) return;
+			expect(replayed.value).toEqual([]);
+			expect(harness.provider.cancelCount).toBe(1);
+
+			const progressed = await reopened.tick();
+			expect(progressed).toMatchObject({ completed: 1, stopped: 0, errors: [] });
+			expect(harness.provider.runCount).toBe(2);
+			expect((await reopened.store.get(workflow.workflowId)).status).toBe("completed");
+			const taskResultsBeforeStaleCompletion = await harness.sourceSession.findFoundationRecords({
+				kind: "fact",
+				objectType: "task_result",
+			});
+			expect(taskResultsBeforeStaleCompletion).toHaveLength(1);
+
+			harness.provider.releaseBlockedAttempt();
+			await interruptedTick.catch(() => undefined);
+			const taskResultsAfterStaleCompletion = await harness.sourceSession.findFoundationRecords({
+				kind: "fact",
+				objectType: "task_result",
+			});
+			expect(taskResultsAfterStaleCompletion).toHaveLength(taskResultsBeforeStaleCompletion.length);
+			expect((await reopened.store.get(workflow.workflowId)).status).toBe("completed");
+			const finalQueue = await reopened.queue.snapshot();
+			expect(finalQueue.ok).toBe(true);
+			if (!finalQueue.ok) return;
+			expect(
+				finalQueue.value.dispatches.find((dispatch) => dispatch.dispatchId === expiredDispatch.dispatchId)?.status,
+			).toBe("expired");
+			expect(finalQueue.value.dispatches.filter((dispatch) => dispatch.status === "settled")).toHaveLength(1);
+		} finally {
+			harness.provider.releaseBlockedAttempt();
+			await interruptedTick.catch(() => undefined);
+			await reopened.dispose();
+		}
 	});
 
 	it("fires a due wake on the due boundary, reloads, fires overdue wakes immediately, and is idempotent", async () => {
