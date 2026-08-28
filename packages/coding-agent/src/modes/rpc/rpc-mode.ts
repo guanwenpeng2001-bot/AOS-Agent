@@ -11,6 +11,11 @@ import {
 	writeRawStdout,
 } from "../../core/output-guard.ts";
 import { redactErrorText } from "../../core/run-lifecycle.ts";
+import {
+	ShutdownCoordinator,
+	type ShutdownFailure,
+	type ShutdownRequest,
+} from "../../core/shutdown-coordinator.ts";
 import { formatRpcTransportAddress, type RpcTransportAddress } from "./rpc-transport-address.ts";
 import { createRpcTransport, RpcTransportError } from "./rpc-transport.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -46,40 +51,29 @@ async function runStdioRpcMode(runtimeHost: AgentSessionRuntime): Promise<never>
 	});
 	await controller.start();
 
-	let shuttingDown = false;
 	let detachJsonl = (): void => {};
-	const signalCleanupHandlers: Array<() => void> = [];
+	let shutdownRequest: ShutdownRequest | undefined;
+	const onInputEnd = (): void => requestProcessShutdown();
+	const shutdownCoordinator = new ShutdownCoordinator({
+		closeAdmission: (request) => {
+			shutdownRequest = request;
+			runtimeHost.closeAdmissionForShutdown();
+			if (request.signal !== undefined) killTrackedDetachedChildren();
+			detachJsonl();
+			process.stdin.off("end", onInputEnd);
+			process.stdin.pause();
+		},
+		handoffRecovery: () => controller.isShuttingDown ? undefined : runtimeHost.handoffShutdownRecovery(),
+		resourceGroups: [[{ name: "rpc_controller", cleanup: () => controller.shutdown() }]],
+		finalize: () => shutdownRequest?.signal === "SIGTERM" ? undefined : flushRawStdout(),
+		onFailure: reportShutdownFailure,
+	});
+	shutdownCoordinator.installSignalHandlers();
 
-	const shutdown = async (exitCode = 0, signal?: NodeJS.Signals): Promise<never> => {
-		if (shuttingDown) {
-			process.exit(exitCode);
-		}
-		shuttingDown = true;
-		for (const cleanup of signalCleanupHandlers) cleanup();
-		if (signal !== undefined) killTrackedDetachedChildren();
-		await controller.shutdown();
-		detachJsonl();
-		process.stdin.off("end", onInputEnd);
-		process.stdin.pause();
-		if (signal !== "SIGTERM") await flushRawStdout();
-		process.exit(exitCode);
-	};
+	const shutdown = (exitCode = 0) => shutdownCoordinator.requestShutdown(exitCode);
 	requestProcessShutdown = (): void => {
-		if (!shuttingDown) void shutdown();
+		void shutdown();
 	};
-
-	const registerSignalHandlers = (): void => {
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
-		if (process.platform !== "win32") signals.push("SIGHUP");
-		for (const signal of signals) {
-			const handler = (): void => {
-				void shutdown(signal === "SIGHUP" ? 129 : 143, signal);
-			};
-			process.on(signal, handler);
-			signalCleanupHandlers.push(() => process.off(signal, handler));
-		}
-	};
-	registerSignalHandlers();
 
 	const handleInputLine = async (line: string): Promise<void> => {
 		let parsed: unknown;
@@ -117,14 +111,16 @@ async function runStdioRpcMode(runtimeHost: AgentSessionRuntime): Promise<never>
 		}
 	};
 
-	const onInputEnd = (): void => {
-		void shutdown();
-	};
 	process.stdin.on("end", onInputEnd);
 
 	detachJsonl = attachJsonlLineReader(process.stdin, (line) => {
 		void handleInputLine(line);
 	});
+	if (shutdownCoordinator.state !== "accepting") {
+		detachJsonl();
+		process.stdin.off("end", onInputEnd);
+		process.stdin.pause();
+	}
 
 	// Keep process alive forever. The input adapter and signal handlers own the
 	// eventual process exit after the controller has disposed its runtime.
@@ -176,39 +172,38 @@ async function runTcpRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTrans
 			reportDiagnostic(`${error.code}: ${error.message}`);
 		},
 	});
-
-	let shuttingDown = false;
-	const signalCleanupHandlers: Array<() => void> = [];
-
-	const shutdown = async (exitCode = 0, signal?: NodeJS.Signals): Promise<never> => {
-		if (shuttingDown) {
-			process.exit(exitCode);
-		}
-		shuttingDown = true;
-		for (const cleanup of signalCleanupHandlers) cleanup();
-		if (signal !== undefined) killTrackedDetachedChildren();
-		await transport.close();
-		detachConnection();
-		await controller.detachTransport();
-		await controller.shutdown();
-		process.exit(exitCode);
+	let transportClosePromise: Promise<void> | undefined;
+	const closeTransport = (): Promise<void> => {
+		transportClosePromise ??= transport.close();
+		return transportClosePromise;
 	};
+
+	const shutdownCoordinator = new ShutdownCoordinator({
+		closeAdmission: (request) => {
+			runtimeHost.closeAdmissionForShutdown();
+			void closeTransport().catch(() => {});
+			if (request.signal !== undefined) killTrackedDetachedChildren();
+		},
+		handoffRecovery: () => controller.isShuttingDown ? undefined : runtimeHost.handoffShutdownRecovery(),
+		resourceGroups: [
+			[{ name: "rpc_transport", cleanup: closeTransport }],
+			[{
+				name: "rpc_connection",
+				cleanup: async () => {
+					detachConnection();
+					await controller.detachTransport();
+				},
+			}],
+			[{ name: "rpc_controller", cleanup: () => controller.shutdown() }],
+		],
+		onFailure: reportShutdownFailure,
+	});
+	shutdownCoordinator.installSignalHandlers();
+
+	const shutdown = (exitCode = 0) => shutdownCoordinator.requestShutdown(exitCode);
 	requestProcessShutdown = (): void => {
-		if (!shuttingDown) void shutdown();
+		void shutdown();
 	};
-
-	const registerSignalHandlers = (): void => {
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
-		if (process.platform !== "win32") signals.push("SIGHUP");
-		for (const signal of signals) {
-			const handler = (): void => {
-				void shutdown(signal === "SIGHUP" ? 129 : 143, signal);
-			};
-			process.on(signal, handler);
-			signalCleanupHandlers.push(() => process.off(signal, handler));
-		}
-	};
-	registerSignalHandlers();
 
 	try {
 		await transport.start();
@@ -216,15 +211,15 @@ async function runTcpRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTrans
 		const diagnostic =
 			error instanceof RpcTransportError ? `${error.code}: ${error.message}` : toError(error).message;
 		console.error(`Error: Failed to bind RPC TCP listener at ${formatRpcTransportAddress(address)}: ${diagnostic}`);
-		await controller.shutdown();
-		process.exit(1);
+		await shutdown(1);
+		return new Promise<never>(() => {});
 	}
 
 	const boundAddress = transport.address;
 	if (boundAddress === undefined) {
 		reportDiagnostic("listener started without a bound TCP address");
-		await controller.shutdown();
-		process.exit(1);
+		await shutdown(1);
+		return new Promise<never>(() => {});
 	}
 	console.error(`RPC TCP listening on ${formatRpcTransportAddress(boundAddress)}`);
 
@@ -245,4 +240,8 @@ function parseTcpRpcCommand(value: unknown): TcpRpcCommand {
 
 function toError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
+}
+
+function reportShutdownFailure(failure: ShutdownFailure): void {
+	console.error(`[shutdown] ${failure.resource} ${failure.reason.replaceAll("_", " ")}`);
 }

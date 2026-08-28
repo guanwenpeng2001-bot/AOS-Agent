@@ -11,6 +11,7 @@ import type { AgentSession, ExtensionBindings } from "../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import type { PreparedSessionScopeRebind } from "../core/current-session-scope.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
+import { ShutdownCoordinator } from "../core/shutdown-coordinator.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 
@@ -40,39 +41,35 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		unsubscribeBackpressure?: () => void;
 	}
 	const sessionBindings = new Map<AgentSession, PrintSessionBinding>();
-	let disposed = false;
-	const signalCleanupHandlers: Array<() => void> = [];
+	let disposePromise: Promise<void> | undefined;
 
 	const disposeRuntime = async (): Promise<void> => {
-		if (disposed) return;
-		disposed = true;
-		for (const binding of sessionBindings.values()) {
-			binding.unsubscribe?.();
-			binding.unsubscribeBackpressure?.();
+		if (disposePromise === undefined) {
+			for (const binding of sessionBindings.values()) {
+				binding.unsubscribe?.();
+				binding.unsubscribeBackpressure?.();
+			}
+			sessionBindings.clear();
+			disposePromise = runtimeHost.dispose();
 		}
-		sessionBindings.clear();
-		await runtimeHost.dispose();
+		await disposePromise;
 	};
 
-	const registerSignalHandlers = (): void => {
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
-		if (process.platform !== "win32") {
-			signals.push("SIGHUP");
-		}
-
-		for (const signal of signals) {
-			const handler = () => {
+	const shutdownCoordinator = new ShutdownCoordinator({
+		closeAdmission: (request) => {
+			runtimeHost.closeAdmissionForShutdown();
+			if (request.signal !== undefined) {
 				killTrackedDetachedChildren();
-				void disposeRuntime().finally(() => {
-					process.exit(signal === "SIGHUP" ? 129 : 143);
-				});
-			};
-			process.on(signal, handler);
-			signalCleanupHandlers.push(() => process.off(signal, handler));
-		}
-	};
-
-	registerSignalHandlers();
+			}
+		},
+		handoffRecovery: () => runtimeHost.handoffShutdownRecovery(),
+		resourceGroups: [[{ name: "runtime", cleanup: disposeRuntime }]],
+		finalize: () => flushRawStdout(),
+		onFailure: (failure) => {
+			console.error(`[shutdown] ${failure.resource} ${failure.reason.replaceAll("_", " ")}`);
+		},
+	});
+	shutdownCoordinator.installSignalHandlers();
 
 	const extensionBindings = (session: AgentSession): ExtensionBindings => ({
 			mode: mode === "json" ? "json" : "print",
@@ -197,10 +194,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		console.error(error instanceof Error ? error.message : String(error));
 		return 1;
 	} finally {
-		for (const cleanup of signalCleanupHandlers) {
-			cleanup();
+		if (shutdownCoordinator.state === "accepting") {
+			shutdownCoordinator.removeSignalHandlers();
+			await disposeRuntime();
+			await flushRawStdout();
+		} else {
+			await shutdownCoordinator.completion;
 		}
-		await disposeRuntime();
-		await flushRawStdout();
 	}
 }
