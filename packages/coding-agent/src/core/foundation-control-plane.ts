@@ -248,6 +248,8 @@ export interface TrustedSchedulerCompositionOptions {
 	readonly registry: SchedulerExecutorRegistry;
 	/** Canonical Session-backed owner shared with the exact-selection registry. */
 	readonly selectionReservationStore?: SchedulerSelectionReservationStore;
+	/** Trusted product initialization that must complete before the Scheduler can start. */
+	readonly initializeBeforeStart?: () => Promise<void>;
 	/** Exact External Connector target and frozen retry policy for this composition generation. */
 	readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
 	readonly task: TaskEnvelope;
@@ -337,6 +339,10 @@ export class TrustedSchedulerComposition {
 	private unsubscribe: (() => void) | undefined;
 	private timer: RuntimeTimerHandle | undefined;
 	private currentTick: Promise<void> | undefined;
+	private initialization: Promise<void> = Promise.resolve();
+	private initializationFailure: { readonly error: unknown } | undefined;
+	private initializationComplete = false;
+	private disposed = false;
 	private wakeQueued = false;
 	private started = false;
 	private ticksCompleted = 0;
@@ -463,7 +469,24 @@ export class TrustedSchedulerComposition {
 					this.clock,
 				),
 			);
-			this.start();
+			if (options.initializeBeforeStart === undefined) {
+				this.initializationComplete = true;
+				this.start();
+			} else {
+				const initializeBeforeStart = options.initializeBeforeStart;
+				const initialization = Promise.resolve()
+					.then(() => initializeBeforeStart())
+					.then(() => {
+						this.initializationComplete = true;
+						if (!this.disposed) this.start();
+					});
+				this.initialization = initialization.then(
+					() => undefined,
+					(error: unknown) => {
+						this.initializationFailure = { error };
+					},
+				);
+			}
 		} catch (error) {
 			this.started = false;
 			this.wakeQueued = false;
@@ -496,7 +519,7 @@ export class TrustedSchedulerComposition {
 	}
 
 	private start(): void {
-		if (this.started) return;
+		if (this.started || this.disposed || !this.initializationComplete) return;
 		this.started = true;
 		this.unsubscribe = this.eventSource?.subscribe(() => this.wake());
 		this.wake();
@@ -513,6 +536,12 @@ export class TrustedSchedulerComposition {
 	}
 
 	async tick(): Promise<void> {
+		if (!this.initializationComplete) {
+			throw new FoundationError(
+				"scheduler_executor_unavailable",
+				"Scheduler cannot tick before trusted product initialization completes",
+			);
+		}
 		if (this.currentTick !== undefined) return this.currentTick;
 		this.currentTick = (async () => {
 			await this.verifySessionIdentity();
@@ -593,8 +622,14 @@ export class TrustedSchedulerComposition {
 		};
 	}
 
+	async whenInitialized(): Promise<void> {
+		await this.initialization;
+		if (this.initializationFailure !== undefined) throw this.initializationFailure.error;
+	}
+
 	async dispose(): Promise<void> {
-		if (!this.started) return;
+		if (this.disposed) return;
+		this.disposed = true;
 		this.started = false;
 		this.wakeQueued = false;
 		this.unsubscribe?.();
@@ -603,9 +638,14 @@ export class TrustedSchedulerComposition {
 		this.timer = undefined;
 		let failure: unknown;
 		try {
-			await this.currentTick;
+			await this.initialization;
 		} catch (error) {
 			failure = error;
+		}
+		try {
+			await this.currentTick;
+		} catch (error) {
+			failure ??= error;
 		}
 		this.host.stop();
 		try {
@@ -1706,6 +1746,7 @@ export class FoundationControlPlane {
 		if (this.disposed) throw new Error("Foundation control plane is disposed");
 		this.refreshToolSources();
 		try {
+			await this.scheduler?.whenInitialized();
 			if (this.capabilityBinding === undefined) {
 				this.resolveStaticBinding();
 				this.applyToolBinding();
@@ -2649,14 +2690,14 @@ export class FoundationControlPlane {
 		}
 		await this.mcpLifecycle.closeAll().catch(() => undefined);
 		try {
-			await this.externalConnectorRegistry?.dispose();
+			await this.scheduler?.dispose();
 		} catch (error) {
 			failure = error;
 		}
 		try {
-			await this.scheduler?.dispose();
+			await this.externalConnectorRegistry?.dispose();
 		} catch (error) {
-			failure = error;
+			failure ??= error;
 		}
 		try {
 			await this.workerSandboxProvider?.dispose();
