@@ -1,14 +1,18 @@
 import {
 	type AgentHarness,
 	createAgentInstance,
+	createBindingEpoch,
 	createModelProfileRevision,
 	createRoleRevision,
 	createTaskEnvelope,
 	fingerprintFoundationValue,
 	FoundationError,
 	InMemoryArtifactBlobStore,
+	InMemoryRoleRegistry,
 	InMemorySessionStorage,
+	isMcpSelectionSubset,
 	resolveAgentBinding,
+	resolveMcpSelection,
 	Result,
 	Session,
 	SessionLedger,
@@ -19,9 +23,11 @@ import {
 	type AgentInstance,
 	type ArtifactStoreProvider,
 	type ChildSpawnRequest,
+	type McpSelection,
 	type ModelProfile,
 	type QuotaProvider,
 	type RevisionReference,
+	type ResourceSelector,
 	type RoleRevision,
 	type ScopedModelGateway,
 	type TaskEnvelope,
@@ -38,6 +44,20 @@ import {
 	TrustedSubagentCompositionV1,
 	type TrustedSubagentCompositionOptionsV1,
 } from "../src/core/subagent-composition.ts";
+import {
+	createTrustedMcpInheritanceApprovalAuthorityV1,
+	type TrustedMcpInheritanceApprovalAuthorityV1,
+} from "../src/core/subagent-binding.ts";
+import {
+	resolveExecutionPolicy,
+	type ExecutionPolicyProfile,
+	type PolicyApprovalRequest,
+} from "../src/core/execution-policy.ts";
+import {
+	createExecutionPolicyLedger,
+	type PolicyLedgerSession,
+	type PolicyLedgerSessionEntry,
+} from "../src/core/execution-policy-ledger.ts";
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
 import type { PlanSubagentSpawnInputV1 } from "../src/core/subagent-supervisor.ts";
@@ -48,6 +68,54 @@ import type {
 } from "../src/core/subagent-worktree.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
+const APPROVED_AT = "2026-01-01T00:01:00.000Z";
+
+class MemoryPolicySession implements PolicyLedgerSession {
+	readonly entries: PolicyLedgerSessionEntry[] = [];
+
+	appendCustomEntry(customType: string, data?: unknown): string {
+		const id = `policy-entry-${this.entries.length + 1}`;
+		this.entries.push({ id, type: "custom", customType, data });
+		return id;
+	}
+
+	getEntries(): ReadonlyArray<PolicyLedgerSessionEntry> {
+		return this.entries;
+	}
+}
+
+function mcpInheritanceAuthority(pending: PolicyApprovalRequest[]) {
+	const profile: ExecutionPolicyProfile = {
+		id: "composition-mcp-inheritance",
+		revision: "revision-1",
+		enforcement: "host",
+		defaultAction: "allow",
+		workspace: { read: ["workspace"], write: ["workspace"], deny: [] },
+		process: { action: "allow", inheritEnvironment: false, allowEnvironment: [] },
+		network: { action: "allow", allowDestinations: [] },
+		credentials: { action: "deny", allowNames: [] },
+		approvals: { writeOutsideWorkspace: "deny", network: "allow", process: "allow", mcp: "ask" },
+	};
+	const resolved = resolveExecutionPolicy({
+		profiles: { [profile.id]: profile },
+		defaultProfile: profile.id,
+		bindingId: "policy-1",
+		runId: "run-product-mcp-inheritance",
+		workspaceIdentity: "workspace-product-mcp-inheritance",
+		createdAt: NOW,
+	});
+	if (!resolved.ok) throw resolved.error;
+	const ledger = createExecutionPolicyLedger(new MemoryPolicySession());
+	const authority = createTrustedMcpInheritanceApprovalAuthorityV1({
+		schemaVersion: 1,
+		profile: resolved.profile,
+		binding: resolved.binding,
+		policyRevision: immutableFact("policy_binding", "policy-1"),
+		ledger,
+		onApprovalRequired: (approval) => pending.push(approval),
+	});
+	return { authority, ledger };
+}
 
 function compositionAuthorities(session: Session) {
 	const memoryLedger = new SessionT5Ledger(session, {
@@ -56,15 +124,19 @@ function compositionAuthorities(session: Session) {
 		memoryOwnerId: "parent-agent",
 		artifactBlobStore: new InMemoryArtifactBlobStore(),
 	});
-	const parentMemory = createScopedMemoryStore(
-		memoryLedger.memory,
-		"session",
-		{ ownerId: "parent-agent", scopeId: "composition-parent-memory", createdBy: "system" },
-		{ ownerId: "parent-agent", scopeId: "composition-parent-memory" },
-	);
+	const parentMemoryForAgent = (parentAgentInstanceId: string) => ({
+		store: createScopedMemoryStore(
+			memoryLedger.memory,
+			"session",
+			{ ownerId: parentAgentInstanceId, scopeId: `composition-parent-memory:${parentAgentInstanceId}`, createdBy: "system" },
+			{ ownerId: parentAgentInstanceId, scopeId: `composition-parent-memory:${parentAgentInstanceId}` },
+		),
+		parentAgentInstanceId,
+	});
 	return {
 		loadParentContext: async () => Result.err(new FoundationError("subagent_context_fork_invalid", "no parent context")),
-		parentMemory: { store: parentMemory, parentAgentInstanceId: "parent-agent" } as const,
+		parentMemory: parentMemoryForAgent("parent-agent"),
+		parentMemoryForAgent,
 	};
 }
 
@@ -88,11 +160,11 @@ function task(taskId: string): TaskEnvelope {
 	return created.value;
 }
 
-function role(): RoleRevision {
+function role(options: { readonly roleId?: string; readonly mcpSelector?: ResourceSelector } = {}): RoleRevision {
 	return createRoleRevision({
 		definition: {
 			schemaVersion: 1,
-			roleId: "role-child",
+			roleId: options.roleId ?? "role-child",
 			scope: "project",
 			slug: "child",
 			name: "Child",
@@ -102,7 +174,7 @@ function role(): RoleRevision {
 			modelProfileRef: { schemaVersion: 1, type: "model_profile", id: "profile-child", revision: 1 },
 			capabilitySelector: { policy: "none" },
 			skillSelector: { policy: "none" },
-			mcpSelector: { policy: "none" },
+			mcpSelector: options.mcpSelector ?? { policy: "none" },
 		},
 		now: () => NOW,
 	});
@@ -125,7 +197,12 @@ function immutableFact(type: string, id: string): RevisionReference {
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function binding(taskEnvelope: TaskEnvelope, roleRevision: RoleRevision, modelProfile: ModelProfile): AgentBinding {
+function binding(
+	taskEnvelope: TaskEnvelope,
+	roleRevision: RoleRevision,
+	modelProfile: ModelProfile,
+	mcpSelection?: McpSelection,
+): AgentBinding {
 	const resolved = resolveAgentBinding({
 		task: taskEnvelope,
 		roleRevision,
@@ -134,11 +211,32 @@ function binding(taskEnvelope: TaskEnvelope, roleRevision: RoleRevision, modelPr
 		capabilityRevision: immutableFact("capability_binding", "capability-1"),
 		modelBrokerBindingRevision: immutableFact("model_broker_binding", "broker-1"),
 		policyRevision: immutableFact("policy_binding", "policy-1"),
+		...(mcpSelection === undefined ? {} : { mcpSelection }),
 		newBindingId: `binding-${taskEnvelope.taskId}`,
 		now: () => NOW,
 	});
 	if (!resolved.ok) throw resolved.error;
 	return resolved.value;
+}
+
+function exactMcpSelection(selector: ResourceSelector): McpSelection {
+	const selected = resolveMcpSelection({
+		selector,
+		capabilityBinding: {
+			id: "capability-1",
+			descriptors: ["docs", "search"].map((serverId) => ({
+				id: `mcp-server-${serverId}`,
+				revision: "revision-1",
+				kind: "mcp_server",
+				name: serverId,
+				mcpServerId: serverId,
+			})),
+			toolAllowlist: [],
+		},
+		routeCatalog: [],
+	});
+	if (!selected.ok) throw selected.error;
+	return selected.value;
 }
 
 function rootAgent(roleRevision: RoleRevision): AgentInstance {
@@ -359,6 +457,8 @@ async function correctionHarness(options: {
 	readonly failedChildren?: readonly string[];
 	readonly suspendThenResume?: boolean;
 	readonly planMaxTurns?: number;
+	readonly productPrompt?: TrustedSubagentCompositionOptionsV1["productPrompt"];
+	readonly mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthorityV1;
 } = {}) {
 	const session = new Session(new InMemorySessionStorage({ id: "session-composition", createdAt: 1 }));
 	const ledgers = new Map<string, SessionLedger>();
@@ -432,6 +532,7 @@ async function correctionHarness(options: {
 		modelGateway,
 		toolGateway,
 		artifactStore,
+		...(options.mcpInheritanceAuthority === undefined ? {} : { mcpInheritanceAuthority: options.mcpInheritanceAuthority }),
 		...compositionAuthorities(session),
 		createHarness: async (input) => {
 			harnessWorkspaces.push(input.executionWorkspace);
@@ -486,6 +587,7 @@ async function correctionHarness(options: {
 			},
 		}),
 		fork: { executable: process.execPath, entrypoint: fileURLToPath(new URL("../src/child-agent-entry.ts", import.meta.url)) },
+		...(options.productPrompt === undefined ? {} : { productPrompt: options.productPrompt }),
 		parentEndpoints: [
 			{ schemaVersion: 1, sessionId: "session-composition", laneId: "child-lane", agentInstanceId: "child-faux", taskId: "child-task", attemptId: "child-attempt" },
 			{ schemaVersion: 1, sessionId: "session-composition", laneId: "parent-lane", agentInstanceId: "parent-agent", taskId: "parent-task", attemptId: "parent-attempt" },
@@ -624,6 +726,177 @@ describe("trusted Subagent product composition", () => {
 			{ trust: "untrusted_child_output", childAgentInstanceId: "child-faux-second" },
 		] } });
 		await fixture.close();
+	});
+
+	it("projects a nonempty parent MCP selection before production Role resolution and replays trusted approval", async () => {
+		const pendingApprovals: PolicyApprovalRequest[] = [];
+		const approval = mcpInheritanceAuthority(pendingApprovals);
+		const registry = new InMemoryRoleRegistry({ now: () => NOW });
+		const registered = registry.create({ definition: {
+			schemaVersion: 1,
+			roleId: "mcp-reviewer",
+			scope: "project",
+			slug: "mcp-reviewer",
+			name: "MCP reviewer",
+			description: "Review with the exact docs MCP subset",
+			revision: 0,
+			persona: "Review the child task.",
+			modelProfileRef: { schemaVersion: 1, type: "model_profile", id: "profile-child", revision: 1 },
+			capabilitySelector: { policy: "none" },
+			skillSelector: { policy: "none" },
+			mcpSelector: { policy: "named", named: ["docs"] },
+		} });
+		if (!registered.ok) throw registered.error;
+		const fixture = await correctionHarness({
+			productionPath: true,
+			mcpInheritanceAuthority: approval.authority,
+			productPrompt: {
+				registry,
+				scope: "project",
+				providerId: "native.in_process",
+				forkScope: "none",
+				mailboxRequired: true,
+				resumeRequired: false,
+				worktreeRequired: false,
+				backgroundRequired: false,
+			},
+		});
+		try {
+			const parentTask = task("product-mcp-parent-task");
+			const parentRole = role({ roleId: "role-product-mcp-parent", mcpSelector: { policy: "all" } });
+			const parentProfile = profile();
+			const parentSelection = exactMcpSelection(parentRole.mcpSelector);
+			const parentBinding = binding(parentTask, parentRole, parentProfile, parentSelection);
+			const parentEpoch = createBindingEpoch({
+				bindingEpochId: "product-mcp-parent-epoch",
+				taskId: parentTask.taskId,
+				attemptId: "product-mcp-parent-attempt",
+				bindingId: parentBinding.bindingId,
+				agentInstanceId: "product-mcp-parent-agent",
+				activationReason: "attempt_started",
+				activatedByCommandId: "product-mcp-parent-dispatch",
+				now: () => NOW,
+			});
+			if (!parentEpoch.ok) throw parentEpoch.error;
+			const createdParent = createAgentInstance({
+				agentInstanceId: "product-mcp-parent-agent",
+				providerId: "parent-provider",
+				providerDeclaredAgent: true,
+				roleRevision: parentRole,
+				taskId: parentTask.taskId,
+				now: () => NOW,
+			});
+			if (!createdParent.ok) throw createdParent.error;
+			const parentAgent = { ...createdParent.value, bindingEpochIds: [parentEpoch.value.bindingEpochId] };
+			const parentDispatch = {
+				schemaVersion: 1 as const,
+				dispatchId: "product-mcp-parent-dispatch",
+				taskId: parentTask.taskId,
+				bindingId: parentBinding.bindingId,
+				taskExecutorProviderId: "parent-provider",
+				status: "pending" as const,
+				createdAt: NOW,
+			};
+			const ledger = fixture.ledgerForLane("parent-lane");
+			const seed = async (objectType: string, objectId: string, payload: object): Promise<void> => {
+				if (await ledger.get(objectType, objectId) !== undefined) return;
+				await ledger.appendFact(objectType, objectId, payload, {
+					clientRequestId: `product-mcp-parent:${objectType}:${objectId}`,
+					expectedRevision: 0,
+					correlation: {
+						taskId: parentTask.taskId,
+						dispatchId: parentDispatch.dispatchId,
+						attemptId: parentEpoch.value.attemptId,
+						bindingId: parentBinding.bindingId,
+						bindingEpochId: parentEpoch.value.bindingEpochId,
+						agentInstanceId: parentAgent.agentInstanceId,
+					},
+				});
+			};
+			await seed("task", parentTask.taskId, parentTask);
+			await seed("role_revision", parentRole.roleRevisionId, parentRole);
+			await seed("model_profile_revision", parentProfile.modelProfileId, parentProfile);
+			for (const [objectType, reference] of [
+				["external_agent_binding", parentBinding.contextRevision],
+				["capability_binding", parentBinding.capabilityRevision],
+				["model_broker_binding", parentBinding.modelBrokerBindingRevision],
+				["policy_binding", parentBinding.policyRevision],
+			] as const) {
+				await seed(objectType, reference.id, reference);
+			}
+			await seed("agent_binding", parentBinding.bindingId, parentBinding);
+			await seed("agent_instance", parentAgent.agentInstanceId, parentAgent);
+			await seed("binding_epoch", parentEpoch.value.bindingEpochId, parentEpoch.value);
+			await seed("dispatch", parentDispatch.dispatchId, parentDispatch);
+			await seed("attempt", parentEpoch.value.attemptId, {
+				schemaVersion: 1,
+				attemptId: parentEpoch.value.attemptId,
+				dispatchId: parentDispatch.dispatchId,
+				taskId: parentTask.taskId,
+				providerId: "parent-provider",
+				agentInstanceId: parentAgent.agentInstanceId,
+				bindingId: parentBinding.bindingId,
+				bindingEpochIds: [parentEpoch.value.bindingEpochId],
+				status: "running",
+				startedAt: NOW,
+			});
+
+			const productRoles = fixture.composition.productPromptRoles();
+			if (productRoles === undefined) throw new Error("Expected product prompt roles");
+			const runId = "run-product-mcp-inheritance";
+			const parentCorrelation = {
+				sessionId: "session-composition",
+				laneId: "parent-lane",
+				runId,
+				operationId: runId,
+				taskId: parentTask.taskId,
+				dispatchId: parentDispatch.dispatchId,
+				attemptId: parentEpoch.value.attemptId,
+				bindingId: parentBinding.bindingId,
+				bindingEpochId: parentEpoch.value.bindingEpochId,
+				agentInstanceId: parentAgent.agentInstanceId,
+				providerId: "parent-provider",
+				revision: 0,
+			};
+			const spawnInput = {
+				schemaVersion: 1 as const,
+				runId,
+				prompt: "Review the docs server only",
+				parentTask,
+				parentBinding,
+				parentRoleRevision: parentRole,
+				parentModelProfile: parentProfile,
+				parentDispatch,
+				parentBindingEpoch: parentEpoch.value,
+				parentAgentInstance: parentAgent,
+				parentCorrelation,
+				timestamp: NOW,
+				selectedRoleRevision: registered.value.currentRevision,
+			};
+			const approvalRequired = await productRoles.spawn(spawnInput);
+			expect(approvalRequired).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
+			expect(pendingApprovals).toHaveLength(1);
+			approval.ledger.appendApprovalOutcome(pendingApprovals[0]!, {
+				outcome: "approved",
+				source: "system",
+				resolvedAt: APPROVED_AT,
+			});
+			const replayed = await productRoles.spawn(spawnInput);
+			if (!replayed.ok) throw replayed.error;
+			expect(replayed.value.attemptReceiptIds).toHaveLength(1);
+
+			const facts = (await fixture.session.findFoundationRecords({ kind: "fact", order: "oldestFirst" }))
+				.filter((record) => record.kind === "fact");
+			const childBindingFact = facts.find((record) => record.objectType === "agent_binding" && record.objectId.startsWith("binding_child_"));
+			if (childBindingFact?.kind !== "fact") throw new Error("Expected the durable child AgentBinding");
+			const childBinding = childBindingFact.payload as unknown as AgentBinding;
+			expect(childBinding.mcpSelection.servers.map((server) => server.serverId)).toEqual(["docs"]);
+			expect(isMcpSelectionSubset(parentSelection, childBinding.mcpSelection)).toBe(true);
+			const projection = facts.find((record) => record.objectType === "subagent.child_binding_projection");
+			expect(projection).toMatchObject({ kind: "fact", payload: { mcpApprovalEvidenceId: "policy-entry-2" } });
+		} finally {
+			await fixture.close();
+		}
 	});
 
 	it("runs a production task_package chain and rejects an unbounded later root plan", async () => {

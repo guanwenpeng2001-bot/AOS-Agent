@@ -6,6 +6,7 @@ import {
 	FoundationError,
 	LayeredResultSettlement,
 	persistTaskEnvelopeBeforeResolver,
+	projectMcpSelectionToSelector,
 	Result,
 	ROLE_RESOLUTION_ORDER,
 	SessionLedger,
@@ -1058,6 +1059,12 @@ export class TrustedSubagentCompositionV1 {
 				childLedger,
 			);
 			if (!seededProfile.ok) return seededProfile;
+			const childMcpSelection = projectMcpSelectionToSelector(
+				input.parentBinding.mcpSelection,
+				input.selectedRoleRevision.mcpSelector,
+				input.parentBinding.capabilityRevision.id,
+			);
+			if (!childMcpSelection.ok) return childMcpSelection;
 			const resolved = policy.registry.resolve({
 				schemaVersion: 1,
 				task: persistedTask.value,
@@ -1076,6 +1083,7 @@ export class TrustedSubagentCompositionV1 {
 				capabilityRevision: input.parentBinding.capabilityRevision,
 				modelBrokerBindingRevision: input.parentBinding.modelBrokerBindingRevision,
 				policyRevision: input.parentBinding.policyRevision,
+				mcpSelection: childMcpSelection.value,
 				bindingId: childBindingId,
 				now: () => input.timestamp,
 			});
@@ -1091,6 +1099,7 @@ export class TrustedSubagentCompositionV1 {
 					parentModelProfile: input.parentModelProfile,
 					childModelProfile: childProfile,
 					childTaskEnvelope: persistedTask.value,
+					childMcpSelection: childMcpSelection.value,
 					createdAt: input.timestamp,
 				},
 				this.mcpInheritanceAuthority,
