@@ -1,0 +1,46 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://aos-agent.invalid/evidence/line13/final-manifest.schema.json",
+	"title": "Line 13 exact-head final evidence manifest",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"schemaVersion",
+		"type",
+		"headSha",
+		"requestedHeadSha",
+		"state",
+		"knownGaps",
+		"platforms",
+		"certifications",
+		"createdBy"
+	],
+	"properties": {
+		"schemaVersion": { "const": 1 },
+		"type": { "const": "line13_final_evidence" },
+		"headSha": { "$ref": "#/$defs/headSha" },
+		"requestedHeadSha": { "$ref": "#/$defs/headSha" },
+		"state": { "enum": ["passed", "incomplete"] },
+		"knownGaps": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["schemaVersion", "type", "headSha", "state", "count", "totalAcceptanceCriteria"],
+			"properties": {
+				"schemaVersion": { "const": 1 },
+				"type": { "const": "known_gaps" },
+				"headSha": { "$ref": "#/$defs/headSha" },
+				"state": { "enum": ["passed", "failed"] },
+				"count": { "type": "integer", "minimum": 0, "maximum": 24 },
+				"totalAcceptanceCriteria": { "const": 24 }
+			}
+		},
+		"platforms": { "type": "array", "items": { "type": "object" } },
+		"certifications": { "type": "array", "items": { "type": "object" } },
+		"createdBy": { "enum": ["repository_verifier", "template"] },
+		"digest": { "$ref": "#/$defs/digest" }
+	},
+	"$defs": {
+		"headSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+		"digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+	}
+}

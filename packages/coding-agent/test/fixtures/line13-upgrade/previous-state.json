@@ -1,0 +1,26 @@
+{
+	"schemaVersion": 1,
+	"packageVersion": "0.84.2",
+	"session": {
+		"id": "sanitized-session",
+		"revision": 7,
+		"state": "idle"
+	},
+	"settings": {
+		"connectorEnabled": false,
+		"mode": "print"
+	},
+	"auth": {
+		"state": "not_configured"
+	},
+	"trust": {
+		"state": "untrusted"
+	},
+	"identity": {
+		"installationIdDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	},
+	"connector": {
+		"targetId": "sanitized-target",
+		"enabled": false
+	}
+}

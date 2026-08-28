@@ -1,0 +1,47 @@
+[
+	{
+		"schemaVersion": 1,
+		"type": "connector_certification",
+		"connector": "acp",
+		"headSha": "0000000000000000000000000000000000000000",
+		"evidenceClass": "product_certification",
+		"state": "not_run",
+		"reasonCode": "authorized_environment_not_run",
+		"platform": null,
+		"dependency": null,
+		"authority": { "kind": "none", "referenceDigest": null },
+		"checks": { "handshake": "not_run", "start": "not_run", "cancel": "not_run", "resume": "not_run", "tool": "not_run" },
+		"safety": { "credentialsPersisted": false, "promptsPersisted": false, "pathsPersisted": false, "transcriptsPersisted": false },
+		"source": "explicit_absence"
+	},
+	{
+		"schemaVersion": 1,
+		"type": "connector_certification",
+		"connector": "codex_app_server",
+		"headSha": "0000000000000000000000000000000000000000",
+		"evidenceClass": "product_certification",
+		"state": "unavailable",
+		"reasonCode": "authorized_environment_unavailable",
+		"platform": null,
+		"dependency": null,
+		"authority": { "kind": "none", "referenceDigest": null },
+		"checks": { "handshake": "unavailable", "start": "unavailable", "cancel": "unavailable", "resume": "unavailable", "tool": "unavailable" },
+		"safety": { "credentialsPersisted": false, "promptsPersisted": false, "pathsPersisted": false, "transcriptsPersisted": false },
+		"source": "explicit_absence"
+	},
+	{
+		"schemaVersion": 1,
+		"type": "connector_certification",
+		"connector": "claude_agent_sdk",
+		"headSha": "0000000000000000000000000000000000000000",
+		"evidenceClass": "product_certification",
+		"state": "not_run",
+		"reasonCode": "authorized_environment_not_run",
+		"platform": null,
+		"dependency": null,
+		"authority": { "kind": "none", "referenceDigest": null },
+		"checks": { "handshake": "not_run", "start": "not_run", "cancel": "not_run", "resume": "not_run", "tool": "not_run" },
+		"safety": { "credentialsPersisted": false, "promptsPersisted": false, "pathsPersisted": false, "transcriptsPersisted": false },
+		"source": "explicit_absence"
+	}
+]
