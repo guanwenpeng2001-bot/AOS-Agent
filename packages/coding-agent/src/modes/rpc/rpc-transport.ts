@@ -1,5 +1,12 @@
 import { createServer, type Server, type Socket } from "node:net";
 import {
+	BoundedProtocolError,
+	DEFAULT_BOUNDED_PROTOCOL_LIMITS,
+	resolveBoundedProtocolLimits,
+	type BoundedProtocolLimits,
+} from "../../core/bounded-protocol.ts";
+import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "../../core/runtime-clock.ts";
+import {
 	attachJsonlLineReader,
 	createJsonlLineWriter,
 	DEFAULT_MAX_JSONL_FRAME_BYTES,
@@ -13,6 +20,9 @@ import {
 } from "./rpc-transport-address.ts";
 
 export const DEFAULT_RPC_TRANSPORT_MAX_FRAME_BYTES = DEFAULT_MAX_JSONL_FRAME_BYTES;
+export const DEFAULT_RPC_TRANSPORT_MAX_PENDING_WRITE_BYTES = DEFAULT_BOUNDED_PROTOCOL_LIMITS.maxPendingBytes;
+export const DEFAULT_RPC_TRANSPORT_MAX_PENDING_WRITE_ENTRIES = DEFAULT_BOUNDED_PROTOCOL_LIMITS.maxPendingEntries;
+export const DEFAULT_RPC_TRANSPORT_DRAIN_TIMEOUT_MS = DEFAULT_BOUNDED_PROTOCOL_LIMITS.drainTimeoutMs;
 
 export type RpcTransportErrorCode =
 	| "rpc_transport_address_invalid"
@@ -20,6 +30,8 @@ export type RpcTransportErrorCode =
 	| "rpc_transport_bind_failed"
 	| "rpc_transport_connection_busy"
 	| "rpc_transport_frame_too_large"
+	| "rpc_transport_pending_write_limit"
+	| "rpc_transport_drain_timeout"
 	| "rpc_transport_closed"
 	| "rpc_transport_write_failed"
 	| "rpc_transport_invalid_json"
@@ -35,6 +47,8 @@ const RPC_TRANSPORT_ERROR_MESSAGES: Readonly<Record<RpcTransportErrorCode, strin
 	rpc_transport_bind_failed: "RPC TCP listener failed to bind",
 	rpc_transport_connection_busy: "Another control connection is active",
 	rpc_transport_frame_too_large: "RPC JSONL frame exceeds the configured maximum",
+	rpc_transport_pending_write_limit: "RPC pending-write capacity exceeded",
+	rpc_transport_drain_timeout: "RPC pending writes did not drain before the deadline",
 	rpc_transport_closed: "RPC transport connection is closed",
 	rpc_transport_write_failed: "RPC transport write failed",
 	rpc_transport_invalid_json: "RPC transport received invalid JSON",
@@ -88,6 +102,12 @@ export interface RpcTransportOptions<TCommand, TOutput> {
 	readonly maxFrameBytes?: number;
 	/** Compatibility spelling used by length-prefixed transports. */
 	readonly maxFrameLength?: number;
+	/** Defaults to eight MiB across writes that have not settled. */
+	readonly maxPendingWriteBytes?: number;
+	/** Defaults to 1024 writes that have not settled. */
+	readonly maxPendingWriteEntries?: number;
+	/** Total bound for ordered pending-write drain and socket finalization. */
+	readonly drainTimeoutMs?: number;
 	readonly onError?: (error: RpcTransportError) => void;
 	readonly onConnection?: (connection: RpcTransportConnection<TCommand, TOutput>) => void;
 	readonly onConnectionClose?: (connection: RpcTransportConnection<TCommand, TOutput>) => void;
@@ -102,6 +122,8 @@ interface ConnectionCallbacks<TCommand, TOutput> {
 	readonly dispatch: RpcTransportDispatcher<TCommand, TOutput>;
 	readonly parseCommand: ((value: unknown) => TCommand) | undefined;
 	readonly maxFrameBytes: number;
+	readonly protocolLimits: BoundedProtocolLimits;
+	readonly clock: RuntimeClock;
 	readonly reportError: (error: RpcTransportError) => void;
 	readonly onReleased: (connection: RpcTransportConnectionImpl<TCommand, TOutput>) => void;
 	readonly onConnectionError: ((error: RpcTransportError) => void) | undefined;
@@ -116,7 +138,6 @@ class RpcTransportConnectionImpl<TCommand, TOutput> implements RpcTransportConne
 	private readonly errorListeners = new Set<(error: RpcTransportError) => void>();
 	private detachReader?: () => void;
 	private closePromise?: Promise<void>;
-	private resolveClosed?: () => void;
 	private closedValue = false;
 	private closing = false;
 
@@ -124,7 +145,18 @@ class RpcTransportConnectionImpl<TCommand, TOutput> implements RpcTransportConne
 		this.id = id;
 		this.socket = socket;
 		this.callbacks = callbacks;
-		this.writer = createJsonlLineWriter(socket, { maxFrameBytes: callbacks.maxFrameBytes });
+		this.writer = createJsonlLineWriter(
+			socket,
+			withRuntimeClock(
+				{
+					maxFrameBytes: callbacks.maxFrameBytes,
+					maxPendingWriteBytes: callbacks.protocolLimits.maxPendingBytes,
+					maxPendingWriteEntries: callbacks.protocolLimits.maxPendingEntries,
+					drainTimeoutMs: callbacks.protocolLimits.drainTimeoutMs,
+				},
+				callbacks.clock,
+			),
+		);
 	}
 
 	get closed(): boolean {
@@ -142,15 +174,18 @@ class RpcTransportConnectionImpl<TCommand, TOutput> implements RpcTransportConne
 
 	send(output: TOutput): Promise<void> {
 		if (this.closed || this.closing) {
-			return Promise.reject(createTransportError("rpc_transport_closed"));
+			return rejectedTransportWrite(createTransportError("rpc_transport_closed"));
 		}
 		const pending = this.writer.write(output);
-		return pending.catch((error: unknown) => {
+		if (this.writer.closed) void this.close();
+		const result = pending.catch((error: unknown) => {
 			const transportError = toTransportError(error, "rpc_transport_write_failed");
 			this.reportError(transportError);
-			this.abort();
+			void this.close();
 			throw transportError;
 		});
+		void result.catch(() => {});
+		return result;
 	}
 
 	write(output: TOutput): Promise<void> {
@@ -166,13 +201,7 @@ class RpcTransportConnectionImpl<TCommand, TOutput> implements RpcTransportConne
 		this.closing = true;
 		this.detachReader?.();
 		this.detachReader = undefined;
-		this.closePromise = new Promise<void>((resolve) => {
-			this.resolveClosed = resolve;
-			void this.writer.close().catch((error: unknown) => {
-				this.reportError(toTransportError(error, "rpc_transport_write_failed"));
-				this.abort();
-			});
-		});
+		this.closePromise = this.closeInternal();
 		return this.closePromise;
 	}
 
@@ -300,7 +329,18 @@ class RpcTransportConnectionImpl<TCommand, TOutput> implements RpcTransportConne
 			await this.close();
 		} catch (writeError: unknown) {
 			this.reportError(toTransportError(writeError, "rpc_transport_write_failed"));
-			this.abort();
+			await this.close();
+		}
+	}
+
+	private async closeInternal(): Promise<void> {
+		try {
+			await this.writer.close();
+		} catch (error: unknown) {
+			this.reportError(toTransportError(error, "rpc_transport_write_failed"));
+		} finally {
+			if (!this.socket.destroyed) this.socket.destroy();
+			this.markClosed();
 		}
 	}
 
@@ -313,8 +353,6 @@ class RpcTransportConnectionImpl<TCommand, TOutput> implements RpcTransportConne
 		this.socket.off("error", this.onSocketError);
 		this.socket.off("close", this.onSocketClose);
 		this.writer.detach();
-		this.resolveClosed?.();
-		this.resolveClosed = undefined;
 		for (const listener of this.closeListeners) {
 			try {
 				listener();
@@ -331,6 +369,8 @@ class RpcTransportConnectionImpl<TCommand, TOutput> implements RpcTransportConne
 export class RpcTransport<TCommand, TOutput> {
 	private readonly options: RpcTransportOptions<TCommand, TOutput>;
 	private readonly maxFrameBytes: number;
+	private readonly protocolLimits: BoundedProtocolLimits;
+	private readonly clock: RuntimeClock;
 	private readonly configuredAddress: RpcTransportAddress;
 	private server?: Server;
 	private boundAddress?: RpcTransportAddress;
@@ -345,6 +385,12 @@ export class RpcTransport<TCommand, TOutput> {
 		this.options = options;
 		this.configuredAddress = validateRpcTransportAddress(options.address);
 		this.maxFrameBytes = resolveMaxFrameBytes(options.maxFrameBytes ?? options.maxFrameLength);
+		this.protocolLimits = resolveBoundedProtocolLimits({
+			maxPendingBytes: options.maxPendingWriteBytes ?? DEFAULT_RPC_TRANSPORT_MAX_PENDING_WRITE_BYTES,
+			maxPendingEntries: options.maxPendingWriteEntries ?? DEFAULT_RPC_TRANSPORT_MAX_PENDING_WRITE_ENTRIES,
+			drainTimeoutMs: options.drainTimeoutMs ?? DEFAULT_RPC_TRANSPORT_DRAIN_TIMEOUT_MS,
+		});
+		this.clock = runtimeClockFor(options);
 	}
 
 	get address(): RpcTransportAddress | undefined {
@@ -424,6 +470,8 @@ export class RpcTransport<TCommand, TOutput> {
 			dispatch: this.options.dispatch,
 			parseCommand: this.options.parseCommand,
 			maxFrameBytes: this.maxFrameBytes,
+			protocolLimits: this.protocolLimits,
+			clock: this.clock,
 			reportError: (error) => this.reportError(error),
 			onReleased: (released) => this.releaseConnection(released),
 			onConnectionError: this.options.onConnectionError,
@@ -440,7 +488,18 @@ export class RpcTransport<TCommand, TOutput> {
 	}
 
 	private async rejectBusy(socket: Socket): Promise<void> {
-		const writer = createJsonlLineWriter(socket, { maxFrameBytes: this.maxFrameBytes });
+		const writer = createJsonlLineWriter(
+			socket,
+			withRuntimeClock(
+				{
+					maxFrameBytes: this.maxFrameBytes,
+					maxPendingWriteBytes: this.protocolLimits.maxPendingBytes,
+					maxPendingWriteEntries: this.protocolLimits.maxPendingEntries,
+					drainTimeoutMs: this.protocolLimits.drainTimeoutMs,
+				},
+				this.clock,
+			),
+		);
 		const busyError = createTransportError("rpc_transport_connection_busy");
 		this.reportConnectionError(busyError);
 		try {
@@ -492,7 +551,6 @@ export class RpcTransport<TCommand, TOutput> {
 		if (starting) await starting.catch(() => {});
 		const server = this.server;
 		const active = this.activeConnectionValue;
-		active?.abort();
 		try {
 			await Promise.all([server ? closeServer(server) : Promise.resolve(), active?.close() ?? Promise.resolve()]);
 		} catch (error: unknown) {
@@ -526,7 +584,24 @@ function toTransportError(error: unknown, fallbackCode: RpcTransportErrorCode): 
 	if (error instanceof JsonlFrameError) {
 		return createTransportError("rpc_transport_frame_too_large", error);
 	}
+	if (error instanceof BoundedProtocolError) {
+		if (error.code === "protocol_pending_bytes_exceeded" || error.code === "protocol_pending_entries_exceeded") {
+			return createTransportError("rpc_transport_pending_write_limit", error);
+		}
+		if (error.code === "protocol_drain_timeout") {
+			return createTransportError("rpc_transport_drain_timeout", error);
+		}
+		if (error.code === "protocol_closed") {
+			return createTransportError("rpc_transport_closed", error);
+		}
+	}
 	return createTransportError(fallbackCode, error);
+}
+
+function rejectedTransportWrite(error: RpcTransportError): Promise<void> {
+	const promise = Promise.reject<void>(error);
+	void promise.catch(() => {});
+	return promise;
 }
 
 function resolveMaxFrameBytes(value: number | undefined): number {
