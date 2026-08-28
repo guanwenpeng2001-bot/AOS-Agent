@@ -17,6 +17,11 @@ import {
 	type TrustedProductionExternalConnectorProcess,
 } from "./external-connector-process-controller.ts";
 import {
+	assertExternalConnectorCapabilityWithinTarget,
+	externalConnectorProcessForTarget,
+	type ExternalConnectorResolvedTarget,
+} from "./external-connector-target-config.ts";
+import {
 	FileExternalConnectorSupervisorPrivateStateStore,
 	runExternalConnectorHostDispose,
 	runExternalConnectorHostOperation,
@@ -38,7 +43,18 @@ export interface ProductionExternalConnectorSupervisionOptions {
 export type ProductionExternalAgentConnectorRuntimeOptions = Omit<
 	ExternalAgentConnectorRuntimeOptions,
 	"supervision"
-> & ProductionExternalConnectorSupervisionOptions;
+> &
+	Omit<ProductionExternalConnectorSupervisionOptions, "process"> &
+	(
+		| {
+				readonly target: ExternalConnectorResolvedTarget;
+				readonly process?: never;
+		  }
+		| {
+				readonly target?: never;
+				readonly process: TrustedProductionExternalConnectorProcess;
+		  }
+	);
 
 export interface ProductionExternalConnectorStartupStatus {
 	readonly schemaVersion: 1;
@@ -50,6 +66,7 @@ export interface ProductionExternalConnectorStartupStatus {
 const PRODUCTION_STARTUP_STATUS = new WeakMap<ExternalAgentConnector, ProductionExternalConnectorStartupStatus>();
 const PRODUCTION_DRIVER_PROVENANCE = new WeakMap<ExternalAgentConnector, ProductionExternalConnectorDriverProvenance>();
 const PRODUCTION_VENDOR_DRIVER = new WeakMap<ExternalAgentConnector, ExternalConnectorVendorDriver>();
+const PRODUCTION_TARGET = new WeakMap<ExternalAgentConnector, ExternalConnectorResolvedTarget>();
 
 class BoundProductionExternalConnectorVendorDriver implements ExternalConnectorVendorDriver {
 	readonly process: TrustedProductionExternalConnectorProcess;
@@ -131,6 +148,13 @@ export function getProductionExternalConnectorVendorDriver(
 	connector: ExternalAgentConnector,
 ): ExternalConnectorVendorDriver | undefined {
 	return PRODUCTION_VENDOR_DRIVER.get(connector);
+}
+
+/** Private Host evidence binding a production connector to its selected trusted target. */
+export function getProductionExternalConnectorTarget(
+	connector: ExternalAgentConnector,
+): ExternalConnectorResolvedTarget | undefined {
+	return PRODUCTION_TARGET.get(connector);
 }
 
 /** Private Host evidence bound directly to the driver instance used for execution. */
@@ -231,14 +255,27 @@ export async function createProductionExternalAgentConnector(
 	if (typeof options.capabilityProbe !== "function") {
 		throw new TypeError("Production External Connector requires an explicit capability probe.");
 	}
-	const driverBinding = bindProductionVendorDriver(options.driver, options.process);
+	if (options.target !== undefined) {
+		assertExternalConnectorCapabilityWithinTarget(options.target, options.capability);
+		if (options.target.providerId !== options.providerId) {
+			throw new TypeError("Production External Connector target provider does not match the runtime provider");
+		}
+	}
+	const process = options.target === undefined ? options.process : externalConnectorProcessForTarget(options.target);
+	const driverBinding = bindProductionVendorDriver(options.driver, process);
 	const connector = createDurableExternalAgentConnector({
 		providerId: options.providerId,
 		capability: options.capability,
 		capabilityProbe: options.capabilityProbe,
 		store: options.store,
 		driver: driverBinding,
-		supervision: createProductionExternalConnectorSupervision({ ...options, process: driverBinding.process }),
+		supervision: createProductionExternalConnectorSupervision({
+			privateStatePath: options.privateStatePath,
+			process: driverBinding.process,
+			...(options.deadlines === undefined ? {} : { deadlines: options.deadlines }),
+			...(options.limits === undefined ? {} : { limits: options.limits }),
+			...(options.clock === undefined ? {} : { clock: options.clock }),
+		}),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.operationNonce === undefined ? {} : { operationNonce: options.operationNonce }),
 	});
@@ -278,6 +315,7 @@ export async function createProductionExternalAgentConnector(
 		}));
 		PRODUCTION_VENDOR_DRIVER.set(connector, driverBinding);
 		PRODUCTION_DRIVER_PROVENANCE.set(connector, driverBinding.provenance);
+		if (options.target !== undefined) PRODUCTION_TARGET.set(connector, options.target);
 		return connector;
 	} catch (error) {
 		try {

@@ -622,6 +622,26 @@ export {
 // The single current External Connector contract and trusted registry.
 export type { ExternalAgentConnector } from "@aos-agent/agent-core";
 export {
+	EXTERNAL_CONNECTOR_TARGET_CONFIG_SCHEMA_VERSION,
+	ExternalConnectorTargetConfigError,
+	buildExternalConnectorTargetConfig,
+	resolveExternalConnectorTargetConfig,
+	type ExternalConnectorAccountReference,
+	type ExternalConnectorCapabilityCeiling,
+	type ExternalConnectorCapabilityNarrowing,
+	type ExternalConnectorModelAccess,
+	type ExternalConnectorResolvedTarget,
+	type ExternalConnectorTargetAuthority,
+	type ExternalConnectorTargetCatalogConfig,
+	type ExternalConnectorTargetConfig,
+	type ExternalConnectorTargetConfigBuildOptions,
+	type ExternalConnectorTargetConfigErrorReason,
+	type ExternalConnectorTargetDefinition,
+	type ExternalConnectorTargetSelectionConfig,
+	type ExternalConnectorTargetSelectionSource,
+	type ExternalConnectorTrustedTarget,
+} from "./core/external-connector-target-config.ts";
+export {
 	EXTERNAL_CONNECTOR_PROVIDER_CLASSES,
 	createExternalConnectorRegistry,
 	isExternalConnectorSelection,

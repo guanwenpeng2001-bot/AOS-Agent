@@ -42,6 +42,8 @@ import {
 	createAgentSessionServices,
 	createRpcHostController,
 	createTrustedWorkerSandboxComposition,
+	buildExternalConnectorTargetConfig,
+	ExternalConnectorTargetConfigError,
 	SchedulerExecutorRegistry,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionContext,
@@ -51,6 +53,9 @@ import {
 	type TaskCredentialProvider,
 	type TrustedSchedulerRuntimeOptions,
 	type ExternalConnectorRegistry,
+	type ExternalConnectorTargetConfigErrorReason,
+	type ExternalConnectorTargetDefinition,
+	type ExternalConnectorResolvedTarget,
 } from "../src/index.ts";
 import { createExternalConnectorRegistry } from "../src/core/external-agent-registry.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -137,6 +142,47 @@ function createGateway(sessionId: string): ToolGateway {
 		dispose: async () => {},
 		execute: async () => Result.err(new FoundationError("tool_guard_denied", "not exercised")),
 	};
+}
+
+function externalTargetDefinition(
+	cwd: string,
+	targetId: string,
+	providerId = `provider-${targetId}`,
+	capabilityOverrides: Partial<ExternalConnectorTargetDefinition["capabilityCeiling"]> = {},
+): ExternalConnectorTargetDefinition {
+	return {
+		schemaVersion: 1,
+		targetId,
+		providerId,
+		executablePath: process.execPath,
+		modulePath: process.execPath,
+		cwd,
+		version: "1.0.0",
+		executableIdentity: `sha256:${"a".repeat(64)}`,
+		moduleIdentity: `sha256:${"b".repeat(64)}`,
+		endpoint: "https://connector.invalid/rpc",
+		accountReference: { schemaVersion: 1, namespace: "test", accountId: `account-${targetId}` },
+		capabilityCeiling: {
+			modelAccess: ["none", "agent_owned"],
+			resume: true,
+			toolGateway: true,
+			artifacts: true,
+			images: true,
+			...capabilityOverrides,
+		},
+	};
+}
+
+function expectTargetConfigError(
+	action: () => unknown,
+	reason: ExternalConnectorTargetConfigErrorReason,
+): void {
+	expect(action).toThrow(ExternalConnectorTargetConfigError);
+	try {
+		action();
+	} catch (error) {
+		expect(error).toMatchObject({ code: "external_connector_config_invalid", reason });
+	}
 }
 
 function catalogProvider(
@@ -729,6 +775,179 @@ describe("AgentRuntimeComposition", () => {
 			await created.session.dispose();
 			await created.session.waitForDispose();
 		}
+	});
+
+	it("resolves a stable explicit target from trusted catalogs and project/Role narrowing", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-runtime-target-config-"));
+		directories.push(cwd);
+		const firstTarget = externalTargetDefinition(cwd, "target-a");
+		const secondTarget = externalTargetDefinition(cwd, "target-b");
+		const options = {
+			global: { schemaVersion: 1, targets: [secondTarget, firstTarget] },
+			project: {
+				schemaVersion: 1,
+				targetId: firstTarget.targetId,
+				capabilityCeiling: { modelAccess: ["none"], resume: false },
+			},
+			projectTrusted: true,
+			role: {
+				schemaVersion: 1,
+				targetId: firstTarget.targetId,
+				capabilityCeiling: { images: false },
+			},
+			roleTrusted: true,
+			explicitTargetId: firstTarget.targetId,
+		} as const;
+		const resolved = buildExternalConnectorTargetConfig(options);
+		const reordered = buildExternalConnectorTargetConfig({
+			...options,
+			global: { schemaVersion: 1, targets: [firstTarget, secondTarget] },
+		});
+
+		expect(resolved.targets.map((target) => target.targetId)).toEqual(["target-a", "target-b"]);
+		expect(resolved.selectedTarget).toMatchObject({
+			targetId: "target-a",
+			providerId: "provider-target-a",
+			source: "global",
+			endpoint: "https://connector.invalid/rpc",
+			accountReference: { namespace: "test", accountId: "account-target-a" },
+			capabilityCeiling: {
+				modelAccess: ["none"],
+				resume: false,
+				toolGateway: true,
+				artifacts: true,
+				images: false,
+			},
+			selectionSources: ["explicit", "project", "role"],
+		});
+		expect(Object.isFrozen(resolved)).toBe(true);
+		expect(Object.isFrozen(resolved.selectedTarget?.capabilityCeiling)).toBe(true);
+		expect(reordered.configRevision).toBe(resolved.configRevision);
+		expect(reordered.selectedTarget?.selectionRevision).toBe(resolved.selectedTarget?.selectionRevision);
+	});
+
+	it("rejects project or Role capability widening and secret-bearing target fields", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-runtime-target-no-widen-"));
+		directories.push(cwd);
+		const target = externalTargetDefinition(cwd, "locked", "locked-provider", {
+			modelAccess: ["none"],
+			resume: false,
+			toolGateway: false,
+		});
+		expectTargetConfigError(
+			() => buildExternalConnectorTargetConfig({
+				managed: { schemaVersion: 1, targets: [target] },
+				project: { schemaVersion: 1, targetId: target.targetId, capabilityCeiling: { resume: true } },
+				projectTrusted: true,
+			}),
+			"capability_widened",
+		);
+		expectTargetConfigError(
+			() => buildExternalConnectorTargetConfig({
+				managed: { schemaVersion: 1, targets: [target] },
+				project: { schemaVersion: 1, targetId: target.targetId, capabilityCeiling: { resume: false } },
+				projectTrusted: true,
+				role: { schemaVersion: 1, capabilityCeiling: { resume: true } },
+				roleTrusted: true,
+			}),
+			"capability_widened",
+		);
+		expectTargetConfigError(
+			() => buildExternalConnectorTargetConfig({
+				global: {
+					schemaVersion: 1,
+					targets: [{ ...target, apiKey: "raw-secret" }],
+				},
+			}),
+			"invalid_shape",
+		);
+		expectTargetConfigError(
+			() => buildExternalConnectorTargetConfig({
+				managed: { schemaVersion: 1, targets: [target] },
+				project: {
+					schemaVersion: 1,
+					targetId: target.targetId,
+					executablePath: process.execPath,
+					endpoint: "https://project.invalid/override",
+					accountReference: { schemaVersion: 1, namespace: "project", accountId: "raw-account" },
+				},
+				projectTrusted: true,
+			}),
+			"invalid_shape",
+		);
+	});
+
+	it("fails closed for ambiguous target selectors and untrusted project sources", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-runtime-target-source-"));
+		directories.push(cwd);
+		const firstTarget = externalTargetDefinition(cwd, "target-a");
+		const secondTarget = externalTargetDefinition(cwd, "target-b");
+		expectTargetConfigError(
+			() => buildExternalConnectorTargetConfig({
+				global: { schemaVersion: 1, targets: [firstTarget, secondTarget] },
+				project: { schemaVersion: 1, targetId: firstTarget.targetId },
+				projectTrusted: true,
+				role: { schemaVersion: 1, targetId: secondTarget.targetId },
+				roleTrusted: true,
+			}),
+			"ambiguous_selection",
+		);
+		expectTargetConfigError(
+			() => buildExternalConnectorTargetConfig({
+				global: { schemaVersion: 1, targets: [firstTarget] },
+				project: { schemaVersion: 1, targetId: firstTarget.targetId },
+				projectTrusted: false,
+			}),
+			"untrusted_source",
+		);
+		expectTargetConfigError(
+			() => buildExternalConnectorTargetConfig({
+				managed: { schemaVersion: 1, targets: [firstTarget] },
+				global: { schemaVersion: 1, targets: [firstTarget] },
+				explicitTargetId: firstTarget.targetId,
+			}),
+			"ambiguous_target",
+		);
+	});
+
+	it("keeps an unselected target catalog off and passes an explicit target only to registry composition", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-runtime-target-default-off-"));
+		directories.push(cwd);
+		const target = externalTargetDefinition(cwd, "explicit-target");
+		const catalog = { schemaVersion: 1, targets: [target] } as const;
+		const defaultOffConfig = buildExternalConnectorTargetConfig({ global: catalog });
+		const offRegistryFactory = vi.fn(() => createExternalConnectorRegistry());
+		const context = {
+			session: Object.freeze({}),
+			harness: Object.freeze({}),
+			sessionId: "target-default-off",
+			models: Object.freeze({}),
+		} as unknown as AgentRuntimeCompositionContext;
+		const defaultOff = createAgentRuntimeCompositionFactory({
+			externalConnectorTargetConfig: defaultOffConfig,
+			externalConnectorRegistry: offRegistryFactory,
+		}).create(context);
+
+		expect(defaultOff.externalConnectorTargetConfig).toBe(defaultOffConfig);
+		expect(defaultOff.externalConnectorTarget).toBeUndefined();
+		expect(defaultOff.externalConnectorRegistry).toBeUndefined();
+		expect(offRegistryFactory).not.toHaveBeenCalled();
+
+		const selectedConfig = buildExternalConnectorTargetConfig({
+			global: catalog,
+			explicitTargetId: target.targetId,
+		});
+		let composedTarget: ExternalConnectorResolvedTarget | undefined;
+		const selectedRegistry = createAgentRuntimeCompositionFactory({
+			externalConnectorTargetConfig: selectedConfig,
+			externalConnectorRegistry: (_compositionContext, _toolGateway, selectedTarget) => {
+				composedTarget = selectedTarget;
+				return createExternalConnectorRegistry();
+			},
+		}).create({ ...context, sessionId: "target-explicit-selection" });
+		expect(composedTarget).toBe(selectedConfig.selectedTarget);
+		expect(selectedRegistry.externalConnectorTarget).toBe(selectedConfig.selectedTarget);
+		expect(selectedRegistry.externalConnectorRegistry).toBeDefined();
 	});
 
 	it("publishes one immutable local, MCP, and sandbox catalog and keeps it on invalid replacement", async () => {

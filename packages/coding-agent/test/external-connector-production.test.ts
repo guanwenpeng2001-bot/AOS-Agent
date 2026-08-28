@@ -8,6 +8,7 @@ import {
 	Result,
 	createConnectorCapabilitySnapshot,
 	fingerprintFoundationValue,
+	type ConnectorCapabilitySnapshot,
 	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
@@ -21,6 +22,7 @@ import {
 	createProductionExternalAgentConnector,
 	createProductionExternalConnectorSupervision,
 	getProductionExternalConnectorStartupStatus,
+	getProductionExternalConnectorTarget,
 } from "../src/core/external-connector-production.ts";
 import { cloneCanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
 import {
@@ -31,8 +33,12 @@ import {
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 import {
 	createAgentRuntimeCompositionFactory,
+	buildExternalConnectorTargetConfig,
 	createExternalConnectorRegistry,
 	type AgentRuntimeCompositionContext,
+	type ExternalConnectorCapabilityCeiling,
+	type ExternalConnectorResolvedTarget,
+	type ExternalConnectorTargetDefinition,
 } from "../src/index.ts";
 import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/types.ts";
 
@@ -47,6 +53,39 @@ const processOptions = {
 		moduleIdentity: `sha256:${createHash("sha256").update(readFileSync(process.execPath)).digest("hex")}`,
 	},
 } as const;
+
+function resolvedProductionTarget(
+	capability: ConnectorCapabilitySnapshot,
+	overrides: Partial<ExternalConnectorCapabilityCeiling> = {},
+): ExternalConnectorResolvedTarget {
+	const definition: ExternalConnectorTargetDefinition = {
+		schemaVersion: 1,
+		targetId: `${capability.providerId}-target`,
+		providerId: capability.providerId,
+		executablePath: processOptions.executablePath,
+		modulePath: processOptions.trustedProvenance.modulePath,
+		cwd: processOptions.trustedProvenance.cwd,
+		version: processOptions.trustedProvenance.version,
+		executableIdentity: processOptions.trustedProvenance.executableIdentity,
+		moduleIdentity: processOptions.trustedProvenance.moduleIdentity,
+		endpoint: "https://connector.invalid/rpc",
+		accountReference: { schemaVersion: 1, namespace: "test", accountId: "production-account" },
+		capabilityCeiling: {
+			modelAccess: [capability.modelAccess],
+			resume: capability.resume,
+			toolGateway: capability.toolGateway,
+			artifacts: capability.artifacts,
+			images: capability.images,
+			...overrides,
+		},
+	};
+	const config = buildExternalConnectorTargetConfig({
+		managed: { schemaVersion: 1, targets: [definition] },
+		explicitTargetId: definition.targetId,
+	});
+	if (config.selectedTarget === undefined) throw new Error("Expected explicit production target selection");
+	return config.selectedTarget;
+}
 
 function processIsLive(pid: number): boolean {
 	try {
@@ -128,6 +167,68 @@ describe("production External Connector composition", () => {
 			},
 		]);
 		await registry.dispose();
+	});
+
+	it("binds production creation to an attested target and rejects capability widening before probing", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-external-production-target-"));
+		const capability = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: "production-target-connector",
+			revision: 1,
+			protocol: { name: "production-protocol", version: "1" },
+			modelAccess: "agent_owned",
+			resume: false,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		});
+		const target = resolvedProductionTarget(capability);
+		const connector = await createProductionExternalAgentConnector({
+			providerId: capability.providerId,
+			capability,
+			capabilityProbe: async () => Result.ok(capability),
+			store: Object.freeze({}) as ExternalConnectorDurableStore,
+			driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
+			privateStatePath: join(root, "selected.json"),
+			target,
+		});
+		try {
+			expect(getProductionExternalConnectorTarget(connector)).toBe(target);
+			expect(getProductionExternalConnectorStartupStatus(connector)).toMatchObject({ readiness: "ready" });
+		} finally {
+			await connector.dispose();
+		}
+
+		const widenedCapability = createConnectorCapabilitySnapshot({
+			schemaVersion: capability.schemaVersion,
+			providerId: capability.providerId,
+			revision: capability.revision,
+			protocol: capability.protocol,
+			modelAccess: capability.modelAccess,
+			resume: capability.resume,
+			toolGateway: capability.toolGateway,
+			artifacts: capability.artifacts,
+			images: true,
+		});
+		const restrictedTarget = resolvedProductionTarget(widenedCapability, { images: false });
+		let probeCalls = 0;
+		await expect(createProductionExternalAgentConnector({
+			providerId: widenedCapability.providerId,
+			capability: widenedCapability,
+			capabilityProbe: async () => {
+				probeCalls += 1;
+				return Result.ok(widenedCapability);
+			},
+			store: Object.freeze({}) as ExternalConnectorDurableStore,
+			driver: Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver,
+			privateStatePath: join(root, "widened.json"),
+			target: restrictedTarget,
+		})).rejects.toMatchObject({
+			code: "external_connector_config_invalid",
+			reason: "capability_widened",
+		});
+		expect(probeCalls).toBe(0);
+		rmSync(root, { recursive: true, force: true });
 	});
 
 	it("retains and exposes quarantined startup recovery through registry readiness", async () => {
