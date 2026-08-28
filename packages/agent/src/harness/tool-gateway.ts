@@ -324,6 +324,44 @@ export function lookupToolGatewayRoute(
 	return Result.ok(matches[0]!);
 }
 
+function lookupToolGatewayRouteSafely(
+	routes: readonly ToolGatewayRouteSnapshot[],
+	toolName: string,
+	namespace?: string,
+): ResultValue<ToolGatewayRouteSnapshot, FoundationError> {
+	try {
+		return lookupToolGatewayRoute(routes, toolName, namespace);
+	} catch {
+		return Result.err(catalogInvalid("Tool Gateway route catalog is invalid"));
+	}
+}
+
+function sameToolGatewayRoute(left: ToolGatewayRouteSnapshot, right: ToolGatewayRouteSnapshot): boolean {
+	try {
+		return canonicalFoundationJson([
+			left.kind,
+			left.namespace ?? "",
+			left.toolName,
+			left.providerId,
+			left.revision,
+			left.operation.resource,
+			left.operation.effects,
+			left.operation.requiresSandbox === true,
+		]) === canonicalFoundationJson([
+			right.kind,
+			right.namespace ?? "",
+			right.toolName,
+			right.providerId,
+			right.revision,
+			right.operation.resource,
+			right.operation.effects,
+			right.operation.requiresSandbox === true,
+		]);
+	} catch {
+		return false;
+	}
+}
+
 export interface FoundationToolGatewayReloadOptions {
 	readonly gatewayId?: string;
 	readonly providers: readonly ToolGatewayProvider[];
@@ -627,7 +665,7 @@ export class FoundationToolGatewayAuthority implements ToolGateway, FoundationPr
 	readonly providerClass = "gateway" as const;
 
 	private readonly gateway: ToolGateway;
-	private readonly routes: readonly ToolGatewayRouteSnapshot[];
+	private readonly readRouteCatalog: () => readonly ToolGatewayRoute[];
 	private authorizer: ToolGatewayRequestAuthorizer | undefined;
 
 	constructor(options: FoundationToolGatewayAuthorityOptions) {
@@ -635,8 +673,12 @@ export class FoundationToolGatewayAuthority implements ToolGateway, FoundationPr
 		this.providerId = options.gateway.providerId;
 		this.authorizer = options.authorizer;
 		const catalog = options.gateway as ToolGateway & Partial<ToolGatewayRouteCatalog>;
-		const routes = options.routeCatalog ?? (typeof catalog.getRouteCatalog === "function" ? catalog.getRouteCatalog() : []);
-		this.routes = freezeRouteSnapshots(routes);
+		const configuredRoutes = options.routeCatalog;
+		this.readRouteCatalog = configuredRoutes === undefined
+			? typeof catalog.getRouteCatalog === "function"
+				? () => catalog.getRouteCatalog!()
+				: () => []
+			: () => configuredRoutes;
 	}
 
 	setAuthorizer(authorizer: ToolGatewayRequestAuthorizer | undefined): void {
@@ -644,7 +686,12 @@ export class FoundationToolGatewayAuthority implements ToolGateway, FoundationPr
 	}
 
 	getRouteCatalog(): readonly ToolGatewayRouteSnapshot[] {
-		return this.routes;
+		try {
+			const routes = this.readRouteCatalog();
+			return Array.isArray(routes) ? freezeRouteSnapshots(routes) : Object.freeze([]);
+		} catch {
+			return Object.freeze([]);
+		}
 	}
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
@@ -658,7 +705,7 @@ export class FoundationToolGatewayAuthority implements ToolGateway, FoundationPr
 		const checked = validateToolGatewayRequest(request);
 		if (!checked.ok) return checked;
 		const value = checked.value;
-		const routeResult = lookupToolGatewayRoute(this.routes, value.toolName, value.namespace);
+		const routeResult = lookupToolGatewayRouteSafely(this.getRouteCatalog(), value.toolName, value.namespace);
 		if (!routeResult.ok) return routeResult;
 		const route = routeResult.value;
 		if (value.context.providerId !== undefined && value.context.providerId !== route.providerId) {
@@ -681,6 +728,10 @@ export class FoundationToolGatewayAuthority implements ToolGateway, FoundationPr
 			);
 		}
 		if (!authorized.ok) return authorized;
+		const currentRoute = lookupToolGatewayRouteSafely(this.getRouteCatalog(), value.toolName, value.namespace);
+		if (!currentRoute.ok || !sameToolGatewayRoute(route, currentRoute.value)) {
+			return Result.err(new FoundationError("external_tool_route_denied", "External connector Tool Gateway route changed during authorization"));
+		}
 		return this.gateway.execute({ ...value, context: { ...value.context, providerId: route.providerId } }, options);
 	}
 

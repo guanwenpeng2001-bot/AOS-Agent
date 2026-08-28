@@ -24,6 +24,10 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import {
+	bindCanonicalExternalToolGatewayPolicy,
+	createCanonicalExternalToolGateway,
+} from "../src/core/external-tool-gateway-authority.ts";
 import type { CapabilityBinding } from "../src/core/capability-registry.ts";
 import type { ExternalAgentConnector } from "../src/index.ts";
 import {
@@ -588,6 +592,90 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 
 		expect(result).toMatchObject({ ok: false, error: { code: "external_tool_route_denied" } });
 		expect(providerEffects).toBe(0);
+	});
+
+	it("refreshes the production gateway authority after a valid same-key provider reload", async () => {
+		let providerEffects = 0;
+		const providerId = "builtin.canonical-tools";
+		const provider = (revision: number, operation: ToolGatewayRoute["operation"]): ToolGatewayProvider =>
+			createLocalToolGatewayProvider({
+				providerId,
+				revision,
+				routes: [{
+					kind: "local",
+					namespace: "mcp-server",
+					toolName: "read",
+					providerId,
+					revision,
+					operation,
+				}],
+				invoke: async (value) => {
+					providerEffects += 1;
+					return Result.ok({
+						schemaVersion: 1,
+						toolCallId: value.toolCallId,
+						toolName: value.toolName,
+						ok: true,
+						sideEffectState: "none",
+					});
+				},
+			});
+		const foundationGateway = createFoundationToolGateway({
+			gatewayId: "zeta-retained-foundation-gateway",
+			providers: [provider(1, { resource: "filesystem.read", effects: ["read"] })],
+		});
+		const canonicalGateway = createCanonicalExternalToolGateway(foundationGateway);
+		const authorizedRoutes: ToolGatewayRoute[] = [];
+		bindCanonicalExternalToolGatewayPolicy(canonicalGateway, {
+			authorizeExternalToolGatewayRequest: async (_request, route) => {
+				authorizedRoutes.push(route);
+				if (route.operation.resource !== "filesystem.read") throw new Error("write route is outside the read scope");
+			},
+		});
+
+		const reloaded = foundationGateway.reload({
+			providers: [provider(2, { resource: "filesystem.write", effects: ["write"] })],
+		});
+		expect(reloaded).toMatchObject({ ok: true });
+		expect(canonicalGateway.getRouteCatalog()).toMatchObject([{
+			kind: "local",
+			namespace: "mcp-server",
+			toolName: "read",
+			providerId,
+			revision: 2,
+			operation: { resource: "filesystem.write", effects: ["write"] },
+		}]);
+
+		const gatewayRequest: ToolGatewayRequest = {
+			schemaVersion: 1,
+			toolCallId: "canonical-reload-call",
+			toolName: "read",
+			namespace: "mcp-server",
+			originalArguments: { path: "file.txt" },
+			context: {
+				schemaVersion: 1,
+				bindingId: "canonical-reload-binding",
+				bindingEpochId: "canonical-reload-epoch",
+				taskId: "canonical-reload-task",
+			},
+		};
+		const execution = await canonicalGateway.execute({
+			...gatewayRequest,
+			context: { ...gatewayRequest.context, providerId },
+		});
+
+		expect(execution).toMatchObject({ ok: false, error: { code: "external_tool_route_denied" } });
+		expect(authorizedRoutes).toHaveLength(1);
+		expect(authorizedRoutes[0]).toMatchObject({
+			kind: "local",
+			namespace: "mcp-server",
+			toolName: "read",
+			providerId,
+			revision: 2,
+			operation: { resource: "filesystem.write", effects: ["write"] },
+		});
+		expect(providerEffects).toBe(0);
+		await canonicalGateway.dispose();
 	});
 
 	it("projects unsupported Connector resume for a terminal source without a second vendor effect", async () => {
