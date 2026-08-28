@@ -31,6 +31,7 @@ import {
 	type RoleRevision,
 	type ScopedModelGateway,
 	type TaskEnvelope,
+	type TaskExecutorProvider,
 	type ToolGateway,
 } from "@aos-agent/agent-core";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
@@ -61,6 +62,7 @@ import {
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
 import type { PlanSubagentSpawnInputV1 } from "../src/core/subagent-supervisor.ts";
+import type { SchedulerNativeAgentResolveInputV1 } from "../src/core/scheduler-dispatch.ts";
 import type {
 	ChildWorktreeIdentityV1,
 	OwnedWorktreeStateV1,
@@ -1031,6 +1033,165 @@ describe("trusted Subagent product composition", () => {
 		expect(result).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
 		expect(adapter.calls).toContain("quarantine:child-faux:child-attempt");
 		await fixture.close();
+	});
+
+	it("bridges an exact Scheduler agent provider through native spawn, lookup, and rebind", async () => {
+		const fixture = await correctionHarness();
+		try {
+			const provider = fixture.composition
+				.schedulerAgentProviders()
+				.find((candidate) => candidate.providerId === "native.in_process");
+			if (provider === undefined) throw new Error("Expected Scheduler Native Agent provider");
+			const descriptor = fixture.composition
+				.providerDescriptors()
+				.find((candidate) => candidate.descriptor.providerId === provider.providerId);
+			if (descriptor === undefined) throw new Error("Expected Scheduler Native Agent descriptor");
+			const sourcePlan = await planInput(
+				fixture.ledgerForLane("parent-lane"),
+				role(),
+				profile(),
+				"scheduler",
+				descriptor,
+			);
+			const resolveInput: SchedulerNativeAgentResolveInputV1 = {
+				schemaVersion: 1,
+				provider,
+				entry: {
+					schemaVersion: 1,
+					queueEntryId: "queue-native-scheduler",
+					sessionId: "session-composition",
+					taskId: sourcePlan.request.taskEnvelope.taskId,
+					goalId: sourcePlan.request.taskEnvelope.goalId,
+					state: "claimed",
+					priority: 1,
+					attemptsUsed: 0,
+					enqueuedAt: NOW,
+					claimId: "claim-native-scheduler",
+					revision: 1,
+				},
+				claim: {
+					schemaVersion: 1,
+					claimId: "claim-native-scheduler",
+					queueEntryId: "queue-native-scheduler",
+					taskId: sourcePlan.request.taskEnvelope.taskId,
+					ownerId: "scheduler-owner",
+					fencingToken: "scheduler-fence",
+					acquiredAt: NOW,
+					expiresAt: "2026-01-01T01:00:00.000Z",
+					revision: 0,
+				},
+				binding: sourcePlan.childBinding,
+				sessionId: "session-composition",
+				laneId: "scheduler-child-lane",
+				dispatchId: "dispatch-native-scheduler",
+				attemptId: "attempt-native-scheduler",
+				bindingEpochId: "epoch-native-scheduler",
+				agentInstanceId: "agent-native-scheduler",
+				spawnId: sourcePlan.request.spawnId,
+				activatedByCommandId: `command:${sourcePlan.request.spawnId}`,
+				now: NOW,
+			};
+			let plannerCalls = 0;
+			const planner = {
+				schemaVersion: 1 as const,
+				plan: async (input: SchedulerNativeAgentResolveInputV1, current: SubagentProviderDescriptorV1) => {
+					plannerCalls += 1;
+					return Result.ok({
+						...sourcePlan,
+						childLaneId: input.laneId,
+						childBinding: input.binding,
+						providerDescriptor: current,
+						childAgentInstanceId: input.agentInstanceId,
+						dispatchId: input.dispatchId,
+						attemptId: input.attemptId,
+						bindingEpochId: input.bindingEpochId,
+						activatedByCommandId: input.activatedByCommandId,
+					});
+				},
+			};
+			const bridge = fixture.composition.schedulerNativeAgentBridge(planner);
+			const resolved = await bridge.resolve(resolveInput);
+			expect(resolved.ok).toBe(true);
+			if (!resolved.ok) return;
+			expect(plannerCalls).toBe(1);
+			expect(resolved.value).toMatchObject({
+				providerId: provider.providerId,
+				agentInstance: { agentInstanceId: resolveInput.agentInstanceId },
+				initialBindingEpoch: {
+					bindingEpochId: resolveInput.bindingEpochId,
+					agentInstanceId: resolveInput.agentInstanceId,
+				},
+				correlation: {
+					providerId: provider.providerId,
+					agentInstanceId: resolveInput.agentInstanceId,
+					bindingEpochId: resolveInput.bindingEpochId,
+				},
+			});
+			const revalidated = await bridge.revalidate({
+				schemaVersion: 1,
+				provider,
+				binding: sourcePlan.childBinding,
+				resolution: resolved.value,
+			});
+			if (!revalidated.ok) throw revalidated.error;
+			const attempt = await provider.createAttempt(
+				resolved.value.dispatch,
+				sourcePlan.childBinding,
+				{
+					initialBindingEpoch: resolved.value.initialBindingEpoch,
+					agentInstance: resolved.value.agentInstance,
+					correlation: resolved.value.correlation,
+				},
+			);
+			if (!attempt.ok) throw attempt.error;
+			const receipt = await provider.runAttempt(attempt.value, { correlation: resolved.value.correlation });
+			expect(receipt).toMatchObject({
+				ok: true,
+				value: {
+					attemptId: resolveInput.attemptId,
+					agentInstanceId: resolveInput.agentInstanceId,
+					bindingEpochIds: [resolveInput.bindingEpochId],
+					provenance: { producerKind: "agent_executor" },
+				},
+			});
+
+			expect((await fixture.composition.reload()).ok).toBe(true);
+			const rebound = fixture.composition.schedulerNativeAgentBridge(planner);
+			const replayed = await rebound.resolve(resolveInput);
+			expect(replayed).toEqual(resolved);
+			expect(plannerCalls).toBe(1);
+			expect(
+				await rebound.revalidate({
+					schemaVersion: 1,
+					provider,
+					binding: sourcePlan.childBinding,
+					resolution: resolved.value,
+				}),
+			).toEqual(Result.ok(undefined));
+
+			const staleEpoch = {
+				...resolved.value,
+				initialBindingEpoch: {
+					...resolved.value.initialBindingEpoch,
+					bindingEpochId: "epoch-native-stale",
+				},
+			};
+			expect(
+				await bridge.revalidate({
+					schemaVersion: 1,
+					provider,
+					binding: sourcePlan.childBinding,
+					resolution: staleEpoch,
+				}),
+			).toMatchObject({ ok: false, error: { code: "subagent_conflict" } });
+			const spoof = new Proxy(provider, {}) as TaskExecutorProvider;
+			expect(await bridge.resolve({ ...resolveInput, provider: spoof })).toMatchObject({
+				ok: false,
+				error: { code: "subagent_provider_unavailable" },
+			});
+		} finally {
+			await fixture.close();
+		}
 	});
 
 	it("is default-off and constructs only the fixed in-process/fork registry after explicit Host opt-in", async () => {

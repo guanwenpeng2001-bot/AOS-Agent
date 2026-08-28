@@ -1,5 +1,9 @@
 import { FoundationError } from "../../../agent/src/harness/foundation/errors.ts";
-import type { ExecutionProviderDescriptor } from "../../../agent/src/harness/foundation/providers.ts";
+import type {
+	ChildAgentProvider,
+	ExecutionProviderDescriptor,
+	TaskExecutorProvider,
+} from "../../../agent/src/harness/foundation/providers.ts";
 import { SUBAGENT_PROVIDER_KINDS, type SubagentProviderKindV1 } from "./subagent.ts";
 
 export type { SubagentProviderKindV1 } from "./subagent.ts";
@@ -29,8 +33,16 @@ export interface SubagentCapabilityRequirementsV1 {
 	readonly maxDepthRequired?: number;
 }
 
+export type ExecutableSubagentProviderV1 = ChildAgentProvider & TaskExecutorProvider;
+
+interface BoundExecutableSubagentProviderV1 {
+	readonly revision: number;
+	readonly provider: ExecutableSubagentProviderV1;
+}
+
 export class SubagentProviderRegistryV1 {
 	private readonly descriptors = new Map<string, SubagentProviderDescriptorV1[]>();
+	private readonly executableProviders = new Map<string, BoundExecutableSubagentProviderV1>();
 
 	register(descriptor: SubagentProviderDescriptorV1): void {
 		if (
@@ -152,6 +164,61 @@ export class SubagentProviderRegistryV1 {
 			}),
 		);
 		this.descriptors.set(descriptor.descriptor.providerId, list);
+	}
+
+	/** Bind one implemented descriptor revision to its exact trusted runtime object. */
+	bindExecutable(provider: ExecutableSubagentProviderV1, revision?: number): void {
+		const descriptor = this.get(provider.providerId, revision);
+		if (
+			!descriptor.implementedInThisLine ||
+			descriptor.descriptor.providerClass !== "agent" ||
+			provider.providerClass !== "agent" ||
+			provider.providerId !== descriptor.descriptor.providerId ||
+			typeof provider.spawn !== "function" ||
+			typeof provider.resume !== "function" ||
+			typeof provider.cancel !== "function" ||
+			typeof provider.createAttempt !== "function" ||
+			typeof provider.runAttempt !== "function" ||
+			typeof provider.cancelAttempt !== "function"
+		) {
+			throw new FoundationError(
+				"subagent_provider_unavailable",
+				`Provider ${provider.providerId} is not an executable Native Subagent runtime.`,
+			);
+		}
+		const existing = this.executableProviders.get(provider.providerId);
+		if (
+			existing !== undefined &&
+			(descriptor.revision < existing.revision ||
+				(descriptor.revision === existing.revision && existing.provider !== provider))
+		) {
+			throw new FoundationError(
+				"subagent_conflict",
+				`Provider ${provider.providerId} is already bound to a different runtime identity.`,
+			);
+		}
+		this.executableProviders.set(
+			provider.providerId,
+			Object.freeze({ revision: descriptor.revision, provider }),
+		);
+	}
+
+	/** Resolve only the exact runtime object bound to the current descriptor revision. */
+	resolveExecutable(provider: TaskExecutorProvider): ExecutableSubagentProviderV1 {
+		const descriptor = this.resolve(provider.providerId);
+		const executable = this.executableProviders.get(provider.providerId);
+		if (
+			executable === undefined ||
+			executable.revision !== descriptor.revision ||
+			executable.provider !== provider ||
+			provider.providerClass !== "agent"
+		) {
+			throw new FoundationError(
+				"subagent_provider_unavailable",
+				`Provider ${provider.providerId} is not the trusted current Native Subagent runtime.`,
+			);
+		}
+		return executable.provider;
 	}
 
 	get(providerId: string, revision?: number): SubagentProviderDescriptorV1 {

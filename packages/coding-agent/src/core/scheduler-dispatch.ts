@@ -17,6 +17,7 @@
  * Task Graph, write TaskResult/RunReceipt, or register a production Scheduler.
  */
 import {
+	type AgentInstance,
 	type AgentBinding,
 	type Attempt,
 	type AttemptReceipt,
@@ -40,9 +41,11 @@ import {
 	type Result as ResultValue,
 	type Session,
 	type TaskExecutorProvider,
+	validateAgentInstance,
 	validateAttempt,
 	validateBindingEpoch,
 	validateDispatch,
+	validateExecutionCorrelation,
 	validateImmutableAgentBinding,
 } from "@aos-agent/agent-core";
 import {
@@ -125,6 +128,8 @@ export interface SchedulerDispatchControllerOptionsV1 {
 	readonly now?: () => string;
 	readonly requiredCapabilities?: readonly FoundationProviderCapability[];
 	readonly workspaceDigest?: Fingerprint;
+	/** Explicit trusted Native Subagent bridge. Omission keeps agent providers unavailable. */
+	readonly nativeAgentBridge?: SchedulerNativeAgentBridgeV1;
 }
 
 export interface SchedulerDispatchRequestV1 {
@@ -163,6 +168,7 @@ export interface SchedulerDispatchAssemblyInputV1 {
 	readonly sessionId: string;
 	readonly laneId: string;
 	readonly now: string;
+	readonly nativeAgent?: SchedulerNativeAgentResolutionV1;
 }
 
 export interface SchedulerDispatchAssemblyV1 {
@@ -172,6 +178,51 @@ export interface SchedulerDispatchAssemblyV1 {
 	readonly dispatchId: string;
 	readonly attemptId: string;
 	readonly bindingEpochId: string;
+	readonly agentInstance?: AgentInstance;
+	readonly agentInstanceId?: string;
+}
+
+export interface SchedulerNativeAgentResolveInputV1 {
+	readonly schemaVersion: 1;
+	readonly provider: TaskExecutorProvider;
+	readonly entry: SchedulerQueueEntryV1;
+	readonly claim: SchedulerClaimV1;
+	readonly binding: AgentBinding;
+	readonly sessionId: string;
+	readonly laneId: string;
+	readonly dispatchId: string;
+	readonly attemptId: string;
+	readonly bindingEpochId: string;
+	readonly agentInstanceId: string;
+	readonly spawnId: string;
+	readonly activatedByCommandId: string;
+	readonly now: string;
+	readonly signal?: AbortSignal;
+}
+
+export interface SchedulerNativeAgentResolutionV1 {
+	readonly schemaVersion: 1;
+	readonly providerId: string;
+	readonly dispatch: Dispatch;
+	readonly agentInstance: AgentInstance;
+	readonly initialBindingEpoch: BindingEpoch;
+	readonly correlation: ExecutionCorrelation;
+}
+
+export interface SchedulerNativeAgentRevalidateInputV1 {
+	readonly schemaVersion: 1;
+	readonly provider: TaskExecutorProvider;
+	readonly binding: AgentBinding;
+	readonly resolution: SchedulerNativeAgentResolutionV1;
+	readonly signal?: AbortSignal;
+}
+
+/** Trusted product bridge from Scheduler selection to the Native Subagent owner. */
+export interface SchedulerNativeAgentBridgeV1 {
+	resolve(
+		input: SchedulerNativeAgentResolveInputV1,
+	): Promise<ResultValue<SchedulerNativeAgentResolutionV1, FoundationError>>;
+	revalidate(input: SchedulerNativeAgentRevalidateInputV1): Promise<ResultValue<void, FoundationError>>;
 }
 
 export interface SchedulerDispatchOutcomeV1 {
@@ -229,6 +280,7 @@ interface SchedulerDurableAttemptV1 {
 	readonly binding: AgentBinding;
 	readonly initialBindingEpoch: BindingEpoch;
 	readonly correlation: ExecutionCorrelation;
+	readonly agentInstance?: AgentInstance;
 }
 
 interface SchedulerExecutionSignalV1 {
@@ -277,14 +329,19 @@ export function schedulerDispatchIdentityV1(
 	readonly dispatchId: string;
 	readonly attemptId: string;
 	readonly bindingEpochId: string;
+	readonly agentInstanceId: string;
+	readonly spawnId: string;
 	readonly commandId: string;
 } {
 	const digest = fingerprintFoundationValue({ schemaVersion: 1, queueEntryId, claimId }).value;
+	const spawnId = `spawn_${digest}`;
 	return {
 		dispatchId: `dispatch_${digest}`,
 		attemptId: `attempt_${digest}`,
 		bindingEpochId: `epoch_${digest}`,
-		commandId: `command_${digest}`,
+		agentInstanceId: `agent_${digest}`,
+		spawnId,
+		commandId: `command:${spawnId}`,
 	};
 }
 
@@ -338,10 +395,84 @@ export function assembleSchedulerDispatchV1(
 	const checkedDispatch = validateDispatch(dispatchCandidate);
 	if (!checkedDispatch.ok) return checkedDispatch;
 	if (input.providerClass === "agent") {
+		const nativeAgent = input.nativeAgent;
+		if (nativeAgent === undefined) {
+			return Result.err(
+				new FoundationError(
+					"agent_instance_required_for_agent_provider",
+					"Scheduler agent dispatch requires the trusted Native Subagent bridge",
+					{ details: { providerId: input.providerId } },
+				),
+			);
+		}
+		const nativeDispatch = validateDispatch(nativeAgent.dispatch);
+		const nativeInstance = validateAgentInstance(nativeAgent.agentInstance);
+		const nativeEpoch = validateBindingEpoch(nativeAgent.initialBindingEpoch);
+		const nativeCorrelation = validateExecutionCorrelation(nativeAgent.correlation);
+		if (!nativeDispatch.ok || !nativeInstance.ok || !nativeEpoch.ok || !nativeCorrelation.ok) {
+			return Result.err(
+				new FoundationError("invalid_correlation", "Native Scheduler bridge returned invalid Foundation identity"),
+			);
+		}
+		if (
+			nativeAgent.schemaVersion !== 1 ||
+			nativeAgent.providerId !== input.providerId ||
+			nativeDispatch.value.dispatchId !== ids.dispatchId ||
+			nativeDispatch.value.taskId !== entry.taskId ||
+			nativeDispatch.value.bindingId !== binding.bindingId ||
+			nativeDispatch.value.taskExecutorProviderId !== input.providerId ||
+			nativeDispatch.value.status !== "pending" ||
+			nativeDispatch.value.deadlineAt !== entry.deadlineAt ||
+			nativeInstance.value.agentInstanceId !== ids.agentInstanceId ||
+			nativeInstance.value.providerId !== input.providerId ||
+			nativeInstance.value.taskId !== entry.taskId ||
+			nativeInstance.value.roleRevision.id !== binding.roleRevision.id ||
+			nativeInstance.value.roleRevision.revision !== binding.roleRevision.revision ||
+			nativeEpoch.value.bindingEpochId !== ids.bindingEpochId ||
+			nativeEpoch.value.taskId !== entry.taskId ||
+			nativeEpoch.value.attemptId !== ids.attemptId ||
+			nativeEpoch.value.agentInstanceId !== ids.agentInstanceId ||
+			nativeEpoch.value.bindingId !== binding.bindingId ||
+			nativeEpoch.value.ordinal !== 0 ||
+			nativeEpoch.value.activationReason !== "attempt_started" ||
+			nativeEpoch.value.activatedByCommandId !== ids.commandId ||
+			nativeCorrelation.value.sessionId !== input.sessionId ||
+			nativeCorrelation.value.laneId !== input.laneId ||
+			nativeCorrelation.value.taskId !== entry.taskId ||
+			nativeCorrelation.value.dispatchId !== ids.dispatchId ||
+			nativeCorrelation.value.attemptId !== ids.attemptId ||
+			nativeCorrelation.value.bindingId !== binding.bindingId ||
+			nativeCorrelation.value.bindingEpochId !== ids.bindingEpochId ||
+			nativeCorrelation.value.agentInstanceId !== ids.agentInstanceId ||
+			nativeCorrelation.value.providerId !== input.providerId ||
+			nativeCorrelation.value.parentId !== nativeInstance.value.lineage.parentId ||
+			JSON.stringify(nativeCorrelation.value.ancestorIds ?? []) !==
+				JSON.stringify(nativeInstance.value.lineage.ancestorIds ?? [])
+		) {
+			return Result.err(
+				new FoundationError(
+					"invalid_correlation",
+					"Native Scheduler bridge identity does not match the selected provider and deterministic dispatch",
+					{ details: { providerId: input.providerId, dispatchId: ids.dispatchId } },
+				),
+			);
+		}
+		return Result.ok({
+			dispatch: nativeDispatch.value,
+			initialBindingEpoch: nativeEpoch.value,
+			correlation: nativeCorrelation.value,
+			dispatchId: ids.dispatchId,
+			attemptId: ids.attemptId,
+			bindingEpochId: ids.bindingEpochId,
+			agentInstance: nativeInstance.value,
+			agentInstanceId: ids.agentInstanceId,
+		});
+	}
+	if (input.nativeAgent !== undefined) {
 		return Result.err(
 			new FoundationError(
-				"agent_instance_required_for_agent_provider",
-				"Scheduler dispatch does not assemble an AgentInstance for an agent provider",
+				"agent_instance_forbidden_for_provider",
+				"Non-agent Scheduler dispatch cannot carry a Native Agent resolution",
 				{ details: { providerId: input.providerId } },
 			),
 		);
@@ -580,6 +711,7 @@ export class SchedulerDispatchController {
 	private readonly nowFn: () => string;
 	private readonly requiredCapabilities: readonly FoundationProviderCapability[];
 	private readonly workspaceDigest: Fingerprint | undefined;
+	private readonly nativeAgentBridge: SchedulerNativeAgentBridgeV1 | undefined;
 	private readonly runsRequiringCancellation = new Set<RunId>();
 	private readonly runDispatches = new Map<RunId, Set<SchedulerRunDispatchCancellationV1>>();
 	private readonly queueRunDispatches = new Map<string, Set<SchedulerRunDispatchCancellationV1>>();
@@ -616,6 +748,7 @@ export class SchedulerDispatchController {
 		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.requiredCapabilities = options.requiredCapabilities ?? [inProcessCapability()];
 		this.workspaceDigest = options.workspaceDigest;
+		this.nativeAgentBridge = options.nativeAgentBridge;
 	}
 
 	runLifecycleHooks(): RunSchedulerLifecycleHooks {
@@ -763,6 +896,7 @@ export class SchedulerDispatchController {
 			binding: loaded.value.binding,
 			initialBindingEpoch: loaded.value.initialBindingEpoch,
 			correlation: loaded.value.correlation,
+			...(loaded.value.agentInstance === undefined ? {} : { agentInstance: loaded.value.agentInstance }),
 		});
 		if (!cancelled.ok) return cancelled;
 		const association = this.attemptRunDispatches.get(attemptId);
@@ -950,6 +1084,50 @@ export class SchedulerDispatchController {
 		) {
 			return rejectSelected(fail("scheduler_executor_unavailable"));
 		}
+		const live = await this.liveDispatch(entry.queueEntryId);
+		if (!live.ok) return rejectSelected(live);
+		if (
+			live.value !== undefined &&
+			(live.value.dispatchId !== identity.dispatchId ||
+				live.value.providerId !== selected.value.provider.providerId ||
+				live.value.providerClass !== providerClass ||
+				(live.value.attemptId !== undefined && live.value.attemptId !== identity.attemptId))
+		) {
+			return rejectSelected(fail("scheduler_dispatch_invalid"));
+		}
+		let nativeAgent: SchedulerNativeAgentResolutionV1 | undefined;
+		if (providerClass === "agent") {
+			if (this.nativeAgentBridge === undefined) {
+				return rejectSelected(
+					Result.err(
+						new FoundationError(
+							"agent_instance_required_for_agent_provider",
+							"Scheduler selected an agent provider without a trusted Native Subagent bridge",
+							{ details: { providerId: selected.value.provider.providerId } },
+						),
+					),
+				);
+			}
+			const resolved = await this.nativeAgentBridge.resolve({
+				schemaVersion: 1,
+				provider: selected.value.provider,
+				entry,
+				claim: fenced.value,
+				binding: request.binding,
+				sessionId: this.sessionId,
+				laneId: this.laneId,
+				dispatchId: identity.dispatchId,
+				attemptId: identity.attemptId,
+				bindingEpochId: identity.bindingEpochId,
+				agentInstanceId: identity.agentInstanceId,
+				spawnId: identity.spawnId,
+				activatedByCommandId: identity.commandId,
+				now: nowIso,
+				...(request.signal === undefined ? {} : { signal: request.signal }),
+			});
+			if (!resolved.ok) return rejectSelected(resolved);
+			nativeAgent = resolved.value;
+		}
 		const assembly = assembleSchedulerDispatchV1({
 			entry,
 			claim: fenced.value,
@@ -959,20 +1137,9 @@ export class SchedulerDispatchController {
 			sessionId: this.sessionId,
 			laneId: this.laneId,
 			now: nowIso,
+			...(nativeAgent === undefined ? {} : { nativeAgent }),
 		});
 		if (!assembly.ok) return rejectSelected(assembly);
-		const live = await this.liveDispatch(entry.queueEntryId);
-		if (!live.ok) return rejectSelected(live);
-		if (live.value !== undefined) {
-			if (
-				live.value.dispatchId !== assembly.value.dispatchId ||
-				live.value.providerId !== selected.value.provider.providerId ||
-				live.value.providerClass !== providerClass ||
-				(live.value.attemptId !== undefined && live.value.attemptId !== assembly.value.attemptId)
-			) {
-				return rejectSelected(fail("scheduler_dispatch_invalid"));
-			}
-		}
 		return Result.ok({
 			entry,
 			claim: fenced.value,
@@ -1023,6 +1190,9 @@ export class SchedulerDispatchController {
 				binding: request.binding,
 				initialBindingEpoch: prepared.assembly.initialBindingEpoch,
 				correlation: prepared.assembly.correlation,
+				...(prepared.assembly.agentInstance === undefined
+					? {}
+					: { agentInstance: prepared.assembly.agentInstance }),
 				beforeRunAttempt: async (attempt) => {
 					const persisted = await this.persistInFlight(prepared, attempt);
 					markResolved = true;
@@ -1039,6 +1209,10 @@ export class SchedulerDispatchController {
 							if (!cancelled.ok) return cancelled;
 						}
 					}
+					if (persisted.ok && prepared.selection.providerClass === "agent") {
+						const revalidated = await this.revalidateNativeAgent(prepared, request.binding, scheduled.signal);
+						if (!revalidated.ok) return revalidated;
+					}
 					return persisted;
 				},
 				...(scheduled.signal === undefined ? {} : { signal: scheduled.signal }),
@@ -1052,14 +1226,11 @@ export class SchedulerDispatchController {
 		const cancelled = pendingCancellation === undefined ? undefined : await pendingCancellation;
 		if (cancelled !== undefined && !cancelled.ok) return cancelled;
 		if (!executed.ok) return executed;
-		if (
-			executed.value.attempt.agentInstanceId !== undefined ||
-			executed.value.receipt.agentInstanceId !== undefined
-		) {
+		if (!this.executionAgentIdentityMatches(prepared, executed.value.attempt, executed.value.receipt)) {
 			return Result.err(
 				new FoundationError(
-					"agent_instance_forbidden_for_provider",
-					"Non-agent provider dispatch cannot carry an AgentInstance",
+					"invalid_correlation",
+					"Provider execution AgentInstance does not match its Scheduler dispatch",
 					{
 						details: { attemptId: executed.value.attempt.attemptId },
 					},
@@ -1100,12 +1271,19 @@ export class SchedulerDispatchController {
 		if (scheduled.signal?.aborted === true) requestCancellation();
 		let resumed: ResultValue<DispatchStartResult, FoundationError>;
 		try {
+			if (prepared.selection.providerClass === "agent") {
+				const revalidated = await this.revalidateNativeAgent(prepared, request.binding, scheduled.signal);
+				if (!revalidated.ok) return revalidated;
+			}
 			resumed = await this.settlement.resumeDispatch({
 				provider: prepared.selection.provider,
 				dispatch: prepared.assembly.dispatch,
 				binding: request.binding,
 				initialBindingEpoch: prepared.assembly.initialBindingEpoch,
 				correlation: prepared.assembly.correlation,
+				...(prepared.assembly.agentInstance === undefined
+					? {}
+					: { agentInstance: prepared.assembly.agentInstance }),
 				...(scheduled.signal === undefined ? {} : { signal: scheduled.signal }),
 			});
 		} finally {
@@ -1117,14 +1295,11 @@ export class SchedulerDispatchController {
 		if (cancelled !== undefined && !cancelled.ok) return cancelled;
 		if (!resumed.ok) return resumed;
 		if (resumed.value.receipt !== undefined) {
-			if (
-				resumed.value.attempt.agentInstanceId !== undefined ||
-				resumed.value.receipt.agentInstanceId !== undefined
-			) {
+			if (!this.executionAgentIdentityMatches(prepared, resumed.value.attempt, resumed.value.receipt)) {
 				return Result.err(
 					new FoundationError(
-						"agent_instance_forbidden_for_provider",
-						"Non-agent provider dispatch cannot carry an AgentInstance",
+						"invalid_correlation",
+						"Provider resume AgentInstance does not match its Scheduler dispatch",
 						{ details: { attemptId: resumed.value.attempt.attemptId } },
 					),
 				);
@@ -1147,7 +1322,53 @@ export class SchedulerDispatchController {
 			binding,
 			initialBindingEpoch: prepared.assembly.initialBindingEpoch,
 			correlation: prepared.assembly.correlation,
+			...(prepared.assembly.agentInstance === undefined
+				? {}
+				: { agentInstance: prepared.assembly.agentInstance }),
 		});
+	}
+
+	private async revalidateNativeAgent(
+		prepared: SchedulerPreparedDispatchV1,
+		binding: AgentBinding,
+		signal: AbortSignal | undefined,
+	): Promise<ResultValue<void, FoundationError>> {
+		const bridge = this.nativeAgentBridge;
+		const agentInstance = prepared.assembly.agentInstance;
+		if (bridge === undefined || agentInstance === undefined || prepared.selection.providerClass !== "agent") {
+			return Result.err(
+				new FoundationError(
+					"agent_instance_required_for_agent_provider",
+					"Scheduler agent execution requires its captured Native Subagent bridge identity",
+					{ details: { providerId: prepared.selection.providerId } },
+			),
+			);
+		}
+		return bridge.revalidate({
+			schemaVersion: 1,
+			provider: prepared.selection.provider,
+			binding,
+			resolution: {
+				schemaVersion: 1,
+				providerId: prepared.selection.providerId,
+				dispatch: prepared.assembly.dispatch,
+				agentInstance,
+				initialBindingEpoch: prepared.assembly.initialBindingEpoch,
+				correlation: prepared.assembly.correlation,
+			},
+			...(signal === undefined ? {} : { signal }),
+		});
+	}
+
+	private executionAgentIdentityMatches(
+		prepared: SchedulerPreparedDispatchV1,
+		attempt: Attempt,
+		receipt: AttemptReceipt,
+	): boolean {
+		const expected = prepared.assembly.agentInstanceId;
+		return prepared.selection.providerClass === "agent"
+			? expected !== undefined && attempt.agentInstanceId === expected && receipt.agentInstanceId === expected
+			: expected === undefined && attempt.agentInstanceId === undefined && receipt.agentInstanceId === undefined;
 	}
 
 	private async persistInFlight(
@@ -1156,11 +1377,15 @@ export class SchedulerDispatchController {
 	): Promise<ResultValue<void, FoundationError>> {
 		const checked = validateAttempt(attempt);
 		if (!checked.ok) return checked;
-		if (checked.value.agentInstanceId !== undefined) {
+		if (
+			(prepared.selection.providerClass === "agent" &&
+				checked.value.agentInstanceId !== prepared.assembly.agentInstanceId) ||
+			(prepared.selection.providerClass !== "agent" && checked.value.agentInstanceId !== undefined)
+		) {
 			return Result.err(
 				new FoundationError(
-					"agent_instance_forbidden_for_provider",
-					"Non-agent Attempt cannot carry an AgentInstance",
+					"invalid_correlation",
+					"Scheduler Attempt AgentInstance does not match its selected provider",
 					{
 						details: { attemptId: checked.value.attemptId },
 					},
@@ -1286,14 +1511,46 @@ export class SchedulerDispatchController {
 		) {
 			return fail("scheduler_dispatch_invalid");
 		}
-		if (checkedAttempt.value.agentInstanceId !== undefined) {
+		let agentInstance: AgentInstance | undefined;
+		if (queueDispatch.providerClass === "agent") {
+			if (checkedAttempt.value.agentInstanceId === undefined) {
+				return Result.err(
+					new FoundationError(
+						"agent_instance_required_for_agent_provider",
+						"Durable Scheduler agent Attempt is missing its AgentInstance",
+						{ details: { attemptId: checkedAttempt.value.attemptId } },
+					),
+				);
+			}
+			const agentRecord = await this.session.getFoundationObject(
+				"agent_instance",
+				checkedAttempt.value.agentInstanceId,
+			);
+			if (agentRecord === undefined || agentRecord.kind !== "fact") {
+				return Result.err(
+					new FoundationError(
+						"agent_instance_required_for_agent_provider",
+						"Durable Scheduler agent Attempt cannot resolve its AgentInstance",
+						{ details: { attemptId: checkedAttempt.value.attemptId } },
+					),
+				);
+			}
+			const checkedAgent = validateAgentInstance(agentRecord.payload);
+			if (!checkedAgent.ok) return checkedAgent;
+			if (
+				checkedAgent.value.agentInstanceId !== checkedAttempt.value.agentInstanceId ||
+				checkedAgent.value.providerId !== checkedAttempt.value.providerId ||
+				checkedAgent.value.taskId !== checkedAttempt.value.taskId
+			) {
+				return fail("scheduler_dispatch_invalid");
+			}
+			agentInstance = checkedAgent.value;
+		} else if (checkedAttempt.value.agentInstanceId !== undefined) {
 			return Result.err(
 				new FoundationError(
 					"agent_instance_forbidden_for_provider",
 					"Non-agent Attempt cannot carry an AgentInstance",
-					{
-						details: { attemptId: checkedAttempt.value.attemptId },
-					},
+					{ details: { attemptId: checkedAttempt.value.attemptId } },
 				),
 			);
 		}
@@ -1338,7 +1595,7 @@ export class SchedulerDispatchController {
 			stored.value.bindingId !== checkedAttempt.value.bindingId ||
 			stored.value.ordinal !== 0 ||
 			stored.value.activationReason !== "attempt_started" ||
-			stored.value.agentInstanceId !== undefined
+			stored.value.agentInstanceId !== agentInstance?.agentInstanceId
 		) {
 			return fail("scheduler_dispatch_invalid");
 		}
@@ -1362,6 +1619,18 @@ export class SchedulerDispatchController {
 			bindingId: checkedAttempt.value.bindingId,
 			bindingEpochId: epochId,
 			providerId: checkedAttempt.value.providerId,
+			...(agentInstance === undefined
+				? {}
+				: {
+						agentInstanceId: agentInstance.agentInstanceId,
+						...(agentInstance.lineage.parentId === undefined
+							? {}
+							: { parentId: agentInstance.lineage.parentId }),
+						...(agentInstance.lineage.ancestorIds === undefined
+							? {}
+							: { ancestorIds: agentInstance.lineage.ancestorIds }),
+					}
+			),
 			...(queueEntry.goalId === undefined && checkedBinding.value.goalId === undefined
 				? {}
 				: { goalId: queueEntry.goalId ?? checkedBinding.value.goalId }),
@@ -1373,6 +1642,7 @@ export class SchedulerDispatchController {
 			binding: checkedBinding.value,
 			initialBindingEpoch: stored.value,
 			correlation,
+			...(agentInstance === undefined ? {} : { agentInstance }),
 		});
 	}
 }
