@@ -40,6 +40,7 @@ import {
 	createExternalConnectorRegistry,
 	type ExternalConnectorRegistration,
 } from "../src/index.ts";
+import type { ExternalConnectorActivationSource } from "../src/core/external-connector-readiness.ts";
 import {
 	executeExternalConnectorProductRun,
 	executePreparedExternalConnectorProductRun,
@@ -57,6 +58,7 @@ import type {
 	ExternalConnectorVendorDriver,
 } from "../src/core/vendor-drivers/types.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
+import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 const NOW = "2026-08-27T00:00:00.000Z";
 const PROVIDER_ID = "third-party.zeta-connector";
@@ -97,6 +99,37 @@ function selection(snapshot: ConnectorCapabilitySnapshot) {
 		providerId: snapshot.providerId,
 		revision: snapshot.revision,
 		capabilitySnapshotDigest: snapshot.digest,
+	};
+}
+
+function activationSource(
+	snapshot: ConnectorCapabilitySnapshot,
+	options: {
+		readonly configurationRevision?: number;
+		readonly configurationMarker?: string;
+		readonly identityMarker?: string;
+	} = {},
+): ExternalConnectorActivationSource {
+	const configurationRevision = options.configurationRevision ?? 1;
+	return {
+		schemaVersion: 1,
+		providerId: snapshot.providerId,
+		configuration: {
+			revision: configurationRevision,
+			digest: fingerprintFoundationValue({
+				providerId: snapshot.providerId,
+				configurationRevision,
+				marker: options.configurationMarker ?? "trusted-config-a",
+			}),
+		},
+		capability: { revision: snapshot.revision, digest: snapshot.digest },
+		identity: {
+			kind: "file",
+			digest: fingerprintFoundationValue({
+				providerId: snapshot.providerId,
+				marker: options.identityMarker ?? "trusted-file-a",
+			}),
+		},
 	};
 }
 
@@ -751,6 +784,275 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		expect(probed.disposeCalls).toBe(1);
 	});
 
+	it("rejects a candidate when the trusted source changed before candidate construction", async () => {
+		let probeCalls = 0;
+		const expectedCapability = capabilitySnapshot();
+		const captured = activationSource(expectedCapability);
+		const current = activationSource(expectedCapability, {
+			configurationRevision: 2,
+			configurationMarker: "trusted-config-b",
+		});
+		const registry = createExternalConnectorRegistry({
+			activationSources: [captured],
+			readActivationSource: () => current,
+		});
+		const fixture = createSupportedConnector({
+			capabilityProbe: async (snapshot) => {
+				probeCalls += 1;
+				return Result.ok(snapshot);
+			},
+		});
+
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: false });
+		expect(probeCalls).toBe(0);
+		expect(fixture.driver.disposeCalls).toBe(1);
+		expect(registry.list()).toEqual([]);
+		expect(registry.readinessSnapshots()).toMatchObject([{
+			providerId: fixture.snapshot.providerId,
+			status: "quarantined",
+			state: "quarantined",
+			reasonCode: "source_changed",
+			configuration: captured.configuration,
+			identity: captured.identity,
+		}]);
+		await registry.dispose();
+	});
+
+	it("publishes no candidate when the trusted source changes during its capability probe", async () => {
+		let current: ExternalConnectorActivationSource;
+		let registry: ReturnType<typeof createExternalConnectorRegistry>;
+		const fixture = createSupportedConnector({
+			capabilityProbe: async (snapshot) => {
+				expect(registry.list()).toEqual([]);
+				expect(registry.readinessSnapshots()).toEqual([]);
+				current = activationSource(snapshot, {
+					configurationRevision: 2,
+					configurationMarker: "mutated-during-probe",
+				});
+				return Result.ok(snapshot);
+			},
+		});
+		const captured = activationSource(fixture.snapshot);
+		current = captured;
+		registry = createExternalConnectorRegistry({
+			activationSources: [captured],
+			readActivationSource: () => current,
+		});
+
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: false });
+		expect(registry.list()).toEqual([]);
+		expect(registry.readinessSnapshots()).toMatchObject([{
+			status: "quarantined",
+			state: "quarantined",
+			reasonCode: "source_changed",
+		}]);
+		expect(fixture.driver.disposeCalls).toBe(1);
+		await registry.dispose();
+	});
+
+	it("fences the final source read immediately before atomic readiness publication", async () => {
+		const fixture = createSupportedConnector();
+		const captured = activationSource(fixture.snapshot);
+		let sourceReads = 0;
+		let registry: ReturnType<typeof createExternalConnectorRegistry>;
+		registry = createExternalConnectorRegistry({
+			activationSources: [captured],
+			readActivationSource: () => {
+				sourceReads += 1;
+				expect(registry.list()).toEqual([]);
+				expect(registry.readinessSnapshots()).toEqual([]);
+				return captured;
+			},
+		});
+
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		expect(sourceReads).toBe(2);
+		expect(registry.list()).toHaveLength(1);
+		const [snapshot] = registry.readinessSnapshots();
+		expect(snapshot).toMatchObject({
+			schemaVersion: 1,
+			providerId: fixture.snapshot.providerId,
+			configuration: captured.configuration,
+			capability: captured.capability,
+			identity: captured.identity,
+			status: "ready",
+			state: "current",
+			ttlMs: 300_000,
+		});
+		expect(snapshot?.observedAt).toEqual(expect.any(String));
+		expect(snapshot?.expiresAt).toEqual(expect.any(String));
+		expect(snapshot?.snapshotDigest).toMatchObject({ algorithm: "sha256" });
+		expect(Date.parse(snapshot!.expiresAt) - Date.parse(snapshot!.observedAt)).toBe(300_000);
+		expect(JSON.stringify(snapshot)).not.toContain("trusted-file-a");
+		expect(Object.isFrozen(snapshot)).toBe(true);
+		expect(Object.isFrozen(snapshot?.configuration)).toBe(true);
+		expect(Object.isFrozen(snapshot?.capability)).toBe(true);
+		expect(Object.isFrozen(snapshot?.identity)).toBe(true);
+		await registry.dispose();
+	});
+
+	it.each(["configuration", "identity"] as const)(
+		"quarantines selection on trusted %s revision or digest mismatch",
+		async (mismatch) => {
+			let probeCalls = 0;
+			const fixture = createSupportedConnector({
+				capabilityProbe: async (snapshot) => {
+					probeCalls += 1;
+					return Result.ok(snapshot);
+				},
+			});
+			const captured = activationSource(fixture.snapshot);
+			let current = captured;
+			const registry = createExternalConnectorRegistry({
+				activationSources: [captured],
+				readActivationSource: () => current,
+			});
+			expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+			current =
+				mismatch === "configuration"
+					? activationSource(fixture.snapshot, {
+							configurationRevision: 2,
+							configurationMarker: "selection-config-drift",
+						})
+					: activationSource(fixture.snapshot, { identityMarker: "replacement-connector-file" });
+
+			expect(await registry.select(selection(fixture.snapshot))).toMatchObject({ ok: false });
+			expect(probeCalls).toBe(1);
+			expect(registry.readiness()).toMatchObject([{
+				status: "quarantined",
+				reasonCode: "source_changed",
+			}]);
+			expect(registry.readinessSnapshots()).toMatchObject([{
+				state: "quarantined",
+				configuration: captured.configuration,
+				identity: captured.identity,
+			}]);
+			await registry.dispose();
+		},
+	);
+
+	it("fails stale readiness closed before product persistence and refreshes only by explicit probe", async () => {
+		const clock = new DeterministicClock({ wallTimeMs: Date.parse(NOW) });
+		let probeCalls = 0;
+		const fixture = createSupportedConnector({
+			capabilityProbe: async (snapshot) => {
+				probeCalls += 1;
+				return Result.ok(snapshot);
+			},
+		});
+		const registry = createExternalConnectorRegistry({ clock, readinessTtlMs: 100 });
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const [published] = registry.readinessSnapshots();
+		clock.advanceBy(101);
+
+		expect(registry.readiness()).toMatchObject([{
+			status: "not_ready",
+			reasonCode: "snapshot_stale",
+		}]);
+		expect(registry.readinessSnapshots()).toEqual([published]);
+		expect(await registry.select(selection(fixture.snapshot))).toMatchObject({ ok: false });
+		await expect(
+			prepareExternalConnectorProductRun(productInput(fixture, registry, "run-zeta-stale-readiness")),
+		).rejects.toMatchObject({ code: "task_executor_invalid_provider_class" });
+		expect(probeCalls).toBe(1);
+		expect(fixture.driver.spawnCalls).toBe(0);
+		expect(fixture.supervision.processController.launchCalls).toBe(0);
+		expect(await fixture.session.findFoundationRecords()).toEqual([]);
+
+		expect(await registry.probeReadiness(selection(fixture.snapshot))).toMatchObject({
+			status: "ready",
+			reasonCode: "ready",
+		});
+		expect(probeCalls).toBe(2);
+		expect(registry.readinessSnapshots()[0]?.snapshotDigest).not.toEqual(published?.snapshotDigest);
+		await registry.dispose();
+	});
+
+	it("selects only the current snapshot and fences a wrapper pinned to a superseded snapshot", async () => {
+		const clock = new DeterministicClock({ wallTimeMs: Date.parse(NOW) });
+		let probeCalls = 0;
+		const fixture = createSupportedConnector({
+			capabilityProbe: async (snapshot) => {
+				probeCalls += 1;
+				return Result.ok(snapshot);
+			},
+		});
+		const registry = createExternalConnectorRegistry({ clock, readinessTtlMs: 1_000 });
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const initial = registry.readinessSnapshots()[0];
+		const initialSelection = await registry.select(selection(fixture.snapshot));
+		if (!initialSelection.ok) throw initialSelection.error;
+		expect(probeCalls).toBe(1);
+		clock.advanceBy(1);
+		expect(await registry.probeReadiness(selection(fixture.snapshot))).toMatchObject({ status: "ready" });
+		const current = registry.readinessSnapshots()[0];
+		expect(current?.snapshotDigest).not.toEqual(initial?.snapshotDigest);
+
+		expect(await initialSelection.value.connector.probeCapabilities()).toMatchObject({ ok: false });
+		const selected = await registry.select(selection(fixture.snapshot));
+		expect(selected).toMatchObject({ ok: true });
+		expect(registry.readinessSnapshots()[0]?.snapshotDigest).toEqual(current?.snapshotDigest);
+		expect(probeCalls).toBe(2);
+		await registry.dispose();
+	});
+
+	it("keeps passive registry status free of Connector, product, credential, and tool effects", async () => {
+		let capabilityProbeCalls = 0;
+		let toolEffects = 0;
+		const toolGateway = createFoundationToolGateway({
+			gatewayId: "passive-readiness-gateway",
+			providers: [createLocalToolGatewayProvider({
+				providerId: "builtin.passive-readiness",
+				revision: 1,
+				routes: [{
+					kind: "local",
+					namespace: "workspace",
+					toolName: "workspace.read",
+					providerId: "builtin.passive-readiness",
+					revision: 1,
+					operation: { resource: "filesystem.read", effects: ["read"] },
+				}],
+				invoke: async (request) => {
+					toolEffects += 1;
+					return Result.ok({
+						schemaVersion: 1,
+						toolCallId: request.toolCallId,
+						toolName: request.toolName,
+						ok: true,
+						sideEffectState: "none",
+						toolReceiptRef: `passive-${request.toolCallId}`,
+					});
+				},
+			})],
+		});
+		const fixture = createSupportedConnector({
+			toolGateway: true,
+			capabilityProbe: async (snapshot) => {
+				capabilityProbeCalls += 1;
+				return Result.ok(snapshot);
+			},
+		});
+		const registry = createExternalConnectorRegistry({ toolGateway });
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+
+		expect(registry.list()).toHaveLength(1);
+		expect(registry.readiness()).toMatchObject([{ status: "ready" }]);
+		expect(registry.readinessSnapshots()).toMatchObject([{ state: "current" }]);
+		expect(registry.readiness()).toMatchObject([{ status: "ready" }]);
+		expect(capabilityProbeCalls).toBe(1);
+		expect(toolEffects).toBe(0);
+		expect(fixture.driver.spawnCalls).toBe(0);
+		expect(fixture.driver.connectCalls).toBe(0);
+		expect(fixture.driver.lookupCalls).toBe(0);
+		expect(fixture.driver.readCalls).toBe(0);
+		expect(fixture.driver.writes).toEqual([]);
+		expect(fixture.supervision.processController.launchCalls).toBe(0);
+		expect(fixture.supervision.processController.activationCalls).toBe(0);
+		expect(await fixture.session.findFoundationRecords()).toEqual([]);
+		await registry.dispose();
+		await toolGateway.dispose();
+	});
+
 	it("rejects a factory-created connector whose lifecycle implementation changes before registration", async () => {
 		const fixture = createSupportedConnector();
 		const prepared = registration(fixture);
@@ -1267,7 +1569,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 	);
 
 	it("rechecks pinned truth before run and routes drift to supervised reconciliation", async () => {
-		const fixture = createDriftingConnector();
+		const fixture = createDriftingConnector(2);
 		const registry = createExternalConnectorRegistry();
 		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
 		const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-capability-drift");
@@ -1283,7 +1585,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 				message: "External connector operation does not exist",
 			},
 		});
-		expect(fixture.probeCalls()).toBe(3);
+		expect(fixture.probeCalls()).toBe(2);
 		expect(fixture.driver.spawnCalls).toBe(0);
 		await persisted.settlement.release();
 		await registry.dispose();
@@ -1328,7 +1630,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 
 	it("rechecks pinned truth for resume and reconcile lifecycle entry points", async () => {
 		for (const operation of ["resume", "reconcile"] as const) {
-			const fixture = createDriftingConnector();
+			const fixture = createDriftingConnector(2);
 			const registry = createExternalConnectorRegistry();
 			expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
 			const persisted = await createPersistedProductAttempt(fixture, registry, `run-zeta-${operation}-drift`);
@@ -1347,7 +1649,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 					message: "External connector operation does not exist",
 				},
 			});
-			expect(fixture.probeCalls()).toBe(3);
+			expect(fixture.probeCalls()).toBe(2);
 			expect(fixture.driver.connectCalls).toBe(0);
 			expect(fixture.driver.lookupCalls).toBe(0);
 			expect(fixture.driver.cancelCalls).toBe(0);
@@ -1358,7 +1660,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 
 	it("contains the same Attempt when capability truth drifts during cancellation", async () => {
 		const driver = new ThirdPartyZetaDriver({ readHangs: true, returnsCancelEvidence: true });
-		const fixture = createDriftingConnector(4, driver);
+		const fixture = createDriftingConnector(3, driver);
 		const registry = createExternalConnectorRegistry();
 		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
 		const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-cancel-drift");
@@ -1376,14 +1678,14 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 					message: "External connector capability truth could not be rechecked",
 				},
 		});
-		expect(fixture.probeCalls()).toBe(4);
+		expect(fixture.probeCalls()).toBe(3);
 		expect(driver.cancelCalls).toBe(1);
 		expect(await running).toMatchObject({ ok: true, value: { status: "cancelled" } });
 		await persisted.settlement.release();
 		await registry.dispose();
 	});
 
-	it("bounds hanging capability probes and aborts the probe operation", async () => {
+	it("bounds an explicit readiness probe without creating product work", async () => {
 		let abortObserved = false;
 		const fixture = createSupportedConnector({
 			capabilityProbe: async (_snapshot, options) =>
@@ -1403,11 +1705,14 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		expect(registry.registerPrepared(registration(fixture), fixture.snapshot)).toMatchObject({ ok: true });
 		const startedAt = Date.now();
 
-		const selected = await registry.select(selection(fixture.snapshot));
+		const status = await registry.probeReadiness(selection(fixture.snapshot));
 
-		expect(selected).toMatchObject({ ok: false });
+		expect(status).toMatchObject({ status: "not_ready", reasonCode: "probe_failed" });
 		expect(Date.now() - startedAt).toBeLessThan(250);
 		expect(abortObserved).toBe(true);
+		expect(fixture.driver.spawnCalls).toBe(0);
+		expect(fixture.supervision.processController.launchCalls).toBe(0);
+		expect(await fixture.session.findFoundationRecords()).toEqual([]);
 		await registry.dispose();
 	});
 
@@ -1419,7 +1724,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 			driver,
 			capabilityProbe: async (snapshot, options) => {
 				probeCalls += 1;
-				if (probeCalls < 4) return Result.ok(snapshot);
+				if (probeCalls < 3) return Result.ok(snapshot);
 				return new Promise<never>(() => {
 					options?.signal?.addEventListener(
 						"abort",
@@ -1550,7 +1855,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		expect(fixture.driver.disposeCalls).toBe(1);
 	});
 
-	it("fails a delayed selection closed when shutdown disposes its registered connector", async () => {
+	it("fails a selected lifecycle probe closed when shutdown disposes its registered connector", async () => {
 		let markProbeStarted: (() => void) | undefined;
 		let releaseProbe: (() => void) | undefined;
 		const probeStarted = new Promise<void>((resolve) => {
@@ -1568,14 +1873,16 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		});
 		const registry = createExternalConnectorRegistry();
 		expect(registry.registerPrepared(registration(fixture), fixture.snapshot)).toMatchObject({ ok: true });
-		const pendingSelection = registry.select(selection(fixture.snapshot));
+		const selected = await registry.select(selection(fixture.snapshot));
+		if (!selected.ok) throw selected.error;
+		const pendingProbe = selected.value.connector.probeCapabilities();
 		await probeStarted;
 
 		await registry.dispose();
 		releaseProbe?.();
-		const selected = await pendingSelection;
+		const probed = await pendingProbe;
 
-		expect(selected.ok).toBe(false);
+		expect(probed.ok).toBe(false);
 		expect(fixture.driver.disposeCalls).toBe(1);
 	});
 

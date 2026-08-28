@@ -312,7 +312,7 @@ describe("production External Connector composition", () => {
 		}
 	});
 
-	it("propagates the trusted capability probe so registry lifecycle rechecks detect runtime drift", async () => {
+	it("propagates the trusted capability probe so explicit readiness detects runtime drift", async () => {
 		const root = mkdtempSync(join(tmpdir(), "aos-external-production-probe-"));
 		const capability = createConnectorCapabilitySnapshot({
 			schemaVersion: 1,
@@ -367,12 +367,12 @@ describe("production External Connector composition", () => {
 			drift = true;
 
 			expect(
-				await registry.select({
+				await registry.probeReadiness({
 					providerId: capability.providerId,
 					revision: capability.revision,
 					capabilitySnapshotDigest: capability.digest,
 				}),
-			).toMatchObject({ ok: false });
+			).toMatchObject({ status: "not_ready", reasonCode: "probe_failed" });
 			expect(probeCalls).toBe(3);
 		} finally {
 			await registry.dispose();
