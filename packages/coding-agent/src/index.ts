@@ -675,6 +675,18 @@ export {
 	type ExternalResolvedModelProjection,
 } from "./core/external-model-projection.ts";
 export {
+	PACKAGED_EXTERNAL_AGENT_DRIVER_NAMES,
+	PackagedExternalAgentDriverAssetError,
+	loadPackagedExternalAgentDriver,
+	runPackagedExternalAgentDriverFixture,
+	type PackagedExternalAgentDriver,
+	type PackagedExternalAgentDriverAssetErrorCode,
+	type PackagedExternalAgentDriverName,
+	type PackagedExternalAgentDriverOperation,
+	type PackagedExternalAgentDriverOperationKind,
+	type PackagedExternalAgentDriverTrace,
+} from "./core/packaged-external-agent-driver.ts";
+export {
 	buildModelBrokerSettings,
 	createEmptyModelBrokerSettings,
 	createModelBrokerSettingsView,

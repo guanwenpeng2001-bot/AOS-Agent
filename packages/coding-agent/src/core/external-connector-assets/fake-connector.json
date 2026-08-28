@@ -1,0 +1,35 @@
+{
+	"schemaVersion": 1,
+	"fixtureId": "line13-fake-connector",
+	"providerId": "line13.fake-connector",
+	"fauxProviderId": "line13.faux-provider",
+	"defaultEnabled": false,
+	"credentialMode": "none",
+	"networkMode": "disabled",
+	"operations": [
+		{
+			"sequence": 1,
+			"kind": "start",
+			"input": "task:deterministic",
+			"output": "attempt:started"
+		},
+		{
+			"sequence": 2,
+			"kind": "tool",
+			"input": "fixture.echo",
+			"output": "tool:ok"
+		},
+		{
+			"sequence": 3,
+			"kind": "resume",
+			"input": "receipt:resume",
+			"output": "attempt:completed"
+		},
+		{
+			"sequence": 4,
+			"kind": "cancel",
+			"input": "attempt:cancel",
+			"output": "attempt:cancelled"
+		}
+	]
+}
