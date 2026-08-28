@@ -69,6 +69,18 @@ import {
 } from "./external-connector-supervisor.ts";
 import type { RuntimeClock } from "./runtime-clock.ts";
 import {
+	decodeRuntimeLimitsOperationNonce,
+	encodeRuntimeLimitsOperationNonce,
+	resolveRuntimeLimitsSource,
+	runtimeLimitsFromSupervisorOptions,
+	runtimeLimitsShutdownDeadline,
+	runtimeLimitsSupervisorDeadlines,
+	runtimeLimitsSupervisorLimits,
+	type RuntimeLimitsOperationNonce,
+	type RuntimeLimitsSnapshot,
+	type RuntimeLimitsSource,
+} from "./runtime-limits.ts";
+import {
 	translateExternalModelProjection,
 	type ExternalModelTranslationResult,
 	type ExternalResolvedModelProjection,
@@ -97,6 +109,8 @@ export interface ExternalAgentConnectorRuntimeOptions {
 		readonly limits?: Partial<ExternalConnectorSupervisorLimits>;
 		readonly clock?: RuntimeClock;
 	};
+	/** Trusted reloadable source; it is sampled exactly once when each Attempt is accepted. */
+	readonly runtimeLimits?: RuntimeLimitsSource;
 	readonly now?: () => string;
 	readonly operationNonce?: () => string;
 }
@@ -324,7 +338,9 @@ function externalFailure(
 		| "binding_required_fact"
 		| "external_binding_invalid"
 		| "external_capability_mismatch"
+		| "external_connector_config_invalid"
 		| "external_mapping_conflict"
+		| "external_resource_limit_exceeded"
 		| "external_resume_unsupported"
 		| "external_terminal_ambiguous"
 		| "invalid_correlation"
@@ -436,6 +452,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly #supervision: ExternalAgentConnectorRuntimeOptions["supervision"];
 	readonly #now: () => string;
 	readonly #operationNonce: () => string;
+	readonly #runtimeLimitsSource: RuntimeLimitsSource;
+	readonly #hostRuntimeLimits: RuntimeLimitsSnapshot;
+	readonly #attemptRuntimeLimits = new Map<string, RuntimeLimitsSnapshot>();
 	readonly #supervisors = new Map<string, ExternalConnectorBoundedSupervisor>();
 	readonly #driverHandles = new Map<string, ExternalConnectorDriverHandle>();
 	readonly #observationControllers = new Map<string, AbortController>();
@@ -473,6 +492,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		this.#store = options.store;
 		this.#driver = options.driver;
 		this.#supervision = options.supervision;
+		this.#runtimeLimitsSource =
+			options.runtimeLimits ?? runtimeLimitsFromSupervisorOptions(options.supervision.deadlines, options.supervision.limits);
+		this.#hostRuntimeLimits = resolveRuntimeLimitsSource(this.#runtimeLimitsSource);
 		this.#now = options.now ?? (() => new Date().toISOString());
 		this.#operationNonce = options.operationNonce ?? randomUUID;
 	}
@@ -548,7 +570,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				results.push(Object.freeze({ attemptId: entry.attemptId, status: "reattached" }));
 				continue;
 			}
-			const supervisor = this.#createSupervisorForReference(entry.state.reference);
+			const runtimeLimits = await this.#runtimeLimitsForStartupEntry(entry);
+			const supervisor = this.#createSupervisorForReference(entry.state.reference, runtimeLimits);
 			if (await this.#isStartupReattachable(entry)) {
 				try {
 					supervisor.reattach(entry.state);
@@ -636,6 +659,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		return this.#capabilityProbe(options);
 	}
 
+	/** @internal Safe immutable projection used by direct execution-boundary verification. */
+	async runtimeLimitsForAttempt(attemptId: string): Promise<RuntimeLimitsSnapshot | undefined> {
+		const operation = await this.#store.readOperation(attemptId);
+		if (operation !== undefined) return decodeRuntimeLimitsOperationNonce(operation.operationNonce)?.snapshot;
+		return this.#attemptRuntimeLimits.get(attemptId);
+	}
+
 	async createAttempt(
 		dispatch: Dispatch,
 		binding: AgentBinding,
@@ -658,7 +688,30 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			);
 		}
 		const attemptId = externalConnectorAttemptId(this.providerId, dispatch.dispatchId);
-		return createFoundationAttempt({
+		let runtimeLimits = this.#attemptRuntimeLimits.get(attemptId);
+		if (runtimeLimits === undefined) {
+			try {
+				runtimeLimits = resolveRuntimeLimitsSource(this.#runtimeLimitsSource);
+			} catch {
+				return Result.err(
+					externalFailure(
+						"external_connector_config_invalid",
+						"External connector RuntimeLimits are invalid",
+						attemptId,
+					),
+				);
+			}
+			if (this.#attemptRuntimeLimits.size >= runtimeLimits.values.maxBacklog) {
+				return Result.err(
+					externalFailure(
+						"external_resource_limit_exceeded",
+						"External connector accepted Attempt backlog is full",
+						attemptId,
+					),
+				);
+			}
+		}
+		const created = createFoundationAttempt({
 			attemptId,
 			dispatch,
 			providerId: this.providerId,
@@ -666,6 +719,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			initialBindingEpoch: context.initialBindingEpoch,
 			now: () => context.initialBindingEpoch.activatedAt,
 		});
+		if (created.ok) this.#attemptRuntimeLimits.set(attemptId, runtimeLimits);
+		return created;
 	}
 
 	runAttempt(
@@ -762,10 +817,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			]);
 		}
 		try {
+			const shutdownDeadline = runtimeLimitsShutdownDeadline(this.#hostRuntimeLimits);
 			await runExternalConnectorHostDispose((signal) => this.#driver.dispose({ signal }), {
-				...(this.#supervision.deadlines?.dispose === undefined
-					? {}
-					: { deadline: this.#supervision.deadlines.dispose }),
+				deadline: shutdownDeadline,
 				...(this.#supervision.clock === undefined ? {} : { clock: this.#supervision.clock }),
 			});
 		} catch (error) {
@@ -776,6 +830,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			this.#observationControllers.clear();
 			this.#startCancellationControllers.clear();
 			this.#pendingCancellations.clear();
+			this.#attemptRuntimeLimits.clear();
 			this.#toolGatewayConsumers.clear();
 			this.#drainWaiters.clear();
 			this.#lifecycle = "disposed";
@@ -840,25 +895,45 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		}
 	}
 
+	#decodeOperationRuntimeLimits(
+		operation: ExternalConnectorOperation,
+	): ResultValue<RuntimeLimitsOperationNonce, FoundationError> {
+		const decoded = decodeRuntimeLimitsOperationNonce(operation.operationNonce);
+		return decoded === undefined
+			? Result.err(
+					externalFailure(
+						"external_connector_config_invalid",
+						"External connector Attempt has no valid frozen RuntimeLimits",
+						operation.attemptId,
+					),
+				)
+			: Result.ok(decoded);
+	}
+
 	#createSupervisor(operation: ExternalConnectorOperation): ExternalConnectorBoundedSupervisor {
+		const runtimeLimits = this.#decodeOperationRuntimeLimits(operation);
+		if (!runtimeLimits.ok) throw runtimeLimits.error;
 		return this.#createSupervisorForReference({
 			schemaVersion: 1,
 			supervisorRef: `external_supervisor_${fingerprintFoundationValue({
 				providerId: this.providerId,
 				attemptId: operation.attemptId,
 			}).value.slice(0, 32)}`,
-			operationNonce: operation.operationNonce,
-		});
+			operationNonce: runtimeLimits.value.processNonce,
+		}, runtimeLimits.value.snapshot);
 	}
 
-	#createSupervisorForReference(reference: ExternalConnectorSupervisorReference): ExternalConnectorBoundedSupervisor {
+	#createSupervisorForReference(
+		reference: ExternalConnectorSupervisorReference,
+		runtimeLimits: RuntimeLimitsSnapshot,
+	): ExternalConnectorBoundedSupervisor {
 		return new ExternalConnectorBoundedSupervisor({
 			reference,
 			containment: this.#supervision.containment,
 			processController: this.#supervision.processController,
 			artifactsAllowed: this.#capability.artifacts,
-			deadlines: this.#supervision.deadlines,
-			limits: this.#supervision.limits,
+			deadlines: runtimeLimitsSupervisorDeadlines(runtimeLimits),
+			limits: runtimeLimitsSupervisorLimits(runtimeLimits),
 			clock: this.#supervision.clock,
 		});
 	}
@@ -875,12 +950,30 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (
 			operation.providerId !== this.providerId ||
 			operation.attemptId !== entry.attemptId ||
-			operation.operationNonce !== entry.state.reference.operationNonce ||
+			decodeRuntimeLimitsOperationNonce(operation.operationNonce)?.processNonce !==
+				entry.state.reference.operationNonce ||
 			operation.status === "terminal" ||
 			operation.status === "reconcile_required"
 		)
 			return;
 		await this.#markReconcile(operation, "driver_failure");
+	}
+
+	async #runtimeLimitsForStartupEntry(
+		entry: ExternalConnectorSupervisorPrivateStateEntry,
+	): Promise<RuntimeLimitsSnapshot> {
+		const operationValue = await this.#store.readOperation(entry.attemptId);
+		if (operationValue === undefined) return this.#hostRuntimeLimits;
+		let operation: ExternalConnectorOperation;
+		try {
+			operation = cloneExternalConnectorOperation(operationValue);
+		} catch {
+			return this.#hostRuntimeLimits;
+		}
+		const decoded = decodeRuntimeLimitsOperationNonce(operation.operationNonce);
+		return decoded !== undefined && decoded.processNonce === entry.state.reference.operationNonce
+			? decoded.snapshot
+			: this.#hostRuntimeLimits;
 	}
 
 	async #isStartupReattachable(entry: ExternalConnectorSupervisorPrivateStateEntry): Promise<boolean> {
@@ -892,10 +985,12 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		} catch {
 			return false;
 		}
+		const runtimeLimits = decodeRuntimeLimitsOperationNonce(operation.operationNonce);
 		if (
 			operation.providerId !== this.providerId ||
 			operation.attemptId !== entry.attemptId ||
-			operation.operationNonce !== entry.state.reference.operationNonce ||
+			runtimeLimits === undefined ||
+			runtimeLimits.processNonce !== entry.state.reference.operationNonce ||
 			operation.status === "prepared" ||
 			operation.status === "terminal"
 		)
@@ -910,7 +1005,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			mapping.capability.revision === operation.capabilityRevision &&
 			sameFingerprint(mapping.capability.digest, operation.capabilityDigest) &&
 			mapping.supervisor.ref === entry.state.reference.supervisorRef &&
-			mapping.supervisor.nonce === operation.operationNonce
+			mapping.supervisor.nonce === runtimeLimits.processNonce
 		);
 	}
 
@@ -959,6 +1054,16 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		this.#driverHandles.delete(attemptId);
 		this.#observationControllers.delete(attemptId);
 		await this.#supervision.privateStateStore.delete(attemptId);
+	}
+
+	#hasAttemptCapacity(attemptId: string, runtimeLimits: RuntimeLimitsSnapshot): boolean {
+		if (this.#cancelling.has(attemptId)) return true;
+		let preceding = 0;
+		for (const activeAttemptId of this.#active.keys()) {
+			if (activeAttemptId === attemptId) return preceding < runtimeLimits.values.maxConcurrency;
+			preceding += 1;
+		}
+		return false;
 	}
 
 	async #recoverSupervisorWithoutMapping(operation: ExternalConnectorOperation): Promise<void> {
@@ -1042,7 +1147,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!durable.ok) return durable;
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
 		if (!priorReceipt.ok) return priorReceipt;
-		if (priorReceipt.value !== undefined) return Result.ok(priorReceipt.value);
+		if (priorReceipt.value !== undefined) {
+			this.#attemptRuntimeLimits.delete(attempt.attemptId);
+			return Result.ok(priorReceipt.value);
+		}
 		if (attempt.status !== "starting") {
 			return Result.err(
 				externalFailure(
@@ -1106,6 +1214,37 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		}
 
 		let operation = await this.#store.readOperation(attempt.attemptId);
+		let runtimeLimits: RuntimeLimitsSnapshot;
+		if (operation === undefined) {
+			const acceptedRuntimeLimits = this.#attemptRuntimeLimits.get(attempt.attemptId);
+			if (acceptedRuntimeLimits === undefined) {
+				return Result.err(
+					externalFailure(
+						"external_connector_config_invalid",
+						"External connector Attempt has no frozen RuntimeLimits",
+						attempt.attemptId,
+					),
+				);
+			}
+			runtimeLimits = acceptedRuntimeLimits;
+		} else {
+			const decoded = this.#decodeOperationRuntimeLimits(operation);
+			if (!decoded.ok) {
+				await this.#markReconcile(operation, "capability_drift");
+				return Result.err(decoded.error);
+			}
+			runtimeLimits = decoded.value.snapshot;
+			this.#attemptRuntimeLimits.delete(attempt.attemptId);
+		}
+		if (!this.#hasAttemptCapacity(attempt.attemptId, runtimeLimits)) {
+			return Result.err(
+				externalFailure(
+					"external_resource_limit_exceeded",
+					"External connector Attempt concurrency limit is full",
+					attempt.attemptId,
+				),
+			);
+		}
 		if (operation === undefined) {
 			operation = await this.#store.writeOperation({
 				schemaVersion: 1,
@@ -1117,12 +1256,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				bindingRevision: binding.value.contextRevision.revision,
 				capabilityDigest: this.#capability.digest,
 				capabilityRevision: this.#capability.revision,
-				operationNonce: this.#operationNonce(),
+				operationNonce: encodeRuntimeLimitsOperationNonce(runtimeLimits, this.#operationNonce()),
 				correlation: correlation.value,
 				status: "prepared",
 				revision: 1,
 				updatedAt: this.#now(),
 			});
+			this.#attemptRuntimeLimits.delete(attempt.attemptId);
 		}
 		if (isAborted()) {
 			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
@@ -1148,7 +1288,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (isAborted()) {
 			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
 		}
-		const operationNonce = operation.operationNonce;
+		const operationNonce = frozen.value.processNonce;
 		const launchOperation = operation;
 		let supervisor: ExternalConnectorBoundedSupervisor;
 		try {
@@ -1262,7 +1402,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					digest: binding.value.fingerprint,
 					revision: binding.value.contextRevision.revision,
 				},
-				capability: { digest: this.#capability.digest, revision: this.#capability.revision },
+				capability: { digest: operation.capabilityDigest, revision: operation.capabilityRevision },
 				supervisor: { ref: handle.supervisorRef, nonce: handle.operationNonce },
 				createdAt: this.#now(),
 			});
@@ -1365,7 +1505,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!durable.ok) return durable;
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
 		if (!priorReceipt.ok) return priorReceipt;
-		if (priorReceipt.value !== undefined) return Result.ok(priorReceipt.value);
+		if (priorReceipt.value !== undefined) {
+			this.#attemptRuntimeLimits.delete(attempt.attemptId);
+			return Result.ok(priorReceipt.value);
+		}
 		if (!this.#capability.resume) {
 			return Result.err(
 				externalFailure(
@@ -1389,6 +1532,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return binding;
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return frozen;
+		if (!this.#hasAttemptCapacity(attempt.attemptId, frozen.value.snapshot)) {
+			return Result.err(
+				externalFailure(
+					"external_resource_limit_exceeded",
+					"External connector Attempt concurrency limit is full",
+					attempt.attemptId,
+				),
+			);
+		}
 		const mapping = await this.#requireMapping(operation);
 		if (!mapping.ok) return mapping;
 		let supervisor: ExternalConnectorBoundedSupervisor | undefined;
@@ -1473,7 +1625,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!durable.ok) return durable;
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
 		if (!priorReceipt.ok) return priorReceipt;
-		if (priorReceipt.value !== undefined) return Result.ok(priorReceipt.value);
+		if (priorReceipt.value !== undefined) {
+			this.#attemptRuntimeLimits.delete(attempt.attemptId);
+			return Result.ok(priorReceipt.value);
+		}
 		let operation = await this.#store.readOperation(attempt.attemptId);
 		if (operation === undefined) {
 			return Result.err(
@@ -1497,6 +1652,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return binding;
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return frozen;
+		if (!this.#hasAttemptCapacity(attempt.attemptId, frozen.value.snapshot)) {
+			return Result.err(
+				externalFailure(
+					"external_resource_limit_exceeded",
+					"External connector Attempt concurrency limit is full",
+					attempt.attemptId,
+				),
+			);
+		}
 		const mapping = await this.#requireMapping(operation);
 		if (!mapping.ok) return mapping;
 		let supervisor: ExternalConnectorBoundedSupervisor;
@@ -1675,7 +1839,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		}
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
 		if (!priorReceipt.ok) return Result.err(priorReceipt.error);
-		if (priorReceipt.value !== undefined) return Result.ok(undefined);
+		if (priorReceipt.value !== undefined) {
+			this.#attemptRuntimeLimits.delete(attemptId);
+			return Result.ok(undefined);
+		}
 		this.#pendingCancellations.add(attemptId);
 		let operation = await this.#store.readOperation(attemptId);
 		if (operation === undefined || operation.status === "prepared") return Result.ok(undefined);
@@ -1840,6 +2007,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	): Promise<void> {
 		if (event.type !== "tool_gateway_request") return;
 		try {
+			const runtimeLimits = this.#decodeOperationRuntimeLimits(operation);
+			if (!runtimeLimits.ok) throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
 			const request = event.request;
 			const correlation: ExecutionCorrelation = {
 				...operation.correlation,
@@ -1848,7 +2017,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			if (
 				!this.#capability.toolGateway ||
 				event.operationNonce !== handle.operationNonce ||
-				handle.operationNonce !== operation.operationNonce ||
+				handle.operationNonce !== runtimeLimits.value.processNonce ||
 				!externalConnectorToolGatewayRequestMatchesExecution(
 					request,
 					operation.providerId,
@@ -1936,7 +2105,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					{
 						schemaVersion: 1,
 						kind: "tool_gateway_result",
-						operationNonce: operation.operationNonce,
+						operationNonce: runtimeLimits.value.processNonce,
 						result: terminal.result,
 					},
 					{ signal },
@@ -2125,7 +2294,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		operation: ExternalConnectorOperation,
 		attempt: Attempt,
 		binding: AgentBinding,
-	): Promise<ResultValue<void, FoundationError>> {
+	): Promise<ResultValue<RuntimeLimitsOperationNonce, FoundationError>> {
 		let canonicalOperation: ExternalConnectorOperation;
 		try {
 			canonicalOperation = cloneExternalConnectorOperation(operation);
@@ -2137,6 +2306,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					attempt.attemptId,
 				),
 			);
+		}
+		const runtimeLimits = this.#decodeOperationRuntimeLimits(canonicalOperation);
+		if (!runtimeLimits.ok) {
+			await this.#markReconcile(canonicalOperation, "capability_drift");
+			return runtimeLimits;
 		}
 		if (
 			canonicalOperation.providerId !== this.providerId ||
@@ -2176,12 +2350,17 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				),
 			);
 		}
-		return Result.ok(undefined);
+		return runtimeLimits;
 	}
 
 	async #requireMapping(
 		operation: ExternalConnectorOperation,
 	): Promise<ResultValue<CanonicalExternalConnectorMapping, FoundationError>> {
+		const runtimeLimits = this.#decodeOperationRuntimeLimits(operation);
+		if (!runtimeLimits.ok) {
+			await this.#markReconcile(operation, "capability_drift");
+			return runtimeLimits;
+		}
 		const mapping = await this.#store.readMapping(operation.attemptId);
 		if (mapping === undefined) {
 			await this.#markReconcile(operation, "mapping_missing");
@@ -2201,7 +2380,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			!sameFingerprint(mapping.binding.digest, operation.bindingDigest) ||
 			mapping.capability.revision !== operation.capabilityRevision ||
 			!sameFingerprint(mapping.capability.digest, operation.capabilityDigest) ||
-			mapping.supervisor.nonce !== operation.operationNonce
+			mapping.supervisor.nonce !== runtimeLimits.value.processNonce
 		) {
 			await this.#markReconcile(operation, "mapping_conflict");
 			return Result.err(
@@ -2240,7 +2419,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
 		if (!priorReceipt.ok) return priorReceipt;
-		if (priorReceipt.value !== undefined) return Result.ok(priorReceipt.value);
+		if (priorReceipt.value !== undefined) {
+			this.#attemptRuntimeLimits.delete(attempt.attemptId);
+			return Result.ok(priorReceipt.value);
+		}
 		if (operation.status === "terminal") {
 			return Result.err(
 				externalFailure(
@@ -2249,6 +2431,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					attempt.attemptId,
 				),
 			);
+		}
+		const runtimeLimits = this.#decodeOperationRuntimeLimits(operation);
+		if (!runtimeLimits.ok) {
+			await this.#markReconcile(operation, "capability_drift");
+			return runtimeLimits;
 		}
 		let canonicalEvidence: ExternalConnectorTerminalEvidence;
 		try {
@@ -2266,7 +2453,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (
 			canonicalEvidence.externalSessionId !== mapping.externalSessionId ||
 			(canonicalEvidence.externalTurnId ?? undefined) !== (mapping.externalTurnId ?? undefined) ||
-			canonicalEvidence.operationNonce !== operation.operationNonce ||
+			canonicalEvidence.operationNonce !== runtimeLimits.value.processNonce ||
 			canonicalEvidence.operationNonce !== mapping.supervisor.nonce
 		) {
 			await this.#markReconcile(operation, "mapping_conflict");
@@ -2314,6 +2501,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			}),
 		);
 		this.#pendingCancellations.delete(attempt.attemptId);
+		this.#attemptRuntimeLimits.delete(attempt.attemptId);
 		return Result.ok(persisted);
 	}
 
@@ -2372,6 +2560,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			);
 		}
 		this.#pendingCancellations.delete(attempt.attemptId);
+		this.#attemptRuntimeLimits.delete(attempt.attemptId);
 		return Result.ok(persisted);
 	}
 
@@ -2425,6 +2614,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				receiptId: persisted.attemptReceiptId,
 			}),
 		);
+		this.#attemptRuntimeLimits.delete(attempt.attemptId);
 		return Result.ok(persisted);
 	}
 
@@ -2436,7 +2626,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!durable.ok) return durable;
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
 		if (!priorReceipt.ok) return priorReceipt;
-		if (priorReceipt.value !== undefined) return Result.ok(priorReceipt.value);
+		if (priorReceipt.value !== undefined) {
+			this.#attemptRuntimeLimits.delete(attempt.attemptId);
+			return Result.ok(priorReceipt.value);
+		}
 		const operation = await this.#store.readOperation(attempt.attemptId);
 		if (operation === undefined || operation.status === "terminal") {
 			return Result.err(
@@ -2480,6 +2673,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				receiptId: persisted.attemptReceiptId,
 			}),
 		);
+		this.#attemptRuntimeLimits.delete(attempt.attemptId);
 		return Result.ok(persisted);
 	}
 }

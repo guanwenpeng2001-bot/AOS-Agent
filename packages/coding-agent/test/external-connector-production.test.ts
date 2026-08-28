@@ -30,6 +30,10 @@ import {
 	FileExternalConnectorSupervisorPrivateStateStore,
 	externalConnectorProcessContainment,
 } from "../src/core/external-connector-supervisor.ts";
+import {
+	DEFAULT_RUNTIME_LIMITS,
+	encodeRuntimeLimitsOperationNonce,
+} from "../src/core/runtime-limits.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 import {
 	createAgentRuntimeCompositionFactory,
@@ -357,6 +361,20 @@ describe("production External Connector composition", () => {
 				} as unknown as Parameters<typeof createProductionExternalAgentConnector>[0]),
 			).rejects.toThrow("explicit capability probe");
 
+			let invalidLimitProbeCalls = 0;
+			await expect(
+				createProductionExternalAgentConnector({
+					...base,
+					capabilityProbe: async () => {
+						invalidLimitProbeCalls += 1;
+						return Result.ok(capability);
+					},
+					privateStatePath: join(root, "invalid-limits.json"),
+					runtimeLimits: { global: { readinessHardMs: Number.POSITIVE_INFINITY } },
+				}),
+			).rejects.toThrow("RuntimeLimits");
+			expect(invalidLimitProbeCalls).toBe(0);
+
 			const clock = new DeterministicClock();
 			const hanging = createProductionExternalAgentConnector({
 				...base,
@@ -372,6 +390,22 @@ describe("production External Connector composition", () => {
 			});
 			clock.advanceBy(5);
 			await expect(hanging).rejects.toMatchObject({ code: "side_effect_unknown", segment: "start" });
+
+			const runtimeLimitsClock = new DeterministicClock();
+			const runtimeLimitsBounded = createProductionExternalAgentConnector({
+				...base,
+				capabilityProbe: async (options) =>
+					new Promise<never>((_resolve, reject) => {
+						const abort = (): void => reject(new Error("capability probe aborted"));
+						if (options?.signal?.aborted === true) abort();
+						else options?.signal?.addEventListener("abort", abort, { once: true });
+					}),
+				privateStatePath: join(root, "runtime-limits-bounded.json"),
+				runtimeLimits: { global: { readinessHardMs: 7, readinessIdleMs: 50 } },
+				clock: runtimeLimitsClock,
+			});
+			runtimeLimitsClock.advanceBy(7);
+			await expect(runtimeLimitsBounded).rejects.toMatchObject({ code: "side_effect_unknown", segment: "start" });
 
 			let cleanupStarted = false;
 			const cleanupStartedAt = Date.now();
@@ -511,7 +545,7 @@ describe("production External Connector composition", () => {
 			bindingRevision: 1,
 			capabilityDigest: capability.digest,
 			capabilityRevision: capability.revision,
-			operationNonce,
+			operationNonce: encodeRuntimeLimitsOperationNonce(DEFAULT_RUNTIME_LIMITS, operationNonce),
 			correlation: {
 				sessionId: "session-production-resume",
 				laneId: "main",

@@ -47,6 +47,13 @@ import {
 	isCanonicalExternalConnectorMapping,
 	type CanonicalExternalConnectorMapping,
 } from "../src/core/external-session-mapping.ts";
+import {
+	decodeRuntimeLimitsOperationNonce,
+	encodeRuntimeLimitsOperationNonce,
+	type RuntimeLimitsResolutionInput,
+	type RuntimeLimitsSnapshot,
+	type RuntimeLimitsSource,
+} from "../src/core/runtime-limits.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,
@@ -430,11 +437,17 @@ interface Fixture {
 	readonly connector: DurableExternalAgentConnector;
 	readonly attempt: Attempt;
 	readonly snapshot: ConnectorCapabilitySnapshot;
+	readonly runtimeLimits: RuntimeLimitsSnapshot;
 	readonly supervision: ReturnType<typeof createExternalConnectorTestSupervision>;
 }
 
 async function fixture(
-	options: { resume?: boolean; capabilityRevision?: number; toolGateway?: boolean } = {},
+	options: {
+		resume?: boolean;
+		capabilityRevision?: number;
+		toolGateway?: boolean;
+		runtimeLimits?: RuntimeLimitsSource;
+	} = {},
 ): Promise<Fixture> {
 	const resolvedBinding = binding();
 	const snapshot = capability(options.resume ?? true, options.capabilityRevision ?? 1, options.toolGateway ?? false);
@@ -450,6 +463,7 @@ async function fixture(
 		store,
 		driver,
 		supervision: supervision.options,
+		...(options.runtimeLimits === undefined ? {} : { runtimeLimits: options.runtimeLimits }),
 		now: () => now,
 		operationNonce: () => "operation-nonce-1",
 	});
@@ -466,10 +480,22 @@ async function fixture(
 	if (!epoch.ok) throw epoch.error;
 	const created = await connector.createAttempt(dispatch, resolvedBinding, { initialBindingEpoch: epoch.value });
 	if (!created.ok) throw created.error;
-	return { binding: resolvedBinding, store, driver, connector, attempt: created.value, snapshot, supervision };
+	const runtimeLimits = await connector.runtimeLimitsForAttempt(created.value.attemptId);
+	if (runtimeLimits === undefined) throw new Error("fixture RuntimeLimits were not frozen");
+	store.reads = 0;
+	return {
+		binding: resolvedBinding,
+		store,
+		driver,
+		connector,
+		attempt: created.value,
+		snapshot,
+		runtimeLimits,
+		supervision,
+	};
 }
 
-function restartedConnector(value: Fixture): {
+function restartedConnector(value: Fixture, runtimeLimits?: RuntimeLimitsSource): {
 	readonly connector: DurableExternalAgentConnector;
 	readonly driver: FakeDriver;
 } {
@@ -484,6 +510,7 @@ function restartedConnector(value: Fixture): {
 			store: value.store,
 			driver,
 			supervision: value.supervision.options,
+			...(runtimeLimits === undefined ? {} : { runtimeLimits }),
 			now: () => now,
 			operationNonce: () => "restart-must-not-create-an-operation",
 		}),
@@ -513,7 +540,7 @@ function operationFor(
 		bindingRevision: value.binding.contextRevision.revision,
 		capabilityDigest: capabilitySnapshot.digest,
 		capabilityRevision: capabilitySnapshot.revision,
-		operationNonce: "operation-nonce-1",
+		operationNonce: encodeRuntimeLimitsOperationNonce(value.runtimeLimits, "operation-nonce-1"),
 		correlation: {
 			...correlation,
 			taskId: value.attempt.taskId,
@@ -602,6 +629,27 @@ function receiptFor(value: Fixture, receiptProviderId = providerId): AttemptRece
 
 function persistAttempt(value: Fixture): void {
 	value.store.attempts.set(value.attempt.attemptId, value.attempt);
+}
+
+async function createAdditionalAttempt(value: Fixture, suffix: string): Promise<Attempt> {
+	const nextDispatch: Dispatch = {
+		...dispatch,
+		dispatchId: `${dispatch.dispatchId}-${suffix}`,
+	};
+	const attemptId = externalConnectorAttemptId(providerId, nextDispatch.dispatchId);
+	const epoch = createBindingEpoch({
+		bindingEpochId: `binding-epoch-external-${suffix}`,
+		taskId: task.taskId,
+		attemptId,
+		bindingId: value.binding.bindingId,
+		activationReason: "attempt_started",
+		activatedByCommandId: nextDispatch.dispatchId,
+		now: () => now,
+	});
+	if (!epoch.ok) throw epoch.error;
+	const created = await value.connector.createAttempt(nextDispatch, value.binding, { initialBindingEpoch: epoch.value });
+	if (!created.ok) throw created.error;
+	return created.value;
 }
 
 function gatewayCorrelation(): ExecutionCorrelation {
@@ -715,6 +763,173 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.driver.spawnStates).toEqual(["start_intent"]);
 		expect(value.driver.calls.events).toBe(1);
 		expect(value.store.operationHistory).toEqual(["prepared", "start_intent", "running", "terminal"]);
+	});
+
+	it("freezes limits for an accepted Attempt while reload updates only later Attempts", async () => {
+		let current: RuntimeLimitsResolutionInput = {
+			global: {
+				attemptWallMs: 10_000,
+				attemptIdleMs: 1_000,
+				cancelGraceMs: 2_000,
+				shutdownHardMs: 3_000,
+				maxFrameBytes: 100_000,
+				maxPendingWriteBytes: 200_000,
+				maxStderrBytes: 50_000,
+				maxEvents: 10,
+				maxOutputBytes: 300_000,
+				maxConcurrency: 2,
+				maxRetries: 1,
+				retryBudgetMs: 4_000,
+				maxBacklog: 10,
+			},
+		};
+		const value = await fixture({ runtimeLimits: () => current });
+		const firstLimits = await value.connector.runtimeLimitsForAttempt(value.attempt.attemptId);
+		expect(firstLimits?.values).toMatchObject({
+			attemptWallMs: 10_000,
+			attemptIdleMs: 1_000,
+			cancelGraceMs: 2_000,
+			shutdownHardMs: 3_000,
+			maxFrameBytes: 100_000,
+			maxPendingWriteBytes: 200_000,
+			maxStderrBytes: 50_000,
+			maxEvents: 10,
+			maxOutputBytes: 300_000,
+			maxConcurrency: 2,
+			maxRetries: 1,
+			retryBudgetMs: 4_000,
+			maxBacklog: 10,
+		});
+
+		current = {
+			global: {
+				attemptWallMs: 20_000,
+				attemptIdleMs: 2_000,
+				cancelGraceMs: 3_000,
+				shutdownHardMs: 4_000,
+				maxFrameBytes: 120_000,
+				maxPendingWriteBytes: 220_000,
+				maxStderrBytes: 60_000,
+				maxEvents: 20,
+				maxOutputBytes: 320_000,
+				maxConcurrency: 3,
+				maxRetries: 2,
+				retryBudgetMs: 5_000,
+				maxBacklog: 20,
+			},
+		};
+		const secondAttempt = await createAdditionalAttempt(value, "reload");
+		const secondLimits = await value.connector.runtimeLimitsForAttempt(secondAttempt.attemptId);
+		expect(secondLimits?.values).toMatchObject({
+			attemptWallMs: 20_000,
+			maxFrameBytes: 120_000,
+			maxEvents: 20,
+			maxOutputBytes: 320_000,
+			maxConcurrency: 3,
+			maxRetries: 2,
+			retryBudgetMs: 5_000,
+			maxBacklog: 20,
+		});
+		expect(await value.connector.runtimeLimitsForAttempt(value.attempt.attemptId)).toEqual(firstLimits);
+
+		persistAttempt(value);
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+		expect(completed.ok).toBe(true);
+		const operation = value.store.operations.get(value.attempt.attemptId);
+		expect(decodeRuntimeLimitsOperationNonce(operation?.operationNonce)?.snapshot).toEqual(firstLimits);
+
+		current = { global: { attemptWallMs: 30_000, maxEvents: 30, maxConcurrency: 4 } };
+		const restarted = restartedConnector(value, () => current);
+		expect(await restarted.connector.runtimeLimitsForAttempt(value.attempt.attemptId)).toEqual(firstLimits);
+		const replayed = await restarted.connector.runAttempt(value.attempt, { correlation });
+		expect(replayed).toEqual(completed);
+		expect(restarted.driver.calls.spawn).toBe(0);
+	});
+
+	it("fails closed after restart when an unsettled Attempt has no valid durable limits", async () => {
+		const missing = await fixture();
+		persistAttempt(missing);
+		const missingRestart = restartedConnector(missing);
+		const missingResult = await missingRestart.connector.runAttempt(missing.attempt, { correlation });
+		expect(missingResult).toMatchObject({ ok: false, error: { code: "external_connector_config_invalid" } });
+		expect(missingRestart.driver.calls.spawn).toBe(0);
+
+		const invalid = await fixture();
+		persistAttempt(invalid);
+		invalid.store.operations.set(invalid.attempt.attemptId, {
+			...operationFor(invalid, "running"),
+			operationNonce: "operation-nonce-1",
+		});
+		invalid.store.mappings.set(invalid.attempt.attemptId, mappingFor(invalid));
+		const invalidRestart = restartedConnector(invalid);
+		const invalidResult = await invalidRestart.connector.resumeAttempt(invalid.attempt, { correlation });
+		expect(invalidResult).toMatchObject({ ok: false, error: { code: "external_connector_config_invalid" } });
+		expect(invalidRestart.driver.calls.connect).toBe(0);
+		expect(invalid.store.operations.get(invalid.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "capability_drift",
+		});
+	});
+
+	it("reuses the durable frozen snapshot for non-terminal restart recovery", async () => {
+		const value = await fixture({
+			runtimeLimits: { global: { attemptWallMs: 10_000, attemptIdleMs: 5_000, maxEvents: 10 } },
+		});
+		persistAttempt(value);
+		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
+		value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
+		await persistSupervisorIdentity(value);
+		const restarted = restartedConnector(value, {
+			global: { attemptWallMs: 20_000, attemptIdleMs: 6_000, maxEvents: 20 },
+		});
+
+		expect((await restarted.connector.runtimeLimitsForAttempt(value.attempt.attemptId))?.values).toMatchObject({
+			attemptWallMs: 10_000,
+			attemptIdleMs: 5_000,
+			maxEvents: 10,
+		});
+		const resumed = await restarted.connector.resumeAttempt(value.attempt, { correlation });
+		expect(resumed.ok).toBe(true);
+		expect(restarted.driver.calls).toMatchObject({ spawn: 0, connect: 1, read: 1 });
+	});
+
+	it("uses each Attempt frozen concurrency limit without stranding later work", async () => {
+		const value = await fixture({ runtimeLimits: { global: { maxConcurrency: 1 } } });
+		const secondAttempt = await createAdditionalAttempt(value, "concurrency");
+		value.store.attempts.set(value.attempt.attemptId, value.attempt);
+		value.store.attempts.set(secondAttempt.attemptId, secondAttempt);
+		let markSpawnStarted: (() => void) | undefined;
+		let releaseSpawn: (() => void) | undefined;
+		const spawnStarted = new Promise<void>((resolve) => {
+			markSpawnStarted = resolve;
+		});
+		value.driver.spawnGate = new Promise<void>((resolve) => {
+			releaseSpawn = resolve;
+		});
+		value.driver.onSpawn = () => markSpawnStarted?.();
+
+		const first = value.connector.runAttempt(value.attempt, { correlation });
+		await spawnStarted;
+		const rejected = await value.connector.runAttempt(secondAttempt, { correlation });
+		expect(rejected).toMatchObject({ ok: false, error: { code: "external_resource_limit_exceeded" } });
+		expect(value.driver.calls.spawn).toBe(1);
+
+		releaseSpawn?.();
+		expect((await first).ok).toBe(true);
+		expect((await value.connector.runAttempt(secondAttempt, { correlation })).ok).toBe(true);
+		expect(value.driver.calls.spawn).toBe(2);
+	});
+
+	it("bounds the accepted backlog and releases its frozen snapshot after durable execution", async () => {
+		const value = await fixture({ runtimeLimits: { global: { maxBacklog: 1 } } });
+		await expect(createAdditionalAttempt(value, "backlog")).rejects.toMatchObject({
+			code: "external_resource_limit_exceeded",
+		});
+
+		persistAttempt(value);
+		expect((await value.connector.runAttempt(value.attempt, { correlation })).ok).toBe(true);
+		const admitted = await createAdditionalAttempt(value, "backlog");
+		expect(admitted.attemptId).toBe(externalConnectorAttemptId(providerId, `${dispatch.dispatchId}-backlog`));
 	});
 
 	it("persists one Attempt mapping and canonical receipt across replay", async () => {
