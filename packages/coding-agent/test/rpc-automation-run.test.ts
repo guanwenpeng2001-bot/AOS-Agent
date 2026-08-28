@@ -59,6 +59,7 @@ import type { ExternalModelSupportMatrix } from "../src/core/external-model-proj
 import type { Extension, ExtensionContext, ToolDefinition } from "../src/core/extensions/index.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import { encodeRuntimeLimitsOperationNonce } from "../src/core/runtime-limits.ts";
 import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -894,6 +895,9 @@ async function seedRpcExternalRecovery(
 	const ledger = new SessionLedger(session, { writer });
 	const store = new SessionExternalConnectorDurableStore(ledger);
 	try {
+		const processNonce = "rpc-operation-nonce";
+		const runtimeLimits = await fixture.connector.runtimeLimitsForAttempt(identity.attemptId);
+		if (runtimeLimits === undefined) throw new Error("RPC External Connector fixture has no frozen RuntimeLimits");
 		let operation: ExternalConnectorOperation = {
 			schemaVersion: 1,
 			providerId: fixture.selection.providerId,
@@ -904,7 +908,7 @@ async function seedRpcExternalRecovery(
 			bindingRevision: prepared.binding.contextRevision.revision,
 			capabilityDigest: fixture.snapshot.digest,
 			capabilityRevision: fixture.snapshot.revision,
-			operationNonce: "rpc-operation-nonce",
+			operationNonce: encodeRuntimeLimitsOperationNonce(runtimeLimits, processNonce),
 			correlation: prepared.correlation,
 			status: "prepared",
 			revision: 1,
@@ -916,7 +920,7 @@ async function seedRpcExternalRecovery(
 		);
 		const processHandle = await fixture.processController.launch({
 			supervisorRef,
-			operationNonce: operation.operationNonce,
+			operationNonce: processNonce,
 			detached: false,
 			containment: fixture.supervision.options.containment,
 		});
@@ -925,7 +929,7 @@ async function seedRpcExternalRecovery(
 			reference: {
 				schemaVersion: 1,
 				supervisorRef,
-				operationNonce: operation.operationNonce,
+				operationNonce: processNonce,
 			},
 			detached: false,
 			containment: fixture.supervision.options.containment,

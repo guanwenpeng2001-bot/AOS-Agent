@@ -9,6 +9,7 @@ export default mergeConfig(
 			globals: true,
 			environment: "node",
 			testTimeout: 30000,
+			include: ["test/**/*.test.ts"],
 			// Tests run offline by default; opt in with allowNetwork() from test/test-network-env.ts.
 			env: { AOS_AGENT_OFFLINE: "1" },
 			unstubEnvs: true,
