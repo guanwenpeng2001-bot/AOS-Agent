@@ -20,15 +20,86 @@ import {
 import {
 	CHILD_BINDING_PROJECTION_FIELDS,
 	CHILD_BINDING_PROJECTION_OBJECT_TYPE,
+	createTrustedMcpInheritanceApprovalAuthorityV1,
 	persistChildBindingProjectionV1,
 	projectChildBindingV1,
 	validateChildBindingProjectionV1,
 	type ChildBindingProjectionFieldV1,
 	type ProjectChildBindingInputV1,
+	type TrustedMcpInheritanceApprovalAuthorityV1,
 } from "../src/core/subagent-binding.ts";
+import {
+	resolveExecutionPolicy,
+	type ExecutionPolicyProfile,
+	type PolicyApprovalRequest,
+} from "../src/core/execution-policy.ts";
+import {
+	createExecutionPolicyLedger,
+	type PolicyLedgerSession,
+	type PolicyLedgerSessionEntry,
+} from "../src/core/execution-policy-ledger.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const ARTIFACT_DIGEST = `sha256:${"ab".repeat(32)}`;
+const APPROVED_AT = "2026-01-01T00:01:00.000Z";
+
+class MemoryPolicySession implements PolicyLedgerSession {
+	readonly entries: PolicyLedgerSessionEntry[] = [];
+
+	appendCustomEntry(customType: string, data?: unknown): string {
+		const id = `policy-entry-${this.entries.length + 1}`;
+		this.entries.push({ id, type: "custom", customType, data });
+		return id;
+	}
+
+	getEntries(): ReadonlyArray<PolicyLedgerSessionEntry> {
+		return this.entries;
+	}
+}
+
+function policyResolution(mcpApproval: "allow" | "ask" | "deny") {
+	const profile: ExecutionPolicyProfile = {
+		id: `mcp-inheritance-${mcpApproval}`,
+		revision: "revision-1",
+		enforcement: "host",
+		defaultAction: "allow",
+		workspace: { read: ["workspace"], write: ["workspace"], deny: [] },
+		process: { action: "allow", inheritEnvironment: false, allowEnvironment: [] },
+		network: { action: "allow", allowDestinations: [] },
+		credentials: { action: "deny", allowNames: [] },
+		approvals: { writeOutsideWorkspace: "deny", network: "allow", process: "allow", mcp: mcpApproval },
+	};
+	const resolved = resolveExecutionPolicy({
+		profiles: { [profile.id]: profile },
+		defaultProfile: profile.id,
+		bindingId: "policy-1",
+		runId: "run-mcp-inheritance",
+		workspaceIdentity: "workspace-mcp-inheritance",
+		createdAt: NOW,
+	});
+	if (!resolved.ok) throw resolved.error;
+	return { profile: resolved.profile, binding: resolved.binding };
+}
+
+function policyAuthority(
+	mcpApproval: "allow" | "ask" | "deny",
+	options: {
+		readonly session?: MemoryPolicySession;
+		readonly pending?: PolicyApprovalRequest[];
+	} = {},
+) {
+	const session = options.session ?? new MemoryPolicySession();
+	const ledger = createExecutionPolicyLedger(session);
+	const policy = policyResolution(mcpApproval);
+	const authority = createTrustedMcpInheritanceApprovalAuthorityV1({
+		schemaVersion: 1,
+		...policy,
+		policyRevision: immutableFact("policy_binding", "policy-1"),
+		ledger,
+		...(options.pending === undefined ? {} : { onApprovalRequired: (approval: PolicyApprovalRequest) => options.pending?.push(approval) }),
+	});
+	return { authority, ledger, policy, session };
+}
 
 function immutableFact(type: string, id: string, revision = 1): RevisionReference {
 	const payload = { schemaVersion: 1 as const, type, id, revision };
@@ -160,8 +231,8 @@ function input(overrides: Partial<ProjectChildBindingInputV1> = {}): ProjectChil
 	};
 }
 
-function mustProject(value: ProjectChildBindingInputV1) {
-	const result = projectChildBindingV1(value);
+function mustProject(value: ProjectChildBindingInputV1, authority?: TrustedMcpInheritanceApprovalAuthorityV1) {
+	const result = projectChildBindingV1(value, authority);
 	if (!result.ok) throw result.error;
 	return result.value;
 }
@@ -212,11 +283,12 @@ describe("child binding projection", () => {
 	});
 
 	it("accepts every selectorsNarrow-true MCP combination and rejects widening", () => {
+		const { authority } = policyAuthority("allow");
 		for (const parentSelector of SELECTORS) {
 			for (const childSelector of SELECTORS) {
 				const parentRole = role({ mcpSelector: parentSelector });
 				const childRole = role({ mcpSelector: childSelector });
-				const result = projectChildBindingV1(input({ parentRoleRevision: parentRole, childRoleRevision: childRole }));
+				const result = projectChildBindingV1(input({ parentRoleRevision: parentRole, childRoleRevision: childRole }), authority);
 				expect(result.ok).toBe(selectorsNarrow(parentSelector, childSelector));
 			}
 		}
@@ -385,35 +457,126 @@ describe("child binding projection", () => {
 		expect(validateChildBindingProjectionV1({ ...projection, fields: projection.fields.slice(1) })).toBe(false);
 	});
 
-	it("persists the projection and inherited MCP approval evidence reference as a durable Session fact", async () => {
-		const projectionInput = input();
-		const selection = projectionInput.parentBinding.mcpSelection;
-		const projection = mustProject({
-			...projectionInput,
-			mcpInheritanceApprovalRequired: true,
-			mcpInheritanceApprovalEvidence: {
-				schemaVersion: 1,
-				evidenceId: "mcp-approval-1",
-				parentBindingId: projectionInput.parentBinding.bindingId,
-				parentSelectionDigest: selection.digest,
-				childSelectionDigest: selection.digest,
-				decision: "allow",
-				approvedBy: "principal:reviewer-1",
-				decidedAt: NOW,
-			},
+	it("rejects omitted Policy authority and caller-fabricated approval fields for non-empty inheritance", () => {
+		const parentRole = role({ mcpSelector: { policy: "all" } });
+		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
+		expect(projectChildBindingV1(projectionInput)).toMatchObject({
+			ok: false,
+			error: { code: "subagent_binding_projection_invalid" },
 		});
-		expect(projection.mcpApprovalEvidenceId).toBe("mcp-approval-1");
+		for (const fabricated of [
+			{ mcpInheritanceApprovalRequired: false },
+			{ mcpApprovalEvidenceId: "fabricated-evidence" },
+			{
+				mcpInheritanceApprovalEvidence: {
+					evidenceId: "fabricated-evidence",
+					decision: "allow",
+				},
+			},
+		]) {
+			expect(projectChildBindingV1({ ...projectionInput, ...fabricated })).toMatchObject({
+				ok: false,
+				error: { code: "subagent_binding_projection_invalid" },
+			});
+		}
+	});
+
+	it("derives the inheritance decision from the trusted effective MCP Policy", () => {
+		const parentRole = role({ mcpSelector: { policy: "all" } });
+		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
+		const allowed = policyAuthority("allow");
+		const allowedProjection = projectChildBindingV1(projectionInput, allowed.authority);
+		expect(allowedProjection.ok).toBe(true);
+		if (allowedProjection.ok) expect(allowedProjection.value.mcpApprovalEvidenceId).toBeUndefined();
+		const denied = policyAuthority("deny");
+		expect(projectChildBindingV1(projectionInput, denied.authority)).toMatchObject({
+			ok: false,
+			error: { code: "subagent_binding_projection_invalid" },
+		});
+	});
+
+	it("rejects approved evidence from a stale child selection", () => {
+		const pending: PolicyApprovalRequest[] = [];
+		const { authority, ledger: policyLedger } = policyAuthority("ask", { pending });
+		const parentRole = role({ mcpSelector: { policy: "all" } });
+		const first = input({
+			parentRoleRevision: parentRole,
+			childRoleRevision: role({ mcpSelector: { policy: "named", named: ["a"] } }),
+		});
+		expect(projectChildBindingV1(first, authority).ok).toBe(false);
+		expect(pending).toHaveLength(1);
+		policyLedger.appendApprovalOutcome(pending[0]!, { outcome: "approved", source: "system", resolvedAt: APPROVED_AT });
+		expect(projectChildBindingV1(first, authority).ok).toBe(true);
+
+		const stale = input({
+			parentRoleRevision: parentRole,
+			childRoleRevision: role({ mcpSelector: { policy: "named", named: ["b"] } }),
+		});
+		expect(projectChildBindingV1(stale, authority)).toMatchObject({
+			ok: false,
+			error: { code: "subagent_binding_projection_invalid" },
+		});
+		expect(pending).toHaveLength(2);
+	});
+
+	it("rejects durable approval records carrying a wrong scope digest", () => {
+		const pending: PolicyApprovalRequest[] = [];
+		const { authority, ledger } = policyAuthority("ask", { pending });
+		const parentRole = role({ mcpSelector: { policy: "all" } });
+		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
+		expect(projectChildBindingV1(projectionInput, authority).ok).toBe(false);
+		const wrongScopeDigest = `sha256:${"0".repeat(64)}`;
+		const wrongScope = {
+			...pending[0]!,
+			scopeDigest: wrongScopeDigest,
+			scope: { ...pending[0]!.scope, scopeDigest: wrongScopeDigest },
+		};
+		ledger.appendApprovalOutcome(wrongScope, { outcome: "approved", source: "system", resolvedAt: APPROVED_AT });
+		expect(projectChildBindingV1(projectionInput, authority)).toMatchObject({
+			ok: false,
+			error: { code: "subagent_binding_projection_invalid" },
+		});
+	});
+
+	it("replays valid approved MCP inheritance from the durable Policy ledger after restart", () => {
+		const session = new MemoryPolicySession();
+		const pending: PolicyApprovalRequest[] = [];
+		const first = policyAuthority("ask", { session, pending });
+		const parentRole = role({ mcpSelector: { policy: "all" } });
+		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
+		expect(projectChildBindingV1(projectionInput, first.authority).ok).toBe(false);
+		first.ledger.appendApprovalOutcome(pending[0]!, { outcome: "approved", source: "system", resolvedAt: APPROVED_AT });
+
+		const restarted = policyAuthority("ask", { session });
+		const projection = mustProject(projectionInput, restarted.authority);
+		expect(projection.mcpApprovalEvidenceId).toBe("policy-entry-2");
+	});
+
+	it("persists the projection and inherited MCP approval evidence reference as a durable Session fact", async () => {
+		const pending: PolicyApprovalRequest[] = [];
+		const { authority, ledger } = policyAuthority("ask", { pending });
+		const parentRole = role({ mcpSelector: { policy: "all" } });
+		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
+		expect(projectChildBindingV1(projectionInput, authority).ok).toBe(false);
+		ledger.appendApprovalOutcome(pending[0]!, { outcome: "approved", source: "system", resolvedAt: APPROVED_AT });
+		const projection = mustProject(projectionInput, authority);
+		expect(projection.mcpApprovalEvidenceId).toBe("policy-entry-2");
 		const session = new Session(new InMemorySessionStorage({ id: "session-binding", createdAt: 1 }));
-		const ledger = new SessionLedger(session);
-		const persisted = await persistChildBindingProjectionV1(ledger, projection, {
+		const foundationLedger = new SessionLedger(session);
+		const fabricated = await persistChildBindingProjectionV1(foundationLedger, { ...projection }, {
+			clientRequestId: "project-fabricated",
+			correlation: { taskId: "task-child" },
+		});
+		expect(fabricated).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
+		const persisted = await persistChildBindingProjectionV1(foundationLedger, projection, {
 			clientRequestId: "project-1",
 			correlation: { taskId: "task-child" },
 		});
 		expect(persisted.ok).toBe(true);
-		const stored = await ledger.getFact(CHILD_BINDING_PROJECTION_OBJECT_TYPE, projection.spawnId);
+		const stored = await foundationLedger.getFact(CHILD_BINDING_PROJECTION_OBJECT_TYPE, projection.spawnId);
 		expect(stored?.payload).toEqual(projection);
 		expect((stored?.payload as { mcpApprovalEvidenceId?: string } | undefined)?.mcpApprovalEvidenceId).toBe(
-			"mcp-approval-1",
+			"policy-entry-2",
 		);
 	});
 });

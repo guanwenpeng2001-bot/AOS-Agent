@@ -12,7 +12,6 @@ import {
 	resolveMcpSelection,
 	validateAgentBinding,
 	validateChildMcpSelection,
-	type McpInheritanceApprovalEvidence,
 	type McpCapabilityBinding,
 	type McpSelection,
 	type ModelProfile,
@@ -149,19 +148,6 @@ function mustResolve(binding: CapabilityBinding): McpSelection {
 	return result.value;
 }
 
-function approval(parentBindingId: string, parent: McpSelection, child: McpSelection): McpInheritanceApprovalEvidence {
-	return {
-		schemaVersion: 1,
-		evidenceId: "approval-mcp-1",
-		parentBindingId,
-		parentSelectionDigest: parent.digest,
-		childSelectionDigest: child.digest,
-		decision: "allow",
-		approvedBy: "principal:reviewer-1",
-		decidedAt: NOW,
-	};
-}
-
 describe("exact MCP selection core", () => {
 	it("trims every MCP tool not present in the CapabilityBinding tool allowlist", () => {
 		const selection = mustResolve(capabilityBinding(["mcp__docs__read"]));
@@ -174,52 +160,13 @@ describe("exact MCP selection core", () => {
 		const parent = mustResolve(capabilityBinding(["mcp__docs__read"]));
 		const child = mustResolve(capabilityBinding(["mcp__docs__read", "mcp__docs__write"]));
 		const result = validateChildMcpSelection({
-			parentBindingId: "binding-parent",
 			parentSelection: parent,
 			childSelection: child,
-			inheritanceApprovalRequired: false,
 		});
 		expect(result).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
 	});
 
-	it("rejects wrong or stale parent/child selection digests", () => {
-		const parent = mustResolve(capabilityBinding(["mcp__docs__read"]));
-		const childResult = projectMcpSelectionToSelector(parent, { policy: "named", named: ["docs"] }, parent.capabilityBindingId);
-		const staleResult = projectMcpSelectionToSelector(parent, { policy: "none" }, parent.capabilityBindingId);
-		if (!childResult.ok) throw childResult.error;
-		if (!staleResult.ok) throw staleResult.error;
-		const evidence = approval("binding-parent", parent, staleResult.value);
-		for (const approvalEvidence of [
-			evidence,
-			{
-				...evidence,
-				parentSelectionDigest: { algorithm: "sha256" as const, value: "0".repeat(64) },
-				childSelectionDigest: childResult.value.digest,
-			},
-		]) {
-			const result = validateChildMcpSelection({
-				parentBindingId: "binding-parent",
-				parentSelection: parent,
-				childSelection: childResult.value,
-				inheritanceApprovalRequired: true,
-				approvalEvidence,
-			});
-			expect(result).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
-		}
-	});
-
-	it("rejects missing inheritance approval when Policy requires it", () => {
-		const parent = mustResolve(capabilityBinding(["mcp__docs__read"]));
-		const result = validateChildMcpSelection({
-			parentBindingId: "binding-parent",
-			parentSelection: parent,
-			childSelection: parent,
-			inheritanceApprovalRequired: true,
-		});
-		expect(result).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
-	});
-
-	it("freezes the resolved set in AgentBinding identity and accepts bound durable approval evidence", () => {
+	it("freezes the resolved set in AgentBinding identity and validates exact child subsets", () => {
 		const liveBinding = capabilityBinding(["mcp__docs__read"]);
 		const descriptors = liveBinding.descriptors.map((descriptor) => ({ ...descriptor }));
 		const toolAllowlist = [...liveBinding.toolAllowlist];
@@ -288,13 +235,10 @@ describe("exact MCP selection core", () => {
 		}).ok).toBe(false);
 
 		const accepted = validateChildMcpSelection({
-			parentBindingId: resolvedBinding.value.bindingId,
 			parentSelection: selected.value,
 			childSelection: selected.value,
-			inheritanceApprovalRequired: true,
-			approvalEvidence: approval(resolvedBinding.value.bindingId, selected.value, selected.value),
 		});
 		expect(accepted.ok).toBe(true);
-		if (accepted.ok) expect(Object.isFrozen(accepted.value.approvalEvidence)).toBe(true);
+		if (accepted.ok) expect(Object.isFrozen(accepted.value.selection)).toBe(true);
 	});
 });
