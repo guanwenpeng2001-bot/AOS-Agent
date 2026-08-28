@@ -639,6 +639,7 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 }
 
 type RpcExternalConnectorSupervision = ReturnType<typeof createExternalConnectorTestSupervision>;
+const RPC_RECOVERY_EVENT_DEADLINE = Object.freeze({ hardMs: 10_000, idleMs: 10_000 });
 
 interface RpcExternalConnectorFixture {
 	readonly connector: ReturnType<typeof createDurableExternalAgentConnector>;
@@ -2286,6 +2287,10 @@ describe("RPC Automation Host run lifecycle", () => {
 					toolGateway: true,
 					connectorToolGatewayCanonicalRequests: [canonicalRequest, secondCanonicalRequest],
 					supervision: fixture.supervision,
+					supervisionDeadlines: {
+						...fixture.supervision.options.deadlines,
+						event: RPC_RECOVERY_EVENT_DEADLINE,
+					},
 				});
 				return result;
 			});
@@ -2308,14 +2313,19 @@ describe("RPC Automation Host run lifecycle", () => {
 					data: { runId: sourceRunId },
 				});
 			});
-			await vi.waitFor(async () => {
-				const receipts = await getAgentCanonicalSession(reloaded.runtimeHost.session).findFoundationRecords({
-					objectType: "run_receipt",
-				});
-				expect(
-					receipts.filter((record) => record.kind === "fact" && record.correlation.runId === sourceRunId),
-				).toHaveLength(1);
-			});
+			await vi.waitFor(
+				async () => {
+					const receipts = await getAgentCanonicalSession(reloaded.runtimeHost.session).findFoundationRecords({
+						objectType: "run_receipt",
+					});
+					const sourceRunReceipts = receipts.filter(
+						(record) => record.kind === "fact" && record.correlation.runId === sourceRunId,
+					);
+					expect(sourceRunReceipts).toHaveLength(1);
+					expect(sourceRunReceipts[0]).toMatchObject({ payload: { terminalStatus: "completed" } });
+				},
+				{ timeout: 10_000 },
+			);
 			expect(switchedSession).toBeDefined();
 			expect(switchedSession).not.toBe(reloadedSession);
 			expect(switchedSession?.agentRuntimeComposition).not.toBe(initialComposition);
@@ -3710,6 +3720,14 @@ describe("RPC Automation Host run lifecycle", () => {
 						? [canonicalGatewayRequest, secondCanonicalGatewayRequest]
 						: [canonicalGatewayRequest],
 					supervision: fixture.supervision,
+					...(testCase.persistTerminal
+						? {
+								supervisionDeadlines: {
+									...fixture.supervision.options.deadlines,
+									event: RPC_RECOVERY_EVENT_DEADLINE,
+								},
+							}
+						: {}),
 				});
 				return result;
 			});
@@ -3747,7 +3765,7 @@ describe("RPC Automation Host run lifecycle", () => {
 							: {}),
 					},
 				});
-			});
+			}, testCase.persistTerminal ? { timeout: 10_000 } : undefined);
 			const gatewayCalls = fixture.toolGatewayRequests.length + (restoredFixture?.toolGatewayRequests.length ?? 0);
 			expect(gatewayCalls).toBe(testCase.gatewayEffects);
 			expect(restoredFixture?.driver.writes).toEqual(
