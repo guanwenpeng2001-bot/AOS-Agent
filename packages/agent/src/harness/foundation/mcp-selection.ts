@@ -63,29 +63,13 @@ export interface ResolveMcpSelectionInput {
 	readonly routeCatalog: readonly McpToolRoute[];
 }
 
-/** Validation-only projection of canonical durable Policy approval evidence. */
-export interface McpInheritanceApprovalEvidence {
-	readonly schemaVersion: 1;
-	readonly evidenceId: string;
-	readonly parentBindingId: string;
-	readonly parentSelectionDigest: Fingerprint;
-	readonly childSelectionDigest: Fingerprint;
-	readonly decision: "allow" | "deny";
-	readonly approvedBy: string;
-	readonly decidedAt: string;
-}
-
 export interface ValidateChildMcpSelectionInput {
-	readonly parentBindingId: string;
 	readonly parentSelection: McpSelection;
 	readonly childSelection: McpSelection;
-	readonly inheritanceApprovalRequired: boolean;
-	readonly approvalEvidence?: McpInheritanceApprovalEvidence;
 }
 
 export interface ValidatedChildMcpSelection {
 	readonly selection: McpSelection;
-	readonly approvalEvidence?: McpInheritanceApprovalEvidence;
 }
 
 const McpToolSelectionSchema = Type.Object(
@@ -119,23 +103,6 @@ export const McpSelectionSchema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-
-export const McpInheritanceApprovalEvidenceSchema = Type.Object(
-	{
-		schemaVersion: Type.Literal(1),
-		evidenceId: Type.String({ minLength: 1 }),
-		parentBindingId: Type.String({ minLength: 1 }),
-		parentSelectionDigest: FingerprintSchema,
-		childSelectionDigest: FingerprintSchema,
-		decision: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
-		approvedBy: Type.String({ minLength: 1 }),
-		decidedAt: Type.String({ minLength: 1 }),
-	},
-	{ additionalProperties: false },
-);
-
-const SAFE_PRINCIPAL_REFERENCE_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,63}:[A-Za-z0-9][A-Za-z0-9._-]{0,191}$/;
-const CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 function selectionError(message: string): ResultValue<never, FoundationError> {
 	return Result.err(new FoundationError("binding_required_fact", message));
@@ -401,11 +368,7 @@ export function isMcpSelectionSubset(parent: McpSelection, child: McpSelection):
 	return true;
 }
 
-/**
- * Validate child no-widen and, when required by the existing Policy authority,
- * exact durable approval evidence. This function does not evaluate Policy or
- * persist evidence; later composition supplies the canonical ledger projection.
- */
+/** Validate only the exact child subset. Policy approval is a Host authority concern. */
 export function validateChildMcpSelection(
 	input: ValidateChildMcpSelectionInput,
 ): ResultValue<ValidatedChildMcpSelection, FoundationError> {
@@ -416,37 +379,5 @@ export function validateChildMcpSelection(
 	if (!isMcpSelectionSubset(parent.value, child.value)) {
 		return childSelectionError("Child MCP selection cannot widen or replace the parent exact set");
 	}
-
-	let evidence: McpInheritanceApprovalEvidence | undefined;
-	if (input.approvalEvidence !== undefined) {
-		const checked = validateExactShape<McpInheritanceApprovalEvidence>(
-			McpInheritanceApprovalEvidenceSchema,
-			input.approvalEvidence,
-			"mcp_inheritance_approval_evidence",
-		);
-		if (!checked.ok) return childSelectionError("MCP inheritance approval evidence is invalid");
-		const decidedAt = new Date(checked.value.decidedAt);
-		if (
-			!SAFE_PRINCIPAL_REFERENCE_PATTERN.test(checked.value.approvedBy) ||
-			!CANONICAL_TIMESTAMP_PATTERN.test(checked.value.decidedAt) ||
-			!Number.isFinite(decidedAt.getTime()) ||
-			decidedAt.toISOString() !== checked.value.decidedAt
-		) {
-			return childSelectionError("MCP inheritance approval evidence has unsafe authority or time references");
-		}
-		evidence = cloneDeepFrozen(checked.value);
-	}
-	if (input.inheritanceApprovalRequired && evidence === undefined) {
-		return childSelectionError("MCP inheritance approval evidence is required");
-	}
-	if (
-		evidence !== undefined &&
-		(evidence.parentBindingId !== input.parentBindingId ||
-			evidence.parentSelectionDigest.value !== parent.value.digest.value ||
-			evidence.childSelectionDigest.value !== child.value.digest.value ||
-			evidence.decision !== "allow")
-	) {
-		return childSelectionError("MCP inheritance approval evidence is stale, denied, or bound to another selection");
-	}
-	return Result.ok(cloneDeepFrozen({ selection: child.value, ...(evidence === undefined ? {} : { approvalEvidence: evidence }) }));
+	return Result.ok(cloneDeepFrozen({ selection: child.value }));
 }

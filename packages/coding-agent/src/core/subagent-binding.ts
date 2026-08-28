@@ -31,7 +31,6 @@ import {
 	type Fingerprint,
 	type ModelProfile,
 	type ModelRoute,
-	type McpInheritanceApprovalEvidence,
 	type McpSelection,
 	type ResourceSelector,
 	type Result as ResultValue,
@@ -41,6 +40,21 @@ import {
 	type TaskEnvelope,
 	type VersionedReference,
 } from "@aos-agent/agent-core";
+import {
+	POLICY_REQUEST_PREFIX,
+	authorizePolicyOperation,
+	freezePolicyProfile,
+	type ExecutionPolicyProfile,
+	type PolicyApprovalRequest,
+	type PolicyBinding,
+	type PolicyDecision,
+} from "./execution-policy.ts";
+import {
+	InMemoryExecutionPolicyLedger,
+	POLICY_APPROVAL_CUSTOM_TYPE,
+	createPolicyBindingLedgerRecord,
+	type PolicyLedgerEvent,
+} from "./execution-policy-ledger.ts";
 
 export const CHILD_BINDING_PROJECTION_SCHEMA_VERSION = 1 as const;
 export const CHILD_BINDING_PROJECTION_OBJECT_TYPE = "subagent.child_binding_projection";
@@ -81,6 +95,21 @@ export interface ChildBindingHostPreflightV1 {
 	readonly instructionsTighter?: boolean;
 }
 
+/** Nominal Host authority backed by one effective PolicyBinding and its durable approval ledger. */
+export interface TrustedMcpInheritanceApprovalAuthorityV1 {
+	readonly schemaVersion: 1;
+	readonly policyBindingId: string;
+}
+
+export interface CreateTrustedMcpInheritanceApprovalAuthorityInputV1 {
+	readonly schemaVersion: 1;
+	readonly profile: ExecutionPolicyProfile;
+	readonly binding: PolicyBinding;
+	readonly policyRevision: RevisionReference;
+	readonly ledger: InMemoryExecutionPolicyLedger;
+	readonly onApprovalRequired?: (approval: PolicyApprovalRequest) => void;
+}
+
 export interface ProjectChildBindingInputV1 {
 	readonly schemaVersion: 1;
 	readonly spawnId: string;
@@ -99,8 +128,6 @@ export interface ProjectChildBindingInputV1 {
 	readonly childPolicyRevision?: RevisionReference;
 	readonly childCapabilityRevision?: RevisionReference;
 	readonly childMcpSelection?: McpSelection;
-	readonly mcpInheritanceApprovalRequired?: boolean;
-	readonly mcpInheritanceApprovalEvidence?: McpInheritanceApprovalEvidence;
 	readonly managedLocks?: readonly ChildBindingProjectionFieldV1[];
 	readonly hostPreflight?: ChildBindingHostPreflightV1;
 }
@@ -124,13 +151,12 @@ const INPUT_KEYS = new Set([
 	"childPolicyRevision",
 	"childCapabilityRevision",
 	"childMcpSelection",
-	"mcpInheritanceApprovalRequired",
-	"mcpInheritanceApprovalEvidence",
 	"managedLocks",
 	"hostPreflight",
 ]);
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+const MCP_POLICY_RESOURCE = "mcp.auth" as const;
 const FIELD_LITERALS = CHILD_BINDING_PROJECTION_FIELDS.map((field) => Type.Literal(field));
 const ChildBindingProjectionFieldRecordV1Schema = Type.Object(
 	{
@@ -167,6 +193,49 @@ function projectionError(message: string): ResultValue<never, FoundationError> {
 	return Result.err(new FoundationError("subagent_binding_projection_invalid", message));
 }
 
+interface TrustedMcpInheritanceApprovalAuthorityStateV1 {
+	readonly profile: ExecutionPolicyProfile;
+	readonly binding: PolicyBinding;
+	readonly policyRevision: RevisionReference;
+	readonly ledger: InMemoryExecutionPolicyLedger;
+	readonly onApprovalRequired?: (approval: PolicyApprovalRequest) => void;
+}
+
+const MCP_INHERITANCE_AUTHORITIES = new WeakMap<
+	TrustedMcpInheritanceApprovalAuthorityV1,
+	TrustedMcpInheritanceApprovalAuthorityStateV1
+>();
+const TRUSTED_CHILD_BINDING_PROJECTIONS = new WeakSet<ChildBindingProjectionV1>();
+
+export function createTrustedMcpInheritanceApprovalAuthorityV1(
+	input: CreateTrustedMcpInheritanceApprovalAuthorityInputV1,
+): TrustedMcpInheritanceApprovalAuthorityV1 {
+	if (input.schemaVersion !== 1 || !(input.ledger instanceof InMemoryExecutionPolicyLedger)) {
+		throw new FoundationError("subagent_binding_projection_invalid", "MCP inheritance approval authority is invalid");
+	}
+	const profile = freezePolicyProfile(input.profile);
+	const binding = createPolicyBindingLedgerRecord(input.binding);
+	const policyRevision = validateExactShape<RevisionReference>(RevisionReferenceSchema, input.policyRevision, "policy_revision");
+	if (
+		!policyRevision.ok ||
+		policyRevision.value.type !== "policy_binding" ||
+		policyRevision.value.id !== binding.id ||
+		binding.profileId !== profile.id ||
+		(profile.revision !== undefined && binding.profileRevision !== profile.revision)
+	) {
+		throw new FoundationError("subagent_binding_projection_invalid", "MCP inheritance Policy profile does not match its binding");
+	}
+	const authority = Object.freeze({ schemaVersion: 1 as const, policyBindingId: binding.id });
+	MCP_INHERITANCE_AUTHORITIES.set(authority, {
+		profile,
+		binding,
+		policyRevision: policyRevision.value,
+		ledger: input.ledger,
+		...(input.onApprovalRequired === undefined ? {} : { onApprovalRequired: input.onApprovalRequired }),
+	});
+	return authority;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -179,6 +248,95 @@ function isCanonicalTimestamp(value: unknown): value is string {
 	if (typeof value !== "string" || !TIMESTAMP_PATTERN.test(value)) return false;
 	const parsed = new Date(value);
 	return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function resolveMcpInheritanceApproval(
+	authority: TrustedMcpInheritanceApprovalAuthorityV1 | undefined,
+	input: {
+		readonly parentBindingId: string;
+		readonly childBindingId: string;
+		readonly policyRevision: RevisionReference;
+		readonly parentSelection: McpSelection;
+		readonly childSelection: McpSelection;
+	},
+): ResultValue<string | undefined, FoundationError> {
+	if (input.childSelection.servers.length === 0) return Result.ok(undefined);
+	const state = authority === undefined ? undefined : MCP_INHERITANCE_AUTHORITIES.get(authority);
+	if (state === undefined || !sameJson(state.policyRevision, input.policyRevision)) {
+		return projectionError("MCP inheritance requires trusted effective Policy authority");
+	}
+	const scope = {
+		schemaVersion: 1 as const,
+		policyRevision: input.policyRevision,
+		parentBindingId: input.parentBindingId,
+		childBindingId: input.childBindingId,
+		parentSelectionDigest: input.parentSelection.digest,
+		childSelectionDigest: input.childSelection.digest,
+	};
+	const scopeDigest = `sha256:${digestOf(scope).value}`;
+	const requestId = `${POLICY_REQUEST_PREFIX}${scopeDigest.slice("sha256:".length)}`;
+	let decision: PolicyDecision;
+	try {
+		decision = authorizePolicyOperation({
+			profile: state.profile,
+			binding: state.binding,
+			operation: { resource: MCP_POLICY_RESOURCE, source: "system", id: requestId },
+		});
+	} catch {
+		return projectionError("MCP inheritance Policy evaluation failed");
+	}
+	if (decision.bindingId !== input.policyRevision.id || decision.requestId !== requestId) {
+		return projectionError("MCP inheritance Policy decision is bound to another scope");
+	}
+	if (decision.outcome === "allow") return Result.ok(undefined);
+	if (decision.outcome !== "ask" || decision.approval === undefined) {
+		return projectionError("MCP inheritance is denied by effective Policy");
+	}
+	const approval = cloneDeepFrozen({
+		...decision.approval,
+		scopeDigest,
+		scope: { ...decision.approval.scope, scopeDigest },
+	});
+	const events = state.ledger.query({ customType: POLICY_APPROVAL_CUSTOM_TYPE, bindingId: input.policyRevision.id })
+		.filter((event): event is Extract<PolicyLedgerEvent, { readonly customType: typeof POLICY_APPROVAL_CUSTOM_TYPE }> =>
+			event.customType === POLICY_APPROVAL_CUSTOM_TYPE)
+		.filter((event) => (event.record.requestId ?? event.record.id) === requestId);
+	if (events.length === 0) {
+		try {
+			state.ledger.appendApproval(approval);
+			state.onApprovalRequired?.(approval);
+		} catch {
+			return projectionError("MCP inheritance approval request could not be persisted");
+		}
+		return projectionError("MCP inheritance approval evidence is required");
+	}
+	if (events.some((event) => {
+		const record = event.record;
+		return record.bindingId !== input.policyRevision.id ||
+			record.resource !== MCP_POLICY_RESOURCE ||
+			record.reasonCode !== "policy_approval_required" ||
+			record.createdAt !== approval.createdAt ||
+			record.scopeDigest !== scopeDigest ||
+			record.scope.scopeDigest !== scopeDigest;
+	})) {
+		return projectionError("MCP inheritance approval evidence is stale or bound to another scope");
+	}
+	const terminal = events.filter((event) => event.record.outcome !== undefined);
+	if (terminal.length !== 1) {
+		return projectionError("MCP inheritance approval evidence is missing or conflicting");
+	}
+	const evidence = terminal[0]!;
+	const resolvedAt = evidence.record.resolvedAt;
+	if (
+		evidence.entryId === undefined ||
+		evidence.record.outcome !== "approved" ||
+		resolvedAt === undefined ||
+		!isCanonicalTimestamp(resolvedAt) ||
+		Date.parse(resolvedAt) < Date.parse(approval.createdAt)
+	) {
+		return projectionError("MCP inheritance approval evidence is rejected, stale, or not durable");
+	}
+	return Result.ok(evidence.entryId);
 }
 
 function routeFromProfile(profile: ModelProfile): ModelRoute {
@@ -296,11 +454,13 @@ function validateInputShape(value: unknown): value is ProjectChildBindingInputV1
 		if (!Array.isArray(value.managedLocks)) return false;
 		if (!value.managedLocks.every((field) => CHILD_BINDING_PROJECTION_FIELDS.includes(field as ChildBindingProjectionFieldV1))) return false;
 	}
-	if (value.mcpInheritanceApprovalRequired !== undefined && typeof value.mcpInheritanceApprovalRequired !== "boolean") return false;
 	return true;
 }
 
-function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): ResultValue<ChildBindingProjectionV1, FoundationError> {
+function projectChildBindingUnchecked(
+	input: ProjectChildBindingInputV1,
+	mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthorityV1,
+): ResultValue<ChildBindingProjectionV1, FoundationError> {
 	if (input.childBudget !== undefined) {
 		const budget = validateBudget(input.childBudget);
 		if (!budget.ok) return projectionError("Child budget is not an exact BudgetV1");
@@ -382,15 +542,18 @@ function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): Result
 	);
 	if (!checkedChildMcpSelection.ok) return projectionError("Child MCP selection is invalid");
 	const checkedMcpInheritance = validateChildMcpSelection({
-		parentBindingId: parentBinding.value.bindingId,
 		parentSelection: parentBinding.value.mcpSelection,
 		childSelection: checkedChildMcpSelection.value,
-		inheritanceApprovalRequired: input.mcpInheritanceApprovalRequired === true,
-		...(input.mcpInheritanceApprovalEvidence === undefined
-			? {}
-			: { approvalEvidence: input.mcpInheritanceApprovalEvidence }),
 	});
 	if (!checkedMcpInheritance.ok) return projectionError(checkedMcpInheritance.error.message);
+	const mcpApprovalEvidenceId = resolveMcpInheritanceApproval(mcpInheritanceAuthority, {
+		parentBindingId: parentBinding.value.bindingId,
+		childBindingId: input.childBindingId,
+		policyRevision: childPolicy,
+		parentSelection: parentBinding.value.mcpSelection,
+		childSelection: checkedChildMcpSelection.value,
+	});
+	if (!mcpApprovalEvidenceId.ok) return mcpApprovalEvidenceId;
 	const mcpBaseProof: ChildBindingTighteningProofV1 =
 		mcpSelectorProof === "equal" && sameJson(parentBinding.value.mcpSelection, checkedChildMcpSelection.value)
 			? "equal"
@@ -475,28 +638,29 @@ function projectChildBindingUnchecked(input: ProjectChildBindingInputV1): Result
 		spawnId: input.spawnId,
 		fields,
 		createdAt: input.createdAt,
-		...(checkedMcpInheritance.value.approvalEvidence === undefined
-			? {}
-			: { mcpApprovalEvidenceId: checkedMcpInheritance.value.approvalEvidence.evidenceId }),
+		...(mcpApprovalEvidenceId.value === undefined ? {} : { mcpApprovalEvidenceId: mcpApprovalEvidenceId.value }),
 	};
-	return Result.ok(
-		cloneDeepFrozen({
-			...base,
-			digest: digestOf(base),
-		}),
-	);
+	const projection = cloneDeepFrozen({
+		...base,
+		digest: digestOf(base),
+	});
+	TRUSTED_CHILD_BINDING_PROJECTIONS.add(projection);
+	return Result.ok(projection);
 }
 
 /**
  * Project the seven inherited resources from parent Binding + child Role/Profile/Task.
  * Any widening, Managed Lock change, or unfrozen model route fails closed.
  */
-export function projectChildBindingV1(inputValue: unknown): ResultValue<ChildBindingProjectionV1, FoundationError> {
+export function projectChildBindingV1(
+	inputValue: unknown,
+	mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthorityV1,
+): ResultValue<ChildBindingProjectionV1, FoundationError> {
 	try {
 		if (!validateInputShape(inputValue)) {
 			return projectionError("Child Binding projection input is invalid");
 		}
-		return projectChildBindingUnchecked(inputValue);
+		return projectChildBindingUnchecked(inputValue, mcpInheritanceAuthority);
 	} catch {
 		return projectionError("Child Binding projection input is invalid");
 	}
@@ -533,6 +697,9 @@ export async function persistChildBindingProjectionV1(
 ): Promise<ResultValue<ChildBindingProjectionV1, FoundationError>> {
 	if (!validateChildBindingProjectionV1(projection)) {
 		return projectionError("Child Binding projection cannot be persisted");
+	}
+	if (!TRUSTED_CHILD_BINDING_PROJECTIONS.has(projection)) {
+		return projectionError("Child Binding projection lacks trusted projection authority");
 	}
 	try {
 		const result = await ledger.appendFact(CHILD_BINDING_PROJECTION_OBJECT_TYPE, projection.spawnId, projection, {

@@ -48,6 +48,7 @@ import {
 import {
 	persistChildBindingProjectionV1,
 	projectChildBindingV1,
+	type TrustedMcpInheritanceApprovalAuthorityV1,
 } from "./subagent-binding.ts";
 import { cleanupChildMemoryScopeV1, createChildMemoryScopeV1 } from "./subagent-memory.ts";
 import {
@@ -121,6 +122,8 @@ export interface TrustedSubagentCompositionOptionsV1 {
 	readonly parentMemoryForAgent?: (
 		parentAgentInstanceId: string,
 	) => { readonly store: ScopedMemoryStore; readonly parentAgentInstanceId: string };
+	/** Effective Host PolicyBinding plus canonical durable approval ledger for non-empty MCP inheritance. */
+	readonly mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthorityV1;
 	/** Explicit trusted Host opt-in for isolated in-process child execution. */
 	readonly worktree?: {
 		readonly schemaVersion: 1;
@@ -311,6 +314,7 @@ export class TrustedSubagentCompositionV1 {
 	private readonly worktree: TrustedSubagentCompositionOptionsV1["worktree"];
 	private readonly writer: SessionLedgerWriter | undefined;
 	private readonly productPrompt: TrustedSubagentCompositionOptionsV1["productPrompt"];
+	private readonly mcpInheritanceAuthority: TrustedMcpInheritanceApprovalAuthorityV1 | undefined;
 	private readonly productPromptComposition: TrustedProductPromptCompositionPolicyV1 | undefined;
 	private readonly now: () => string;
 	private readonly registry: SubagentProviderRegistryV1;
@@ -367,6 +371,7 @@ export class TrustedSubagentCompositionV1 {
 				return ledger;
 			};
 		this.productPrompt = options.productPrompt;
+		this.mcpInheritanceAuthority = options.mcpInheritanceAuthority;
 		const productPromptComposition = options.productPrompt?.composition;
 		if (
 			productPromptComposition !== undefined &&
@@ -1075,18 +1080,21 @@ export class TrustedSubagentCompositionV1 {
 				now: () => input.timestamp,
 			});
 			if (!resolved.ok) return resolved;
-			const projection = projectChildBindingV1({
-				schemaVersion: 1,
-				spawnId,
-				parentBinding: input.parentBinding,
-				childBindingId,
-				parentRoleRevision: input.parentRoleRevision,
-				childRoleRevision: input.selectedRoleRevision,
-				parentModelProfile: input.parentModelProfile,
-				childModelProfile: childProfile,
-				childTaskEnvelope: persistedTask.value,
-				createdAt: input.timestamp,
-			});
+			const projection = projectChildBindingV1(
+				{
+					schemaVersion: 1,
+					spawnId,
+					parentBinding: input.parentBinding,
+					childBindingId,
+					parentRoleRevision: input.parentRoleRevision,
+					childRoleRevision: input.selectedRoleRevision,
+					parentModelProfile: input.parentModelProfile,
+					childModelProfile: childProfile,
+					childTaskEnvelope: persistedTask.value,
+					createdAt: input.timestamp,
+				},
+				this.mcpInheritanceAuthority,
+			);
 			if (!projection.ok) return projection;
 			const persistedProjection = await persistChildBindingProjectionV1(childLedger, projection.value, {
 				clientRequestId: `subagent-product:projection:${spawnId}`,
