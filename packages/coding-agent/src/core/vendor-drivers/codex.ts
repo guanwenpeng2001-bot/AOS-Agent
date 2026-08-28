@@ -194,6 +194,7 @@ interface CodexOperation {
 	readonly rpcPending: Map<string, RpcPending>;
 	readonly gatewayPending: Map<string, GatewayPending>;
 	readonly respondedServerRequests: Set<string>;
+	readonly acceptedSideEffectingRequests: Set<string>;
 	readonly authority?: CodexExecutionAuthority;
 	readerTask?: Promise<void>;
 	stderrTask?: Promise<void>;
@@ -602,6 +603,24 @@ function terminalEvidence(
 	now: () => string,
 ): ExternalConnectorTerminalEvidence {
 	if (status === "interrupted") {
+		if (operation.sideEffectState !== "none" || operation.acceptedSideEffectingRequests.size > 0) {
+			operation.sideEffectState = "side_effect_unknown";
+			return {
+				externalSessionId: operation.threadId,
+				externalTurnId: operation.turnId,
+				operationNonce: operation.handle.operationNonce,
+				status: "failed",
+				artifacts: [],
+				error: {
+					code: "side_effect_unknown",
+					message: "External side effect could not be confirmed.",
+					category: "side_effect_unknown",
+					retryable: false,
+				},
+				sideEffectState: "side_effect_unknown",
+				producedAt: now(),
+			};
+		}
 		return {
 			externalSessionId: operation.threadId,
 			externalTurnId: operation.turnId,
@@ -720,6 +739,232 @@ const THREAD_KEYS = new Set([
 ]);
 const TURN_KEYS = new Set(["id", "items", "itemsView", "status", "error", "startedAt", "completedAt", "durationMs"]);
 
+function isNullableString(value: unknown): boolean {
+	return value === null || typeof value === "string";
+}
+
+function isNullableSafeInteger(value: unknown): boolean {
+	return value === null || (typeof value === "number" && Number.isSafeInteger(value));
+}
+
+function hasOptionalNullableString(value: Record<string, unknown>, key: string): boolean {
+	return !Object.hasOwn(value, key) || isNullableString(value[key]);
+}
+
+function validateThreadStatus(value: unknown): void {
+	if (!isRecord(value) || typeof value.type !== "string") throw eventInvalidError();
+	if (new Set(["notLoaded", "idle", "systemError"]).has(value.type)) {
+		if (!hasExactKeys(value, new Set(["type"]))) throw eventInvalidError();
+		return;
+	}
+	if (
+		value.type !== "active" ||
+		!hasExactKeys(value, new Set(["type", "activeFlags"])) ||
+		!Array.isArray(value.activeFlags) ||
+		!value.activeFlags.every(
+			(flag) => typeof flag === "string" && new Set(["waitingOnApproval", "waitingOnUserInput"]).has(flag),
+		)
+	) {
+		throw eventInvalidError();
+	}
+}
+
+function validateThreadSection(value: unknown): void {
+	if (value === null) return;
+	if (
+		!isRecord(value) ||
+		!hasOnlyKeys(value, new Set(["id", "name", "appearance"])) ||
+		!Object.hasOwn(value, "id") ||
+		!Object.hasOwn(value, "name") ||
+		typeof value.id !== "string" ||
+		typeof value.name !== "string"
+	) {
+		throw eventInvalidError();
+	}
+	if (!Object.hasOwn(value, "appearance") || value.appearance === null) return;
+	if (
+		!isRecord(value.appearance) ||
+		!hasOnlyKeys(value.appearance, new Set(["color", "icon"])) ||
+		!hasOptionalNullableString(value.appearance, "color") ||
+		!hasOptionalNullableString(value.appearance, "icon")
+	) {
+		throw eventInvalidError();
+	}
+}
+
+function validateSubAgentSource(value: unknown): void {
+	if (typeof value === "string") {
+		if (!new Set(["review", "compact", "memory_consolidation"]).has(value)) throw eventInvalidError();
+		return;
+	}
+	if (!isRecord(value)) throw eventInvalidError();
+	if (hasExactKeys(value, new Set(["other"]))) {
+		if (typeof value.other !== "string") throw eventInvalidError();
+		return;
+	}
+	if (!hasExactKeys(value, new Set(["thread_spawn"])) || !isRecord(value.thread_spawn)) {
+		throw eventInvalidError();
+	}
+	const spawn = value.thread_spawn;
+	if (
+		!hasOnlyKeys(spawn, new Set(["agent_nickname", "agent_path", "agent_role", "depth", "parent_thread_id"])) ||
+		!Object.hasOwn(spawn, "depth") ||
+		!Object.hasOwn(spawn, "parent_thread_id") ||
+		typeof spawn.depth !== "number" ||
+		!Number.isSafeInteger(spawn.depth) ||
+		spawn.depth < -2_147_483_648 ||
+		spawn.depth > 2_147_483_647 ||
+		typeof spawn.parent_thread_id !== "string" ||
+		!hasOptionalNullableString(spawn, "agent_nickname") ||
+		!hasOptionalNullableString(spawn, "agent_path") ||
+		!hasOptionalNullableString(spawn, "agent_role")
+	) {
+		throw eventInvalidError();
+	}
+}
+
+function validateSessionSource(value: unknown): void {
+	if (typeof value === "string") {
+		if (!new Set(["cli", "vscode", "exec", "appServer", "unknown"]).has(value)) throw eventInvalidError();
+		return;
+	}
+	if (!isRecord(value)) throw eventInvalidError();
+	if (hasExactKeys(value, new Set(["custom"]))) {
+		if (typeof value.custom !== "string") throw eventInvalidError();
+		return;
+	}
+	if (!hasExactKeys(value, new Set(["subAgent"]))) throw eventInvalidError();
+	validateSubAgentSource(value.subAgent);
+}
+
+function validateGitInfo(value: unknown): void {
+	if (value === null) return;
+	if (
+		!isRecord(value) ||
+		!hasOnlyKeys(value, new Set(["sha", "branch", "originUrl"])) ||
+		!hasOptionalNullableString(value, "sha") ||
+		!hasOptionalNullableString(value, "branch") ||
+		!hasOptionalNullableString(value, "originUrl")
+	) {
+		throw eventInvalidError();
+	}
+}
+
+function validateSandboxPolicy(value: unknown): void {
+	if (!isRecord(value) || typeof value.type !== "string") throw eventInvalidError();
+	if (value.type === "dangerFullAccess") {
+		if (!hasExactKeys(value, new Set(["type"]))) throw eventInvalidError();
+		return;
+	}
+	if (value.type === "readOnly") {
+		if (
+			!hasOnlyKeys(value, new Set(["type", "networkAccess"])) ||
+			(Object.hasOwn(value, "networkAccess") && typeof value.networkAccess !== "boolean")
+		) {
+			throw eventInvalidError();
+		}
+		return;
+	}
+	if (value.type === "externalSandbox") {
+		if (
+			!hasOnlyKeys(value, new Set(["type", "networkAccess"])) ||
+			(Object.hasOwn(value, "networkAccess") &&
+				(typeof value.networkAccess !== "string" ||
+					!new Set(["restricted", "enabled"]).has(value.networkAccess)))
+		) {
+			throw eventInvalidError();
+		}
+		return;
+	}
+	if (
+		value.type !== "workspaceWrite" ||
+		!hasOnlyKeys(
+			value,
+			new Set(["type", "writableRoots", "networkAccess", "excludeTmpdirEnvVar", "excludeSlashTmp"]),
+		) ||
+		(Object.hasOwn(value, "writableRoots") &&
+			(!Array.isArray(value.writableRoots) || !value.writableRoots.every((root) => typeof root === "string"))) ||
+		(Object.hasOwn(value, "networkAccess") && typeof value.networkAccess !== "boolean") ||
+		(Object.hasOwn(value, "excludeTmpdirEnvVar") && typeof value.excludeTmpdirEnvVar !== "boolean") ||
+		(Object.hasOwn(value, "excludeSlashTmp") && typeof value.excludeSlashTmp !== "boolean")
+	) {
+		throw eventInvalidError();
+	}
+}
+
+const CODEX_ERROR_INFO_VALUES = new Set([
+	"contextWindowExceeded",
+	"sessionBudgetExceeded",
+	"usageLimitExceeded",
+	"serverOverloaded",
+	"cyberPolicy",
+	"misalignmentPolicyViolation",
+	"internalServerError",
+	"unauthorized",
+	"badRequest",
+	"threadRollbackFailed",
+	"sandboxError",
+	"other",
+]);
+
+function validateCodexErrorInfo(value: unknown): void {
+	if (typeof value === "string") {
+		if (!CODEX_ERROR_INFO_VALUES.has(value)) throw eventInvalidError();
+		return;
+	}
+	if (!isRecord(value) || Reflect.ownKeys(value).length !== 1) throw eventInvalidError();
+	const key = Object.keys(value)[0];
+	if (key === undefined) throw eventInvalidError();
+	const details = value[key];
+	if (key === "activeTurnNotSteerable") {
+		if (
+			!isRecord(details) ||
+			!hasExactKeys(details, new Set(["turnKind"])) ||
+			typeof details.turnKind !== "string" ||
+			!new Set(["review", "compact"]).has(details.turnKind)
+		) {
+			throw eventInvalidError();
+		}
+		return;
+	}
+	if (
+		!new Set([
+			"httpConnectionFailed",
+			"responseStreamConnectionFailed",
+			"responseStreamDisconnected",
+			"responseTooManyFailedAttempts",
+		]).has(key) ||
+		!isRecord(details) ||
+		!hasOnlyKeys(details, new Set(["httpStatusCode"]))
+	) {
+		throw eventInvalidError();
+	}
+	if (Object.hasOwn(details, "httpStatusCode")) {
+		const status = details.httpStatusCode;
+		if (
+			status !== null &&
+			(typeof status !== "number" || !Number.isSafeInteger(status) || status < 0 || status > 65_535)
+		) {
+			throw eventInvalidError();
+		}
+	}
+}
+
+function validateTurnError(value: unknown): void {
+	if (
+		!isRecord(value) ||
+		!hasOnlyKeys(value, new Set(["message", "codexErrorInfo", "additionalDetails"])) ||
+		!Object.hasOwn(value, "message") ||
+		typeof value.message !== "string" ||
+		!hasOptionalNullableString(value, "additionalDetails")
+	) {
+		throw eventInvalidError();
+	}
+	if (Object.hasOwn(value, "codexErrorInfo") && value.codexErrorInfo !== null) {
+		validateCodexErrorInfo(value.codexErrorInfo);
+	}
+}
+
 function validateInitialize(value: unknown): void {
 	if (
 		!isRecord(value) ||
@@ -740,18 +985,37 @@ function validateThread(value: unknown, expectedId?: string): string {
 		!isExternalConnectorMappingIdentifier(value.id) ||
 		(expectedId !== undefined && value.id !== expectedId) ||
 		!isExternalConnectorMappingIdentifier(value.sessionId) ||
+		!isNullableString(value.forkedFromId) ||
+		!isNullableString(value.parentThreadId) ||
 		typeof value.preview !== "string" ||
 		value.ephemeral !== false ||
+		!isNullableSafeInteger(value.sectionEnteredAt) ||
+		!isNullableString(value.projectId) ||
+		(typeof value.historyMode !== "string" || !new Set(["legacy", "paginated"]).has(value.historyMode)) ||
 		typeof value.modelProvider !== "string" ||
-		!Number.isFinite(value.createdAt) ||
-		!Number.isFinite(value.updatedAt) ||
+		typeof value.createdAt !== "number" ||
+		!Number.isSafeInteger(value.createdAt) ||
+		typeof value.updatedAt !== "number" ||
+		!Number.isSafeInteger(value.updatedAt) ||
+		!isNullableSafeInteger(value.recencyAt) ||
+		!isNullableString(value.path) ||
 		typeof value.cwd !== "string" ||
 		value.cliVersion !== PRIVATE_CODEX_APP_SERVER_IDENTITY.cliVersion ||
+		(value.canAcceptDirectInput !== null && typeof value.canAcceptDirectInput !== "boolean") ||
+		!isNullableString(value.threadSource) ||
+		!isNullableString(value.agentNickname) ||
+		!isNullableString(value.agentRole) ||
+		!isNullableString(value.name) ||
 		!Array.isArray(value.turns) ||
 		value.turns.length !== 0
 	) {
 		throw eventInvalidError();
 	}
+	if (value.extra !== null && !isRecord(value.extra)) throw eventInvalidError();
+	validateThreadSection(value.section);
+	validateThreadStatus(value.status);
+	validateSessionSource(value.source);
+	validateGitInfo(value.gitInfo);
 	return value.id;
 }
 
@@ -762,18 +1026,59 @@ function validateThreadResponse(value: unknown, resumeId?: string): string {
 		!hasExactKeys(value, keys) ||
 		typeof value.model !== "string" ||
 		typeof value.modelProvider !== "string" ||
+		!isNullableString(value.serviceTier) ||
 		typeof value.cwd !== "string" ||
 		!Array.isArray(value.runtimeWorkspaceRoots) ||
+		!value.runtimeWorkspaceRoots.every((root) => typeof root === "string") ||
 		!Array.isArray(value.instructionSources) ||
+		!value.instructionSources.every((source) => typeof source === "string") ||
 		typeof value.approvalPolicy !== "string" ||
 		!new Set(["untrusted", "on-request", "never"]).has(value.approvalPolicy) ||
 		typeof value.approvalsReviewer !== "string" ||
 		!new Set(["user", "auto_review", "guardian_subagent"]).has(value.approvalsReviewer) ||
-		!isRecord(value.sandbox) ||
-		typeof value.sandbox.type !== "string" ||
-		!new Set(["dangerFullAccess", "readOnly", "externalSandbox", "workspaceWrite"]).has(value.sandbox.type)
+		(value.reasoningEffort !== null &&
+			(typeof value.reasoningEffort !== "string" || value.reasoningEffort.length === 0))
 	) {
 		throw eventInvalidError();
+	}
+	validateSandboxPolicy(value.sandbox);
+	if (value.activePermissionProfile !== null) {
+		if (
+			!isRecord(value.activePermissionProfile) ||
+			!hasOnlyKeys(value.activePermissionProfile, new Set(["id", "extends"])) ||
+			!Object.hasOwn(value.activePermissionProfile, "id") ||
+			typeof value.activePermissionProfile.id !== "string" ||
+			!hasOptionalNullableString(value.activePermissionProfile, "extends")
+		) {
+			throw eventInvalidError();
+		}
+	}
+	if (typeof value.multiAgentMode === "string") {
+		if (!new Set(["explicitRequestOnly", "proactive"]).has(value.multiAgentMode)) throw eventInvalidError();
+	} else if (
+		!isRecord(value.multiAgentMode) ||
+		!hasExactKeys(value.multiAgentMode, new Set(["custom"])) ||
+		typeof value.multiAgentMode.custom !== "string"
+	) {
+		throw eventInvalidError();
+	}
+	if (resumeId !== undefined) {
+		if (!isNullableString(value.turnsBackwardsCursor) || !isNullableString(value.itemsBackwardsCursor)) {
+			throw eventInvalidError();
+		}
+		if (value.initialTurnsPage !== null) {
+			if (
+				!isRecord(value.initialTurnsPage) ||
+				!hasOnlyKeys(value.initialTurnsPage, new Set(["data", "nextCursor", "backwardsCursor"])) ||
+				!Object.hasOwn(value.initialTurnsPage, "data") ||
+				!Array.isArray(value.initialTurnsPage.data) ||
+				!hasOptionalNullableString(value.initialTurnsPage, "nextCursor") ||
+				!hasOptionalNullableString(value.initialTurnsPage, "backwardsCursor")
+			) {
+				throw eventInvalidError();
+			}
+			for (const turn of value.initialTurnsPage.data) validateTurn(turn);
+		}
 	}
 	return validateThread(value.thread, resumeId);
 }
@@ -789,18 +1094,15 @@ function validateTurn(value: unknown, expectedId?: string): { readonly id: strin
 		typeof value.itemsView !== "string" ||
 		!new Set(["notLoaded", "summary", "full"]).has(value.itemsView) ||
 		typeof value.status !== "string" ||
-		!new Set(["completed", "interrupted", "failed", "inProgress"]).has(value.status)
+		!new Set(["completed", "interrupted", "failed", "inProgress"]).has(value.status) ||
+		!isNullableSafeInteger(value.startedAt) ||
+		!isNullableSafeInteger(value.completedAt) ||
+		!isNullableSafeInteger(value.durationMs)
 	) {
 		throw eventInvalidError();
 	}
 	if (value.status === "failed") {
-		if (
-			!isRecord(value.error) ||
-			!hasOnlyKeys(value.error, new Set(["message", "codexErrorInfo", "additionalDetails", "misalignment"])) ||
-			typeof value.error.message !== "string"
-		) {
-			throw eventInvalidError();
-		}
+		validateTurnError(value.error);
 	} else if (value.error !== null) {
 		throw eventInvalidError();
 	}
@@ -1061,7 +1363,12 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 	): Promise<ExternalConnectorTerminalEvidence | undefined> {
 		const operation = this.#requireOperation(handle);
 		operation.cancelRequested = true;
-		if ([...operation.gatewayPending.values()].some((pending) => pending.sideEffecting)) {
+		if (
+			operation.acceptedSideEffectingRequests.size > 0 ||
+			[...operation.gatewayPending.values()].some(
+				(pending) => pending.responseKind === "dynamic_tool" && pending.sideEffecting,
+			)
+		) {
 			operation.sideEffectState = "side_effect_unknown";
 		}
 		try {
@@ -1159,6 +1466,7 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 			rpcPending: new Map(),
 			gatewayPending: new Map(),
 			respondedServerRequests: new Set(),
+			acceptedSideEffectingRequests: new Set(),
 			...(input.authority === undefined ? {} : { authority: input.authority }),
 			threadId: input.externalSessionId ?? "",
 			turnId: input.externalTurnId ?? "",
@@ -1363,7 +1671,9 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 					([, pending]) => rpcIdKey(pending.requestId) === requestKey,
 				);
 				if (unresolved === undefined) throw eventInvalidError();
-				if (unresolved[1].sideEffecting) operation.sideEffectState = "side_effect_unknown";
+				if (unresolved[1].responseKind === "dynamic_tool" && unresolved[1].sideEffecting) {
+					operation.sideEffectState = "side_effect_unknown";
+				}
 				operation.gatewayPending.delete(unresolved[0]);
 			}
 			progress(operation, "server_request_resolved");
@@ -1372,13 +1682,14 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 		if (method === "error") {
 			if (
 				!isRecord(params) ||
-				!hasExactKeys(params, new Set(["error"])) ||
-				!isRecord(params.error) ||
-				!hasOnlyKeys(params.error, new Set(["message", "codexErrorInfo", "additionalDetails", "misalignment"])) ||
-				typeof params.error.message !== "string"
+				!hasExactKeys(params, new Set(["error", "threadId", "turnId", "willRetry"])) ||
+				params.threadId !== operation.threadId ||
+				params.turnId !== operation.turnId ||
+				typeof params.willRetry !== "boolean"
 			) {
 				throw eventInvalidError();
 			}
+			validateTurnError(params.error);
 			progress(operation, "error");
 			return;
 		}
@@ -1610,6 +1921,16 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 		}
 		const requestKey = rpcIdKey(pending.requestId)!;
 		operation.respondedServerRequests.add(requestKey);
+		if (
+			pending.sideEffecting &&
+			result.ok &&
+			(pending.responseKind === "permissions_approval" ||
+				((pending.responseKind === "command_approval" || pending.responseKind === "file_approval") &&
+					isRecord(payload) &&
+					(payload.decision === "accept" || payload.decision === "acceptForSession")))
+		) {
+			operation.acceptedSideEffectingRequests.add(requestKey);
+		}
 		try {
 			await this.#send(operation, { id: pending.requestId, result: payload });
 		} catch (error) {
@@ -1620,7 +1941,12 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 
 	#fail(operation: CodexOperation, error: unknown): void {
 		if (operation.failure !== undefined || operation.closed) return;
-		if ([...operation.gatewayPending.values()].some((pending) => pending.sideEffecting)) {
+		if (
+			operation.acceptedSideEffectingRequests.size > 0 ||
+			[...operation.gatewayPending.values()].some(
+				(pending) => pending.responseKind === "dynamic_tool" && pending.sideEffecting,
+			)
+		) {
 			operation.sideEffectState = "side_effect_unknown";
 		}
 		operation.failure = normalizeError(error);
