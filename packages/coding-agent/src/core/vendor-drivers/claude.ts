@@ -12,11 +12,15 @@ import { createHash } from "node:crypto";
 import {
 	Result,
 	canonicalFoundationJson,
+	isToolGatewayRoute,
+	validateMcpSelection,
+	type AttemptReceiptUsage,
 	type ConnectorCapabilitySnapshot,
 	type FoundationJsonValue,
 	type McpSelection,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
+	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import {
 	createDurableExternalAgentConnector,
@@ -40,7 +44,6 @@ export const PRIVATE_CLAUDE_AGENT_SDK_VERSION = "0.3.246" as const;
 const CLAUDE_PROTOCOL_NAME = "claude-agent-sdk";
 const CLAUDE_PERMISSION_TOOL = "claude.permission.request";
 const CLAUDE_NAMESPACE = "claude";
-const RESUME_PROMPT = "Continue the durable AOS attempt.";
 
 export const PRIVATE_CLAUDE_AGENT_SDK_LIMITS = Object.freeze({
 	maxMessageBytes: 256 * 1024,
@@ -90,7 +93,6 @@ export interface PrivateClaudeToolResult {
 export interface PrivateClaudeCompanionQueryRequest {
 	readonly sdkVersion: typeof PRIVATE_CLAUDE_AGENT_SDK_VERSION;
 	readonly prompt: string;
-	readonly resumeSessionId?: string;
 	readonly cwd: string;
 	readonly env: Readonly<Record<string, string>>;
 	readonly tools: readonly PrivateClaudeSelectedTool[];
@@ -130,6 +132,7 @@ type ClaudeDriverErrorCode =
 	| "external_event_invalid"
 	| "external_frame_oversize"
 	| "external_protocol_unsupported"
+	| "external_resume_unsupported"
 	| "external_resource_limit_exceeded";
 
 export class PrivateClaudeAgentSdkError extends Error {
@@ -156,6 +159,10 @@ interface ClaudeExecutionAuthority {
 	readonly dispatchId: string;
 	readonly bindingId: string;
 	readonly bindingEpochId: string;
+	readonly bindingDigest: string;
+	readonly bindingRevision: number;
+	readonly capabilityDigest: string;
+	readonly capabilityRevision: number;
 	readonly operationId: string;
 }
 
@@ -169,6 +176,8 @@ interface PendingClaudeOperation {
 interface ClaudeOperation {
 	handle: ExternalConnectorDriverHandle;
 	readonly query: PrivateClaudeCompanionQuery;
+	readonly tools: readonly PrivateClaudeSelectedTool[];
+	readonly toolNames: ReadonlySet<string>;
 	readonly abortController: AbortController;
 	readonly events: BoundedEventQueue;
 	readonly initialized: Deferred<void>;
@@ -176,7 +185,6 @@ interface ClaudeOperation {
 	readonly pending: Map<string, PendingClaudeOperation>;
 	readonly seenCallbacks: Set<string>;
 	readonly authority?: ClaudeExecutionAuthority;
-	readonly expectedSessionId?: string;
 	sessionId: string;
 	sequence: number;
 	totalBytes: number;
@@ -326,7 +334,7 @@ function validateCapability(providerId: string, capability: ConnectorCapabilityS
 		capability.providerId !== providerId ||
 		capability.protocol.name !== CLAUDE_PROTOCOL_NAME ||
 		capability.protocol.version !== PRIVATE_CLAUDE_AGENT_SDK_VERSION ||
-		capability.resume !== true ||
+		capability.resume !== false ||
 		capability.toolGateway !== true ||
 		capability.artifacts ||
 		capability.images ||
@@ -358,6 +366,44 @@ function resolveTools(selection: McpSelection): readonly PrivateClaudeSelectedTo
 	return Object.freeze(tools);
 }
 
+function intersectToolGatewayRoutes(
+	selectedTools: readonly PrivateClaudeSelectedTool[],
+	routes: readonly ToolGatewayRoute[] | undefined,
+): readonly PrivateClaudeSelectedTool[] {
+	if (routes === undefined) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+	const routeKeys = new Set<string>();
+	for (const route of routes) {
+		if (!isToolGatewayRoute(route)) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		const key = canonicalFoundationJson([route.namespace ?? "", route.toolName]);
+		if (routeKeys.has(key)) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		routeKeys.add(key);
+		if (
+			route.kind === "mcp" &&
+			!selectedTools.some(
+				(tool) =>
+					tool.serverName === route.namespace &&
+					tool.toolName === route.toolName &&
+					tool.providerId === route.providerId &&
+					tool.routeRevision === route.revision,
+			)
+		) {
+			throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		}
+	}
+	return Object.freeze(
+		selectedTools.filter((tool) =>
+			routes.some(
+				(route) =>
+					route.kind === "mcp" &&
+					route.namespace === tool.serverName &&
+					route.toolName === tool.toolName &&
+					route.providerId === tool.providerId &&
+					route.revision === tool.routeRevision,
+			),
+		),
+	);
+}
+
 function authorityFor(request: ExternalConnectorDriverSpawnRequest): ClaudeExecutionAuthority {
 	const bindingEpochId = request.attempt.bindingEpochIds[0];
 	const operationId = request.correlation.operationId;
@@ -377,6 +423,10 @@ function authorityFor(request: ExternalConnectorDriverSpawnRequest): ClaudeExecu
 		dispatchId: request.attempt.dispatchId,
 		bindingId: request.attempt.bindingId,
 		bindingEpochId,
+		bindingDigest: request.bindingDigest,
+		bindingRevision: request.bindingRevision,
+		capabilityDigest: request.capability.digest.value,
+		capabilityRevision: request.capability.revision,
 		operationId,
 	});
 }
@@ -432,46 +482,84 @@ function mappingMatchesHandle(
 		mapping.supervisor.nonce === handle.operationNonce;
 }
 
-function validateUsage(message: Record<string, unknown>): void {
-	if (!isRecord(message.usage)) throw eventInvalidError();
-	for (const key of ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]) {
-		const amount = message.usage[key];
-		if (amount !== undefined && (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0)) {
-			throw eventInvalidError();
-		}
-	}
+function mappingMatchesOperation(mapping: CanonicalExternalConnectorMapping, operation: ClaudeOperation): boolean {
+	const authority = operation.authority;
+	return authority !== undefined &&
+		mappingMatchesHandle(mapping, operation.handle) &&
+		mapping.providerId === authority.providerId &&
+		mapping.attemptId === authority.attemptId &&
+		mapping.binding.digest.value === authority.bindingDigest &&
+		mapping.binding.revision === authority.bindingRevision &&
+		mapping.capability.digest.value === authority.capabilityDigest &&
+		mapping.capability.revision === authority.capabilityRevision;
+}
+
+const CLAUDE_MODEL_USAGE_KEYS = new Set([
+	"inputTokens",
+	"outputTokens",
+	"cacheReadInputTokens",
+	"cacheCreationInputTokens",
+	"webSearchRequests",
+	"costUSD",
+	"contextWindow",
+	"maxOutputTokens",
+	"canonicalModel",
+	"provider",
+	"costBasis",
+]);
+
+function boundedCount(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function boundedCost(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+}
+
+function validateUsage(message: Record<string, unknown>): AttemptReceiptUsage {
 	if (
-		typeof message.usage.input_tokens !== "number" ||
-		typeof message.usage.output_tokens !== "number" ||
-		typeof message.total_cost_usd !== "number" ||
-		!Number.isFinite(message.total_cost_usd) ||
-		message.total_cost_usd < 0
-	) {
-		throw eventInvalidError();
-	}
+		!isRecord(message.usage) ||
+		!boundedCount(message.usage.input_tokens) ||
+		!boundedCount(message.usage.output_tokens) ||
+		(message.usage.cache_read_input_tokens !== undefined && !boundedCount(message.usage.cache_read_input_tokens)) ||
+		(message.usage.cache_creation_input_tokens !== undefined && !boundedCount(message.usage.cache_creation_input_tokens)) ||
+		!boundedCost(message.total_cost_usd)
+	) throw eventInvalidError();
 	if (!isRecord(message.modelUsage)) throw eventInvalidError();
 	for (const usage of Object.values(message.modelUsage)) {
-		if (!isRecord(usage)) throw eventInvalidError();
-		for (const key of [
-			"inputTokens",
-			"outputTokens",
-			"cacheReadInputTokens",
-			"cacheCreationInputTokens",
-			"webSearchRequests",
-			"costUSD",
-			"contextWindow",
-			"maxOutputTokens",
-		]) {
-			const amount = usage[key];
-			if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) throw eventInvalidError();
-		}
+		if (
+			!isRecord(usage) ||
+			Reflect.ownKeys(usage).some((key) => typeof key !== "string" || !CLAUDE_MODEL_USAGE_KEYS.has(key)) ||
+			![
+				usage.inputTokens,
+				usage.outputTokens,
+				usage.cacheReadInputTokens,
+				usage.cacheCreationInputTokens,
+				usage.webSearchRequests,
+				usage.contextWindow,
+				usage.maxOutputTokens,
+			].every(boundedCount) ||
+			!boundedCost(usage.costUSD) ||
+			(usage.canonicalModel !== undefined && typeof usage.canonicalModel !== "string") ||
+			(usage.provider !== undefined && typeof usage.provider !== "string") ||
+			(usage.costBasis !== undefined &&
+				(typeof usage.costBasis !== "string" || !["list", "managed", "unknown"].includes(usage.costBasis)))
+		) throw eventInvalidError();
 	}
+	return Object.freeze({
+		inputTokens: message.usage.input_tokens,
+		outputTokens: message.usage.output_tokens,
+		cacheReadInputTokens: message.usage.cache_read_input_tokens ?? 0,
+		cacheCreationInputTokens: message.usage.cache_creation_input_tokens ?? 0,
+		costUsd: message.total_cost_usd,
+	});
 }
 
 function failedEvidence(
 	operation: ClaudeOperation,
 	now: () => string,
 	code: "agent_run_failed" | "side_effect_unknown" = "agent_run_failed",
+	usage?: AttemptReceiptUsage,
 ): ExternalConnectorTerminalEvidence {
 	return {
 		externalSessionId: operation.sessionId,
@@ -479,22 +567,44 @@ function failedEvidence(
 		operationNonce: operation.handle.operationNonce,
 		status: "failed",
 		artifacts: [],
+		...(usage === undefined ? {} : { usage }),
 		error: code === "side_effect_unknown"
-			? { code, message: "External side effect state is unknown.", category: "unknown", retryable: false }
+			? { code, message: "External side effect state is unknown.", category: "side_effect_unknown", retryable: false }
 			: { code, message: "Run failed.", category: "unknown", retryable: false },
 		sideEffectState: operation.sideEffectState,
 		producedAt: now(),
 	};
 }
 
+function cancellationEvidence(
+	operation: ClaudeOperation,
+	now: () => string,
+	usage?: AttemptReceiptUsage,
+): ExternalConnectorTerminalEvidence {
+	if (operation.activeEffects > 0 || operation.sideEffectState !== "none") {
+		operation.sideEffectState = "side_effect_unknown";
+		return failedEvidence(operation, now, "side_effect_unknown", usage);
+	}
+	return {
+		externalSessionId: operation.sessionId,
+		externalTurnId: operation.handle.externalTurnId,
+		operationNonce: operation.handle.operationNonce,
+		status: "cancelled",
+		artifacts: [],
+		...(usage === undefined ? {} : { usage }),
+		sideEffectState: "none",
+		producedAt: now(),
+	};
+}
+
 /** @internal Package-private driver for the pinned Claude Agent SDK companion. */
 export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDriver {
+	readonly toolGatewayMcpSelection: McpSelection;
 	readonly #providerId: string;
 	readonly #companion: PrivateClaudeAgentSdkCompanion;
 	readonly #cwd: string;
 	readonly #env: Readonly<Record<string, string>>;
-	readonly #tools: readonly PrivateClaudeSelectedTool[];
-	readonly #toolNames: ReadonlySet<string>;
+	readonly #selectedTools: readonly PrivateClaudeSelectedTool[];
 	readonly #limits: PrivateClaudeAgentSdkLimits;
 	readonly #now: () => string;
 	readonly #operations = new Map<string, ClaudeOperation>();
@@ -506,12 +616,14 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
 		}
 		if (typeof options.cwd !== "string" || options.cwd.length === 0) throw new TypeError("Claude cwd is required");
+		const mcpSelection = validateMcpSelection(options.mcpSelection);
+		if (!mcpSelection.ok) throw new TypeError("Claude MCP selection is not canonical");
 		this.#providerId = options.providerId;
 		this.#companion = options.companion;
 		this.#cwd = options.cwd;
 		this.#env = Object.freeze({ ...(options.env ?? {}) });
-		this.#tools = resolveTools(options.mcpSelection);
-		this.#toolNames = new Set(this.#tools.map((tool) => tool.exposedToolName));
+		this.toolGatewayMcpSelection = mcpSelection.value;
+		this.#selectedTools = resolveTools(mcpSelection.value);
 		this.#limits = resolveLimits(options.limits);
 		this.#now = options.now ?? (() => new Date().toISOString());
 	}
@@ -519,8 +631,15 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
 		validateCapability(this.#providerId, request.capability);
 		if (request.input.artifacts.length > 0) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		const mcpSelection = validateMcpSelection(request.mcpSelection);
+		if (
+			!mcpSelection.ok ||
+			canonicalFoundationJson(mcpSelection.value) !== canonicalFoundationJson(this.toolGatewayMcpSelection)
+		) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		const tools = intersectToolGatewayRoutes(this.#selectedTools, request.toolGatewayRoutes);
 		const operation = this.#openOperation({
 			prompt: request.input.text,
+			tools,
 			supervisorRef: request.supervisorRef,
 			operationNonce: request.operationNonce,
 			externalTurnId: request.attempt.attemptId,
@@ -540,29 +659,19 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 
 	async connect(
 		mapping: CanonicalExternalConnectorMapping,
-		options?: { readonly signal?: AbortSignal },
 	): Promise<ExternalConnectorDriverHandle> {
 		const known = this.#operations.get(mapping.externalSessionId);
 		if (known !== undefined && !known.closed) {
-			if (!mappingMatchesHandle(mapping, known.handle)) throw eventInvalidError();
+			if (!mappingMatchesOperation(mapping, known)) throw eventInvalidError();
 			return known.handle;
 		}
-		const operation = this.#openOperation({
-			prompt: RESUME_PROMPT,
-			resumeSessionId: mapping.externalSessionId,
-			supervisorRef: mapping.supervisor.ref,
-			operationNonce: mapping.supervisor.nonce,
-			externalTurnId: mapping.externalTurnId,
-			signal: options?.signal,
-		});
-		await withTimeout(operation.initialized.promise, this.#limits.requestTimeoutMs, options?.signal);
-		if (!mappingMatchesHandle(mapping, operation.handle)) throw eventInvalidError();
-		return operation.handle;
+		throw new PrivateClaudeAgentSdkError("external_resume_unsupported");
 	}
 
 	async lookup(mapping: CanonicalExternalConnectorMapping): Promise<ExternalConnectorDriverLookup> {
 		const operation = this.#operations.get(mapping.externalSessionId);
-		if (operation === undefined || !mappingMatchesHandle(mapping, operation.handle)) return { status: "ambiguous" };
+		if (operation === undefined) return { status: "missing" };
+		if (!mappingMatchesOperation(mapping, operation)) return { status: "ambiguous" };
 		if (!operation.terminal.settled()) return { status: "running", handle: operation.handle };
 		try {
 			return { status: "terminal", evidence: await operation.terminal.promise };
@@ -602,20 +711,11 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		const operation = this.#requireOperation(handle);
 		if (operation.terminal.settled()) return operation.terminal.promise;
 		operation.cancelRequested = true;
-		if (operation.activeEffects > 0) operation.sideEffectState = "side_effect_unknown";
 		for (const pending of operation.pending.values()) pending.reject(eventInvalidError());
 		operation.pending.clear();
 		operation.abortController.abort();
 		operation.query.close();
-		const evidence: ExternalConnectorTerminalEvidence = {
-			externalSessionId: operation.sessionId,
-			externalTurnId: operation.handle.externalTurnId,
-			operationNonce: operation.handle.operationNonce,
-			status: "cancelled",
-			artifacts: [],
-			sideEffectState: operation.sideEffectState,
-			producedAt: this.#now(),
-		};
+		const evidence = cancellationEvidence(operation, this.#now);
 		operation.terminal.resolve(evidence);
 		operation.events.close();
 		return evidence;
@@ -630,7 +730,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 
 	#openOperation(input: {
 		readonly prompt: string;
-		readonly resumeSessionId?: string;
+		readonly tools: readonly PrivateClaudeSelectedTool[];
 		readonly supervisorRef: string;
 		readonly operationNonce: string;
 		readonly externalTurnId?: string;
@@ -644,10 +744,9 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		const query = this.#companion.query({
 			sdkVersion: PRIVATE_CLAUDE_AGENT_SDK_VERSION,
 			prompt: input.prompt,
-			...(input.resumeSessionId === undefined ? {} : { resumeSessionId: input.resumeSessionId }),
 			cwd: this.#cwd,
 			env: this.#env,
-			tools: this.#tools,
+			tools: input.tools,
 			abortController,
 			requestPermission: (request) => this.#requestPermission(this.#requireLiveOperation(operation), request),
 			executeTool: (request) => this.#executeTool(this.#requireLiveOperation(operation), request),
@@ -662,12 +761,14 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		}
 		operation = {
 			handle: Object.freeze({
-				externalSessionId: input.resumeSessionId ?? "claude_session_pending",
+				externalSessionId: "claude_session_pending",
 				...(input.externalTurnId === undefined ? {} : { externalTurnId: input.externalTurnId }),
 				supervisorRef: input.supervisorRef,
 				operationNonce: input.operationNonce,
 			}),
 			query,
+			tools: input.tools,
+			toolNames: new Set(input.tools.map((tool) => tool.exposedToolName)),
 			abortController,
 			events: new BoundedEventQueue(this.#limits.maxEvents),
 			initialized: deferred<void>(),
@@ -675,8 +776,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			pending: new Map(),
 			seenCallbacks: new Set(),
 			...(input.authority === undefined ? {} : { authority: input.authority }),
-			...(input.resumeSessionId === undefined ? {} : { expectedSessionId: input.resumeSessionId }),
-			sessionId: input.resumeSessionId ?? "",
+			sessionId: "",
 			sequence: 0,
 			totalBytes: 0,
 			activeEffects: 0,
@@ -685,7 +785,6 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			closed: false,
 		};
 		this.#allOperations.add(operation);
-		if (input.resumeSessionId !== undefined) this.#operations.set(input.resumeSessionId, operation);
 		void this.#consume(operation);
 		return operation;
 	}
@@ -699,10 +798,20 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			if (!operation.terminal.settled() && !operation.cancelRequested) throw eventInvalidError();
 		} catch (error) {
 			if (!operation.terminal.settled()) {
-				const safe = safeFailure(error);
-				operation.initialized.reject(safe);
-				operation.terminal.reject(safe);
-				operation.events.fail(safe);
+				if (
+					operation.initialized.settled() &&
+					operation.abortController.signal.aborted &&
+					(operation.activeEffects > 0 || operation.sideEffectState !== "none")
+				) {
+					const evidence = cancellationEvidence(operation, this.#now);
+					operation.terminal.resolve(evidence);
+					operation.events.close();
+				} else {
+					const safe = safeFailure(error);
+					operation.initialized.reject(safe);
+					operation.terminal.reject(safe);
+					operation.events.fail(safe);
+				}
 			}
 		} finally {
 			for (const pending of operation.pending.values()) pending.reject(eventInvalidError());
@@ -744,7 +853,6 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		if (
 			typeof message.session_id !== "string" ||
 			!isExternalConnectorMappingIdentifier(message.session_id) ||
-			(operation.expectedSessionId !== undefined && message.session_id !== operation.expectedSessionId) ||
 			!Array.isArray(message.tools) ||
 			message.tools.some((tool) => typeof tool !== "string") ||
 			!Array.isArray(message.mcp_servers) ||
@@ -755,9 +863,9 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			throw eventInvalidError();
 		}
 		const actualTools = [...message.tools].sort();
-		const expectedTools = this.#tools.map((tool) => tool.exposedToolName).sort();
+		const expectedTools = operation.tools.map((tool) => tool.exposedToolName).sort();
 		const actualServers = message.mcp_servers.map((server) => (server as Record<string, unknown>).name).sort();
-		const expectedServers = [...new Set(this.#tools.map((tool) => tool.serverName))].sort();
+		const expectedServers = [...new Set(operation.tools.map((tool) => tool.serverName))].sort();
 		if (
 			actualTools.length !== expectedTools.length ||
 			actualTools.some((tool, index) => tool !== expectedTools[index]) ||
@@ -788,23 +896,16 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		) {
 			throw eventInvalidError();
 		}
-		validateUsage(message);
+		const usage = validateUsage(message);
 		let evidence: ExternalConnectorTerminalEvidence;
 		if (operation.cancelRequested) {
-			evidence = {
-				externalSessionId: operation.sessionId,
-				externalTurnId: operation.handle.externalTurnId,
-				operationNonce: operation.handle.operationNonce,
-				status: "cancelled",
-				artifacts: [],
-				sideEffectState: operation.sideEffectState,
-				producedAt: this.#now(),
-			};
+			evidence = cancellationEvidence(operation, this.#now, usage);
 		} else if (message.subtype !== "success" || message.is_error || operation.sideEffectState !== "none") {
 			evidence = failedEvidence(
 				operation,
 				this.#now,
-				operation.sideEffectState === "side_effect_unknown" ? "side_effect_unknown" : "agent_run_failed",
+				operation.sideEffectState === "none" ? "agent_run_failed" : "side_effect_unknown",
+				usage,
 			);
 		} else {
 			evidence = {
@@ -813,6 +914,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 				operationNonce: operation.handle.operationNonce,
 				status: "succeeded",
 				artifacts: [],
+				usage,
 				sideEffectState: "none",
 				producedAt: this.#now(),
 			};
@@ -841,7 +943,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		if (
 			operation.terminal.settled() ||
 			request.signal.aborted ||
-			!this.#toolNames.has(request.toolName) ||
+			!operation.toolNames.has(request.toolName) ||
 			request.requestId.length === 0 ||
 			request.toolUseId.length === 0
 		) {
@@ -869,7 +971,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		if (
 			operation.terminal.settled() ||
 			request.signal.aborted ||
-			!this.#toolNames.has(request.toolName) ||
+			!operation.toolNames.has(request.toolName) ||
 			request.toolUseId.length === 0
 		) {
 			return { ok: false, sideEffectState: "none" };

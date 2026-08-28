@@ -1,12 +1,15 @@
 import { readFile } from "node:fs/promises";
 import {
 	createConnectorCapabilitySnapshot,
+	resolveMcpSelection,
+	validateAttemptReceipt,
 	type Attempt,
 	type ConnectorCapabilitySnapshot,
 	type ExecutionCorrelation,
 	type FoundationJsonValue,
 	type McpSelection,
 	type ToolExecutionResult,
+	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import * as packageEntry from "../src/index.ts";
@@ -61,30 +64,43 @@ const capability: ConnectorCapabilitySnapshot = createConnectorCapabilitySnapsho
 	revision: 1,
 	protocol: { name: "claude-agent-sdk", version: PRIVATE_CLAUDE_AGENT_SDK_VERSION },
 	modelAccess: "agent_owned",
-	resume: true,
+	resume: false,
 	toolGateway: true,
 	artifacts: false,
 	images: false,
 });
 
-const mcpSelection: McpSelection = {
-	schemaVersion: 1,
-	capabilityBindingId: "capability-binding-claude",
-	selectorDigest: { algorithm: "sha256", value: "a".repeat(64) },
-	servers: [{
-		serverId: "docs",
-		descriptorId: "descriptor-docs",
-		descriptorRevision: "1",
-		tools: [{
-			toolId: "read",
-			descriptorId: "descriptor-docs-read",
-			descriptorRevision: "1",
-			providerId: "mcp-provider",
-			routeRevision: 1,
-		}],
-	}],
-	digest: { algorithm: "sha256", value: "b".repeat(64) },
+const toolGatewayRoute: ToolGatewayRoute = {
+	kind: "mcp",
+	namespace: "docs",
+	toolName: "read",
+	providerId: "mcp-provider",
+	revision: 1,
+	operation: { resource: "filesystem.read", effects: ["read"] },
 };
+
+const resolvedMcpSelection = resolveMcpSelection({
+	selector: { policy: "named", named: ["docs"] },
+	capabilityBinding: {
+		id: "capability-binding-claude",
+		descriptors: [
+			{ id: "descriptor-docs", revision: "1", kind: "mcp_server", name: "docs", mcpServerId: "docs" },
+			{
+				id: "descriptor-docs-read",
+				revision: "1",
+				kind: "mcp_tool",
+				name: "read",
+				exposedToolName: selectedToolName,
+				parentId: "descriptor-docs",
+				mcpServerId: "docs",
+			},
+		],
+		toolAllowlist: [selectedToolName],
+	},
+	routeCatalog: [toolGatewayRoute],
+});
+if (!resolvedMcpSelection.ok) throw resolvedMcpSelection.error;
+const mcpSelection: McpSelection = resolvedMcpSelection.value;
 
 const usage = {
 	inputTokens: 1,
@@ -95,6 +111,9 @@ const usage = {
 	costUSD: 0,
 	contextWindow: 200_000,
 	maxOutputTokens: 8_192,
+	canonicalModel: "claude-fixture",
+	provider: "firstParty",
+	costBasis: "list",
 };
 
 function init(tools: readonly string[] = [selectedToolName], servers: readonly string[] = ["docs"]) {
@@ -180,6 +199,8 @@ function spawnRequest(overrides: Partial<ExternalConnectorDriverSpawnRequest> = 
 		capability,
 		bindingDigest: "c".repeat(64),
 		bindingRevision: 1,
+		mcpSelection,
+		toolGatewayRoutes: [toolGatewayRoute],
 		supervisorRef: "supervisor-claude-1",
 		operationNonce: "nonce-claude-1",
 		...overrides,
@@ -244,7 +265,7 @@ async function settle(
 }
 
 describe("private Claude Agent SDK connector driver", () => {
-	it("runs pinned query, exact MCP permission and tool routes, success, error, and resume", async () => {
+	it("runs one pinned query with exact MCP authority and never replays a prompt on connect", async () => {
 		let permissionDecision: string | undefined;
 		let toolResult: unknown;
 		const companion = new FakeCompanion(async function* (request) {
@@ -262,7 +283,15 @@ describe("private Claude Agent SDK connector driver", () => {
 				input: { path: "README.md" },
 				signal: request.abortController.signal,
 			});
-			yield result();
+			yield result("success", {
+				total_cost_usd: 0.125,
+				usage: {
+					input_tokens: 3,
+					output_tokens: 2,
+					cache_read_input_tokens: 4,
+					cache_creation_input_tokens: 5,
+				},
+			});
 		});
 		const connector = driver(companion);
 		const handle = await connector.spawn(spawnRequest());
@@ -278,7 +307,34 @@ describe("private Claude Agent SDK connector driver", () => {
 		const tool = await nextToolEvent(iterator);
 		expect(tool.request).toMatchObject({ toolName: selectedToolName, originalArguments: { path: "README.md" } });
 		await settle(connector, handle, tool, { result: { content: "fixture" } });
-		await expect(connector.read(handle)).resolves.toMatchObject({ status: "succeeded", sideEffectState: "none" });
+		const evidence = await connector.read(handle);
+		expect(evidence).toMatchObject({
+			status: "succeeded",
+			sideEffectState: "none",
+			usage: {
+				inputTokens: 3,
+				outputTokens: 2,
+				cacheReadInputTokens: 4,
+				cacheCreationInputTokens: 5,
+				costUsd: 0.125,
+			},
+		});
+		expect(validateAttemptReceipt({
+			schemaVersion: 1,
+			attemptReceiptId: `attempt_receipt_${attempt.attemptId}`,
+			taskId: attempt.taskId,
+			dispatchId: attempt.dispatchId,
+			attemptId: attempt.attemptId,
+			providerId,
+			bindingId: attempt.bindingId,
+			bindingEpochIds: attempt.bindingEpochIds,
+			status: evidence.status,
+			workerReceiptRefs: [],
+			artifacts: [],
+			usage: evidence.usage,
+			provenance: { producerKind: "external_connector", providerId, producedAt: now, correlation },
+			sideEffectState: evidence.sideEffectState,
+		}, { providerClass: "external_connector" })).toMatchObject({ ok: true });
 		expect(permissionDecision).toBe("allow");
 		expect(toolResult).toEqual({ ok: true, sideEffectState: "none", result: { content: "fixture" } });
 		expect(companion.requests[0]).toMatchObject({
@@ -286,23 +342,86 @@ describe("private Claude Agent SDK connector driver", () => {
 			prompt: "Perform the Claude fixture task",
 			tools: [{ exposedToolName: selectedToolName }],
 		});
+		await expect(connector.connect({ ...mapping(), attemptId: "attempt-claude-other" })).rejects.toMatchObject({
+			code: "external_event_invalid",
+		});
+		expect(await connector.connect(mapping())).toEqual(handle);
+		expect(companion.requests).toHaveLength(1);
 
 		await connector.dispose();
-		const resumedCompanion = new FakeCompanion(async function* () {
-			yield init();
-			yield result("error_during_execution", { errors: ["private vendor failure"] });
-		});
+		const resumedCompanion = new FakeCompanion(async function* () { yield init(); });
 		const resumed = driver(resumedCompanion);
-		const resumedHandle = await resumed.connect(mapping());
-		await expect(resumed.read(resumedHandle)).resolves.toMatchObject({
-			status: "failed",
-			error: { code: "agent_run_failed", message: "Run failed." },
+		await expect(resumed.connect(mapping())).rejects.toMatchObject({
+			code: "external_resume_unsupported",
 		});
-		expect(resumedCompanion.requests[0]).toMatchObject({
-			resumeSessionId: sessionId,
-			prompt: "Continue the durable AOS attempt.",
-		});
+		expect(resumedCompanion.requests).toHaveLength(0);
 		await resumed.dispose();
+	});
+
+	it("rejects malformed or stale MCP selections and intersects exact Tool Gateway routes", async () => {
+		const companion = new FakeCompanion(async function* (request) {
+			yield init(request.tools.map((tool) => tool.exposedToolName), request.tools.map((tool) => tool.serverName));
+			yield result();
+		});
+		expect(() => driver(companion, {
+			mcpSelection: {
+				...mcpSelection,
+				digest: { algorithm: "sha256", value: "0".repeat(64) },
+			},
+		})).toThrow("Claude MCP selection is not canonical");
+
+		const connector = driver(companion);
+		const staleRoute: ToolGatewayRoute = { ...toolGatewayRoute, revision: 2 };
+		const staleSelection = resolveMcpSelection({
+			selector: { policy: "named", named: ["docs"] },
+			capabilityBinding: {
+				id: "capability-binding-claude",
+				descriptors: [
+					{ id: "descriptor-docs", revision: "1", kind: "mcp_server", name: "docs", mcpServerId: "docs" },
+					{
+						id: "descriptor-docs-read",
+						revision: "1",
+						kind: "mcp_tool",
+						name: "read",
+						exposedToolName: selectedToolName,
+						parentId: "descriptor-docs",
+						mcpServerId: "docs",
+					},
+				],
+				toolAllowlist: [selectedToolName],
+			},
+			routeCatalog: [staleRoute],
+		});
+		if (!staleSelection.ok) throw staleSelection.error;
+		await expect(connector.spawn(spawnRequest({
+			mcpSelection: staleSelection.value,
+			toolGatewayRoutes: [staleRoute],
+		}))).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+		await expect(connector.spawn(spawnRequest({
+			toolGatewayRoutes: [{ ...toolGatewayRoute, toolName: "write" }],
+		}))).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+
+		const narrowed = await connector.spawn(spawnRequest({ toolGatewayRoutes: [] }));
+		await expect(connector.read(narrowed)).resolves.toMatchObject({ status: "succeeded" });
+		expect(companion.requests).toHaveLength(1);
+		expect(companion.requests[0]?.tools).toEqual([]);
+		await connector.dispose();
+	});
+
+	it("rejects unbounded, fractional, or widened Claude result usage", async () => {
+		for (const invalidResult of [
+			result("success", { usage: { input_tokens: 0.5, output_tokens: 1 } }),
+			result("success", { total_cost_usd: Number.MAX_SAFE_INTEGER + 1 }),
+			result("success", { modelUsage: { fixture: { ...usage, unexpected: 1 } } }),
+		]) {
+			const connector = driver(new FakeCompanion(async function* () {
+				yield init();
+				yield invalidResult;
+			}));
+			const handle = await connector.spawn(spawnRequest());
+			await expect(connector.read(handle)).rejects.toMatchObject({ code: "external_event_invalid" });
+			await connector.dispose();
+		}
 	});
 
 	it("routes execution through Tool Gateway even when the SDK skips permission callbacks", async () => {
@@ -380,10 +499,78 @@ describe("private Claude Agent SDK connector driver", () => {
 		expect((await nextEvent(iterator)).type).toBe("started");
 		expect((await nextToolEvent(iterator)).request.toolName).toBe(selectedToolName);
 		await expect(connector.cancel(handle)).resolves.toMatchObject({
-			status: "cancelled",
+			status: "failed",
+			error: { code: "side_effect_unknown", category: "side_effect_unknown" },
+			sideEffectState: "side_effect_unknown",
+		});
+		await expect(connector.read(handle)).resolves.toMatchObject({
+			status: "failed",
 			sideEffectState: "side_effect_unknown",
 		});
 		expect(companion.queries[0]?.closed).toBe(true);
+		await connector.dispose();
+	});
+
+	it("settles failed side_effect_unknown when an abort interrupts an active effect", async () => {
+		const controller = new AbortController();
+		const companion = new FakeCompanion(async function* (request) {
+			yield init();
+			await request.executeTool({
+				toolUseId: "effect-before-signal-abort",
+				toolName: selectedToolName,
+				input: { path: "result.txt" },
+				signal: request.abortController.signal,
+			});
+		});
+		const connector = driver(companion);
+		const handle = await connector.spawn(spawnRequest({ signal: controller.signal }));
+		const iterator = connector.events(handle)[Symbol.asyncIterator]();
+		expect((await nextEvent(iterator)).type).toBe("started");
+		expect((await nextToolEvent(iterator)).request.toolName).toBe(selectedToolName);
+		controller.abort();
+		await expect(connector.read(handle)).resolves.toMatchObject({
+			status: "failed",
+			error: { code: "side_effect_unknown" },
+			sideEffectState: "side_effect_unknown",
+		});
+		await connector.dispose();
+	});
+
+	it("settles failed side_effect_unknown when cancellation races a late SDK result", async () => {
+		let toolCompleted: () => void = () => undefined;
+		const completed = new Promise<void>((resolve) => { toolCompleted = resolve; });
+		let releaseResult: () => void = () => undefined;
+		const lateResult = new Promise<void>((resolve) => { releaseResult = resolve; });
+		const companion = new FakeCompanion(async function* (request) {
+			yield init();
+			await request.executeTool({
+				toolUseId: "effect-before-late-result",
+				toolName: selectedToolName,
+				input: { path: "result.txt" },
+				signal: request.abortController.signal,
+			});
+			toolCompleted();
+			await lateResult;
+			yield result();
+		});
+		const connector = driver(companion);
+		const handle = await connector.spawn(spawnRequest());
+		const iterator = connector.events(handle)[Symbol.asyncIterator]();
+		expect((await nextEvent(iterator)).type).toBe("started");
+		const event = await nextToolEvent(iterator);
+		await settle(connector, handle, event, { sideEffectState: "unknown" });
+		await completed;
+		await expect(connector.cancel(handle)).resolves.toMatchObject({
+			status: "failed",
+			error: { code: "side_effect_unknown" },
+			sideEffectState: "side_effect_unknown",
+		});
+		releaseResult();
+		await Promise.resolve();
+		await expect(connector.read(handle)).resolves.toMatchObject({
+			status: "failed",
+			sideEffectState: "side_effect_unknown",
+		});
 		await connector.dispose();
 	});
 

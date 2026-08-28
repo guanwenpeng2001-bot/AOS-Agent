@@ -8,11 +8,13 @@ import {
 	EXTERNAL_ERROR_MESSAGES,
 	fingerprintFoundationValue,
 	FoundationError,
+	isToolGatewayRoute,
 	Result,
 	validateAttemptReceiptForProvider,
 	validateConnectorCapabilitySnapshotForProvider,
 	validateExecutionCorrelation,
 	validateImmutableAgentBinding,
+	validateMcpSelection,
 	type AgentBinding,
 	type Attempt,
 	type AttemptReceipt,
@@ -473,6 +475,68 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		this.#supervision = options.supervision;
 		this.#now = options.now ?? (() => new Date().toISOString());
 		this.#operationNonce = options.operationNonce ?? randomUUID;
+	}
+
+	#requireExactMcpToolGatewayRoutes(
+		attempt: Attempt,
+		binding: AgentBinding,
+	): ResultValue<readonly ToolGatewayRoute[] | undefined, FoundationError> {
+		const driverSelectionValue = this.#driver.toolGatewayMcpSelection;
+		if (driverSelectionValue === undefined) return Result.ok(undefined);
+		const driverSelection = validateMcpSelection(driverSelectionValue);
+		const bindingSelection = validateMcpSelection(binding.mcpSelection);
+		const consumer = this.#toolGatewayConsumers.get(attempt.attemptId);
+		if (
+			!driverSelection.ok ||
+			!bindingSelection.ok ||
+			canonicalFoundationJson(driverSelection.value) !== canonicalFoundationJson(bindingSelection.value) ||
+			consumer === undefined ||
+			consumer.scope.bindingId !== binding.bindingId ||
+			consumer.scope.capabilityBindingId !== bindingSelection.value.capabilityBindingId ||
+			consumer.scope.mcpSelectionDigest.algorithm !== bindingSelection.value.digest.algorithm ||
+			consumer.scope.mcpSelectionDigest.value !== bindingSelection.value.digest.value
+		) {
+			return Result.err(
+				externalFailure(
+					"external_binding_invalid",
+					"External connector MCP selection does not match its exact Tool Gateway authority",
+					attempt.attemptId,
+				),
+			);
+		}
+		const routeKeys = new Set<string>();
+		for (const route of consumer.scope.routes) {
+			const key = canonicalFoundationJson([route.namespace ?? "", route.toolName]);
+			if (!isToolGatewayRoute(route) || routeKeys.has(key)) {
+				return Result.err(
+					externalFailure(
+						"external_binding_invalid",
+						"External connector Tool Gateway scope is malformed or ambiguous",
+						attempt.attemptId,
+					),
+				);
+			}
+			routeKeys.add(key);
+			if (route.kind !== "mcp") continue;
+			const selectedServer = bindingSelection.value.servers.find(
+				(server) => server.serverId === route.namespace,
+			);
+			const selectedTool = selectedServer?.tools.find((tool) => tool.toolId === route.toolName);
+			if (
+				selectedTool === undefined ||
+				selectedTool.providerId !== route.providerId ||
+				selectedTool.routeRevision !== route.revision
+			) {
+				return Result.err(
+					externalFailure(
+						"external_binding_invalid",
+						"External connector Tool Gateway scope widens its exact MCP selection",
+						attempt.attemptId,
+					),
+				);
+			}
+		}
+		return Result.ok(consumer.scope.routes);
 	}
 
 	/** Reattach mapped live operations and reap private trees that cannot be resumed or reconciled. */
@@ -995,6 +1059,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (isAborted()) {
 			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, undefined, options?.signal);
 		}
+		const mcpToolGatewayRoutes = this.#requireExactMcpToolGatewayRoutes(attempt, binding.value);
+		if (!mcpToolGatewayRoutes.ok) return mcpToolGatewayRoutes;
 		const executionInput = await this.#store.readExecutionInput(attempt.taskId);
 		if (executionInput === undefined) {
 			return Result.err(
@@ -1133,6 +1199,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 						capability: this.#capability,
 						bindingDigest: binding.value.fingerprint.value,
 						bindingRevision: binding.value.contextRevision.revision,
+						mcpSelection: binding.value.mcpSelection,
+						...(mcpToolGatewayRoutes.value === undefined
+							? {}
+							: { toolGatewayRoutes: mcpToolGatewayRoutes.value }),
 						supervisorRef: supervisor.reference.supervisorRef,
 						operationNonce,
 						signal,
@@ -2221,6 +2291,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			status: canonicalEvidence.status,
 			workerReceiptRefs: [],
 			artifacts: [...(canonicalEvidence.artifacts ?? [])],
+			...(canonicalEvidence.usage === undefined ? {} : { usage: canonicalEvidence.usage }),
 			...(canonicalEvidence.error === undefined ? {} : { error: canonicalEvidence.error }),
 			provenance: {
 				producerKind: "external_connector",

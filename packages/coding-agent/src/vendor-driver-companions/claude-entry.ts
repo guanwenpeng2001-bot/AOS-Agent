@@ -105,7 +105,6 @@ function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
 		mcpServers: mcpServers(request),
 		permissionMode: "default",
 		plugins: [],
-		...(request.resumeSessionId === undefined ? {} : { resume: request.resumeSessionId }),
 		settingSources: [],
 		skills: [],
 		strictMcpConfig: true,
