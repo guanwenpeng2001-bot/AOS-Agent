@@ -630,7 +630,7 @@ describe("private Claude Agent SDK connector driver", () => {
 		);
 		const coreSource = await readFile(new URL("../src/core/vendor-drivers/claude.ts", import.meta.url), "utf8");
 		expect(manifest.optionalDependencies["@anthropic-ai/claude-agent-sdk"]).toBe("0.3.246");
-		expect(manifest.optionalDependencies.zod).toBe("3.25.76");
+		expect(manifest.optionalDependencies.zod).toBe("4.4.3");
 		expect(companionSource).toContain('from "@anthropic-ai/claude-agent-sdk"');
 		expect(companionSource).toContain("settingSources: []");
 		expect(companionSource).toContain("strictMcpConfig: true");
