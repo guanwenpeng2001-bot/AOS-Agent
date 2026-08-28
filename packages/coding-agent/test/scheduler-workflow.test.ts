@@ -34,6 +34,11 @@ import { SchedulerDispatchController } from "../src/core/scheduler-dispatch.ts";
 import { SchedulerFanInController } from "../src/core/scheduler-fan-in.ts";
 import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
 import { SchedulerMessageOrchestrator } from "../src/core/scheduler-messages.ts";
+import {
+	CONNECTOR_RETRY_DECISION_OBJECT_TYPE,
+	type ConnectorRetryPolicyV1,
+} from "../src/core/connector-retry-circuit.ts";
+import { withRuntimeClock, type RuntimeClock } from "../src/core/runtime-clock.ts";
 import { SchedulerHost, type SchedulerWakeV1 } from "../src/core/scheduler.ts";
 import {
 	SCHEDULER_WORKFLOW_ATTEMPT_OBJECT_TYPE,
@@ -44,11 +49,13 @@ import {
 	SchedulerWorkflowController,
 	type SchedulerWorkflowCompensationFactV1,
 	type SchedulerWorkflowCompensationPolicyV1,
+	type SchedulerWorkflowConnectorRetryOptionsV1,
 	type SchedulerWorkflowPolicyFactV1,
 	schedulerWorkflowExternalIds,
 } from "../src/core/scheduler-workflow.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
+import { DeterministicClock } from "./support/deterministic-clock.ts";
 import { createTaskGraphStore, type TaskGraphStore } from "../src/core/task-graph.ts";
 
 vi.mock("@aos-agent/ai/compat", () => ({
@@ -263,13 +270,18 @@ async function seedBindingFacts(session: Session, task: TaskEnvelope, value: Age
 
 class ScriptedTaskExecutor implements TaskExecutorProvider {
 	readonly schemaVersion = 1 as const;
-	readonly providerId = "task_executor_scheduler_workflow";
-	readonly providerClass = "task_executor" as const;
+	readonly providerId: string;
+	readonly providerClass: "task_executor" | "external_connector";
 	failuresRemaining = 0;
 	nextSideEffect: SideEffectState = "none";
 	runCount = 0;
 	resumeCount = 0;
 	readonly queueEntryIds: string[] = [];
+
+	constructor(providerClass: "task_executor" | "external_connector" = "task_executor") {
+		this.providerClass = providerClass;
+		this.providerId = `${providerClass}_scheduler_workflow`;
+	}
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		return [CAPABILITY];
@@ -314,7 +326,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 			workerReceiptRefs: [],
 			artifacts: status === "succeeded" ? [ARTIFACT] : [],
 			provenance: {
-				producerKind: "scheduler",
+				producerKind: this.providerClass === "external_connector" ? "external_connector" : "scheduler",
 				providerId: attempt.providerId,
 				producedAt: T0,
 				correlation: { ...correlation, attemptReceiptId },
@@ -394,13 +406,16 @@ async function createHarness(
 		readonly compensationPolicy?: SchedulerWorkflowCompensationPolicyV1;
 		readonly maxAttempts?: number;
 		readonly executorOwnerId?: string;
+		readonly providerClass?: "task_executor" | "external_connector";
+		readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
+		readonly clock?: RuntimeClock;
 	} = {},
 ): Promise<WorkflowHarness> {
 	harnessOrdinal += 1;
 	const sourceSessionId = `session_source_${harnessOrdinal}`;
 	const targetSessionId = `session_target_${harnessOrdinal}`;
 	let nowIso = T0;
-	const now = () => nowIso;
+	const now = () => options.clock === undefined ? nowIso : new Date(options.clock.wallNow()).toISOString();
 	const task = taskEnvelope(`task_workflow_${harnessOrdinal}`, `goal_workflow_${harnessOrdinal}`);
 	const binding = bindingFor(task);
 	const sourceSession = new Session(new InMemorySessionStorage({ id: sourceSessionId, createdAt: 1 }));
@@ -412,7 +427,7 @@ async function createHarness(
 	const targetRuns = createRunLifecycleCoordinator(targetManager, { diagnostics: () => {}, now });
 	const sourceGraph = graphStore(sourceManager, sourceRuns, now);
 	const targetGraph = graphStore(targetManager, targetRuns, now);
-	const provider = new ScriptedTaskExecutor();
+	const provider = new ScriptedTaskExecutor(options.providerClass);
 	const registry = new SchedulerExecutorRegistry();
 	const registered = await registry.register({
 		entry: {
@@ -427,7 +442,7 @@ async function createHarness(
 		latencyMs: 0,
 	});
 	if (!registered.ok) throw registered.error;
-	const controller = new SchedulerWorkflowController({
+	const controllerOptions = {
 		enabled: options.enabled,
 		sourceSession,
 		targetSession,
@@ -443,7 +458,11 @@ async function createHarness(
 		...(options.executorOwnerId === undefined ? {} : { executorOwnerId: options.executorOwnerId }),
 		...(options.compensationPolicy === undefined ? {} : { compensationPolicy: options.compensationPolicy }),
 		...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
-	});
+		...(options.connectorRetry === undefined ? {} : { connectorRetry: options.connectorRetry }),
+	};
+	const controller = new SchedulerWorkflowController(
+		options.clock === undefined ? controllerOptions : withRuntimeClock(controllerOptions, options.clock),
+	);
 	return {
 		sourceSessionId,
 		targetSessionId,
@@ -469,6 +488,8 @@ async function reopenController(
 	options: {
 		readonly compensationPolicy?: SchedulerWorkflowCompensationPolicyV1;
 		readonly maxAttempts?: number;
+		readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
+		readonly clock?: RuntimeClock;
 	} = {},
 ): Promise<SchedulerWorkflowController> {
 	const registry = new SchedulerExecutorRegistry();
@@ -489,7 +510,7 @@ async function reopenController(
 		latencyMs: 0,
 	});
 	if (!registered.ok) throw registered.error;
-	return new SchedulerWorkflowController({
+	const controllerOptions = {
 		enabled: true,
 		sourceSession: harness.sourceSession,
 		targetSession: harness.targetSession,
@@ -504,7 +525,11 @@ async function reopenController(
 		now: harness.now,
 		...(options.compensationPolicy === undefined ? {} : { compensationPolicy: options.compensationPolicy }),
 		...(options.maxAttempts === undefined ? {} : { maxAttempts: options.maxAttempts }),
-	});
+		...(options.connectorRetry === undefined ? {} : { connectorRetry: options.connectorRetry }),
+	};
+	return new SchedulerWorkflowController(
+		options.clock === undefined ? controllerOptions : withRuntimeClock(controllerOptions, options.clock),
+	);
 }
 
 async function createActiveWorkflow(
@@ -888,6 +913,114 @@ describe("scheduler T7 production Workflow controller", () => {
 		);
 		expect(attempt).toMatchObject({ payload: { attemptsUsed: 2, maxAttempts: 2 } });
 		expect((await harness.store.get(workflow.workflowId)).status).toBe("completed");
+		await harness.controller.dispose();
+	});
+
+	it("delays eligible connector retry across ticks and replays the durable deadline after restart", async () => {
+		const clock = new DeterministicClock({ wallTimeMs: Date.parse(T0), monotonicTimeMs: 0 });
+		const retryPolicy: ConnectorRetryPolicyV1 = {
+			maxAttempts: 3,
+			baseDelayMs: 100,
+			maxDelayMs: 100,
+			totalRetryTimeMs: 1_000,
+			jitterPermille: 0,
+			failureThreshold: 3,
+			openDurationMs: 100,
+			halfOpenProbeTimeoutMs: 100,
+		};
+		const connectorRetry: SchedulerWorkflowConnectorRetryOptionsV1 = {
+			targetId: "external_connector_scheduler_workflow",
+			guarantee: "idempotent",
+			policy: retryPolicy,
+		};
+		const harness = await createHarness({
+			enabled: true,
+			compensationPolicy: "bounded_retry",
+			maxAttempts: 3,
+			providerClass: "external_connector",
+			connectorRetry,
+			clock,
+		});
+		harness.provider.failuresRemaining = 1;
+		harness.provider.nextSideEffect = "none";
+		const workflow = await createActiveWorkflow(
+			harness,
+			[toolStep("tool1", 0)],
+			"workflow_connector_retry",
+		);
+
+		const firstTick = await harness.controller.tick();
+		expect(firstTick.errors).toEqual([]);
+		expect(firstTick.completed).toBe(0);
+		expect(harness.provider.runCount).toBe(1);
+		const decisions = await harness.sourceSession.findFoundationRecords({
+			objectType: CONNECTOR_RETRY_DECISION_OBJECT_TYPE,
+			kind: "fact",
+		});
+		expect(decisions).toHaveLength(1);
+		expect(decisions[0]).toMatchObject({
+			payload: {
+				decision: "retry",
+				reasonCode: "eligible",
+				attemptCount: 1,
+				targetId: connectorRetry.targetId,
+				delayMs: 100,
+				nextEligibleAt: new Date(Date.parse(T0) + 100).toISOString(),
+			},
+		});
+		expect((await harness.store.get(workflow.workflowId)).status).toBe("active");
+
+		await harness.controller.dispose();
+		const reopened = await reopenController(harness, {
+			compensationPolicy: "bounded_retry",
+			maxAttempts: 3,
+			connectorRetry,
+			clock,
+		});
+		const beforeDeadline = await reopened.tick();
+		expect(beforeDeadline.completed).toBe(0);
+		expect(harness.provider.runCount).toBe(1);
+		clock.advanceBy(100);
+		const afterDeadline = await reopened.tick();
+		expect(afterDeadline.errors).toEqual([]);
+		expect(afterDeadline.completed).toBe(1);
+		expect(harness.provider.runCount).toBe(2);
+		expect((await harness.store.get(workflow.workflowId)).status).toBe("completed");
+		await reopened.dispose();
+	});
+
+	it("fails closed when an external connector operation has no explicit retry eligibility", async () => {
+		const harness = await createHarness({
+			enabled: true,
+			compensationPolicy: "bounded_retry",
+			maxAttempts: 3,
+			providerClass: "external_connector",
+		});
+		harness.provider.failuresRemaining = 1;
+		harness.provider.nextSideEffect = "none";
+		const workflow = await createActiveWorkflow(
+			harness,
+			[toolStep("tool1", 0)],
+			"workflow_connector_missing_eligibility",
+		);
+
+		const ticked = await harness.controller.tick();
+		expect(ticked.stopped).toBe(1);
+		expect(harness.provider.runCount).toBe(1);
+		expect((await harness.store.get(workflow.workflowId)).status).toBe("stopped");
+		const decisions = await harness.sourceSession.findFoundationRecords({
+			objectType: CONNECTOR_RETRY_DECISION_OBJECT_TYPE,
+			kind: "fact",
+		});
+		expect(decisions).toHaveLength(1);
+		expect(decisions[0]).toMatchObject({
+			payload: {
+				decision: "stop",
+				reasonCode: "missing_operation_eligibility",
+				attemptCount: 1,
+				targetId: harness.provider.providerId,
+			},
+		});
 		await harness.controller.dispose();
 	});
 

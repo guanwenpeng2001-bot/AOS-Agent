@@ -40,6 +40,11 @@ import { SchedulerQueueStore } from "./scheduler-queue.ts";
 import type { RunLedgerSession } from "./run-lifecycle.ts";
 import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "./runtime-clock.ts";
 import {
+	ConnectorRetryCircuit,
+	type ConnectorRetryGuaranteeV1,
+	type ConnectorRetryPolicyV1,
+} from "./connector-retry-circuit.ts";
+import {
 	applySchedulerWakeFire,
 	isSchedulerQueueTerminal,
 	isSchedulerSideEffectRetryable,
@@ -124,6 +129,14 @@ export interface SchedulerWorkflowCompensationFactV1 {
 	readonly failedAt?: string;
 }
 
+export interface SchedulerWorkflowConnectorRetryOptionsV1 {
+	/** Exact trusted provider/target identity expected from Scheduler selection. */
+	readonly targetId: string;
+	/** Omission is intentional fail-closed evidence that the operation is not retry eligible. */
+	readonly guarantee?: ConnectorRetryGuaranteeV1;
+	readonly policy?: ConnectorRetryPolicyV1;
+}
+
 export interface SchedulerWorkflowControllerOptionsV1 {
 	/** Production scheduling is inert unless explicitly enabled. */
 	readonly enabled?: boolean;
@@ -142,6 +155,7 @@ export interface SchedulerWorkflowControllerOptionsV1 {
 	readonly executorOwnerId?: string;
 	readonly compensationPolicy?: SchedulerWorkflowCompensationPolicyV1;
 	readonly maxAttempts?: number;
+	readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
 	readonly now?: () => string;
 }
 
@@ -207,6 +221,10 @@ function queueIdentity(workflowId: string, nodeId: string, attempt: number): str
 function localNodeId(stepId: string, attempt: number, compensation: boolean): string {
 	const base = compensation ? `compensate_${stepId}` : stepId;
 	return attempt === 1 ? base : `${base}_r${attempt}`;
+}
+
+function connectorRetryOperationId(taskId: string, workflowId: string, stepId: string): string {
+	return `connector_retry_${stemId({ taskId, workflowId, stepId })}`;
 }
 
 function parsePolicyFact(
@@ -333,6 +351,8 @@ export class SchedulerWorkflowController {
 	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
 	private readonly ledger: SessionLedger;
+	private readonly connectorRetryOptions: SchedulerWorkflowConnectorRetryOptionsV1 | undefined;
+	private readonly connectorRetry: ConnectorRetryCircuit | undefined;
 	private wakes = new Map<string, SchedulerWakeV1>();
 	private wakeRevisions = new Map<string, number>();
 	private eventRevisions = new Map<string, number>();
@@ -349,9 +369,30 @@ export class SchedulerWorkflowController {
 		this.binding = options.binding;
 		this.compensationPolicy = options.compensationPolicy ?? "stop";
 		this.maxAttempts = options.maxAttempts ?? SCHEDULER_DEFAULT_MAX_ATTEMPTS;
+		this.connectorRetryOptions = options.connectorRetry === undefined
+			? undefined
+			: Object.freeze({
+					targetId: options.connectorRetry.targetId,
+					...(options.connectorRetry.guarantee === undefined ? {} : { guarantee: options.connectorRetry.guarantee }),
+					...(options.connectorRetry.policy === undefined
+						? {}
+						: { policy: Object.freeze({ ...options.connectorRetry.policy }) }),
+				});
 		this.nowFn = options.now ?? (() => new Date(this.clock.wallNow()).toISOString());
 		this.store = new WorkflowStore(options.sourceSession, { ownerId: options.ownerId });
 		this.ledger = new SessionLedger(options.sourceSession, { ownerId: options.ownerId });
+		this.connectorRetry = options.connectorRetry === undefined
+			? undefined
+			: new ConnectorRetryCircuit(
+					withRuntimeClock(
+						{
+							ledger: this.ledger,
+							taskId: options.task.taskId,
+							...(options.connectorRetry.policy === undefined ? {} : { policy: options.connectorRetry.policy }),
+						},
+						this.clock,
+					),
+				);
 		this.queue = new SchedulerQueueStore(
 			withRuntimeClock(
 				{
@@ -980,6 +1021,35 @@ export class SchedulerWorkflowController {
 		const policy = await this.workflowPolicy(workflow.workflowId);
 		if (!policy.ok) return policy;
 		const previous = await this.readAttempt(workflow.workflowId, step.stepId);
+		const connectorOperationId = connectorRetryOperationId(this.task.taskId, workflow.workflowId, step.stepId);
+		if (compensation === undefined && this.connectorRetry !== undefined && this.connectorRetryOptions !== undefined) {
+			const previousDecision = await this.connectorRetry.decision(connectorOperationId);
+			if (!previousDecision.ok) return previousDecision;
+			if (
+				previousDecision.value !== undefined &&
+				previousDecision.value.targetId !== this.connectorRetryOptions.targetId
+			) {
+				return Result.err(
+					new FoundationError("external_connector_config_invalid", "Durable connector retry target changed across restart"),
+				);
+			}
+			if (previousDecision.value?.decision === "stop") {
+				return this.handleFailure(workflow, step, previousDecision.value.sideEffectState, false);
+			}
+			if (
+				previousDecision.value?.decision === "retry" &&
+				Date.parse(previousDecision.value.nextEligibleAt ?? this.nowFn()) > Date.parse(this.nowFn())
+			) {
+				return Result.ok({ progressed: false, scheduled: false });
+			}
+			const admitted = await this.connectorRetry.admit(this.connectorRetryOptions.targetId, connectorOperationId);
+			if (!admitted.ok) {
+				if (admitted.error.code === "external_connector_circuit_open") {
+					return Result.ok({ progressed: false, scheduled: false });
+				}
+				return admitted;
+			}
+		}
 		const attemptsUsed = compensation?.attempt ?? (previous?.attemptsUsed ?? 0) + 1;
 		const recorded = await this.writeAttempt({
 			schemaVersion: 1,
@@ -1056,7 +1126,19 @@ export class SchedulerWorkflowController {
 			binding: this.binding,
 		});
 		if (!dispatched.ok) {
-			return this.afterDispatchFailure(workflow, step, undefined, attemptsUsed, compensation !== undefined);
+			return this.afterDispatchFailure(
+				workflow,
+				step,
+				undefined,
+				attemptsUsed,
+				compensation !== undefined,
+				undefined,
+				{
+					code: dispatched.error.code,
+					message: "Scheduler dispatch failed before a provider receipt was accepted",
+					retryable: dispatched.error.retryable,
+				},
+			);
 		}
 		const receipt = dispatched.value.receipt;
 		const queued = await this.writeAttempt({
@@ -1077,7 +1159,42 @@ export class SchedulerWorkflowController {
 				fencingToken,
 				outcome: "cancelled",
 			});
-			return this.afterDispatchFailure(workflow, step, receipt, attemptsUsed, compensation !== undefined);
+			return this.afterDispatchFailure(
+				workflow,
+				step,
+				receipt,
+				attemptsUsed,
+				compensation !== undefined,
+				{ providerId: dispatched.value.providerId, providerClass: dispatched.value.providerClass },
+				receipt.error,
+			);
+		}
+		if (
+			compensation === undefined &&
+			this.connectorRetry !== undefined &&
+			this.connectorRetryOptions !== undefined &&
+			dispatched.value.providerClass === "external_connector"
+		) {
+			if (dispatched.value.providerId !== this.connectorRetryOptions.targetId) {
+				const rejected = await this.connectorRetry.recordFailure({
+					operationId: connectorOperationId,
+					targetId: this.connectorRetryOptions.targetId,
+					attemptCount: attemptsUsed,
+					sideEffectState: receipt.sideEffectState,
+					error: {
+						code: "scheduler_dispatch_invalid",
+						message: "Selected connector target did not match the durable retry target",
+						retryable: false,
+					},
+				});
+				if (!rejected.ok) return rejected;
+				return this.handleFailure(workflow, step, receipt.sideEffectState, false);
+			}
+			const succeeded = await this.connectorRetry.recordSuccess(
+				this.connectorRetryOptions.targetId,
+				connectorOperationId,
+			);
+			if (!succeeded.ok) return succeeded;
 		}
 		const predecessors =
 			step.dependsOn?.filter((dependency) => {
@@ -1180,11 +1297,61 @@ export class SchedulerWorkflowController {
 		receipt: AttemptReceipt | undefined,
 		attemptsUsed: number,
 		fromCompensation: boolean,
+		provider?: { readonly providerId: string; readonly providerClass: string },
+		error?: AttemptReceipt["error"],
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		const sideEffect: SideEffectState = receipt?.sideEffectState ?? "side_effect_unknown";
 		if (fromCompensation) return this.failCompensationAndStop(workflow, step);
 		const policy = await this.workflowPolicy(workflow.workflowId);
 		if (!policy.ok) return policy;
+		if (
+			this.connectorRetry !== undefined &&
+			this.connectorRetryOptions !== undefined &&
+			(provider === undefined || provider.providerClass === "external_connector")
+		) {
+			const targetMatches = provider === undefined || provider.providerId === this.connectorRetryOptions.targetId;
+			const decision = await this.connectorRetry.recordFailure({
+				operationId: connectorRetryOperationId(this.task.taskId, workflow.workflowId, step.stepId),
+				targetId: this.connectorRetryOptions.targetId,
+				attemptCount: attemptsUsed,
+				...(targetMatches &&
+				policy.value.policy === "bounded_retry" &&
+				this.connectorRetryOptions.guarantee !== undefined
+					? { guarantee: this.connectorRetryOptions.guarantee }
+					: {}),
+				sideEffectState: sideEffect,
+				...(targetMatches && error !== undefined
+					? { error }
+					: {
+							error: {
+								code: "scheduler_dispatch_invalid",
+								message: "Selected connector target did not match the durable retry target",
+								retryable: false,
+							},
+						}),
+			});
+			if (!decision.ok) return decision;
+			if (decision.value.decision === "retry") {
+				return Result.ok({ progressed: false, scheduled: false });
+			}
+			return this.handleFailure(workflow, step, sideEffect, false);
+		}
+		if (provider?.providerClass === "external_connector") {
+			const failClosedRetry = new ConnectorRetryCircuit(
+				withRuntimeClock({ ledger: this.ledger, taskId: this.task.taskId }, this.clock),
+			);
+			const decision = await failClosedRetry.recordFailure({
+				operationId: connectorRetryOperationId(this.task.taskId, workflow.workflowId, step.stepId),
+				targetId: provider.providerId,
+				attemptCount: attemptsUsed,
+				sideEffectState: sideEffect,
+				...(error === undefined
+					? {}
+					: { error }),
+			});
+			if (!decision.ok) return decision;
+			return this.handleFailure(workflow, step, sideEffect, false);
+		}
 		const retryable =
 			receipt !== undefined &&
 			isSchedulerSideEffectRetryable(sideEffect) &&
