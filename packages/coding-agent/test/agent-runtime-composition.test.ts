@@ -64,6 +64,7 @@ import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
+import type { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "../src/core/subagent-composition.ts";
 import { createTaskCredentialTestProvider } from "../src/core/task-credential-provider.ts";
@@ -372,7 +373,15 @@ const settleRunAtHost = async () => {
 	throw new Error("No graph work is present");
 };
 
-function createScheduler(context: AgentRuntimeCompositionContext, cwd: string): TrustedSchedulerRuntimeOptions {
+function createScheduler(
+	context: AgentRuntimeCompositionContext,
+	cwd: string,
+	selectionReservations: SchedulerSelectionReservationStore,
+	options: {
+		readonly registry?: SchedulerExecutorRegistry;
+		readonly onStart?: () => void;
+	} = {},
+): TrustedSchedulerRuntimeOptions {
 	const targetSessionId = `scheduler-target-${context.sessionId}`;
 	const targetManager = SessionManager.inMemory(cwd, { id: targetSessionId });
 	const targetSession = new Session(createSessionManagerStorage(targetManager));
@@ -390,7 +399,7 @@ function createScheduler(context: AgentRuntimeCompositionContext, cwd: string): 
 			{ now: () => NOW },
 		),
 		ownerId: `composition-scheduler-${context.sessionId}`,
-		registry: new SchedulerExecutorRegistry(),
+		registry: options.registry ?? new SchedulerExecutorRegistry({ reservationStore: selectionReservations }),
 		task: currentTask,
 		binding: schedulerBinding(currentTask, context.sessionId),
 		gateLookup: schedulerAdmissionGate,
@@ -398,6 +407,14 @@ function createScheduler(context: AgentRuntimeCompositionContext, cwd: string): 
 			throw new Error("No graph work is present");
 		},
 		settleRunAtHost,
+		...(options.onStart === undefined ? {} : {
+			eventSource: {
+				subscribe: () => {
+					options.onStart?.();
+					return () => {};
+				},
+			},
+		}),
 		pollIntervalMs: 60_000,
 		now: () => NOW,
 	};
@@ -406,10 +423,11 @@ function createScheduler(context: AgentRuntimeCompositionContext, cwd: string): 
 function createTestExternalConnectorRegistry(
 	sessionId: string,
 	toolGateway?: ToolGateway,
+	providerId = `external-connector-${sessionId}`,
 ): ExternalConnectorRegistry {
 	const snapshot = createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
-		providerId: `external-connector-${sessionId}`,
+		providerId,
 		revision: 1,
 		protocol: { name: "composition-test", version: "1" },
 		modelAccess: "none",
@@ -478,9 +496,9 @@ function createCompositionFactory(cwd: string, captures: CompositionCaptures): A
 			captures.subagents.push(subagents);
 			return subagents;
 		},
-		scheduler: (context) => {
+		scheduler: (context, selectionReservations) => {
 			captures.contexts.push(context);
-			const scheduler = createScheduler(context, cwd);
+			const scheduler = createScheduler(context, cwd, selectionReservations);
 			captures.schedulers.push(scheduler);
 			return scheduler;
 		},
@@ -948,6 +966,264 @@ describe("AgentRuntimeComposition", () => {
 		expect(composedTarget).toBe(selectedConfig.selectedTarget);
 		expect(selectedRegistry.externalConnectorTarget).toBe(selectedConfig.selectedTarget);
 		expect(selectedRegistry.externalConnectorRegistry).toBeDefined();
+	});
+
+	it("binds one selected Connector target to frozen limits, durable Scheduler selection, and retry", async () => {
+		const fixture = await createRuntimeFixture();
+		const target = externalTargetDefinition(fixture.cwd, "product-target", "product-connector");
+		const targetConfig = buildExternalConnectorTargetConfig({
+			global: { schemaVersion: 1, targets: [target] },
+			explicitTargetId: target.targetId,
+		});
+		let capturedLimits: Parameters<NonNullable<AgentRuntimeCompositionOptions["externalConnectorRegistry"]>>[3] | undefined;
+		let schedulerRegistry: SchedulerExecutorRegistry | undefined;
+		const factory = createAgentRuntimeCompositionFactory({
+			externalConnectorTargetConfig: targetConfig,
+			runtimeLimits: {
+				global: { maxRetries: 1, retryBudgetMs: 4_000, maxBacklog: 2, maxConcurrency: 1 },
+			},
+			scheduler: (context, selectionReservations) => {
+				const scheduler = createScheduler(context, fixture.cwd, selectionReservations);
+				schedulerRegistry = scheduler.registry;
+				return scheduler;
+			},
+			externalConnectorRegistry: (context, toolGateway, selectedTarget, authority) => {
+				capturedLimits = authority;
+				if (selectedTarget === undefined) throw new Error("Expected exact selected target");
+				return createTestExternalConnectorRegistry(
+					context.sessionId,
+					toolGateway,
+					selectedTarget.providerId,
+				);
+			},
+		});
+		const created = await createAgentSession({
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			modelRuntime: fixture.services.modelRuntime,
+			modelBroker: fixture.services.modelBroker,
+			settingsManager: fixture.services.settingsManager,
+			resourceLoader: fixture.services.resourceLoader,
+			capabilityRegistry: fixture.services.capabilityRegistry,
+			sessionManager: SessionManager.inMemory(fixture.cwd, { id: "connector-product-composition" }),
+			runtimeComposition: factory,
+			noTools: "all",
+		});
+		try {
+			await created.session.whenCapabilitiesReady();
+			const composition = created.runtimeComposition;
+			expect(capturedLimits?.runtimeLimits).toBe(composition.runtimeLimits);
+			expect(composition.runtimeLimits.values).toMatchObject({
+				maxRetries: 1,
+				retryBudgetMs: 4_000,
+				maxBacklog: 2,
+				maxConcurrency: 1,
+			});
+			expect(composition.scheduler?.registry.durableSelectionsEnabled()).toBe(true);
+			expect(composition.scheduler?.selectionReservationStore).toBe(
+				composition.schedulerSelectionReservations,
+			);
+			expect(composition.scheduler?.connectorRetry).toMatchObject({
+				providerId: target.providerId,
+				targetId: target.targetId,
+				policy: { maxAttempts: 2, totalRetryTimeMs: 4_000 },
+			});
+			expect(created.session.getExternalConnectorRegistry()?.list()).toMatchObject([
+				{ providerId: target.providerId, providerClass: "external_connector" },
+			]);
+			const registered = schedulerRegistry?.get(target.providerId);
+			expect(target.providerId).not.toBe(target.targetId);
+			expect(registered?.entry.descriptor).toEqual({
+				schemaVersion: 1,
+				providerId: target.providerId,
+				providerClass: "external_connector",
+			});
+			expect(registered?.runtimeSnapshot).toMatchObject({
+				capabilitySnapshot: { providerId: target.providerId },
+				credentialTargetRefs: [target.targetId],
+			});
+			expect(created.session.getSchedulerStatus()?.started).toBe(true);
+		} finally {
+			await created.session.dispose();
+			await created.session.waitForDispose();
+		}
+	});
+
+	it("does not start Scheduler before exact External Connector registration completes", async () => {
+		const fixture = await createRuntimeFixture();
+		const target = externalTargetDefinition(fixture.cwd, "barrier-target", "barrier-provider");
+		const targetConfig = buildExternalConnectorTargetConfig({
+			global: { schemaVersion: 1, targets: [target] },
+			explicitTargetId: target.targetId,
+		});
+		let releaseRegistration: (() => void) | undefined;
+		const registrationGate = new Promise<void>((resolve) => { releaseRegistration = resolve; });
+		const registrationStarted = vi.fn();
+		const schedulerStarted = vi.fn();
+		const factory = createAgentRuntimeCompositionFactory({
+			externalConnectorTargetConfig: targetConfig,
+			scheduler: (context, selectionReservations) => {
+				const registry = new SchedulerExecutorRegistry({ reservationStore: selectionReservations });
+				const register = registry.register.bind(registry);
+				vi.spyOn(registry, "register").mockImplementation(async (registration) => {
+					registrationStarted();
+					await registrationGate;
+					return register(registration);
+				});
+				return createScheduler(context, fixture.cwd, selectionReservations, {
+					registry,
+					onStart: schedulerStarted,
+				});
+			},
+			externalConnectorRegistry: (context, toolGateway, selectedTarget) => {
+				if (selectedTarget === undefined) throw new Error("Expected exact selected target");
+				return createTestExternalConnectorRegistry(context.sessionId, toolGateway, selectedTarget.providerId);
+			},
+		});
+		const created = await createAgentSession({
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			modelRuntime: fixture.services.modelRuntime,
+			modelBroker: fixture.services.modelBroker,
+			settingsManager: fixture.services.settingsManager,
+			resourceLoader: fixture.services.resourceLoader,
+			capabilityRegistry: fixture.services.capabilityRegistry,
+			sessionManager: SessionManager.inMemory(fixture.cwd, { id: "connector-registration-barrier" }),
+			runtimeComposition: factory,
+			noTools: "all",
+		});
+		const readiness = created.session.whenCapabilitiesReady();
+		await vi.waitFor(() => expect(registrationStarted).toHaveBeenCalledOnce());
+		expect(schedulerStarted).not.toHaveBeenCalled();
+		releaseRegistration?.();
+		try {
+			await readiness;
+			expect(schedulerStarted).toHaveBeenCalledOnce();
+			expect(created.session.getSchedulerStatus()?.started).toBe(true);
+		} finally {
+			await created.session.dispose();
+			await created.session.waitForDispose();
+		}
+	});
+
+	it("fences Scheduler start and keeps its registry alive while disposal awaits initialization", async () => {
+		const fixture = await createRuntimeFixture();
+		const target = externalTargetDefinition(fixture.cwd, "dispose-target", "dispose-provider");
+		const targetConfig = buildExternalConnectorTargetConfig({
+			global: { schemaVersion: 1, targets: [target] },
+			explicitTargetId: target.targetId,
+		});
+		let releaseRegistration: (() => void) | undefined;
+		const registrationGate = new Promise<void>((resolve) => { releaseRegistration = resolve; });
+		const registrationStarted = vi.fn();
+		const schedulerStarted = vi.fn();
+		const registryDisposed = vi.fn();
+		const factory = createAgentRuntimeCompositionFactory({
+			externalConnectorTargetConfig: targetConfig,
+			scheduler: (context, selectionReservations) => {
+				const registry = new SchedulerExecutorRegistry({ reservationStore: selectionReservations });
+				const register = registry.register.bind(registry);
+				vi.spyOn(registry, "register").mockImplementation(async (registration) => {
+					registrationStarted();
+					await registrationGate;
+					return register(registration);
+				});
+				return createScheduler(context, fixture.cwd, selectionReservations, {
+					registry,
+					onStart: schedulerStarted,
+				});
+			},
+			externalConnectorRegistry: (context, toolGateway, selectedTarget) => {
+				if (selectedTarget === undefined) throw new Error("Expected exact selected target");
+				const registry = createTestExternalConnectorRegistry(
+					context.sessionId,
+					toolGateway,
+					selectedTarget.providerId,
+				);
+				const dispose = registry.dispose.bind(registry);
+				vi.spyOn(registry, "dispose").mockImplementation(async () => {
+					registryDisposed();
+					await dispose();
+				});
+				return registry;
+			},
+		});
+		const created = await createAgentSession({
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			modelRuntime: fixture.services.modelRuntime,
+			modelBroker: fixture.services.modelBroker,
+			settingsManager: fixture.services.settingsManager,
+			resourceLoader: fixture.services.resourceLoader,
+			capabilityRegistry: fixture.services.capabilityRegistry,
+			sessionManager: SessionManager.inMemory(fixture.cwd, { id: "connector-dispose-barrier" }),
+			runtimeComposition: factory,
+			noTools: "all",
+		});
+		await vi.waitFor(() => expect(registrationStarted).toHaveBeenCalledOnce());
+		let disposalComplete = false;
+		const disposal = created.session.dispose().then(() => { disposalComplete = true; });
+		try {
+			await Promise.resolve();
+			expect(disposalComplete).toBe(false);
+			expect(schedulerStarted).not.toHaveBeenCalled();
+			expect(registryDisposed).not.toHaveBeenCalled();
+		} finally {
+			releaseRegistration?.();
+			await disposal;
+		}
+		expect(schedulerStarted).not.toHaveBeenCalled();
+		expect(registryDisposed).toHaveBeenCalledOnce();
+		await created.session.waitForDispose();
+	});
+
+	it("prevents Scheduler start when exact External Connector registration fails", async () => {
+		const fixture = await createRuntimeFixture();
+		const target = externalTargetDefinition(fixture.cwd, "failed-target", "failed-provider");
+		const targetConfig = buildExternalConnectorTargetConfig({
+			global: { schemaVersion: 1, targets: [target] },
+			explicitTargetId: target.targetId,
+		});
+		const schedulerStarted = vi.fn();
+		const factory = createAgentRuntimeCompositionFactory({
+			externalConnectorTargetConfig: targetConfig,
+			scheduler: (context, selectionReservations) => {
+				const registry = new SchedulerExecutorRegistry({ reservationStore: selectionReservations });
+				vi.spyOn(registry, "register").mockImplementation(async () => Result.err(
+					new FoundationError("scheduler_executor_unavailable", "Exact connector registration rejected"),
+				));
+				return createScheduler(context, fixture.cwd, selectionReservations, {
+					registry,
+					onStart: schedulerStarted,
+				});
+			},
+			externalConnectorRegistry: (context, toolGateway, selectedTarget) => {
+				if (selectedTarget === undefined) throw new Error("Expected exact selected target");
+				return createTestExternalConnectorRegistry(context.sessionId, toolGateway, selectedTarget.providerId);
+			},
+		});
+		const created = await createAgentSession({
+			cwd: fixture.cwd,
+			agentDir: fixture.cwd,
+			modelRuntime: fixture.services.modelRuntime,
+			modelBroker: fixture.services.modelBroker,
+			settingsManager: fixture.services.settingsManager,
+			resourceLoader: fixture.services.resourceLoader,
+			capabilityRegistry: fixture.services.capabilityRegistry,
+			sessionManager: SessionManager.inMemory(fixture.cwd, { id: "connector-registration-failure" }),
+			runtimeComposition: factory,
+			noTools: "all",
+		});
+		try {
+			await Promise.resolve();
+			await expect(created.session.whenCapabilitiesReady()).rejects.toThrow("Exact connector registration rejected");
+			await expect(created.session.whenCapabilitiesReady()).rejects.toThrow("Exact connector registration rejected");
+			expect(schedulerStarted).not.toHaveBeenCalled();
+			expect(created.session.getSchedulerStatus()?.started).toBe(false);
+		} finally {
+			await created.session.dispose();
+			await created.session.waitForDispose();
+		}
 	});
 
 	it("publishes one immutable local, MCP, and sandbox catalog and keeps it on invalid replacement", async () => {

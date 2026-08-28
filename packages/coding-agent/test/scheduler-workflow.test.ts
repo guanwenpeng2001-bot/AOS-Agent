@@ -1046,6 +1046,7 @@ describe("scheduler T7 production Workflow controller", () => {
 			halfOpenProbeTimeoutMs: 100,
 		};
 		const connectorRetry: SchedulerWorkflowConnectorRetryOptionsV1 = {
+			providerId: "external_connector_scheduler_workflow",
 			targetId: "external_connector_scheduler_workflow",
 			guarantee: "idempotent",
 			policy: retryPolicy,

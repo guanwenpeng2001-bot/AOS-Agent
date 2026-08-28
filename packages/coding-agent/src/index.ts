@@ -766,6 +766,7 @@ export {
 	type TrustedWorkerSandboxComposition,
 	type TrustedWorkerSandboxFactory,
 	type TrustedWorkerSandboxProviderOptions,
+	type TrustedExternalConnectorProductAuthority,
 	type TrustedExternalConnectorRegistryFactory,
 	type TrustedSchedulerCompositionFactory,
 	type TrustedSchedulerRuntimeOptions,

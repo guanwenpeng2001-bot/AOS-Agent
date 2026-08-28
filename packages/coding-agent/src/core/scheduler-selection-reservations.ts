@@ -96,6 +96,8 @@ export interface SchedulerSelectionReservationStoreOptionsV1 {
 	readonly ownerId?: string;
 	readonly laneId?: string;
 	readonly now?: () => string;
+	/** Bound on the current reconciliation aggregate; prior ledger revisions remain durable audit history. */
+	readonly maxBacklog?: number;
 }
 
 export interface SchedulerSelectionBeginSettlementV1 {
@@ -450,6 +452,7 @@ function replaceRecord(
 export class SchedulerSelectionReservationStore {
 	private readonly ledger: SessionLedger;
 	private readonly now: () => string;
+	private readonly maxBacklog: number;
 	private mutationTail: Promise<void> = Promise.resolve();
 
 	constructor(session: Session, options: SchedulerSelectionReservationStoreOptionsV1 = {}) {
@@ -458,6 +461,10 @@ export class SchedulerSelectionReservationStore {
 			...(options.laneId === undefined ? {} : { laneId: options.laneId }),
 		});
 		this.now = options.now ?? (() => new Date().toISOString());
+		this.maxBacklog = options.maxBacklog ?? Number.MAX_SAFE_INTEGER;
+		if (!Number.isSafeInteger(this.maxBacklog) || this.maxBacklog < 1) {
+			throw new RangeError("Scheduler selection maxBacklog must be a positive safe integer");
+		}
 	}
 
 	async list(): Promise<ResultValue<readonly SchedulerSelectionReservationRecordV1[], FoundationError>> {
@@ -510,7 +517,15 @@ export class SchedulerSelectionReservationStore {
 					? Result.ok(existing)
 					: Result.err(selectionConflict());
 			}
-			const active = loaded.value.aggregate.records.filter(
+			const retained = this.retainBoundedBacklog(loaded.value.aggregate);
+			if (retained.records.length >= this.maxBacklog) {
+				return Result.err(
+					new FoundationError("scheduler_backpressure", "Scheduler selection backlog is full.", {
+						retryable: true,
+					}),
+				);
+			}
+			const active = retained.records.filter(
 				(record) =>
 					record.status === "reserved" && record.fact.chosenProviderId === checkedFact.value.chosenProviderId,
 			).length;
@@ -523,11 +538,33 @@ export class SchedulerSelectionReservationStore {
 			});
 			const persisted = await this.persist(
 				loaded.value,
-				replaceRecord(loaded.value.aggregate, record),
+				replaceRecord(retained, record),
 				checkedFact.value.taskId,
 				`reserve:${checkedFact.value.reservationId}`,
 			);
 			return persisted.ok ? Result.ok(record) : persisted;
+		});
+	}
+
+	private retainBoundedBacklog(
+		aggregate: SchedulerSelectionReservationAggregateV1,
+	): SchedulerSelectionReservationAggregateV1 {
+		if (aggregate.records.length < this.maxBacklog) return aggregate;
+		const removable = aggregate.records
+			.filter((record) => record.status === "settled")
+			.sort((left, right) =>
+				left.updatedAt.localeCompare(right.updatedAt) ||
+				left.fact.queueEntryId.localeCompare(right.fact.queueEntryId),
+			);
+		const removeCount = Math.min(
+			removable.length,
+			aggregate.records.length - this.maxBacklog + 1,
+		);
+		if (removeCount === 0) return aggregate;
+		const removed = new Set(removable.slice(0, removeCount).map((record) => record.fact.queueEntryId));
+		return deepFreeze({
+			schemaVersion: 1,
+			records: aggregate.records.filter((record) => !removed.has(record.fact.queueEntryId)),
 		});
 	}
 

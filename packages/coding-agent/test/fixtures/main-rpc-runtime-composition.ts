@@ -46,6 +46,7 @@ import {
 } from "../../src/core/external-connector-supervisor.ts";
 import { createSessionManagerStorage } from "../../src/core/session-manager-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
+import type { SchedulerSelectionReservationStore } from "../../src/core/scheduler-selection-reservations.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "../../src/core/subagent-composition.ts";
 import { createTaskCredentialTestProvider } from "../../src/core/task-credential-provider.ts";
 import { TaskGraphStore } from "../../src/core/task-graph.ts";
@@ -264,7 +265,10 @@ function createSubagents(context: AgentRuntimeCompositionContext): TrustedSubage
 	};
 }
 
-function createScheduler(context: AgentRuntimeCompositionContext): TrustedSchedulerRuntimeOptions {
+function createScheduler(
+	context: AgentRuntimeCompositionContext,
+	selectionReservations: SchedulerSelectionReservationStore,
+): TrustedSchedulerRuntimeOptions {
 	const targetSessionId = `main-rpc-scheduler-target-${context.sessionId}`;
 	const targetManager = SessionManager.inMemory(process.cwd(), { id: targetSessionId });
 	const targetSession = new Session(createSessionManagerStorage(targetManager));
@@ -282,7 +286,7 @@ function createScheduler(context: AgentRuntimeCompositionContext): TrustedSchedu
 			{ now: () => NOW },
 		),
 		ownerId: `main-rpc-scheduler-${context.sessionId}`,
-		registry: new SchedulerExecutorRegistry(),
+		registry: new SchedulerExecutorRegistry({ reservationStore: selectionReservations }),
 		task,
 		binding: schedulerBinding(task, context.sessionId),
 		gateLookup: schedulerAdmissionGate,
@@ -506,9 +510,9 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 		}
 		return subagents;
 	},
-	scheduler: (context) => {
+	scheduler: (context, selectionReservations) => {
 		requireCanonicalContext(context);
-		const scheduler = createScheduler(context);
+		const scheduler = createScheduler(context, selectionReservations);
 		if (
 			scheduler.sourceSession !== canonicalContext?.session ||
 			scheduler.gateLookup !== schedulerAdmissionGate ||

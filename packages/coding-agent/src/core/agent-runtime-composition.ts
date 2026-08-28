@@ -4,7 +4,11 @@ import type {
 	ToolGateway,
 	ToolGatewayProvider,
 } from "@aos-agent/agent-core";
-import { createFoundationToolGateway } from "@aos-agent/agent-core";
+import {
+	createFoundationToolGateway,
+	fingerprintFoundationValue,
+	FoundationError,
+} from "@aos-agent/agent-core";
 import { createCanonicalExternalToolGateway, bindCanonicalExternalToolGatewayPolicy } from "./external-tool-gateway-authority.ts";
 import type { ExternalToolGatewayPolicyAuthority } from "./external-tool-gateway-authority.ts";
 import type { Models } from "@aos-agent/ai";
@@ -13,14 +17,30 @@ import type {
 	ExternalConnectorRegistry,
 } from "./external-agent-registry.ts";
 import type { TrustedSchedulerCompositionOptions } from "./foundation-control-plane.ts";
+import {
+	DEFAULT_CONNECTOR_RETRY_POLICY,
+	type ConnectorRetryPolicyV1,
+} from "./connector-retry-circuit.ts";
 import type { MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
 import type { ModelBroker } from "./model-broker.ts";
 import type { SandboxProvider } from "./sandbox.ts";
 import type { SessionManager } from "./session-manager.ts";
+import { SchedulerSelectionReservationStore } from "./scheduler-selection-reservations.ts";
+import {
+	createSchedulerExecutorRuntimeSnapshotV1,
+	schedulerBindingRequirementDigestV1,
+} from "./scheduler-executors.ts";
 import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import {
+	DEFAULT_RUNTIME_LIMITS,
+	resolveRuntimeLimitsSource,
+	type RuntimeLimitsSnapshot,
+	type RuntimeLimitsSource,
+} from "./runtime-limits.ts";
+import {
+	assertExternalConnectorCapabilityWithinTarget,
 	isTrustedExternalConnectorTargetConfig,
 	type ExternalConnectorResolvedTarget,
 	type ExternalConnectorTargetConfig,
@@ -94,14 +114,24 @@ export type TrustedSubagentCompositionFactory = (
 ) => TrustedSubagentCompositionOptionsV1;
 export type TrustedSchedulerCompositionFactory = (
 	context: AgentRuntimeCompositionContext,
+	/** Canonical Session-backed exact-selection and capacity authority. */
+	selectionReservations: SchedulerSelectionReservationStore,
 ) => TrustedSchedulerRuntimeOptions;
 export type TrustedSchedulerRuntimeOptions = Omit<TrustedSchedulerCompositionOptions, "runLifecycleSession">;
+export interface TrustedExternalConnectorProductAuthority {
+	/** Reloadable trusted source sampled once for each new Connector Attempt. */
+	readonly runtimeLimitsSource: RuntimeLimitsSource;
+	/** Frozen source identity used by this composition generation. */
+	readonly runtimeLimits: RuntimeLimitsSnapshot;
+}
 export type TrustedExternalConnectorRegistryFactory = (
 	context: AgentRuntimeCompositionContext,
 	/** The same canonical Foundation Tool Gateway exposed to every executor in this Session. */
 	toolGateway: ToolGateway | undefined,
 	/** Explicit target resolved from trusted global/managed definitions plus project/Role narrowing. */
 	target: ExternalConnectorResolvedTarget | undefined,
+	/** Centralized limits shared by readiness, Scheduler retry, and Connector execution. */
+	authority: TrustedExternalConnectorProductAuthority,
 ) => ExternalConnectorRegistry;
 export type TrustedTaskCredentialProviderFactory = (
 	context: AgentRuntimeCompositionContext,
@@ -118,6 +148,8 @@ export interface AgentRuntimeCompositionOptions {
 	/** Immutable target catalog. A catalog without explicit selection remains off. */
 	readonly externalConnectorTargetConfig?: ExternalConnectorTargetConfig;
 	readonly externalConnectorRegistry?: TrustedExternalConnectorRegistryFactory;
+	/** Centralized reloadable limits; omission uses the finite product defaults. */
+	readonly runtimeLimits?: RuntimeLimitsSource;
 	readonly taskCredentialProvider?: TrustedTaskCredentialProviderFactory;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
 }
@@ -137,6 +169,8 @@ export interface AgentRuntimeComposition extends AgentRuntimeCompositionContext 
 	readonly externalConnectorTargetConfig?: ExternalConnectorTargetConfig;
 	readonly externalConnectorTarget?: ExternalConnectorResolvedTarget;
 	readonly externalConnectorRegistry?: ExternalConnectorRegistry;
+	readonly runtimeLimits: RuntimeLimitsSnapshot;
+	readonly schedulerSelectionReservations?: SchedulerSelectionReservationStore;
 	readonly taskCredentialProvider?: TaskCredentialProvider;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
 }
@@ -201,6 +235,142 @@ function createPublicContext(context: AgentRuntimeCompositionContext): AgentRunt
 	});
 }
 
+function connectorRetryPolicy(runtimeLimits: RuntimeLimitsSnapshot): ConnectorRetryPolicyV1 {
+	const totalRetryTimeMs = runtimeLimits.values.retryBudgetMs;
+	const maxDelayMs = Math.min(DEFAULT_CONNECTOR_RETRY_POLICY.maxDelayMs, totalRetryTimeMs);
+	return Object.freeze({
+		maxAttempts: runtimeLimits.values.maxRetries + 1,
+		baseDelayMs: Math.min(DEFAULT_CONNECTOR_RETRY_POLICY.baseDelayMs, maxDelayMs),
+		maxDelayMs,
+		totalRetryTimeMs,
+		jitterPermille: DEFAULT_CONNECTOR_RETRY_POLICY.jitterPermille,
+		failureThreshold: Math.min(
+			DEFAULT_CONNECTOR_RETRY_POLICY.failureThreshold,
+			runtimeLimits.values.maxRetries + 1,
+		),
+		openDurationMs: Math.min(DEFAULT_CONNECTOR_RETRY_POLICY.openDurationMs, maxDelayMs),
+		halfOpenProbeTimeoutMs: Math.min(DEFAULT_CONNECTOR_RETRY_POLICY.halfOpenProbeTimeoutMs, maxDelayMs),
+	});
+}
+
+async function registerSelectedExternalConnector(options: {
+	readonly registry: ExternalConnectorRegistry;
+	readonly scheduler: TrustedSchedulerRuntimeOptions;
+	readonly targetConfig: ExternalConnectorTargetConfig;
+	readonly target: ExternalConnectorResolvedTarget;
+	readonly runtimeLimits: RuntimeLimitsSnapshot;
+}): Promise<void> {
+	const descriptors = options.registry.list().filter(({ providerId }) => providerId === options.target.providerId);
+	const readinessSnapshots = options.registry
+		.readinessSnapshots()
+		.filter(({ providerId }) => providerId === options.target.providerId);
+	if (descriptors.length !== 1 || readinessSnapshots.length !== 1) {
+		throw new FoundationError(
+			"scheduler_executor_unavailable",
+			"Selected External Connector must have one exact descriptor and readiness snapshot",
+		);
+	}
+	const descriptor = descriptors[0]!;
+	const readiness = readinessSnapshots[0]!;
+	if (
+		descriptor.providerClass !== "external_connector" ||
+		readiness.status !== "ready" ||
+		readiness.state !== "current" ||
+		readiness.capability.revision !== descriptor.revision ||
+		readiness.capability.digest.value !== descriptor.capabilitySnapshotDigest.value
+	) {
+		throw new FoundationError(
+			"scheduler_executor_unavailable",
+			"Selected External Connector descriptor and readiness identity are inconsistent",
+		);
+	}
+	const selection = {
+		providerId: descriptor.providerId,
+		revision: descriptor.revision,
+		capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+	};
+	const selected = await options.registry.select(selection);
+	if (!selected.ok) throw selected.error;
+	assertExternalConnectorCapabilityWithinTarget(options.target, selected.value.capabilitySnapshot);
+	if (
+		selected.value.connector.providerId !== options.target.providerId ||
+		selected.value.connector.providerClass !== "external_connector" ||
+		selected.value.capabilitySnapshot.digest.value !== readiness.capability.digest.value
+	) {
+		throw new FoundationError(
+			"scheduler_executor_unavailable",
+			"Selected External Connector execution identity drifted before Scheduler registration",
+		);
+	}
+	const bindingRequirementDigest = schedulerBindingRequirementDigestV1(options.scheduler.binding);
+	if (!bindingRequirementDigest.ok) throw bindingRequirementDigest.error;
+	const policyRevisionFingerprint = options.scheduler.binding.policyRevision.fingerprint;
+	if (policyRevisionFingerprint === undefined) {
+		throw new FoundationError(
+			"binding_required_fact",
+			"Selected External Connector registration requires a fingerprinted policy revision",
+		);
+	}
+	const runtimeSnapshot = createSchedulerExecutorRuntimeSnapshotV1({
+		schemaVersion: 1,
+		capabilitySnapshot: selected.value.capabilitySnapshot,
+		configRevision: fingerprintFoundationValue({
+			targetConfigRevision: options.targetConfig.configRevision,
+			targetSelectionRevision: options.target.selectionRevision,
+			targetId: options.target.targetId,
+			providerId: options.target.providerId,
+			readinessSnapshotDigest: readiness.snapshotDigest,
+			readinessConfiguration: readiness.configuration,
+			readinessIdentity: readiness.identity,
+			runtimeLimitsDigest: options.runtimeLimits.digest,
+		}),
+		bindingRequirementDigests: [bindingRequirementDigest.value],
+		toolSelectionDigests: [options.scheduler.binding.mcpSelection.digest],
+		policyRevisionDigests: [policyRevisionFingerprint],
+		reviewRevisionDigests: [],
+		credentialTargetRefs: options.target.accountReference === undefined ? [] : [options.target.targetId],
+		sandboxTargetRefs: [],
+		observedAt: readiness.observedAt,
+		expiresAt: readiness.expiresAt,
+	});
+	if (!runtimeSnapshot.ok) throw runtimeSnapshot.error;
+	const capabilities = await selected.value.connector.capabilities();
+	const registered = await options.scheduler.registry.register({
+		entry: {
+			schemaVersion: 1,
+			descriptor: {
+				schemaVersion: 1,
+				providerId: options.target.providerId,
+				providerClass: "external_connector",
+			},
+			capabilities,
+			costClass: "remote_paid",
+			registeredAt: readiness.observedAt,
+		},
+		provider: selected.value.connector,
+		trusted: true,
+		latencyMs: 0,
+		maxConcurrency: options.runtimeLimits.values.maxConcurrency,
+		runtimeSnapshot: runtimeSnapshot.value,
+	});
+	if (!registered.ok) throw registered.error;
+	const currentReadiness = options.registry
+		.readinessSnapshots()
+		.filter(({ providerId }) => providerId === options.target.providerId);
+	const reselected = await options.registry.select(selection);
+	if (
+		currentReadiness.length !== 1 ||
+		currentReadiness[0]!.snapshotDigest.value !== readiness.snapshotDigest.value ||
+		!reselected.ok ||
+		reselected.value.capabilitySnapshot.digest.value !== selected.value.capabilitySnapshot.digest.value
+	) {
+		throw new FoundationError(
+			"scheduler_executor_unavailable",
+			"Selected External Connector identity drifted during Scheduler registration",
+		);
+	}
+}
+
 function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRuntimeCompositionFactory {
 	if (options.toolGateway !== undefined && options.toolGatewayCatalog !== undefined) {
 		throw new TypeError("Trusted Tool Gateway must have one composition source");
@@ -229,6 +399,8 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 		[agentRuntimeCompositionFactoryBrand]: true as const,
 		create(context: AgentRuntimeCompositionContext): AgentRuntimeComposition {
 			const publicContext = createPublicContext(context);
+			const runtimeLimitsSource = snapshot.runtimeLimits ?? DEFAULT_RUNTIME_LIMITS;
+			const runtimeLimits = resolveRuntimeLimitsSource(runtimeLimitsSource);
 			const workerComposition = snapshot.trustedWorkerSandboxFactory?.(publicContext);
 			const workerSandboxProvider = requireFresh(
 				snapshot.workerSandboxProvider ?? (
@@ -266,11 +438,26 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				snapshot.subagents?.(publicContext) ?? snapshot.subagentOptions,
 				"Trusted Subagent composition",
 			);
+			const schedulerSelectionReservations = snapshot.scheduler === undefined
+				? undefined
+				: new SchedulerSelectionReservationStore(publicContext.session, {
+						ownerId: `scheduler-selection:${publicContext.sessionId}`,
+						maxBacklog: runtimeLimits.values.maxBacklog,
+					});
 			const schedulerSource = requireFresh(
-				snapshot.scheduler?.(publicContext) ?? snapshot.schedulerOptions,
+				(snapshot.scheduler === undefined || schedulerSelectionReservations === undefined
+					? undefined
+					: snapshot.scheduler(publicContext, schedulerSelectionReservations)) ?? snapshot.schedulerOptions,
 				"Trusted Scheduler composition",
 			);
-			const scheduler = schedulerSource === undefined ? undefined : withoutPhysicalScheduler(schedulerSource);
+			let scheduler = schedulerSource === undefined ? undefined : withoutPhysicalScheduler(schedulerSource);
+			if (
+				snapshot.scheduler !== undefined &&
+				scheduler !== undefined &&
+				!scheduler.registry.durableSelectionsEnabled()
+			) {
+				throw new TypeError("Trusted Scheduler composition must use the canonical selection reservation store");
+			}
 			const underlyingToolGateway = explicitToolGateway ?? subagents?.toolGateway;
 			requireFresh(underlyingToolGateway, "Trusted Tool Gateway");
 			const toolGateway = underlyingToolGateway === undefined
@@ -282,13 +469,50 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 					: Object.freeze({ ...subagents, toolGateway });
 			const externalConnectorTargetConfig = snapshot.externalConnectorTargetConfig;
 			const externalConnectorTarget = externalConnectorTargetConfig?.selectedTarget;
+			if (scheduler !== undefined && externalConnectorTarget !== undefined) {
+				scheduler = Object.freeze({
+					...scheduler,
+					connectorRetry: Object.freeze({
+						providerId: externalConnectorTarget.providerId,
+						targetId: externalConnectorTarget.targetId,
+						policy: connectorRetryPolicy(runtimeLimits),
+					}),
+					...(schedulerSelectionReservations === undefined
+						? {}
+						: { selectionReservationStore: schedulerSelectionReservations }),
+				});
+			}
 			const externalConnectorRegistry = externalConnectorTargetConfig !== undefined && externalConnectorTarget === undefined
 				? undefined
 				: requireFresh(
-					snapshot.externalConnectorRegistry?.(publicContext, toolGateway, externalConnectorTarget) ??
+					snapshot.externalConnectorRegistry?.(
+						publicContext,
+						toolGateway,
+						externalConnectorTarget,
+						Object.freeze({ runtimeLimitsSource, runtimeLimits }),
+					) ??
 						snapshot.externalConnectorRegistryInstance,
 					"Trusted External Connector registry",
 				);
+			if (scheduler !== undefined && externalConnectorTarget !== undefined) {
+				if (externalConnectorRegistry === undefined || externalConnectorTargetConfig === undefined) {
+					throw new FoundationError(
+						"scheduler_executor_unavailable",
+						"Selected External Connector requires its trusted registry before Scheduler start",
+					);
+				}
+				const schedulerForInitialization = scheduler;
+				scheduler = Object.freeze({
+					...schedulerForInitialization,
+					initializeBeforeStart: () => registerSelectedExternalConnector({
+						registry: externalConnectorRegistry,
+						scheduler: schedulerForInitialization,
+						targetConfig: externalConnectorTargetConfig,
+						target: externalConnectorTarget,
+						runtimeLimits,
+					}),
+				});
+			}
 			const taskCredentialProvider = requireFresh(
 				snapshot.taskCredentialProvider?.(publicContext) ?? snapshot.taskCredentialProviderInstance,
 				"Trusted Task Credential provider",
@@ -306,6 +530,10 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				...(externalConnectorRegistry === undefined
 					? {}
 					: { externalConnectorRegistry }),
+				runtimeLimits,
+				...(schedulerSelectionReservations === undefined
+					? {}
+					: { schedulerSelectionReservations }),
 				...(taskCredentialProvider === undefined
 					? {}
 					: { taskCredentialProvider }),
@@ -332,6 +560,7 @@ export function createAgentRuntimeCompositionFactory(
 		options.scheduler === undefined &&
 		options.externalConnectorTargetConfig === undefined &&
 		options.externalConnectorRegistry === undefined &&
+		options.runtimeLimits === undefined &&
 		options.taskCredentialProvider === undefined &&
 		options.taskCredentialPolicyMaxTtlMs === undefined
 	) {
