@@ -11,6 +11,33 @@ import {
 
 const HEAD_SHA = "c".repeat(40);
 
+function fixtureOwnerState() {
+	return {
+		session: { id: "line13-upgrade", entries: 2 },
+		settings: { defaultProvider: "faux", steeringMode: "one-at-a-time" },
+		trust: { decision: true },
+		auth: { providers: [{ providerId: "line13.faux-provider", type: "api_key" }] },
+		identity: { installationIdDigest: `sha256:${"1".repeat(64)}` },
+		connectorConfig: {
+			schemaVersion: 1,
+			targetCount: 1,
+			selectedTargetId: "line13-upgrade-target",
+			providerId: "line13.fake-connector",
+			source: "managed",
+			configRevision: `sha256:${"2".repeat(64)}`,
+			selectionRevision: `sha256:${"3".repeat(64)}`,
+			capabilityCeiling: {
+				modelAccess: ["none"],
+				resume: false,
+				toolGateway: false,
+				artifacts: false,
+				images: false,
+			},
+			selectionSources: ["explicit"],
+		},
+	};
+}
+
 function fakePackageExecutor() {
 	const calls = [];
 	return {
@@ -27,14 +54,26 @@ function fakePackageExecutor() {
 		generatePrevious({ stateDirectory }) {
 			calls.push({ operation: "generate_previous" });
 			mkdirSync(stateDirectory, { recursive: true });
-			const state = { schemaVersion: 1, packageVersion: "0.84.2" };
+			const state = {
+				schemaVersion: 1,
+				packageVersion: "0.84.2",
+				sessionFile: "sessions/line13-upgrade.jsonl",
+				cwd: "workspace",
+				agentDir: "agent",
+				owners: fixtureOwnerState(),
+			};
 			writeFileSync(join(stateDirectory, "publication.json"), `${JSON.stringify(state)}\n`, "utf8");
 			return state;
 		},
 		migrateCandidate({ stateDirectory, fault }) {
 			calls.push({ operation: "migrate_candidate", fault });
 			if (fault === "before_publish") return { status: 2, ok: false, error: "injected_before_publish" };
-			const state = { schemaVersion: 2, migration: { complete: true } };
+			const state = {
+				schemaVersion: 2,
+				packageVersion: "0.84.2",
+				owners: fixtureOwnerState(),
+				migration: { fromSchemaVersion: 1, complete: true },
+			};
 			writeFileSync(join(stateDirectory, "publication.json"), `${JSON.stringify(state)}\n`, "utf8");
 			if (fault === "after_publish") return { status: 2, ok: false, error: "injected_after_publish" };
 			return {
@@ -43,7 +82,7 @@ function fakePackageExecutor() {
 				result: {
 					entrypoint: "aos-agent/external-connector",
 					adapter: "packaged_durable_state_migration",
-					owners: ["session", "settings", "trust", "auth", "identity", "connector"],
+					owners: ["session", "settings", "trust", "auth", "identity", "connector_config"],
 					stateDigest: `sha256:${"5".repeat(64)}`,
 				},
 			};

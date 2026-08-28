@@ -172,21 +172,125 @@ export function createSystemPackageExecutor(workRoot) {
 		},
 		generatePrevious({ installDirectory, stateDirectory }) {
 			const runner = join(installDirectory, "generate-previous.mjs");
-			writeFileSync(runner, [
-				'import { mkdirSync, writeFileSync } from "node:fs";',
-				'import { basename, join } from "node:path";',
-				'import { ProjectTrustStore, SessionManager, SettingsManager } from "aos-agent";',
-				'const state = process.argv[2];',
-				'const version = process.argv[3];',
-				'const cwd = join(state, "workspace"); const agentDir = join(state, "agent"); const sessions = join(state, "sessions");',
-				'mkdirSync(cwd, { recursive: true }); mkdirSync(agentDir, { recursive: true }); mkdirSync(sessions, { recursive: true });',
-				'const session = SessionManager.create(cwd, sessions, { id: "line13-upgrade" });',
-				'session.appendCustomEntry("line13.previous", { sanitized: true }); session.flushPendingSession();',
-				'const settings = SettingsManager.create(cwd, agentDir); settings.setDefaultProvider("faux"); settings.setSteeringMode("one-at-a-time"); await settings.flush();',
-				'new ProjectTrustStore(agentDir).set(cwd, true);',
-				'const publication = { schemaVersion: 1, packageVersion: version, sessionFile: `sessions/${basename(session.getSessionFile())}`, cwd: "workspace", agentDir: "agent", auth: "not_configured", identity: "anonymous", connector: "disabled" };',
-				'writeFileSync(join(state, "publication.json"), `${JSON.stringify(publication, undefined, 2)}\\n`, { mode: 0o600 });',
-			].join("\n"), { encoding: "utf8", mode: 0o600 });
+			writeFileSync(runner, `
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { AuthStorage } from "./node_modules/aos-agent/dist/core/auth-storage.js";
+import { CapabilityPublicIdentity } from "./node_modules/aos-agent/dist/core/capability-public-identity.js";
+import { buildExternalConnectorTargetConfig } from "./node_modules/aos-agent/dist/core/external-connector-target-config.js";
+import { SessionManager } from "./node_modules/aos-agent/dist/core/session-manager.js";
+import { SettingsManager } from "./node_modules/aos-agent/dist/core/settings-manager.js";
+import { ProjectTrustStore } from "./node_modules/aos-agent/dist/core/trust-manager.js";
+
+const state = process.argv[2];
+const version = process.argv[3];
+const cwd = join(state, "workspace");
+const agentDir = join(state, "agent");
+const sessions = join(state, "sessions");
+const identityDomain = "line13-upgrade-owner";
+const identityInput = "installation";
+const targetId = "line13-upgrade-target";
+const providerId = "line13.fake-connector";
+
+function connectorConfigOwner() {
+	const fileIdentity = \`sha256:\${createHash("sha256").update(readFileSync(process.execPath)).digest("hex")}\`;
+	const config = buildExternalConnectorTargetConfig({
+		managed: {
+			schemaVersion: 1,
+			targets: [{
+				schemaVersion: 1,
+				targetId,
+				providerId,
+				executablePath: process.execPath,
+				modulePath: process.execPath,
+				cwd,
+				version: process.version,
+				executableIdentity: fileIdentity,
+				moduleIdentity: fileIdentity,
+				capabilityCeiling: {
+					modelAccess: ["none"],
+					resume: false,
+					toolGateway: false,
+					artifacts: false,
+					images: false,
+				},
+			}],
+		},
+		explicitTargetId: targetId,
+	});
+	if (config.selectedTarget === undefined) throw new Error("Line 13 previous owner connector config was not selected");
+	return {
+		schemaVersion: 1,
+		targetCount: config.targets.length,
+		selectedTargetId: config.selectedTarget.targetId,
+		providerId: config.selectedTarget.providerId,
+		source: config.selectedTarget.source,
+		configRevision: config.configRevision,
+		selectionRevision: config.selectedTarget.selectionRevision,
+		capabilityCeiling: {
+			modelAccess: [...config.selectedTarget.capabilityCeiling.modelAccess],
+			resume: config.selectedTarget.capabilityCeiling.resume,
+			toolGateway: config.selectedTarget.capabilityCeiling.toolGateway,
+			artifacts: config.selectedTarget.capabilityCeiling.artifacts,
+			images: config.selectedTarget.capabilityCeiling.images,
+		},
+		selectionSources: [...config.selectedTarget.selectionSources],
+	};
+}
+
+mkdirSync(cwd, { recursive: true });
+mkdirSync(agentDir, { recursive: true });
+mkdirSync(sessions, { recursive: true });
+
+const session = SessionManager.create(cwd, sessions, { id: "line13-upgrade" });
+session.appendCustomEntry("line13.previous", { sanitized: true });
+session.flushPendingSession();
+
+const settings = SettingsManager.create(cwd, agentDir);
+settings.setDefaultProvider("faux");
+settings.setSteeringMode("one-at-a-time");
+await settings.flush();
+
+await AuthStorage.create(join(agentDir, "auth.json")).modify("line13.faux-provider", async () => ({
+	type: "api_key",
+	key: "line13-secret",
+}));
+new ProjectTrustStore(agentDir).set(cwd, true);
+
+const identity = CapabilityPublicIdentity.loadSync(agentDir);
+const sessionFile = session.getSessionFile();
+const defaultProvider = settings.getDefaultProvider();
+if (sessionFile === undefined || defaultProvider === undefined) throw new Error("Line 13 previous owner state is incomplete");
+const publication = {
+	schemaVersion: 1,
+	packageVersion: version,
+	sessionFile: \`sessions/\${basename(sessionFile)}\`,
+	cwd: "workspace",
+	agentDir: "agent",
+	owners: {
+		session: {
+			id: session.getSessionId(),
+			entries: session.getEntries().length,
+		},
+		settings: {
+			defaultProvider,
+			steeringMode: settings.getSteeringMode(),
+		},
+		trust: {
+			decision: new ProjectTrustStore(agentDir).get(cwd),
+		},
+		auth: {
+			providers: [{ providerId: "line13.faux-provider", type: "api_key" }],
+		},
+		identity: {
+			installationIdDigest: \`sha256:\${createHash("sha256").update(identity.derive(identityDomain, identityInput)).digest("hex")}\`,
+		},
+		connectorConfig: connectorConfigOwner(),
+	},
+};
+writeFileSync(join(state, "publication.json"), \`\${JSON.stringify(publication, undefined, 2)}\\n\`, { mode: 0o600 });
+`.trimStart(), { encoding: "utf8", mode: 0o600 });
 			const packageJson = JSON.parse(readFileSync(join(installDirectory, "node_modules", "aos-agent", "package.json"), "utf8"));
 			runCommand(process.execPath, [runner, stateDirectory, packageJson.version], {
 				cwd: installDirectory,
@@ -212,22 +316,37 @@ export function createSystemPackageExecutor(workRoot) {
 	};
 }
 
-function readPublishedSchema(stateDirectory) {
+function readPublishedState(stateDirectory) {
 	const state = readJson(join(stateDirectory, "publication.json"));
 	if (state.schemaVersion !== 1 && state.schemaVersion !== 2) throw new Error("Interrupted migration exposed partial state");
+	return state;
+}
+
+function readPublishedSchema(stateDirectory) {
+	const state = readPublishedState(stateDirectory);
 	return state.schemaVersion;
 }
 
 function runScenario(executor, installs, root, fault) {
 	mkdirSync(root, { recursive: true });
-	executor.generatePrevious({ installDirectory: installs.previous, stateDirectory: root });
+	const previousState = assertSanitized(
+		executor.generatePrevious({ installDirectory: installs.previous, stateDirectory: root }),
+		"previousPublication",
+	);
+	const previousStateDigest = digestJson(previousState);
 	const faultReceipt = executor.migrateCandidate({ installDirectory: installs.candidate, stateDirectory: root, fault });
 	if (faultReceipt.status === 0 || faultReceipt.error !== `injected_${fault}`) {
 		throw new Error(`Packaged candidate did not observe ${fault}`);
 	}
-	const recoveredSchemaVersion = readPublishedSchema(root);
-	if (fault === "before_publish" && recoveredSchemaVersion !== 1) throw new Error("Pre-publish fault did not preserve old state");
-	if (fault === "after_publish" && recoveredSchemaVersion !== 2) throw new Error("Post-publish fault did not preserve new state");
+	const recoveredState = readPublishedState(root);
+	const recoveredSchemaVersion = recoveredState.schemaVersion;
+	if (fault === "before_publish" && digestJson(recoveredState) !== previousStateDigest) {
+		throw new Error("Pre-publish fault did not preserve old state");
+	}
+	if (
+		fault === "after_publish" &&
+		(recoveredSchemaVersion !== 2 || recoveredState.migration?.complete !== true || recoveredState.owners === undefined)
+	) throw new Error("Post-publish fault did not preserve complete new state");
 	const temporaryPath = join(root, "publication.json.next");
 	if (existsSync(temporaryPath)) rmSync(temporaryPath, { force: true });
 	const restarted = executor.migrateCandidate({ installDirectory: installs.candidate, stateDirectory: root, fault: "none" });
