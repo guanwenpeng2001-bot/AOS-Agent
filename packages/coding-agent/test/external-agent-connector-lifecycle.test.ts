@@ -26,6 +26,7 @@ import * as packageEntry from "../src/index.ts";
 import {
 	DurableExternalAgentConnector,
 	externalConnectorAttemptId,
+	type ExternalConnectorCredentialRuntime,
 	type ExternalConnectorToolGatewayConsumer,
 } from "../src/core/external-agent-connector.ts";
 import type {
@@ -63,9 +64,29 @@ import type {
 	ExternalConnectorVendorDriver,
 } from "../src/core/vendor-drivers/types.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
+import type { SessionEntry } from "../src/core/session-manager.ts";
+import {
+	createTaskCredentialTestProvider,
+	type TaskCredentialProviderReceipt,
+	type TaskCredentialTargetCapabilities,
+	type TaskCredentialTargetCapabilitiesRequest,
+	type TaskCredentialTargetRenewRequest,
+	type TaskCredentialTargetRevokeRequest,
+	type TaskCredentialTestProvider,
+} from "../src/core/task-credential-provider.ts";
+import type {
+	TaskCredentialDeliveryReceipt,
+	TaskCredentialScope,
+} from "../src/core/task-credential-lease.ts";
+import {
+	TaskCredentialService,
+	type TaskCredentialPreflightResolver,
+} from "../src/core/task-credential-service.ts";
+import type { TaskCredentialSession } from "../src/core/task-credential-store.ts";
 
 const now = "2026-08-27T00:00:00.000Z";
 const providerId = "third-party-connector";
+const credentialCanary = "external-credential-material-canary";
 const task: TaskEnvelope = {
 	schemaVersion: 1,
 	taskId: "task-external-lifecycle",
@@ -312,12 +333,14 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 		dispose: 0,
 	};
 	readonly spawnStates: Array<ExternalConnectorOperationStatus | undefined> = [];
+	readonly spawnRequests: ExternalConnectorDriverSpawnRequest[] = [];
 	readonly writes: ExternalConnectorDriverWriteRequest[] = [];
 	store: FakeStore | undefined;
 	spawnFailure = false;
 	spawnGate: Promise<void> | undefined;
 	onSpawn: (() => void) | undefined;
 	readFailure = false;
+	connectFailure = false;
 	readHangs = false;
 	readAbortObserved = false;
 	eventNextHangs = false;
@@ -340,6 +363,7 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
 		this.calls.spawn++;
 		this.spawnStates.push(this.store?.operations.get(request.attempt.attemptId)?.status);
+		this.spawnRequests.push(request);
 		this.onSpawn?.();
 		if (this.spawnGate !== undefined) await this.spawnGate;
 		if (this.spawnFailure) throw new Error("injected spawn failure");
@@ -367,6 +391,7 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 
 	async connect(mapping: CanonicalExternalConnectorMapping): Promise<ExternalConnectorDriverHandle> {
 		this.calls.connect++;
+		if (this.connectFailure) throw new Error("injected connect failure");
 		return (this.connectHandle ?? {
 			...this.handle,
 			supervisorRef: mapping.supervisor.ref,
@@ -430,6 +455,170 @@ class FakeDriver implements ExternalConnectorVendorDriver {
 	}
 }
 
+class CredentialSession implements TaskCredentialSession {
+	readonly entries: SessionEntry[] = [];
+
+	getSessionId(): string {
+		return "session-external-credential";
+	}
+
+	getEntries(): ReadonlyArray<SessionEntry> {
+		return this.entries;
+	}
+
+	appendCustomEntry(customType: string, data?: unknown): string {
+		const entry = {
+			id: `credential-entry-${this.entries.length + 1}`,
+			type: "custom",
+			customType,
+			data,
+		} as SessionEntry;
+		this.entries.push(entry);
+		return entry.id;
+	}
+}
+
+class ExternalCredentialTarget {
+	readonly projectedMaterials: string[] = [];
+	readonly renewals: TaskCredentialTargetRenewRequest[] = [];
+	readonly revocations: TaskCredentialTargetRevokeRequest[] = [];
+	revokeUnknown = false;
+	operationStatus: (() => ExternalConnectorOperationStatus | undefined) | undefined;
+	onProject: (() => void) | undefined;
+	statusAtProjection: ExternalConnectorOperationStatus | undefined;
+
+	getCapabilities(request: TaskCredentialTargetCapabilitiesRequest): TaskCredentialTargetCapabilities {
+		return {
+			schemaVersion: 1,
+			targetId: request.targetId,
+			targetKind: request.targetKind,
+			bindingId: request.bindingId,
+			canReceiveShortLivedCredential: true,
+			canRenewCredential: true,
+			canRevokeCredential: true,
+			supportsPerBindingIsolation: true,
+			supportsDeliveryReceipt: true,
+		};
+	}
+
+	project(request: {
+		readonly schemaVersion: 1;
+		readonly leaseId: string;
+		readonly grantId: string;
+		readonly bindingId: string;
+		readonly targetId?: string;
+		readonly scopes: ReadonlyArray<TaskCredentialScope>;
+		readonly material: Readonly<Record<string, string>>;
+		readonly projectedAt: string;
+	}): TaskCredentialDeliveryReceipt {
+		this.statusAtProjection = this.operationStatus?.();
+		this.onProject?.();
+		this.projectedMaterials.push(...Object.values(request.material));
+		return {
+			schemaVersion: 1,
+			leaseId: request.leaseId,
+			grantId: request.grantId,
+			bindingId: request.bindingId,
+			...(request.targetId === undefined ? {} : { targetId: request.targetId }),
+			status: "succeeded",
+			recordedAt: now,
+		};
+	}
+
+	renew(request: TaskCredentialTargetRenewRequest): TaskCredentialProviderReceipt {
+		this.renewals.push(request);
+		return {
+			schemaVersion: 1,
+			leaseId: request.leaseId,
+			grantId: request.grantId,
+			bindingId: request.bindingId,
+			status: "renewed",
+			recordedAt: now,
+		};
+	}
+
+	revoke(request: TaskCredentialTargetRevokeRequest): TaskCredentialProviderReceipt {
+		this.revocations.push(request);
+		return {
+			schemaVersion: 1,
+			leaseId: request.leaseId,
+			grantId: request.grantId,
+			bindingId: request.bindingId,
+			status: this.revokeUnknown ? "revocation_unknown" : "revoked",
+			recordedAt: now,
+		};
+	}
+}
+
+interface CredentialHarness {
+	readonly session: CredentialSession;
+	readonly target: ExternalCredentialTarget;
+	readonly provider: TaskCredentialTestProvider;
+	readonly clock: { nowMs: number };
+	service: TaskCredentialService;
+	runtime: ExternalConnectorCredentialRuntime;
+	reload(): void;
+}
+
+function credentialPreflight(): TaskCredentialPreflightResolver {
+	return { resolve: (input) => ({ allowed: true, boundedTtlMs: input.requestedTtlMs }) };
+}
+
+function createCredentialHarness(): CredentialHarness {
+	const session = new CredentialSession();
+	const target = new ExternalCredentialTarget();
+	const clock = { nowMs: Date.parse(now) };
+	const provider = createTaskCredentialTestProvider({
+		materials: { external_registry: credentialCanary },
+		target,
+		now: () => new Date(clock.nowMs).toISOString(),
+	});
+	const createService = (): TaskCredentialService => new TaskCredentialService({
+		session,
+		provider,
+		preflight: credentialPreflight(),
+		policyMaxTtlMs: 300_000,
+		now: () => new Date(clock.nowMs).toISOString(),
+	});
+	const createRuntime = (service: TaskCredentialService): ExternalConnectorCredentialRuntime => ({
+		service,
+		resolveIssueContext: (attempt, selectedBinding) => ({
+			taskId: attempt.taskId,
+			graphRevision: 1,
+			nodeId: "node-external-credential",
+			runId: "run-external-credential",
+			capabilityBindingId: selectedBinding.capabilityRevision.id,
+			policyBindingId: selectedBinding.policyRevision.id,
+			targetId: "external-target-1",
+			targetKind: "external_connector",
+			scopes: [{
+				credentialName: "external_registry",
+				purpose: "read",
+				operations: ["read"],
+				targetKinds: ["external_connector"],
+			}],
+			requestedTtlMs: 60_000,
+			clientRequestId: "connector-overrides-this-request",
+			nodeAttached: true,
+		}),
+	});
+	const service = createService();
+	const harness: CredentialHarness = {
+		session,
+		target,
+		provider,
+		clock,
+		service,
+		runtime: createRuntime(service),
+		reload: () => {
+			const reloaded = createService();
+			harness.service = reloaded;
+			harness.runtime = createRuntime(reloaded);
+		},
+	};
+	return harness;
+}
+
 interface Fixture {
 	readonly binding: AgentBinding;
 	readonly store: FakeStore;
@@ -447,6 +636,7 @@ async function fixture(
 		capabilityRevision?: number;
 		toolGateway?: boolean;
 		runtimeLimits?: RuntimeLimitsSource;
+		credential?: ExternalConnectorCredentialRuntime;
 	} = {},
 ): Promise<Fixture> {
 	const resolvedBinding = binding();
@@ -464,6 +654,7 @@ async function fixture(
 		driver,
 		supervision: supervision.options,
 		...(options.runtimeLimits === undefined ? {} : { runtimeLimits: options.runtimeLimits }),
+		...(options.credential === undefined ? {} : { credential: options.credential }),
 		now: () => now,
 		operationNonce: () => "operation-nonce-1",
 	});
@@ -495,7 +686,11 @@ async function fixture(
 	};
 }
 
-function restartedConnector(value: Fixture, runtimeLimits?: RuntimeLimitsSource): {
+function restartedConnector(
+	value: Fixture,
+	runtimeLimits?: RuntimeLimitsSource,
+	credential?: ExternalConnectorCredentialRuntime,
+): {
 	readonly connector: DurableExternalAgentConnector;
 	readonly driver: FakeDriver;
 } {
@@ -511,6 +706,7 @@ function restartedConnector(value: Fixture, runtimeLimits?: RuntimeLimitsSource)
 			driver,
 			supervision: value.supervision.options,
 			...(runtimeLimits === undefined ? {} : { runtimeLimits }),
+			...(credential === undefined ? {} : { credential }),
 			now: () => now,
 			operationNonce: () => "restart-must-not-create-an-operation",
 		}),
@@ -765,6 +961,151 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.store.operationHistory).toEqual(["prepared", "start_intent", "running", "terminal"]);
 	});
 
+	it("issues after durable start intent and exposes only a safe per-binding lease projection", async () => {
+		const credentials = createCredentialHarness();
+		const value = await fixture({ credential: credentials.runtime });
+		credentials.target.operationStatus = () =>
+			value.store.operations.get(value.attempt.attemptId)?.status;
+		persistAttempt(value);
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed).toMatchObject({ ok: true, value: { status: "succeeded" } });
+		expect(credentials.target.statusAtProjection).toBe("start_intent");
+		expect(credentials.target.projectedMaterials).toEqual([credentialCanary]);
+		const driverProjection = value.driver.spawnRequests[0]?.credential;
+		expect(driverProjection).toBeDefined();
+		expect(Object.keys(driverProjection ?? {}).sort()).toEqual([
+			"bindingId",
+			"clientRequestId",
+			"expiresAt",
+			"grantId",
+			"leaseId",
+			"schemaVersion",
+			"scopeDigest",
+		]);
+		const operation = value.store.operations.get(value.attempt.attemptId);
+		expect(operation?.credential).toMatchObject({
+			targetId: "external-target-1",
+			targetKind: "external_connector",
+			projection: driverProjection,
+			delivery: { status: "succeeded", targetId: "external-target-1" },
+		});
+		expect(credentials.target.revocations).toHaveLength(1);
+		const leaseId = operation?.credential?.projection.leaseId;
+		expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("settled");
+		const durableTrace = JSON.stringify({
+			operation,
+			credentialEntries: credentials.session.entries,
+			driverProjection,
+			result: completed,
+		});
+		expect(durableTrace).not.toContain(credentialCanary);
+		expect(durableTrace).not.toContain("material");
+
+		const replayed = await value.connector.runAttempt(value.attempt, { correlation });
+		expect(replayed).toEqual(completed);
+		expect(value.driver.calls.spawn).toBe(1);
+		expect(credentials.target.revocations).toHaveLength(1);
+	});
+
+	it("quarantines an external target when terminal revocation cannot be confirmed", async () => {
+		const credentials = createCredentialHarness();
+		credentials.target.revokeUnknown = true;
+		const value = await fixture({ credential: credentials.runtime });
+		persistAttempt(value);
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed).toMatchObject({ ok: true, value: { status: "succeeded" } });
+		const lease = value.store.operations.get(value.attempt.attemptId)?.credential;
+		if (lease === undefined) throw new Error("missing durable credential lease");
+		expect(credentials.target.revocations).toHaveLength(1);
+		expect(credentials.service.get(lease.projection.leaseId)?.status).toBe("revocation_unknown");
+		expect(credentials.service.isTargetQuarantined(lease.targetId)).toBe(true);
+
+		expect(await value.connector.runAttempt(value.attempt, { correlation })).toEqual(completed);
+		expect(credentials.target.revocations).toHaveLength(1);
+	});
+
+	for (const terminalPath of ["launch_failure", "runner_throw", "cancel", "deadline", "dispose"] as const) {
+		it(`revokes and clears the external lease on ${terminalPath}`, async () => {
+			const credentials = createCredentialHarness();
+			const value = await fixture({ credential: credentials.runtime });
+			persistAttempt(value);
+			const controller = new AbortController();
+			if (terminalPath === "launch_failure") value.supervision.privateStateStore.failWrites = 1;
+			if (terminalPath === "runner_throw") value.driver.spawnFailure = true;
+			if (terminalPath === "cancel" || terminalPath === "dispose") {
+				value.driver.readHangs = true;
+				value.driver.eventNextHangs = true;
+			}
+			if (terminalPath === "deadline") {
+				credentials.target.onProject = () => controller.abort(new AgentOperationError("deadline_exceeded"));
+			}
+
+			const running = value.connector.runAttempt(value.attempt, {
+				correlation,
+				...(terminalPath === "deadline" ? { signal: controller.signal } : {}),
+			});
+			if (terminalPath === "cancel" || terminalPath === "dispose") {
+				await expect.poll(() => value.driver.calls.read).toBe(1);
+				if (terminalPath === "cancel") await value.connector.cancelAttempt(value.attempt.attemptId);
+				else await value.connector.dispose();
+			}
+			await running;
+
+			const operation = value.store.operations.get(value.attempt.attemptId);
+			const leaseId = operation?.credential?.projection.leaseId;
+			expect(leaseId).toBeDefined();
+			expect(credentials.target.revocations).toHaveLength(1);
+			expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("settled");
+			expect(JSON.stringify({ operation, entries: credentials.session.entries })).not.toContain(credentialCanary);
+		});
+	}
+
+	it("renews an active external target only through the bounded Host lease authority", async () => {
+		const credentials = createCredentialHarness();
+		const value = await fixture({ credential: credentials.runtime });
+		persistAttempt(value);
+		value.driver.readHangs = true;
+		value.driver.eventNextHangs = true;
+		const running = value.connector.runAttempt(value.attempt, { correlation });
+		await expect.poll(() => value.driver.calls.read).toBe(1);
+		const projection = value.store.operations.get(value.attempt.attemptId)?.credential?.projection;
+		if (projection === undefined) throw new Error("missing external credential projection");
+		credentials.clock.nowMs += 10_000;
+
+		const renewed = credentials.service.renew({
+			leaseId: projection.leaseId,
+			grantId: projection.grantId,
+			bindingId: projection.bindingId,
+			heartbeatSequence: 1,
+			requestedTtlMs: 120_000,
+			clientRequestId: "external-credential-renew-1",
+			nodeAttached: true,
+		});
+		expect(renewed).toMatchObject({ ok: true, grant: { heartbeatSequence: 1 } });
+		expect(credentials.target.renewals).toHaveLength(1);
+		expect(credentials.target.renewals[0]?.requestedTtlMs).toBe(120_000);
+		const rejected = credentials.service.renew({
+			leaseId: projection.leaseId,
+			grantId: projection.grantId,
+			bindingId: projection.bindingId,
+			heartbeatSequence: 2,
+			requestedTtlMs: 300_001,
+			clientRequestId: "external-credential-renew-unbounded",
+			nodeAttached: true,
+		});
+		expect(rejected.ok).toBe(false);
+		expect(credentials.target.renewals).toHaveLength(1);
+
+		await value.connector.cancelAttempt(value.attempt.attemptId);
+		await running;
+		expect(credentials.target.revocations).toHaveLength(1);
+		expect(credentials.service.get(projection.leaseId)?.status).toBe("settled");
+	});
+
 	it("freezes limits for an accepted Attempt while reload updates only later Attempts", async () => {
 		let current: RuntimeLimitsResolutionInput = {
 			global: {
@@ -891,6 +1232,100 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const resumed = await restarted.connector.resumeAttempt(value.attempt, { correlation });
 		expect(resumed.ok).toBe(true);
 		expect(restarted.driver.calls).toMatchObject({ spawn: 0, connect: 1, read: 1 });
+	});
+
+	it("recovers only a current delivered lease and fails closed for expired, revoked, missing, or disconnected authority", async () => {
+		const prepareRunning = async () => {
+			const credentials = createCredentialHarness();
+			const value = await fixture({ credential: credentials.runtime });
+			persistAttempt(value);
+			value.driver.readHangs = true;
+			value.driver.eventNextHangs = true;
+			const running = value.connector.runAttempt(value.attempt, { correlation });
+			void running.catch(() => undefined);
+			await expect.poll(() => value.driver.calls.read).toBe(1);
+			const operation = value.store.operations.get(value.attempt.attemptId);
+			const credential = operation?.credential;
+			if (operation === undefined || credential === undefined) {
+				throw new Error("missing durable credential lease");
+			}
+			return { credentials, value, running, operation, credential };
+		};
+
+		const valid = await prepareRunning();
+		valid.credentials.reload();
+		const validRestart = restartedConnector(valid.value, undefined, valid.credentials.runtime);
+		const resumed = await validRestart.connector.resumeAttempt(valid.value.attempt, { correlation });
+		expect(resumed).toMatchObject({ ok: true, value: { status: "succeeded" } });
+		expect(validRestart.driver.calls).toMatchObject({ spawn: 0, connect: 1, read: 1 });
+		expect(valid.credentials.target.revocations).toHaveLength(1);
+		expect(
+			valid.credentials.service.get(valid.credential.projection.leaseId)?.status,
+		).toBe("settled");
+		await valid.value.connector.dispose().catch(() => undefined);
+		await valid.running;
+
+		const expired = await prepareRunning();
+		expired.credentials.clock.nowMs += 61_000;
+		expired.credentials.reload();
+		const expiredRestart = restartedConnector(expired.value, undefined, expired.credentials.runtime);
+		const expiredResult = await expiredRestart.connector.resumeAttempt(expired.value.attempt, { correlation });
+		expect(expiredResult).toMatchObject({ ok: false, error: { code: "external_credential_unavailable" } });
+		expect(expiredRestart.driver.calls.connect).toBe(0);
+		expect(expired.credentials.target.revocations).toHaveLength(1);
+		expect(
+			expired.credentials.service.get(expired.credential.projection.leaseId)?.status,
+		).toBe("settled");
+
+		const revoked = await prepareRunning();
+		const revokedProjection = revoked.credential.projection;
+		expect(revoked.credentials.service.releaseDeliveredLease({
+			reference: {
+				schemaVersion: 1,
+				leaseId: revokedProjection.leaseId,
+				grantId: revokedProjection.grantId,
+				bindingId: revokedProjection.bindingId,
+				clientRequestId: revokedProjection.clientRequestId,
+			},
+			targetId: revoked.credential.targetId,
+			reasonCode: "run_cancelled",
+		}).ok).toBe(true);
+		revoked.credentials.reload();
+		const revokedRestart = restartedConnector(revoked.value, undefined, revoked.credentials.runtime);
+		expect(await revokedRestart.connector.resumeAttempt(revoked.value.attempt, { correlation })).toMatchObject({
+			ok: false,
+			error: { code: "external_credential_unavailable" },
+		});
+		expect(revokedRestart.driver.calls.connect).toBe(0);
+		expect(revoked.credentials.target.revocations).toHaveLength(1);
+
+		const missing = await prepareRunning();
+		const missingRestart = restartedConnector(missing.value);
+		expect(await missingRestart.connector.resumeAttempt(missing.value.attempt, { correlation })).toMatchObject({
+			ok: false,
+			error: { code: "external_credential_unavailable" },
+		});
+		expect(missingRestart.driver.calls.connect).toBe(0);
+		expect(missing.value.store.operations.get(missing.value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
+		expect(missing.credentials.target.revocations).toHaveLength(0);
+
+		const disconnected = await prepareRunning();
+		disconnected.credentials.reload();
+		const disconnectedRestart = restartedConnector(
+			disconnected.value,
+			undefined,
+			disconnected.credentials.runtime,
+		);
+		disconnectedRestart.driver.connectFailure = true;
+		expect(await disconnectedRestart.connector.resumeAttempt(disconnected.value.attempt, { correlation })).toMatchObject({
+			ok: false,
+			error: { code: "worker_lost" },
+		});
+		expect(disconnectedRestart.driver.calls.connect).toBe(1);
+		expect(disconnected.credentials.target.revocations).toHaveLength(1);
 	});
 
 	it("uses each Attempt frozen concurrency limit without stranding later work", async () => {

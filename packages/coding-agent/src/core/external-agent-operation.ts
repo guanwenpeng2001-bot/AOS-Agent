@@ -39,6 +39,15 @@ import {
 	type ExternalResolvedModelProjection,
 	type ExternalTranslatedModelProjection,
 } from "./external-model-projection.ts";
+import {
+	isTaskCredentialDeliveryReceipt,
+	serializeTaskCredentialDeliveryReceipt,
+	type TaskCredentialDeliveryReceipt,
+} from "./task-credential-lease.ts";
+import {
+	validateSafeLeaseProjectionV1,
+	type SafeLeaseProjectionV1,
+} from "./worker-protocol.ts";
 
 export const EXTERNAL_CONNECTOR_OPERATION_OBJECT_TYPE = "external_connector_operation" as const;
 export const EXTERNAL_CONNECTOR_MAPPING_OBJECT_TYPE = "external_connector_mapping" as const;
@@ -62,9 +71,36 @@ export type ExternalConnectorReconcileReason =
 	| "mapping_conflict"
 	| "capability_drift"
 	| "binding_drift"
+	| "credential_unavailable"
 	| "driver_state_missing"
 	| "driver_state_ambiguous"
 	| "driver_failure";
+
+/** Safe, immutable target selection captured before credential issue. */
+export interface ExternalConnectorCredentialRequirement {
+	readonly schemaVersion: 1;
+	readonly targetId: string;
+	readonly targetKind: string;
+	readonly capabilityBindingId: string;
+	readonly policyBindingId: string;
+	readonly scopeDigest: string;
+	readonly scopeCount: number;
+}
+
+/**
+ * Material-free lease facts delivered to one exact Connector Attempt.
+ * Credential material remains behind the Host-owned provider boundary.
+ */
+export interface ExternalConnectorCredentialLease {
+	readonly schemaVersion: 1;
+	readonly projection: SafeLeaseProjectionV1;
+	readonly leaseDigest: Fingerprint;
+	readonly targetId: string;
+	readonly targetKind: string;
+	readonly scopeCount: number;
+	readonly issuedAt: string;
+	readonly delivery: TaskCredentialDeliveryReceipt;
+}
 
 export interface ExternalConnectorOperation {
 	readonly schemaVersion: 1;
@@ -81,6 +117,8 @@ export interface ExternalConnectorOperation {
 	readonly status: ExternalConnectorOperationStatus;
 	readonly revision: number;
 	readonly updatedAt: string;
+	readonly credentialRequirement?: ExternalConnectorCredentialRequirement;
+	readonly credential?: ExternalConnectorCredentialLease;
 	readonly receiptId?: string;
 	readonly reconcileReason?: ExternalConnectorReconcileReason;
 }
@@ -172,11 +210,33 @@ const EXTERNAL_CONNECTOR_OPERATION_KEYS = new Set([
 	"status",
 	"revision",
 	"updatedAt",
+	"credentialRequirement",
+	"credential",
 	"receiptId",
 	"reconcileReason",
 ]);
 const EXTERNAL_CONNECTOR_FINGERPRINT_KEYS = new Set(["algorithm", "value"]);
 const EXTERNAL_CONNECTOR_SHA256_DIGEST = /^[a-f0-9]{64}$/;
+const EXTERNAL_CONNECTOR_SCOPE_DIGEST = /^sha256:[a-f0-9]{64}$/;
+const EXTERNAL_CONNECTOR_CREDENTIAL_REQUIREMENT_KEYS = new Set([
+	"schemaVersion",
+	"targetId",
+	"targetKind",
+	"capabilityBindingId",
+	"policyBindingId",
+	"scopeDigest",
+	"scopeCount",
+]);
+const EXTERNAL_CONNECTOR_CREDENTIAL_LEASE_KEYS = new Set([
+	"schemaVersion",
+	"projection",
+	"leaseDigest",
+	"targetId",
+	"targetKind",
+	"scopeCount",
+	"issuedAt",
+	"delivery",
+]);
 const EXTERNAL_CONNECTOR_RECONCILE_REASONS: ReadonlySet<ExternalConnectorReconcileReason> = new Set([
 	"start_outcome_unknown",
 	"mapping_persistence_unknown",
@@ -184,10 +244,92 @@ const EXTERNAL_CONNECTOR_RECONCILE_REASONS: ReadonlySet<ExternalConnectorReconci
 	"mapping_conflict",
 	"capability_drift",
 	"binding_drift",
+	"credential_unavailable",
 	"driver_state_missing",
 	"driver_state_ambiguous",
 	"driver_failure",
 ]);
+
+export function isExternalConnectorCredentialRequirement(
+	value: unknown,
+): value is ExternalConnectorCredentialRequirement {
+	return (
+		operationRecord(value) &&
+		operationExactKeys(value, EXTERNAL_CONNECTOR_CREDENTIAL_REQUIREMENT_KEYS) &&
+		value.schemaVersion === 1 &&
+		isExternalConnectorMappingIdentifier(value.targetId) &&
+		isExternalConnectorMappingIdentifier(value.targetKind) &&
+		isExternalConnectorMappingIdentifier(value.capabilityBindingId) &&
+		isExternalConnectorMappingIdentifier(value.policyBindingId) &&
+		typeof value.scopeDigest === "string" &&
+		EXTERNAL_CONNECTOR_SCOPE_DIGEST.test(value.scopeDigest) &&
+		Number.isSafeInteger(value.scopeCount) &&
+		(value.scopeCount as number) > 0
+	);
+}
+
+export function cloneExternalConnectorCredentialRequirement(
+	value: unknown,
+): ExternalConnectorCredentialRequirement {
+	if (!isExternalConnectorCredentialRequirement(value)) {
+		throw new FoundationError("session_ledger_corrupt", "Durable external connector credential requirement is invalid");
+	}
+	return Object.freeze({ ...value });
+}
+
+export function isExternalConnectorCredentialLease(value: unknown): value is ExternalConnectorCredentialLease {
+	if (
+		!operationRecord(value) ||
+		!operationExactKeys(value, EXTERNAL_CONNECTOR_CREDENTIAL_LEASE_KEYS) ||
+		value.schemaVersion !== 1 ||
+		!validateSafeLeaseProjectionV1(value.projection) ||
+		!operationFingerprint(value.leaseDigest) ||
+		!isExternalConnectorMappingIdentifier(value.targetId) ||
+		!isExternalConnectorMappingIdentifier(value.targetKind) ||
+		!Number.isSafeInteger(value.scopeCount) ||
+		(value.scopeCount as number) < 1 ||
+		!isCanonicalExternalConnectorMappingTimestamp(value.issuedAt) ||
+		!isTaskCredentialDeliveryReceipt(value.delivery)
+	) {
+		return false;
+	}
+	const projection = value.projection;
+	const delivery = value.delivery;
+	if (
+		delivery.status !== "succeeded" ||
+		delivery.leaseId !== projection.leaseId ||
+		delivery.grantId !== projection.grantId ||
+		delivery.bindingId !== projection.bindingId ||
+		delivery.targetId !== value.targetId
+	) {
+		return false;
+	}
+	const expectedDigest = fingerprintFoundationValue({
+		projection,
+		targetId: value.targetId,
+		targetKind: value.targetKind,
+		scopeCount: value.scopeCount,
+		issuedAt: value.issuedAt,
+		delivery,
+	});
+	return canonicalFoundationJson(expectedDigest) === canonicalFoundationJson(value.leaseDigest);
+}
+
+export function cloneExternalConnectorCredentialLease(value: unknown): ExternalConnectorCredentialLease {
+	if (!isExternalConnectorCredentialLease(value)) {
+		throw new FoundationError("session_ledger_corrupt", "Durable external connector credential lease is invalid");
+	}
+	return Object.freeze({
+		schemaVersion: 1,
+		projection: Object.freeze({ ...value.projection }),
+		leaseDigest: Object.freeze({ ...value.leaseDigest }),
+		targetId: value.targetId,
+		targetKind: value.targetKind,
+		scopeCount: value.scopeCount,
+		issuedAt: value.issuedAt,
+		delivery: Object.freeze(serializeTaskCredentialDeliveryReceipt(value.delivery)),
+	});
+}
 
 function operationRecord(value: unknown): value is Record<string, unknown> {
 	return (
@@ -238,6 +380,18 @@ function cloneOperationCorrelation(value: unknown): ExecutionCorrelation | undef
 export function isExternalConnectorOperation(value: unknown): value is ExternalConnectorOperation {
 	if (!operationRecord(value) || !operationExactKeys(value, EXTERNAL_CONNECTOR_OPERATION_KEYS)) return false;
 	const correlation = cloneOperationCorrelation(value.correlation);
+	const credentialRequirement =
+		value.credentialRequirement === undefined
+			? undefined
+			: isExternalConnectorCredentialRequirement(value.credentialRequirement)
+				? value.credentialRequirement
+				: null;
+	const credential =
+		value.credential === undefined
+			? undefined
+			: isExternalConnectorCredentialLease(value.credential)
+				? value.credential
+				: null;
 	const hasReceiptId = Object.hasOwn(value, "receiptId");
 	const hasReconcileReason = Object.hasOwn(value, "reconcileReason");
 	if (
@@ -259,6 +413,15 @@ export function isExternalConnectorOperation(value: unknown): value is ExternalC
 		!Number.isSafeInteger(value.revision) ||
 		(value.revision as number) < 1 ||
 		!isCanonicalExternalConnectorMappingTimestamp(value.updatedAt) ||
+		credentialRequirement === null ||
+		credential === null ||
+		(credential !== undefined && credentialRequirement === undefined) ||
+		(credential !== undefined &&
+			(credential.targetId !== credentialRequirement?.targetId ||
+				credential.targetKind !== credentialRequirement.targetKind ||
+				credential.projection.scopeDigest !== credentialRequirement.scopeDigest ||
+				credential.scopeCount !== credentialRequirement.scopeCount)) ||
+		(value.status === "prepared" && credential !== undefined) ||
 		(hasReceiptId && !isExternalConnectorMappingIdentifier(value.receiptId)) ||
 		(hasReconcileReason &&
 			(typeof value.reconcileReason !== "string" ||
@@ -304,6 +467,12 @@ export function cloneExternalConnectorOperation(value: unknown): ExternalConnect
 		status: value.status,
 		revision: value.revision,
 		updatedAt: value.updatedAt,
+		...(value.credentialRequirement === undefined
+			? {}
+			: { credentialRequirement: cloneExternalConnectorCredentialRequirement(value.credentialRequirement) }),
+		...(value.credential === undefined
+			? {}
+			: { credential: cloneExternalConnectorCredentialLease(value.credential) }),
 		...(value.receiptId === undefined ? {} : { receiptId: value.receiptId }),
 		...(value.reconcileReason === undefined ? {} : { reconcileReason: value.reconcileReason }),
 	});
@@ -560,6 +729,10 @@ export function transitionExternalConnectorOperation(
 		status,
 		revision: canonicalCurrent.revision + 1,
 		updatedAt: options.now,
+		...(canonicalCurrent.credentialRequirement === undefined
+			? {}
+			: { credentialRequirement: canonicalCurrent.credentialRequirement }),
+		...(canonicalCurrent.credential === undefined ? {} : { credential: canonicalCurrent.credential }),
 		...(status === "terminal" && options.receiptId !== undefined ? { receiptId: options.receiptId } : {}),
 		...(status === "reconcile_required" && options.reconcileReason !== undefined
 			? { reconcileReason: options.reconcileReason }
@@ -569,11 +742,47 @@ export function transitionExternalConnectorOperation(
 	});
 }
 
+/** Persist a confirmed material-free lease before the vendor start boundary. */
+export function attachExternalConnectorCredentialLease(
+	current: ExternalConnectorOperation,
+	credential: ExternalConnectorCredentialLease,
+	now: string,
+): ExternalConnectorOperation {
+	const canonicalCurrent = cloneExternalConnectorOperation(current);
+	const canonicalCredential = cloneExternalConnectorCredentialLease(credential);
+	const requirement = canonicalCurrent.credentialRequirement;
+	if (
+		canonicalCurrent.status !== "start_intent" ||
+		canonicalCurrent.credential !== undefined ||
+		requirement === undefined ||
+		canonicalCredential.targetId !== requirement.targetId ||
+		canonicalCredential.targetKind !== requirement.targetKind ||
+		canonicalCredential.projection.scopeDigest !== requirement.scopeDigest ||
+		canonicalCredential.scopeCount !== requirement.scopeCount
+	) {
+		throw new FoundationError(
+			"scheduler_attempt_recovery_failed",
+			"External connector credential lease does not match its durable requirement",
+			{ details: { attemptId: canonicalCurrent.attemptId } },
+		);
+	}
+	return cloneExternalConnectorOperation({
+		...canonicalCurrent,
+		credential: canonicalCredential,
+		revision: canonicalCurrent.revision + 1,
+		updatedAt: now,
+	});
+}
+
 function operationMatches(left: ExternalConnectorOperation, right: ExternalConnectorOperation): boolean {
 	return canonicalFoundationJson(left) === canonicalFoundationJson(right);
 }
 
-function operationImmutableFactsMatch(left: ExternalConnectorOperation, right: ExternalConnectorOperation): boolean {
+function operationImmutableFactsMatch(
+	left: ExternalConnectorOperation,
+	right: ExternalConnectorOperation,
+	allowCredentialAttachment = false,
+): boolean {
 	return (
 		left.schemaVersion === right.schemaVersion &&
 		left.providerId === right.providerId &&
@@ -585,7 +794,30 @@ function operationImmutableFactsMatch(left: ExternalConnectorOperation, right: E
 		canonicalFoundationJson(left.capabilityDigest) === canonicalFoundationJson(right.capabilityDigest) &&
 		left.capabilityRevision === right.capabilityRevision &&
 		left.operationNonce === right.operationNonce &&
-		canonicalFoundationJson(left.correlation) === canonicalFoundationJson(right.correlation)
+		canonicalFoundationJson(left.correlation) === canonicalFoundationJson(right.correlation) &&
+		((left.credentialRequirement === undefined && right.credentialRequirement === undefined) ||
+			(left.credentialRequirement !== undefined &&
+				right.credentialRequirement !== undefined &&
+				canonicalFoundationJson(left.credentialRequirement) ===
+					canonicalFoundationJson(right.credentialRequirement))) &&
+		((left.credential === undefined && right.credential === undefined) ||
+			(left.credential !== undefined &&
+				right.credential !== undefined &&
+				canonicalFoundationJson(left.credential) === canonicalFoundationJson(right.credential)) ||
+			(allowCredentialAttachment && left.credential === undefined && right.credential !== undefined))
+	);
+}
+
+function operationIsCredentialAttachment(
+	current: ExternalConnectorOperation,
+	proposed: ExternalConnectorOperation,
+): boolean {
+	return (
+		current.status === "start_intent" &&
+		proposed.status === "start_intent" &&
+		current.credentialRequirement !== undefined &&
+		current.credential === undefined &&
+		proposed.credential !== undefined
 	);
 }
 
@@ -891,10 +1123,11 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			}
 		} else {
 			if (operationMatches(current, proposed)) return current;
+			const credentialAttachment = operationIsCredentialAttachment(current, proposed);
 			if (
 				proposed.revision !== current.revision + 1 ||
-				!operationImmutableFactsMatch(current, proposed) ||
-				!OPERATION_TRANSITIONS[current.status].has(proposed.status)
+				!operationImmutableFactsMatch(current, proposed, credentialAttachment) ||
+				(!credentialAttachment && !OPERATION_TRANSITIONS[current.status].has(proposed.status))
 			) {
 				throw new FoundationError(
 					"session_ledger_conflict",

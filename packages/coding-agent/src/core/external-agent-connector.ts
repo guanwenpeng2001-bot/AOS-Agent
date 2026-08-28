@@ -33,11 +33,16 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+	attachExternalConnectorCredentialLease,
+	cloneExternalConnectorCredentialLease,
+	cloneExternalConnectorCredentialRequirement,
 	cloneExternalConnectorOperation,
 	externalConnectorToolGatewayExchangeId,
 	externalConnectorToolGatewayRequestMatchesExecution,
 	transitionExternalConnectorOperation,
 	type ExternalConnectorDurableStore,
+	type ExternalConnectorCredentialLease,
+	type ExternalConnectorCredentialRequirement,
 	type ExternalConnectorOperation,
 	type ExternalConnectorReconcileReason,
 	type ExternalConnectorToolGatewayIntent,
@@ -54,6 +59,34 @@ import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorVendorDriver,
 } from "./vendor-drivers/types.ts";
+import {
+	calculateScopeDigest,
+	isTaskCredentialIdentifier,
+	normalizeTaskCredentialScopes,
+	type TaskCredentialScope,
+} from "./task-credential-lease.ts";
+import type {
+	TaskCredentialLifecycleReasonCode,
+	TaskCredentialRunIssueContext,
+	TaskCredentialService,
+	TaskCredentialWorkerTarget,
+} from "./task-credential-service.ts";
+import {
+	validateSafeLeaseProjectionV1,
+	validateSafeLeaseReferenceV1,
+	type SafeLeaseProjectionV1,
+	type SafeLeaseReferenceV1,
+} from "./worker-protocol.ts";
+
+export interface ExternalConnectorCredentialRuntime {
+	/** Host-owned lifecycle authority; Connector code never receives material. */
+	readonly service: TaskCredentialService;
+	/** Pure exact target/binding selection for this already durable Attempt. */
+	readonly resolveIssueContext: (
+		attempt: Attempt,
+		binding: AgentBinding,
+	) => TaskCredentialRunIssueContext | undefined;
+}
 import {
 	ExternalConnectorBoundedSupervisor,
 	ExternalConnectorSupervisorError,
@@ -111,6 +144,8 @@ export interface ExternalAgentConnectorRuntimeOptions {
 	};
 	/** Trusted reloadable source; it is sampled exactly once when each Attempt is accepted. */
 	readonly runtimeLimits?: RuntimeLimitsSource;
+	/** Optional and default-off Host credential authority for external targets. */
+	readonly credential?: ExternalConnectorCredentialRuntime;
 	readonly now?: () => string;
 	readonly operationNonce?: () => string;
 }
@@ -332,6 +367,31 @@ function sameFingerprint(
 	return left.algorithm === right.algorithm && left.value === right.value;
 }
 
+interface ExternalConnectorCredentialPlan {
+	readonly context: TaskCredentialRunIssueContext;
+	readonly requirement: ExternalConnectorCredentialRequirement;
+}
+
+function externalConnectorCredentialIssueRequestId(attemptId: string): string {
+	return `external_credential_issue_${fingerprintFoundationValue({ attemptId }).value.slice(0, 48)}`;
+}
+
+function externalConnectorCredentialReference(
+	lease: ExternalConnectorCredentialLease,
+): SafeLeaseReferenceV1 {
+	const reference: SafeLeaseReferenceV1 = {
+		schemaVersion: 1,
+		leaseId: lease.projection.leaseId,
+		grantId: lease.projection.grantId,
+		bindingId: lease.projection.bindingId,
+		clientRequestId: lease.projection.clientRequestId,
+	};
+	if (!validateSafeLeaseReferenceV1(reference)) {
+		throw externalFailure("external_credential_unavailable", "External connector lease reference is invalid");
+	}
+	return Object.freeze(reference);
+}
+
 function externalFailure(
 	code:
 		| "binding_epoch_mismatch"
@@ -339,6 +399,7 @@ function externalFailure(
 		| "external_binding_invalid"
 		| "external_capability_mismatch"
 		| "external_connector_config_invalid"
+		| "external_credential_unavailable"
 		| "external_mapping_conflict"
 		| "external_resource_limit_exceeded"
 		| "external_resume_unsupported"
@@ -368,6 +429,16 @@ function isDeadlineAbort(signal: AbortSignal | undefined): boolean {
 
 function isAbortedSignal(signal: AbortSignal | undefined): boolean {
 	return signal?.aborted === true;
+}
+
+function credentialReasonForTerminal(
+	status: AttemptReceipt["status"] | ExternalConnectorTerminalEvidence["status"],
+	errorCode?: string,
+): TaskCredentialLifecycleReasonCode {
+	if (status === "succeeded") return "run_completed";
+	if (status === "cancelled") return "run_cancelled";
+	if (errorCode === "run_deadline_exceeded") return "run_deadline_exceeded";
+	return status === "suspended" ? "run_interrupted" : "run_failed";
 }
 
 function supervisedFailureEvidence(
@@ -453,6 +524,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly #now: () => string;
 	readonly #operationNonce: () => string;
 	readonly #runtimeLimitsSource: RuntimeLimitsSource;
+	readonly #credentialRuntime: ExternalConnectorCredentialRuntime | undefined;
 	readonly #hostRuntimeLimits: RuntimeLimitsSnapshot;
 	readonly #attemptRuntimeLimits = new Map<string, RuntimeLimitsSnapshot>();
 	readonly #supervisors = new Map<string, ExternalConnectorBoundedSupervisor>();
@@ -463,6 +535,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly #active = new Map<string, Promise<ResultValue<AttemptReceipt, FoundationError>>>();
 	readonly #cancelling = new Map<string, Promise<ResultValue<void, FoundationError>>>();
 	readonly #toolGatewayConsumers = new Map<string, ExternalConnectorToolGatewayConsumer>();
+	readonly #credentialLeases = new Map<string, ExternalConnectorCredentialLease>();
 	readonly #drainWaiters = new Set<() => void>();
 	#lifecycle: "accepting" | "draining" | "disposed" = "accepting";
 	#disposal: Promise<void> | undefined;
@@ -486,6 +559,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			typeof options.supervision.privateStateStore?.delete !== "function"
 		)
 			throw externalFailure("invalid_correlation", "External connector supervision is invalid");
+		if (
+			options.credential !== undefined &&
+			(typeof options.credential.service?.issueForTaskRun !== "function" ||
+				typeof options.credential.service.lookupDeliveredLease !== "function" ||
+				typeof options.credential.service.releaseDeliveredLease !== "function" ||
+				typeof options.credential.resolveIssueContext !== "function")
+		) {
+			throw externalFailure("external_connector_config_invalid", "External connector credential authority is invalid");
+		}
 		this.providerId = options.providerId;
 		this.#capability = checked.value;
 		this.#capabilityProbe = options.capabilityProbe;
@@ -495,8 +577,254 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		this.#runtimeLimitsSource =
 			options.runtimeLimits ?? runtimeLimitsFromSupervisorOptions(options.supervision.deadlines, options.supervision.limits);
 		this.#hostRuntimeLimits = resolveRuntimeLimitsSource(this.#runtimeLimitsSource);
+		this.#credentialRuntime = options.credential;
 		this.#now = options.now ?? (() => new Date().toISOString());
 		this.#operationNonce = options.operationNonce ?? randomUUID;
+	}
+
+	#resolveCredentialPlan(
+		attempt: Attempt,
+		binding: AgentBinding,
+	): ResultValue<ExternalConnectorCredentialPlan | undefined, FoundationError> {
+		const runtime = this.#credentialRuntime;
+		if (runtime === undefined) return Result.ok(undefined);
+		let context: TaskCredentialRunIssueContext | undefined;
+		try {
+			context = runtime.resolveIssueContext(attempt, binding);
+		} catch {
+			return Result.err(
+				externalFailure(
+					"external_credential_unavailable",
+					"External connector credential target selection failed",
+					attempt.attemptId,
+				),
+			);
+		}
+		if (context === undefined) return Result.ok(undefined);
+		let scopes: ReadonlyArray<TaskCredentialScope>;
+		try {
+			scopes = normalizeTaskCredentialScopes(context.scopes);
+		} catch {
+			return Result.err(
+				externalFailure(
+					"external_credential_unavailable",
+					"External connector credential scope selection is invalid",
+					attempt.attemptId,
+				),
+			);
+		}
+		if (
+			context.taskId !== attempt.taskId ||
+			context.capabilityBindingId !== binding.capabilityRevision.id ||
+			context.policyBindingId !== binding.policyRevision.id ||
+			context.targetId === undefined ||
+			context.targetKind === undefined ||
+			!isTaskCredentialIdentifier(context.targetId) ||
+			!isTaskCredentialIdentifier(context.targetKind) ||
+			context.workerId !== undefined ||
+			context.workerTarget !== undefined ||
+			scopes.length === 0
+		) {
+			return Result.err(
+				externalFailure(
+					"external_credential_unavailable",
+					"External connector credential selection does not match the exact binding",
+					attempt.attemptId,
+				),
+			);
+		}
+		const requirement = cloneExternalConnectorCredentialRequirement({
+			schemaVersion: 1,
+			targetId: context.targetId,
+			targetKind: context.targetKind,
+			capabilityBindingId: context.capabilityBindingId,
+			policyBindingId: context.policyBindingId,
+			scopeDigest: calculateScopeDigest(scopes),
+			scopeCount: scopes.length,
+		});
+		return Result.ok(Object.freeze({ context: Object.freeze({ ...context, scopes }), requirement }));
+	}
+
+	async #issueCredentialLease(
+		attempt: Attempt,
+		plan: ExternalConnectorCredentialPlan,
+	): Promise<ResultValue<ExternalConnectorCredentialLease, FoundationError>> {
+		const runtime = this.#credentialRuntime;
+		if (runtime === undefined) {
+			return Result.err(
+				externalFailure(
+					"external_credential_unavailable",
+					"External connector credential authority is unavailable",
+					attempt.attemptId,
+				),
+			);
+		}
+		let projected: SafeLeaseProjectionV1 | undefined;
+		const target: TaskCredentialWorkerTarget = Object.freeze({
+			project: (lease: SafeLeaseProjectionV1) => {
+				if (
+					!validateSafeLeaseProjectionV1(lease) ||
+					lease.scopeDigest !== plan.requirement.scopeDigest
+				) {
+					return Object.freeze({ ok: false });
+				}
+				projected = Object.freeze({ ...lease });
+				return Object.freeze({ ok: true });
+			},
+			renew: (lease: SafeLeaseProjectionV1) => {
+				if (
+					!validateSafeLeaseProjectionV1(lease) ||
+					lease.scopeDigest !== plan.requirement.scopeDigest ||
+					(projected !== undefined &&
+						(lease.leaseId !== projected.leaseId ||
+							lease.grantId !== projected.grantId ||
+							lease.bindingId !== projected.bindingId))
+				) {
+					return Object.freeze({ ok: false });
+				}
+				projected = Object.freeze({ ...lease });
+				return Object.freeze({ ok: true });
+			},
+			revoke: (lease: SafeLeaseReferenceV1) => {
+				if (
+					!validateSafeLeaseReferenceV1(lease) ||
+					(projected !== undefined &&
+						(lease.leaseId !== projected.leaseId ||
+							lease.grantId !== projected.grantId ||
+							lease.bindingId !== projected.bindingId))
+				) {
+					return Object.freeze({ ok: false });
+				}
+				projected = undefined;
+				this.#credentialLeases.delete(attempt.attemptId);
+				return Object.freeze({ ok: true });
+			},
+		});
+		const clientRequestId = externalConnectorCredentialIssueRequestId(attempt.attemptId);
+		const issued = runtime.service.issueForTaskRun({
+			...plan.context,
+			clientRequestId,
+			workerId: attempt.attemptId,
+			workerTarget: target,
+			targetLifecycle: "external_connector",
+		});
+		if (!issued.ok || issued.delivery === undefined || issued.delivery.status !== "succeeded") {
+			return Result.err(
+				externalFailure(
+					"external_credential_unavailable",
+					"External connector credential could not be issued and delivered",
+					attempt.attemptId,
+				),
+			);
+		}
+		const projection: SafeLeaseProjectionV1 = projected ?? Object.freeze({
+			schemaVersion: 1,
+			leaseId: issued.grant.leaseId,
+			grantId: issued.grant.grantId,
+			bindingId: issued.grant.bindingId,
+			scopeDigest: issued.grant.scopeDigest,
+			expiresAt: issued.grant.expiresAt,
+			clientRequestId,
+		});
+		const leaseFacts = {
+			projection,
+			targetId: plan.requirement.targetId,
+			targetKind: plan.requirement.targetKind,
+			scopeCount: plan.requirement.scopeCount,
+			issuedAt: issued.grant.issuedAt,
+			delivery: issued.delivery,
+		};
+		let lease: ExternalConnectorCredentialLease;
+		try {
+			lease = cloneExternalConnectorCredentialLease({
+				schemaVersion: 1,
+				...leaseFacts,
+				leaseDigest: fingerprintFoundationValue(leaseFacts),
+			});
+		} catch {
+			runtime.service.releaseDeliveredLease({
+				reference: {
+					schemaVersion: 1,
+					leaseId: issued.grant.leaseId,
+					grantId: issued.grant.grantId,
+					bindingId: issued.grant.bindingId,
+					clientRequestId,
+				},
+				targetId: plan.requirement.targetId,
+				reasonCode: "run_interrupted",
+			});
+			return Result.err(
+				externalFailure(
+					"external_credential_unavailable",
+					"External connector credential delivery facts are invalid",
+					attempt.attemptId,
+				),
+			);
+		}
+		this.#credentialLeases.set(attempt.attemptId, lease);
+		return Result.ok(lease);
+	}
+
+	#requireCredentialLease(
+		operation: ExternalConnectorOperation,
+	): ResultValue<SafeLeaseProjectionV1 | undefined, FoundationError> {
+		if (operation.credentialRequirement === undefined && operation.credential === undefined) {
+			return Result.ok(undefined);
+		}
+		const lease = operation.credential;
+		const runtime = this.#credentialRuntime;
+		if (lease === undefined || runtime === undefined) {
+			return Result.err(
+				externalFailure(
+					"external_credential_unavailable",
+					"External connector credential authority or lease reference is unavailable",
+					operation.attemptId,
+				),
+			);
+		}
+		const lookup = runtime.service.lookupDeliveredLease({
+			projection: lease.projection,
+			targetId: lease.targetId,
+		});
+		if (
+			!lookup.ok ||
+			lookup.grant.scopeCount !== lease.scopeCount ||
+			lookup.grant.issuedAt !== lease.issuedAt
+		) {
+			return Result.err(
+				externalFailure(
+					"external_credential_unavailable",
+					"External connector credential lease is expired, revoked, or inconsistent",
+					operation.attemptId,
+				),
+			);
+		}
+		this.#credentialLeases.set(operation.attemptId, lease);
+		return Result.ok(Object.freeze({ ...lookup.projection }));
+	}
+
+	#releaseCredentialLease(
+		attemptId: string,
+		lease: ExternalConnectorCredentialLease,
+		reasonCode: TaskCredentialLifecycleReasonCode,
+	): boolean {
+		this.#credentialLeases.delete(attemptId);
+		const runtime = this.#credentialRuntime;
+		if (runtime === undefined) return false;
+		const result = runtime.service.releaseDeliveredLease({
+			reference: externalConnectorCredentialReference(lease),
+			targetId: lease.targetId,
+			reasonCode,
+		});
+		return result.ok;
+	}
+
+	#releaseCredential(
+		operation: ExternalConnectorOperation | undefined,
+		reasonCode: TaskCredentialLifecycleReasonCode,
+	): boolean {
+		if (operation?.credential === undefined) return true;
+		return this.#releaseCredentialLease(operation.attemptId, operation.credential, reasonCode);
 	}
 
 	#requireExactMcpToolGatewayRoutes(
@@ -816,6 +1144,15 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				),
 			]);
 		}
+		for (const [attemptId, lease] of [...this.#credentialLeases]) {
+			if (!this.#releaseCredentialLease(attemptId, lease, "session_shutdown")) {
+				disposalFailure ??= externalFailure(
+					"external_credential_unavailable",
+					"External connector credential cleanup could not be confirmed",
+					attemptId,
+				);
+			}
+		}
 		try {
 			const shutdownDeadline = runtimeLimitsShutdownDeadline(this.#hostRuntimeLimits);
 			await runExternalConnectorHostDispose((signal) => this.#driver.dispose({ signal }), {
@@ -832,6 +1169,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			this.#pendingCancellations.clear();
 			this.#attemptRuntimeLimits.clear();
 			this.#toolGatewayConsumers.clear();
+			this.#credentialLeases.clear();
 			this.#drainWaiters.clear();
 			this.#lifecycle = "disposed";
 		}
@@ -1212,6 +1550,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			}
 			modelTranslation = translated.translation;
 		}
+		const credentialPlan = this.#resolveCredentialPlan(attempt, binding.value);
+		if (!credentialPlan.ok) return credentialPlan;
 
 		let operation = await this.#store.readOperation(attempt.attemptId);
 		let runtimeLimits: RuntimeLimitsSnapshot;
@@ -1261,6 +1601,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				status: "prepared",
 				revision: 1,
 				updatedAt: this.#now(),
+				...(credentialPlan.value === undefined
+					? {}
+					: { credentialRequirement: credentialPlan.value.requirement }),
 			});
 			this.#attemptRuntimeLimits.delete(attempt.attemptId);
 		}
@@ -1269,7 +1612,26 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		}
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return frozen;
-		if (operation.status !== "prepared") {
+		const credentialRequirementMatches =
+			credentialPlan.value === undefined
+				? operation.credentialRequirement === undefined
+				: canonicalFoundationJson(credentialPlan.value.requirement) ===
+					canonicalFoundationJson(operation.credentialRequirement);
+		if (!credentialRequirementMatches) {
+			await this.#markReconcile(operation, "credential_unavailable");
+			return Result.err(
+				externalFailure(
+					"external_credential_unavailable",
+					"External connector credential selection drifted from its durable requirement",
+					attempt.attemptId,
+				),
+			);
+		}
+		const recoverCredentialIssue =
+			operation.status === "start_intent" &&
+			operation.credentialRequirement !== undefined &&
+			operation.credential === undefined;
+		if (operation.status !== "prepared" && !recoverCredentialIssue) {
 			if (operation.status === "start_intent") {
 				await this.#markReconcile(operation, "start_outcome_unknown");
 			}
@@ -1282,9 +1644,46 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			);
 		}
 
-		operation = await this.#store.writeOperation(
-			transitionExternalConnectorOperation(operation, "start_intent", { now: this.#now() }),
-		);
+		if (operation.status === "prepared") {
+			operation = await this.#store.writeOperation(
+				transitionExternalConnectorOperation(operation, "start_intent", { now: this.#now() }),
+			);
+		}
+		if (isAborted()) {
+			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
+		}
+		if (operation.credentialRequirement !== undefined && operation.credential === undefined) {
+			if (credentialPlan.value === undefined) {
+				await this.#markReconcile(operation, "credential_unavailable");
+				return Result.err(
+					externalFailure(
+						"external_credential_unavailable",
+						"External connector credential authority is unavailable",
+						attempt.attemptId,
+					),
+				);
+			}
+			const issuedCredential = await this.#issueCredentialLease(attempt, credentialPlan.value);
+			if (!issuedCredential.ok) {
+				await this.#markReconcile(operation, "credential_unavailable");
+				return issuedCredential;
+			}
+			try {
+				operation = await this.#store.writeOperation(
+					attachExternalConnectorCredentialLease(operation, issuedCredential.value, this.#now()),
+				);
+			} catch {
+				this.#releaseCredentialLease(attempt.attemptId, issuedCredential.value, "run_interrupted");
+				await this.#markReconcile(operation, "credential_unavailable");
+				return Result.err(
+					externalFailure(
+						"external_credential_unavailable",
+						"External connector credential delivery facts could not be persisted",
+						attempt.attemptId,
+					),
+				);
+			}
+		}
 		if (isAborted()) {
 			return this.#settleCancelledBeforeLaunch(attempt, correlation.value, operation, options?.signal);
 		}
@@ -1339,6 +1738,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 						capability: this.#capability,
 						bindingDigest: binding.value.fingerprint.value,
 						bindingRevision: binding.value.contextRevision.revision,
+						...(launchOperation.credential === undefined
+							? {}
+							: { credential: launchOperation.credential.projection }),
 						mcpSelection: binding.value.mcpSelection,
 						...(mcpToolGatewayRoutes.value === undefined
 							? {}
@@ -1532,6 +1934,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return binding;
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return frozen;
+		const credential = this.#requireCredentialLease(operation);
+		if (!credential.ok) {
+			await this.#markReconcile(operation, "credential_unavailable");
+			return credential;
+		}
 		if (!this.#hasAttemptCapacity(attempt.attemptId, frozen.value.snapshot)) {
 			return Result.err(
 				externalFailure(
@@ -1652,6 +2059,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return binding;
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return frozen;
+		const credential = this.#requireCredentialLease(operation);
+		if (!credential.ok) {
+			await this.#markReconcile(operation, "credential_unavailable");
+			return credential;
+		}
 		if (!this.#hasAttemptCapacity(attempt.attemptId, frozen.value.snapshot)) {
 			return Result.err(
 				externalFailure(
@@ -1863,6 +2275,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return Result.err(binding.error);
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return Result.err(frozen.error);
+		this.#releaseCredential(operation, "run_cancelled");
 		if (operation.status === "start_intent") {
 			const active = this.#active.get(attemptId);
 			if (active !== undefined) {
@@ -2188,6 +2601,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					),
 				);
 			}
+			this.#releaseCredential(
+				operation,
+				credentialReasonForTerminal(checked.value.status, checked.value.error?.code),
+			);
 			if (operation.status === "terminal") {
 				if (operation.receiptId !== receiptId) {
 					return Result.err(
@@ -2326,7 +2743,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			canonicalOperation.correlation.bindingId !== attempt.bindingId ||
 			canonicalOperation.correlation.bindingEpochId !== attempt.bindingEpochIds[0] ||
 			canonicalOperation.correlation.providerId !== this.providerId ||
-			canonicalOperation.correlation.agentInstanceId !== undefined
+			canonicalOperation.correlation.agentInstanceId !== undefined ||
+			(canonicalOperation.credentialRequirement !== undefined &&
+				(canonicalOperation.credentialRequirement.capabilityBindingId !== binding.capabilityRevision.id ||
+					canonicalOperation.credentialRequirement.policyBindingId !== binding.policyRevision.id))
 		) {
 			await this.#markReconcile(canonicalOperation, "binding_drift");
 			return Result.err(
@@ -2398,6 +2818,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		operation: ExternalConnectorOperation,
 		reason: ExternalConnectorReconcileReason,
 	): Promise<void> {
+		this.#releaseCredential(operation, "run_interrupted");
 		if (
 			operation.status === "terminal" ||
 			(operation.status === "reconcile_required" && operation.reconcileReason === reason)
@@ -2465,6 +2886,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				),
 			);
 		}
+		this.#releaseCredential(
+			operation,
+			credentialReasonForTerminal(canonicalEvidence.status, canonicalEvidence.error?.code),
+		);
 		const receiptId = `attempt_receipt_${attempt.attemptId}`;
 		const receipt: AttemptReceipt = {
 			schemaVersion: 1,
@@ -2550,6 +2975,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			},
 		);
 		if (!checked.ok) return checked;
+		this.#releaseCredential(
+			operation,
+			deadline ? "run_deadline_exceeded" : "run_cancelled",
+		);
 		const persisted = await this.#store.writeReceipt(checked.value);
 		if (operation !== undefined && operation.status !== "terminal") {
 			await this.#store.writeOperation(
@@ -2607,6 +3036,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			},
 		);
 		if (!checked.ok) return checked;
+		this.#releaseCredential(
+			operation,
+			deadline ? "run_deadline_exceeded" : "run_failed",
+		);
 		const persisted = await this.#store.writeReceipt(checked.value);
 		await this.#store.writeOperation(
 			transitionExternalConnectorOperation(operation, "terminal", {
@@ -2666,6 +3099,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			{ providerId: this.providerId, providerClass: this.providerClass },
 		);
 		if (!checked.ok) return checked;
+		this.#releaseCredential(operation, "run_failed");
 		const persisted = await this.#store.writeReceipt(checked.value);
 		await this.#store.writeOperation(
 			transitionExternalConnectorOperation(operation, "terminal", {
