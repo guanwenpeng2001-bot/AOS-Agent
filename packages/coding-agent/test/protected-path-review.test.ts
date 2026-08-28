@@ -7,19 +7,32 @@ import {
 	createModelProfileRevision,
 	createRoleRevision,
 	fingerprintFoundationValue,
+	createFoundationToolGateway,
+	createLocalToolGatewayProvider,
+	Result,
+	SessionLedger,
 	resolveAgentBinding,
+	type AgentBinding,
 	type AgentHarness,
+	type BindingEpoch,
+	type FoundationError,
 	type RevisionReference,
 	type TaskEnvelope,
+	type ToolExecutionResult,
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
+import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
+import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
+import { AuthStorage } from "../src/core/auth-storage.ts";
 import { buildCapabilitySettings } from "../src/core/capability-settings.ts";
 import {
 	POLICY_EFFECTS,
 	createPolicyReviewEvidence,
 	type ExecutionPolicyProfile,
+	type PolicyBinding,
 	resolveExecutionPolicy,
 } from "../src/core/execution-policy.ts";
 import {
@@ -35,7 +48,10 @@ import {
 } from "../src/core/foundation-control-plane.ts";
 import { resolveHostPathForPolicy } from "../src/core/policy-filesystem.ts";
 import { classifyExternalToolPolicyOperation } from "../src/core/external-tool-policy-operation.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
+import { fauxModel } from "./test-harness.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 const protectedPaths = {
@@ -161,12 +177,13 @@ function createReviewControlPlane(
 	});
 }
 
-function installGatewayFoundationFacts(
-	controlPlane: FoundationControlPlane,
-	canonical: ReviewCanonicalSession,
-): void {
-	const policyBinding = controlPlane.getActiveExecutionPolicyBinding();
-	if (policyBinding === undefined) throw new Error("policy binding is required");
+interface GatewayFoundationFacts {
+	readonly task: TaskEnvelope;
+	readonly binding: AgentBinding;
+	readonly epoch: BindingEpoch;
+}
+
+function createGatewayFoundationFacts(policyBinding: PolicyBinding): GatewayFoundationFacts {
 	const now = policyBinding.createdAt;
 	const task: TaskEnvelope = {
 		schemaVersion: 1,
@@ -238,8 +255,18 @@ function installGatewayFoundationFacts(
 		now: () => now,
 	});
 	if (!epoch.ok) throw epoch.error;
-	canonical.facts.set(`agent_binding:${binding.value.bindingId}`, { kind: "fact", payload: binding.value });
-	canonical.facts.set(`binding_epoch:${epoch.value.bindingEpochId}`, { kind: "fact", payload: epoch.value });
+	return { task, binding: binding.value, epoch: epoch.value };
+}
+
+function installGatewayFoundationFacts(
+	controlPlane: FoundationControlPlane,
+	canonical: ReviewCanonicalSession,
+): void {
+	const policyBinding = controlPlane.getActiveExecutionPolicyBinding();
+	if (policyBinding === undefined) throw new Error("policy binding is required");
+	const facts = createGatewayFoundationFacts(policyBinding);
+	canonical.facts.set(`agent_binding:${facts.binding.bindingId}`, { kind: "fact", payload: facts.binding });
+	canonical.facts.set(`binding_epoch:${facts.epoch.bindingEpochId}`, { kind: "fact", payload: facts.epoch });
 	canonical.facts.set(`policy_binding:${policyBinding.id}`, { kind: "fact", payload: policyBinding });
 }
 
@@ -258,8 +285,126 @@ async function createReviewFixture(): Promise<{
 	return { workspace, ledger, canonical, controlPlane };
 }
 
+interface CanonicalReviewFixture {
+	readonly workspace: string;
+	readonly sessionDir: string;
+	readonly sessionFile: string;
+	readonly services: Awaited<ReturnType<typeof createAgentSessionServices>>;
+	readonly sessionManager: SessionManager;
+	readonly created: Awaited<ReturnType<typeof createAgentSessionFromServices>>;
+}
+
+async function createCanonicalReviewFixture(): Promise<CanonicalReviewFixture> {
+	const workspace = await mkdtemp(join(tmpdir(), "aos-review-canonical-session-"));
+	const sessionDir = join(workspace, "sessions");
+	const canonicalProfile: ExecutionPolicyProfile = {
+		...profile,
+		// Managed locks are host/system policy input; the production SettingsManager
+		// only accepts user/global profiles, so keep the team requirement without
+		// claiming a system-owned lock for this composition proof.
+		protectedPaths: { rules: protectedPaths.rules },
+	};
+	const settingsManager = SettingsManager.inMemory({
+		executionPolicy: {
+			defaultProfile: canonicalProfile.id,
+			profiles: { [canonicalProfile.id]: canonicalProfile },
+		},
+	});
+	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
+	const route = gatewayRoute("local", "workspace.write", {
+		resource: "filesystem.write",
+		effects: ["write", "create"],
+	});
+	const runtimeComposition = createAgentRuntimeCompositionFactory({
+		toolGateway: () => createFoundationToolGateway({
+			gatewayId: "canonical-review-tool-gateway",
+			providers: [
+				createLocalToolGatewayProvider({
+					providerId: route.providerId,
+					revision: route.revision,
+					routes: [route],
+					invoke: async (request: ToolGatewayRequest): Promise<Result<ToolExecutionResult, FoundationError>> =>
+						Result.ok({
+							schemaVersion: 1,
+							toolCallId: request.toolCallId,
+							toolName: request.toolName,
+							ok: true,
+							sideEffectState: "none",
+							toolReceiptRef: `canonical-review-receipt-${request.toolCallId}`,
+						}),
+				}),
+			],
+		}),
+	});
+	const services = await createAgentSessionServices({
+		cwd: workspace,
+		agentDir: workspace,
+		modelRuntime,
+		settingsManager,
+		runtimeComposition,
+		resourceLoaderOptions: {
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+		},
+	});
+	const sessionManager = SessionManager.create(workspace, sessionDir, { id: "canonical-review-session" });
+	const created = await createAgentSessionFromServices({
+		services,
+		sessionManager,
+		model: fauxModel,
+		policyProfile: canonicalProfile.id,
+		noTools: "all",
+	});
+	await created.session.whenCapabilitiesReady("run-product-policy");
+	const policyBinding = created.session.getActiveExecutionPolicyBinding();
+	if (policyBinding === undefined || policyBinding.runId !== "run-product-policy") {
+		throw new Error("canonical AgentSession did not materialize the review policy binding");
+	}
+	const canonicalSession = getAgentCanonicalSession(created.session);
+	expect(canonicalSession).toBe(created.runtimeComposition.harness.t5.session);
+	const ledger = new SessionLedger(canonicalSession, { writer: created.runtimeComposition.harness.t5.writer });
+	const facts = createGatewayFoundationFacts(policyBinding);
+	const correlation = {
+		operationId: policyBinding.runId,
+		runId: policyBinding.runId,
+		taskId: facts.task.taskId,
+		bindingId: facts.binding.bindingId,
+		bindingEpochId: facts.epoch.bindingEpochId,
+		attemptId: facts.epoch.attemptId,
+	};
+	await ledger.appendFact("agent_binding", facts.binding.bindingId, facts.binding, {
+		clientRequestId: "canonical-review-agent-binding",
+		expectedRevision: 0,
+		correlation,
+	});
+	await ledger.appendFact("binding_epoch", facts.epoch.bindingEpochId, facts.epoch, {
+		clientRequestId: "canonical-review-binding-epoch",
+		expectedRevision: 0,
+		correlation,
+	});
+	await ledger.appendFact("policy_binding", policyBinding.id, policyBinding, {
+		clientRequestId: "canonical-review-policy-binding",
+		expectedRevision: 0,
+		correlation,
+	});
+	const sessionFile = sessionManager.getSessionFile();
+	if (sessionFile === undefined) throw new Error("canonical review session did not allocate a session file");
+	return { workspace, sessionDir, sessionFile, services, sessionManager, created };
+}
+
 function onlyPendingReview(controlPlane: FoundationControlPlane) {
 	const pending = controlPlane.getPendingExecutionPolicyApprovals();
+	expect(pending).toHaveLength(1);
+	const approval = pending[0];
+	if (approval === undefined) throw new Error("pending review is required");
+	return approval;
+}
+
+function onlyPendingAgentReview(session: AgentSession) {
+	const pending = session.getPendingExecutionPolicyApprovals();
 	expect(pending).toHaveLength(1);
 	const approval = pending[0];
 	if (approval === undefined) throw new Error("pending review is required");
@@ -286,6 +431,18 @@ function gatewayRequest(toolName: string, originalArguments: ToolGatewayRequest[
 			attemptId: "attempt-product-policy",
 			operationId: "run-product-policy",
 		},
+	};
+}
+
+function canonicalGatewayRequest(
+	toolCallId: string,
+	originalArguments: ToolGatewayRequest["originalArguments"],
+): ToolGatewayRequest {
+	const request = gatewayRequest("workspace.write", originalArguments);
+	return {
+		...request,
+		toolCallId,
+		context: { ...request.context, providerId: "product-local" },
 	};
 }
 
@@ -815,6 +972,180 @@ describe("Foundation reviewer evidence integration", () => {
 			});
 		} finally {
 			await fixture.controlPlane.dispose();
+			await rm(fixture.workspace, { recursive: true, force: true });
+		}
+	});
+
+	it("durably replays reviewer and team evidence through the production Session composition", async () => {
+		const fixture = await createCanonicalReviewFixture();
+		let reopened: Awaited<ReturnType<typeof createAgentSessionFromServices>> | undefined;
+		let initialClosed = false;
+		try {
+			const gateway = fixture.created.runtimeComposition.toolGateway;
+			if (gateway === undefined) throw new Error("canonical AgentSession did not compose a Tool Gateway");
+			const first = canonicalGatewayRequest("tool-call-canonical-first", { path: ".config/first.json", content: "first" });
+			const second = canonicalGatewayRequest("tool-call-canonical-second", { path: ".config/second.json", content: "second" });
+			const team = canonicalGatewayRequest("tool-call-canonical-team", { path: ".git/config", content: "team" });
+
+			const firstDenied = await gateway.execute(first);
+			expect(firstDenied).toMatchObject({ ok: false, error: expect.objectContaining({ code: "external_tool_route_denied" }) });
+			const firstApproval = onlyPendingAgentReview(fixture.created.session);
+			expect(firstApproval.reviewRequirement).toBe("reviewer");
+			const firstEvidence = fixture.created.session.resolveExecutionPolicyReview(
+				firstApproval.id,
+				{ kind: "user", id: "alice" },
+				"approved",
+				timestampAfter(firstApproval.createdAt),
+			);
+			expect(firstEvidence).toMatchObject({
+				requestId: firstApproval.id,
+				bindingId: firstApproval.bindingId,
+				scopeDigest: firstApproval.scopeDigest,
+			});
+			const firstAllowed = await gateway.execute(first);
+			expect(firstAllowed.ok).toBe(true);
+
+			const secondDenied = await gateway.execute(second);
+			expect(secondDenied).toMatchObject({ ok: false, error: expect.objectContaining({ code: "external_tool_route_denied" }) });
+			const secondApproval = onlyPendingAgentReview(fixture.created.session);
+			expect(secondApproval.reviewRequirement).toBe("reviewer");
+			expect(secondApproval.scopeDigest).not.toBe(firstApproval.scopeDigest);
+			const secondEvidence = fixture.created.session.resolveExecutionPolicyReview(
+				secondApproval.id,
+				{ kind: "user", id: "alice" },
+				"approved",
+				timestampAfter(secondApproval.createdAt, 2_000),
+			);
+			expect(secondEvidence).toMatchObject({
+				requestId: secondApproval.id,
+				bindingId: secondApproval.bindingId,
+				scopeDigest: secondApproval.scopeDigest,
+			});
+			expect(secondApproval.id).not.toBe(firstApproval.id);
+			expect((await gateway.execute(second)).ok).toBe(true);
+
+			const teamDenied = await gateway.execute(team);
+			expect(teamDenied).toMatchObject({ ok: false, error: expect.objectContaining({ code: "external_tool_route_denied" }) });
+			const teamApproval = onlyPendingAgentReview(fixture.created.session);
+			expect(teamApproval.reviewRequirement).toBe("team_enforced");
+			expect(teamApproval.scopeDigest).not.toBe(firstApproval.scopeDigest);
+			const teamEvidence = fixture.created.session.resolveExecutionPolicyReview(
+				teamApproval.id,
+				{ kind: "team", id: "security" },
+				"approved",
+				timestampAfter(teamApproval.createdAt, 3_000),
+			);
+			expect(teamEvidence).toMatchObject({
+				requestId: teamApproval.id,
+				bindingId: teamApproval.bindingId,
+				scopeDigest: teamApproval.scopeDigest,
+				reviewer: { kind: "team", id: "security" },
+			});
+			expect((await gateway.execute(team)).ok).toBe(true);
+
+			const canonicalSession = getAgentCanonicalSession(fixture.created.session);
+			const persistedApprovals = await canonicalSession.findEntries({
+				type: "custom",
+				customType: POLICY_APPROVAL_CUSTOM_TYPE,
+				order: "oldestFirst",
+			});
+			expect(persistedApprovals).toEqual(expect.arrayContaining([
+				expect.objectContaining({
+					data: expect.objectContaining({
+						record: expect.objectContaining({
+							requestId: firstEvidence.requestId,
+							bindingId: firstEvidence.bindingId,
+							scopeDigest: firstEvidence.scopeDigest,
+							outcome: "approved",
+							reviewer: { kind: "user", id: "alice" },
+						}),
+					}),
+				}),
+				expect.objectContaining({
+					data: expect.objectContaining({
+						record: expect.objectContaining({
+							requestId: secondEvidence.requestId,
+							bindingId: secondEvidence.bindingId,
+							scopeDigest: secondEvidence.scopeDigest,
+							outcome: "approved",
+							reviewer: { kind: "user", id: "alice" },
+						}),
+					}),
+				}),
+				expect.objectContaining({
+					data: expect.objectContaining({
+						record: expect.objectContaining({
+							requestId: teamEvidence.requestId,
+							bindingId: teamEvidence.bindingId,
+							scopeDigest: teamEvidence.scopeDigest,
+							outcome: "approved",
+							reviewer: { kind: "team", id: "security" },
+						}),
+					}),
+				}),
+			]));
+
+			await fixture.created.session.dispose();
+			await fixture.created.session.waitForDispose();
+			initialClosed = true;
+			const reopenedManager = SessionManager.open(fixture.sessionFile, fixture.sessionDir);
+			reopened = await createAgentSessionFromServices({
+				services: fixture.services,
+				sessionManager: reopenedManager,
+				model: fauxModel,
+				policyProfile: profile.id,
+				noTools: "all",
+			});
+			await reopened.session.whenCapabilitiesReady("run-product-policy");
+			const reopenedGateway = reopened.runtimeComposition.toolGateway;
+			if (reopenedGateway === undefined) throw new Error("reopened AgentSession did not compose a Tool Gateway");
+			expect((await reopenedGateway.execute(first)).ok).toBe(true);
+			expect((await reopenedGateway.execute(second)).ok).toBe(true);
+			expect((await reopenedGateway.execute(team)).ok).toBe(true);
+
+			const replayedApprovals = await getAgentCanonicalSession(reopened.session).findEntries({
+				type: "custom",
+				customType: POLICY_APPROVAL_CUSTOM_TYPE,
+				order: "oldestFirst",
+			});
+			expect(replayedApprovals).toEqual(expect.arrayContaining([
+				expect.objectContaining({
+					data: expect.objectContaining({
+						record: expect.objectContaining({
+							requestId: firstEvidence.requestId,
+							bindingId: firstEvidence.bindingId,
+							scopeDigest: firstEvidence.scopeDigest,
+						}),
+					}),
+				}),
+				expect.objectContaining({
+					data: expect.objectContaining({
+						record: expect.objectContaining({
+							requestId: secondEvidence.requestId,
+							bindingId: secondEvidence.bindingId,
+							scopeDigest: secondEvidence.scopeDigest,
+						}),
+					}),
+				}),
+				expect.objectContaining({
+					data: expect.objectContaining({
+						record: expect.objectContaining({
+							requestId: teamEvidence.requestId,
+							bindingId: teamEvidence.bindingId,
+							scopeDigest: teamEvidence.scopeDigest,
+						}),
+					}),
+				}),
+			]));
+		} finally {
+			if (!initialClosed) {
+				await fixture.created.session.dispose();
+				await fixture.created.session.waitForDispose();
+			}
+			if (reopened !== undefined) {
+				await reopened.session.dispose();
+				await reopened.session.waitForDispose();
+			}
 			await rm(fixture.workspace, { recursive: true, force: true });
 		}
 	});
