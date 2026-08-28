@@ -1127,7 +1127,7 @@ export const line13KnownGapCasesAc09Ac16 = defineLine13KnownGapCaseShard({
 				mode: "fails",
 				expectedFailure: {
 					reason: "scheduler.quota_not_released",
-					fingerprint: "sha256:8058b976471215a8c56d7d668daf1029fc5a10a3a2f9fdf6a4ff3ddcd0267d67",
+					fingerprint: "sha256:58e7ec1ad16951738997499112ca19e3cb41fb8bf0180db9bb38d197f853b46b",
 				},
 			},
 			scenario: {

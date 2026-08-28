@@ -361,18 +361,9 @@ const ac19 = defineLine13KnownGapCase({
 	},
 });
 
-const ac20 = defineLine13KnownGapCase({
-	entry: {
-		ac: "AC-20",
-		fullTestName: "Line 13 AC-20 drains bounded ordered protocol writes before transport close",
-		baseSha: LINE13_T0_BASE_SHA,
-		ownerStage: "T9c",
-		mode: "fails",
-		expectedFailure: {
-			reason: "transport.pending_drain",
-			fingerprint: "sha256:bc8941d5af185a0022de298f5bfc992d451b652eeb3b4d499536bbe913e5fa84",
-		},
-	},
+const ac20 = defineLine13ResolvedCase({
+	ac: "AC-20",
+	fullTestName: "Line 13 AC-20 drains bounded ordered protocol writes before transport close",
 	scenario: {
 		fixture: () => ({ orderedProtocol: false, drained: false }),
 		setup: async (fixture) => {
@@ -1018,6 +1009,6 @@ export const line13KnownGapCasesAc17Ac24 = defineLine13KnownGapCaseShard({
 	schemaVersion: 1,
 	shardId: "ac-17-24",
 	complete: true,
-	cases: [ac18, ac19, ac20, ac22, ac24],
-	resolvedCases: [ac17, ac21, ac23],
+	cases: [ac18, ac19, ac22, ac24],
+	resolvedCases: [ac17, ac20, ac21, ac23],
 });
