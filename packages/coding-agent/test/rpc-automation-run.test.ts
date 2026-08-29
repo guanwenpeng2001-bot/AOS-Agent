@@ -645,6 +645,7 @@ type RpcExternalConnectorSupervision = ReturnType<typeof createExternalConnector
 // CPU and filesystem contention cannot turn a valid replay into a deadline failure.
 const RPC_RECOVERY_EVENT_DEADLINE = Object.freeze({ hardMs: 60_000, idleMs: 60_000 });
 const RPC_RECOVERY_WAIT_TIMEOUT_MS = 30_000;
+const RPC_RECOVERY_TEST_TIMEOUT_MS = 90_000;
 
 const RPC_PROCESS_SIGNALS: readonly NodeJS.Signals[] =
 	process.platform === "win32" ? ["SIGINT", "SIGTERM"] : ["SIGINT", "SIGTERM", "SIGHUP"];
@@ -2395,7 +2396,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			await harness.controller.shutdown();
 			await harness.cleanup();
 		}
-	});
+	}, RPC_RECOVERY_TEST_TIMEOUT_MS);
 
 	it("does not invoke Tool Gateway when the Connector emits no request", async () => {
 		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });

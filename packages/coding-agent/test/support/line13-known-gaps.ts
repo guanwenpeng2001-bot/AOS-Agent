@@ -95,6 +95,7 @@ export interface Line13ResolvedCase {
 	readonly [line13ResolvedCaseBrand]: true;
 	readonly ac: Line13AcceptanceCriterion;
 	readonly fullTestName: string;
+	readonly timeoutMs?: number;
 	readonly scenario: Line13KnownGapScenario<unknown>;
 }
 
@@ -119,7 +120,7 @@ export interface Line13KnownGapTransition {
 }
 
 export interface Line13ExpectedFailureTestApi {
-	normal(name: string, body: () => void | Promise<void>): void;
+	normal(name: string, body: () => void | Promise<void>, timeoutMs?: number): void;
 	fails(name: string, body: () => void | Promise<void>): void;
 }
 
@@ -345,13 +346,22 @@ export function defineLine13KnownGapCase<TFixture>(value: {
 export function defineLine13ResolvedCase<TFixture>(value: {
 	readonly ac: Line13AcceptanceCriterion;
 	readonly fullTestName: string;
+	readonly timeoutMs?: number;
 	readonly scenario: Line13KnownGapScenario<TFixture>;
 }): Line13ResolvedCase {
 	const resolvedCase = asRecord(value, "case", invalidResolvedCase);
-	assertExactKeys(resolvedCase, ["ac", "fullTestName", "scenario"], "case", invalidResolvedCase);
+	assertExactKeys(resolvedCase, ["ac", "fullTestName", "scenario"], "case", invalidResolvedCase, ["timeoutMs"]);
+	const timeoutMs = resolvedCase.timeoutMs;
+	if (
+		timeoutMs !== undefined &&
+		(typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
+	) {
+		return invalidResolvedCase("case.timeoutMs must be a positive safe integer when provided");
+	}
 	return Object.freeze({
 		ac: validateAcceptanceCriterion(resolvedCase.ac, (problem) => invalidResolvedCase(`case.${problem}`)),
 		fullTestName: validateFullTestName(resolvedCase.fullTestName, (problem) => invalidResolvedCase(`case.${problem}`)),
+		...(timeoutMs === undefined ? {} : { timeoutMs }),
 		scenario: validateLine13Scenario(resolvedCase.scenario, invalidResolvedCase),
 	}) as Line13ResolvedCase;
 }
@@ -621,11 +631,11 @@ export function registerLine13ResolvedCaseWith(
 	}
 	testApi.normal(resolvedCase.fullTestName, async () => {
 		await runRawScenario(resolvedCase.scenario);
-	});
+	}, resolvedCase.timeoutMs);
 }
 
 const vitestApi: Line13ExpectedFailureTestApi = {
-	normal: (name, body) => test(name, body),
+	normal: (name, body, timeoutMs) => test(name, body, timeoutMs),
 	fails: (name, body) => test.fails(name, body),
 };
 

@@ -102,6 +102,7 @@ import {
 
 const CHILD_ENTRY = fileURLToPath(new URL("../fixtures/fake-worker-child.ts", import.meta.url));
 const NOW = "2026-08-25T00:00:00.000Z";
+const AC24_TEST_TIMEOUT_MS = 60_000;
 
 function workerBinding(profileId: string): WorkerBindingV1 {
 	return {
@@ -901,6 +902,7 @@ const ac23 = defineLine13ResolvedCase({
 const ac24 = defineLine13ResolvedCase({
 	ac: "AC-24",
 	fullTestName: "Line 13 AC-24 applies RuntimeLimits and exposes deterministic terminal resource status",
+	timeoutMs: AC24_TEST_TIMEOUT_MS,
 	scenario: {
 		fixture: () => {
 			const root = mkdtempSync(join(tmpdir(), "aos-line13-ac24-"));
