@@ -21,8 +21,9 @@ import {
 	assertPackageContents,
 	assertPackageSmokeResult,
 	createPackageSmokeResult,
-} from "./line13-pack-smoke.mjs";
-import { digestJson } from "./line13-evidence-common.mjs";
+	PACKAGED_FIXTURE_TOOL_CALL_ID,
+} from "./pack-smoke.mjs";
+import { digestJson } from "./pack-smoke-common.mjs";
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(packageDirectory, "../..");
@@ -62,7 +63,7 @@ function assertExecutedTrace(trace) {
 		{ phase: "cancel", status: "cancelled" },
 	]);
 	assert.deepEqual(trace.toolResult, {
-		toolCallId: "line13-tool-call",
+		toolCallId: PACKAGED_FIXTURE_TOOL_CALL_ID,
 		toolName: "fixture.echo",
 		ok: true,
 		sideEffectState: "none",
@@ -153,7 +154,7 @@ test("package-content validation catches missing public exports and assets", () 
 });
 
 test("outside-repository validation supports missing external paths and rejects filesystem roots", () => {
-	const root = mkdtempSync(join(tmpdir(), "aos-line13-work-root-test-"));
+	const root = mkdtempSync(join(tmpdir(), "aos-pack-work-root-test-"));
 	try {
 		const workRoot = join(root, "missing", "work-root");
 		assert.equal(assertOutsideRepository(workRoot, repoRoot), join(realpathSync(root), "missing", "work-root"));
@@ -167,7 +168,7 @@ test("outside-repository validation supports missing external paths and rejects 
 });
 
 test("outside-repository validation rejects a link or junction targeting the repository", (t) => {
-	const root = mkdtempSync(join(tmpdir(), "aos-line13-work-root-link-test-"));
+	const root = mkdtempSync(join(tmpdir(), "aos-pack-work-root-link-test-"));
 	try {
 		const repositoryLink = join(root, "repository-link");
 		try {
@@ -194,7 +195,7 @@ test("outside-repository validation rejects a link or junction targeting the rep
 });
 
 test("external npm install executes the packed public subpath in Node, Bun, and a compiled binary", () => {
-	const root = mkdtempSync(join(tmpdir(), "aos-line13-pack-test-"));
+	const root = mkdtempSync(join(tmpdir(), "aos-pack-test-"));
 	try {
 		assertOutsideRepository(root, repoRoot);
 		const staged = createStagedPackage(root);
