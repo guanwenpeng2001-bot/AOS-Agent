@@ -24,6 +24,7 @@
 
 ### Changed
 
+- Session artifacts now use the `.context-artifacts` directory suffix, while existing legacy artifact directories remain readable.
 - The External Agent Connector contract and the architecture convergence are implemented. Product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) and the final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) are not complete. This checkout does not claim product readiness.
 - Clarified that higher-level connector retry circuits must preserve the terminal `side_effect_unknown` no-replay boundary.
 - Tool Gateway results can carry a bounded JSON-safe structured result separately from their canonical receipt reference.

@@ -110,7 +110,7 @@ export function createStoreWriter(
 	}
 	return new SessionLedgerWriter(session, {
 		...options,
-		ownerId: options.ownerId ?? "foundation-t7",
+		ownerId: options.ownerId ?? "foundation-store",
 	});
 }
 

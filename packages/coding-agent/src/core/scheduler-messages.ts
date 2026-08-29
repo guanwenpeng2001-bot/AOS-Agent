@@ -554,7 +554,7 @@ export class SchedulerMessageOrchestrator {
 	) {
 		if (endpoints[0].session === endpoints[1].session)
 			invalid("Cross-Session messaging requires two distinct Sessions");
-		const ownerId = options.ownerId ?? "foundation-t7";
+		const ownerId = options.ownerId ?? "scheduler-messaging";
 		this.endpointStates = endpoints.map((endpoint) => {
 			const writer = new SessionLedgerWriter(endpoint.session, { ownerId });
 			return {

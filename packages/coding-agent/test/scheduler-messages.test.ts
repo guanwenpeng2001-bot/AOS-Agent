@@ -197,7 +197,7 @@ async function seedTaskResult(
 			requiredEvidencePresent: input.status !== "succeeded",
 		},
 	};
-	const ledger = new SessionLedger(session, { ownerId: "foundation-t7" });
+	const ledger = new SessionLedger(session, { ownerId: "scheduler-messaging" });
 	const stored = await ledger.appendFact("task_result", input.taskResultId, result, {
 		clientRequestId: `seed-task-result-${input.taskResultId}`,
 		expectedRevision: 0,
@@ -242,7 +242,7 @@ async function seedRunReceipt(
 				}),
 		completedAt: T0,
 	};
-	const ledger = new SessionLedger(session, { ownerId: "foundation-t7" });
+	const ledger = new SessionLedger(session, { ownerId: "scheduler-messaging" });
 	const stored = await ledger.appendFact("run_receipt", input.runId, receipt, {
 		clientRequestId: `seed-run-receipt-${input.runReceiptId}`,
 		expectedRevision: 0,
@@ -392,7 +392,7 @@ describe("durable scheduler message lifecycle", () => {
 	it("rejects durable revision gaps instead of guessing a missing transmission", async () => {
 		const fixture = pair();
 		await fixture.messages.post({ message: requiredMessage() });
-		const ledger = new SessionLedger(fixture.sourceSession, { ownerId: "foundation-t7" });
+		const ledger = new SessionLedger(fixture.sourceSession, { ownerId: "scheduler-messaging" });
 		await ledger.appendFact(
 			SCHEDULER_MESSAGE_OBJECT_TYPES.posted,
 			"message-1",

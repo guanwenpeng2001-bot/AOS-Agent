@@ -58,7 +58,7 @@ export function createContextCacheKey(input: ContextCacheKeyInput): ContextCache
 		bindingEpochId: input.bindingEpochId,
 		cacheEpoch: input.cacheEpoch,
 	};
-	return { ...normalized, key: `t5-cache:${sha256HexValue(canonicalFoundationJson(normalized))}` };
+	return { ...normalized, key: `context-cache:${sha256HexValue(canonicalFoundationJson(normalized))}` };
 }
 
 /**

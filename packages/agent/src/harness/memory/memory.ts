@@ -417,7 +417,7 @@ export class SessionMemoryStore implements MemoryStore {
 			principal: entry.principal ?? "system",
 			permissions: [entry.principal ?? "system"],
 			retention,
-			producer: "t5-memory",
+			producer: "context-memory",
 			clientRequestId: `memory-content:${id}`,
 		});
 		await this.artifacts.retainReference({

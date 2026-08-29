@@ -380,13 +380,13 @@ export class ContextLedger {
 			const reference = isImage
 				? await this.artifacts.putAttachment(bytes, {
 						mediaType: block.mimeType,
-						producer: "t5-tool-result",
-						validation: { state: "verified", validator: "t5.tool_result", validatedAt: this.now() },
+						producer: "context-tool-result",
+						validation: { state: "verified", validator: "tool.result", validatedAt: this.now() },
 					})
 				: await this.artifacts.putStructuredResult(bytes, {
 						mediaType: "text/plain",
-						producer: "t5-tool-result",
-						validation: { state: "verified", validator: "t5.tool_result", validatedAt: this.now() },
+						producer: "context-tool-result",
+						validation: { state: "verified", validator: "tool.result", validatedAt: this.now() },
 					});
 			artifactIds.push(reference.artifactId);
 			await this.artifacts.retainReference({
@@ -406,8 +406,8 @@ export class ContextLedger {
 			validationState = details.validationState;
 			const storedDetails = await this.artifacts.putStructuredResult(new TextEncoder().encode(serialized), {
 				mediaType: "application/json",
-				producer: "t5-tool-result",
-				validation: { state: validationState, validator: "t5.tool_result", validatedAt: this.now() },
+				producer: "context-tool-result",
+				validation: { state: validationState, validator: "tool.result", validatedAt: this.now() },
 			});
 			detailsRef = storedDetails;
 			artifactIds.push(storedDetails.artifactId);
@@ -430,7 +430,7 @@ export class ContextLedger {
 			...(message.addedToolNames === undefined ? {} : { addedToolNames: [...message.addedToolNames] }),
 			isError: message.isError,
 			timestamp: message.timestamp,
-			validation: { state: validationState, validator: "t5.tool_result", validatedAt: this.now(), artifactIds },
+			validation: { state: validationState, validator: "tool.result", validatedAt: this.now(), artifactIds },
 			provenance: {
 				producer: "agent-harness",
 				sessionId: metadata.id,
@@ -559,7 +559,7 @@ export class ContextLedger {
 		if (summary !== undefined && record.summaryRef === undefined) {
 			const summaryRef = await this.artifacts.putStructuredResult(new TextEncoder().encode(summary), {
 				mediaType: "text/plain",
-				producer: "t5-context-summary",
+				producer: "context-summary",
 				principal: "system",
 				permissions: ["system"],
 				clientRequestId: `context-summary:${snapshot.snapshotId}`,
@@ -674,7 +674,7 @@ export class ContextLedger {
 		let contentRef = input.contentRef === undefined ? undefined : redactArtifactReference(input.contentRef);
 		let contentDigest = input.contentDigest;
 		if (input.content !== undefined) {
-			contentRef = await this.artifacts.putStructuredResult(new TextEncoder().encode(input.content), { mediaType: "text/plain", producer: "t5-instruction" });
+			contentRef = await this.artifacts.putStructuredResult(new TextEncoder().encode(input.content), { mediaType: "text/plain", producer: "context-instruction" });
 			contentDigest = contentRef.digest;
 		}
 		if (contentDigest === undefined) throw new Error(`Instruction source ${sourceId} requires contentDigest or contentRef`);
@@ -785,7 +785,7 @@ export class ContextLedger {
 		if (options.retention?.expiresAt !== undefined && (!Number.isFinite(options.retention.expiresAt) || options.retention.expiresAt < 0)) throw new RangeError("Compaction retention expiry must be finite and non-negative");
 		const proposal = compactContext(snapshot.entries(), { retainEntries: options.retainEntries, retention: options.retention });
 		const summary = options.summary ?? proposal.summary;
-		const summaryRef = await this.artifacts.putStructuredResult(new TextEncoder().encode(summary), { ...options.artifact, mediaType: options.artifact?.mediaType ?? "text/plain", producer: options.artifact?.producer ?? "t5-compaction" });
+		const summaryRef = await this.artifacts.putStructuredResult(new TextEncoder().encode(summary), { ...options.artifact, mediaType: options.artifact?.mediaType ?? "text/plain", producer: options.artifact?.producer ?? "context-compaction" });
 		const record: CompactionRecord = {
 			schemaVersion: 1,
 			compactionId: options.compactionId ?? newFoundationId("compaction"),
@@ -826,7 +826,7 @@ export class ContextLedger {
 	async recordPromptCache(options: PromptCacheWriteOptions): Promise<PromptCacheRecord> {
 		if (!Number.isInteger(options.cacheEpoch) || options.cacheEpoch < 0) throw new RangeError("cacheEpoch must be a non-negative integer");
 		let valueRef = options.valueRef === undefined ? undefined : redactArtifactReference(options.valueRef);
-		if (options.value !== undefined) valueRef = await this.artifacts.putStructuredResult(options.value, { mediaType: "application/octet-stream", producer: "t5-prompt-cache" });
+		if (options.value !== undefined) valueRef = await this.artifacts.putStructuredResult(options.value, { mediaType: "application/octet-stream", producer: "context-prompt-cache" });
 		const record: PromptCacheRecord = {
 			schemaVersion: 1,
 			cacheEntryId: options.cacheEntryId ?? newFoundationId("prompt-cache"),

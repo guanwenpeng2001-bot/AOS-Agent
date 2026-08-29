@@ -425,21 +425,23 @@ function validateReference(value: ArtifactReferenceRecord): ArtifactReferenceRec
 class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 	private readonly configuredRoot?: string;
 	private readonly session: Session;
-	private rootPromise?: Promise<string>;
+	private rootsPromise?: Promise<SessionArtifactRoots>;
 
 	constructor(session: Session, root?: string) {
 		this.session = session;
 		this.configuredRoot = root;
 	}
 
-	private root(): Promise<string> {
-		if (this.rootPromise === undefined) {
-			this.rootPromise = this.configuredRoot === undefined ? this.deriveRoot() : Promise.resolve(this.configuredRoot);
+	private roots(): Promise<SessionArtifactRoots> {
+		if (this.rootsPromise === undefined) {
+			this.rootsPromise = this.configuredRoot === undefined
+				? this.deriveRoots()
+				: Promise.resolve({ current: this.configuredRoot });
 		}
-		return this.rootPromise;
+		return this.rootsPromise;
 	}
 
-	private async deriveRoot(): Promise<string> {
+	private async deriveRoots(): Promise<SessionArtifactRoots> {
 		const metadata = await this.session.getMetadata();
 		const path = (metadata as SessionMetadataWithPath).path;
 		if (typeof path !== "string" || path.length === 0) {
@@ -448,29 +450,45 @@ class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 				"A persistent artifact root is unavailable for this Session; pass an explicit blobStore for tests",
 			);
 		}
-		return `${path}.t5-artifacts`;
+		return {
+			current: `${path}.context-artifacts`,
+			legacy: `${path}.t5-artifacts`,
+		};
 	}
 
-	private async path(id: ArtifactId): Promise<string> {
+	private path(root: string, id: ArtifactId): string {
 		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
-		return joinArtifactPath(await this.root(), "blobs", id.slice(0, 2), id.slice(2));
+		return joinArtifactPath(root, "blobs", id.slice(0, 2), id.slice(2));
+	}
+
+	private async readRoot(): Promise<string> {
+		const roots = await this.roots();
+		if (roots.legacy === undefined) return roots.current;
+		try {
+			await nodeFileSystemPromises().access(roots.current);
+			return roots.current;
+		} catch (error) {
+			if (isNodeNotFoundError(error)) return roots.legacy;
+			throw error;
+		}
 	}
 
 	async put(id: ArtifactId, content: Uint8Array): Promise<void> {
 		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
 		if (!verifyArtifact(content, id)) throw new ArtifactStoreError("corrupt", `Blob content does not match artifact id: ${id}`);
-		const path = await this.path(id);
+		const root = (await this.roots()).current;
+		const path = this.path(root, id);
 		const fs = nodeFileSystemPromises();
-		await fs.mkdir(joinArtifactPath(await this.root(), "blobs", id.slice(0, 2)), { recursive: true });
+		await fs.mkdir(joinArtifactPath(root, "blobs", id.slice(0, 2)), { recursive: true });
 		await fs.writeFile(path, content);
 	}
 
 	async get(id: ArtifactId): Promise<Uint8Array | undefined> {
 		const fs = nodeFileSystemPromises();
 		try {
-			return Uint8Array.from(await fs.readFile(await this.path(id)));
+			return Uint8Array.from(await fs.readFile(this.path(await this.readRoot(), id)));
 		} catch (error) {
-			if (error instanceof Error && "code" in error && (error as { code?: string }).code === "ENOENT") return undefined;
+			if (isNodeNotFoundError(error)) return undefined;
 			throw new ArtifactStoreError("storage", `Failed to read artifact blob ${id}`, error instanceof Error ? error : undefined);
 		}
 	}
@@ -478,10 +496,10 @@ class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 	async has(id: ArtifactId): Promise<boolean> {
 		const fs = nodeFileSystemPromises();
 		try {
-			await fs.access(await this.path(id));
+			await fs.access(this.path(await this.readRoot(), id));
 			return true;
 		} catch (error) {
-			if (error instanceof Error && "code" in error && (error as { code?: string }).code === "ENOENT") return false;
+			if (isNodeNotFoundError(error)) return false;
 			throw new ArtifactStoreError("storage", `Failed to inspect artifact blob ${id}`, error instanceof Error ? error : undefined);
 		}
 	}
@@ -489,13 +507,18 @@ class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 	async remove(id: ArtifactId): Promise<boolean> {
 		const fs = nodeFileSystemPromises();
 		try {
-			await fs.unlink(await this.path(id));
+			await fs.unlink(this.path(await this.readRoot(), id));
 			return true;
 		} catch (error) {
-			if (error instanceof Error && "code" in error && (error as { code?: string }).code === "ENOENT") return false;
+			if (isNodeNotFoundError(error)) return false;
 			throw new ArtifactStoreError("storage", `Failed to remove artifact blob ${id}`, error instanceof Error ? error : undefined);
 		}
 	}
+}
+
+interface SessionArtifactRoots {
+	readonly current: string;
+	readonly legacy?: string;
 }
 
 interface SessionMetadataWithPath {
@@ -515,6 +538,10 @@ function nodeFileSystemPromises(): NodeFileSystemPromises {
 	const module = processValue?.getBuiltinModule?.("node:fs/promises") as NodeFileSystemPromises | undefined;
 	if (module === undefined) throw new ArtifactStoreError("storage", "The default persistent artifact backend requires Node filesystem capabilities");
 	return module;
+}
+
+function isNodeNotFoundError(error: unknown): boolean {
+	return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function joinArtifactPath(root: string, ...parts: string[]): string {

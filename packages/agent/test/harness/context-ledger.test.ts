@@ -1,3 +1,4 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -8,8 +9,10 @@ import {
 	JsonlSessionRepo,
 	LEDGER_OBJECT_TYPES,
 	Session,
+	SessionArtifactStore,
 	ContextLedger,
 	createContextCacheKey,
+	sha256Hex,
 	type ArtifactStoreError,
 	type JsonlSessionMetadata,
 } from "../../src/index.ts";
@@ -116,6 +119,43 @@ describe("Context ledger recovery", () => {
 });
 
 describe("Context ledger content addressed artifacts", () => {
+	it("writes default persistent blobs under the context artifact directory", async () => {
+		const root = createTempDir();
+		const { session } = await createSession(root, "context-artifact-root");
+		const metadata = await session.getMetadata();
+		const artifacts = new SessionArtifactStore(session, { ownerId: "context-artifact-root" });
+		const content = new TextEncoder().encode("new artifact root");
+		const stored = await artifacts.put(content);
+		const blobPath = join(`${metadata.path}.context-artifacts`, "blobs", stored.id.slice(0, 2), stored.id.slice(2));
+
+		expect(Uint8Array.from(readFileSync(blobPath))).toEqual(content);
+		expect(existsSync(`${metadata.path}.t5-artifacts`)).toBe(false);
+		await artifacts.writer.releaseLease();
+	});
+
+	it("reads default persistent blobs from the legacy directory when the current directory is absent", async () => {
+		const root = createTempDir();
+		const { session, repo } = await createSession(root, "legacy-artifact-root");
+		const metadata = await session.getMetadata();
+		const content = new TextEncoder().encode("legacy artifact root");
+		const id = sha256Hex(content);
+		const manifestStore = new SessionArtifactStore(session, {
+			blobStore: new InMemoryArtifactBlobStore(),
+			ownerId: "legacy-artifact-fixture",
+		});
+		await manifestStore.put(content);
+		await manifestStore.writer.releaseLease();
+		const blobDirectory = join(`${metadata.path}.t5-artifacts`, "blobs", id.slice(0, 2));
+		mkdirSync(blobDirectory, { recursive: true });
+		writeFileSync(join(blobDirectory, id.slice(2)), content);
+		expect(existsSync(`${metadata.path}.context-artifacts`)).toBe(false);
+
+		const reopened = await repo.open(metadata);
+		const artifacts = new SessionArtifactStore(reopened, { ownerId: "legacy-artifact-reader" });
+		expect((await artifacts.get(id)).content).toEqual(content);
+		await artifacts.writer.releaseLease();
+	});
+
 	it("detects ACL denial, retention expiry, missing blobs, corruption, and digest mismatch", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "artifact-cas", createdAt: 1 }));
 		const artifacts = new InMemoryArtifactStore(session, { ownerId: "artifact-cas" });

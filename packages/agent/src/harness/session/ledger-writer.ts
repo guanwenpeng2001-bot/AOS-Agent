@@ -117,7 +117,7 @@ export class SessionLedgerWriter {
 	constructor(session: Session, options: SessionLedgerWriterOptions = {}) {
 		this.session = session;
 		this.lane = options.lane ?? "main";
-		this.ownerId = options.ownerId ?? `t5-writer-${session.idGenerator.next()}`;
+		this.ownerId = options.ownerId ?? `context-ledger-writer-${session.idGenerator.next()}`;
 		this.leaseTtlMs = options.leaseTtlMs ?? 15 * 60 * 1000;
 		this.now = options.now ?? Date.now;
 	}
@@ -182,7 +182,7 @@ export class SessionLedgerWriter {
 		const lease = await this.ensureLease();
 		const metadata = await this.session.getMetadata();
 		const currentRevision = await this.session.getFoundationRevision(options.objectType, options.objectId);
-		const clientRequestId = options.clientRequestId ?? newFoundationId("t5-request");
+		const clientRequestId = options.clientRequestId ?? newFoundationId("ledger-request");
 		const correlation = createExecutionCorrelation(metadata.id, this.lane, {
 			...options.correlation,
 			revision: options.correlation?.revision ?? 0,
@@ -190,7 +190,7 @@ export class SessionLedgerWriter {
 		const record: ProvisionedFoundationRecord = {
 			schemaVersion: 1,
 			kind: "fact",
-			id: `t5_fact_${options.objectType.replace(/[^a-zA-Z0-9_-]/g, "_")}_${options.objectId}_${clientRequestId}`,
+			id: `ledger_fact_${options.objectType.replace(/[^a-zA-Z0-9_-]/g, "_")}_${options.objectId}_${clientRequestId}`,
 			lane: this.lane,
 			objectType: options.objectType,
 			objectId: options.objectId,
@@ -259,7 +259,7 @@ export class SessionLedgerWriter {
 		const lease = await this.ensureLease();
 		const metadata = await this.session.getMetadata();
 		const revision = await this.session.getFoundationRevision(options.objectType, options.objectId);
-		const clientRequestId = options.clientRequestId ?? newFoundationId("t5-delete");
+		const clientRequestId = options.clientRequestId ?? newFoundationId("ledger-delete");
 		const correlation = createExecutionCorrelation(metadata.id, this.lane, {
 			...options.correlation,
 			revision: options.correlation?.revision ?? 0,
@@ -267,7 +267,7 @@ export class SessionLedgerWriter {
 		const accepted = await this.session.appendFoundationRecord({
 			schemaVersion: 1,
 			kind: "tombstone",
-			id: `t5_tombstone_${options.objectType.replace(/[^a-zA-Z0-9_-]/g, "_")}_${options.objectId}_${clientRequestId}`,
+			id: `ledger_tombstone_${options.objectType.replace(/[^a-zA-Z0-9_-]/g, "_")}_${options.objectId}_${clientRequestId}`,
 			lane: this.lane,
 			objectType: options.objectType,
 			objectId: options.objectId,
