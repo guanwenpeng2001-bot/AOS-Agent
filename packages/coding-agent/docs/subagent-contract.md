@@ -1,6 +1,6 @@
-# Native Subagent Runtime Contract (Line 12A)
+# Native Subagent Runtime Contract
 
-Line 12A implements native child agents for one Host and one Session. A child
+The native runtime implements child agents for one Host and one Session. A child
 agent is a distinct Task, Dispatch, Attempt, `AgentInstance`, Binding, Context,
 and mailbox identity. It is not an Operation Worker, a mode switch, a
 scheduler node, or a second Run terminal authority.
@@ -30,7 +30,7 @@ only Run terminal writer.
 
 The immutable Native Agent registry recognizes three provider kinds:
 
-| Provider kind | Line 12A status |
+| Provider kind | Status |
 | --- | --- |
 | `in_process` | implemented; independent child lane, Context, Binding, model gateway, and tool gateway in the Host process |
 | `fork` | implemented; trusted local child process over a private bounded JSONL protocol |
@@ -41,7 +41,7 @@ External protocols and SDKs are not Native Agent provider kinds. They use the se
 Only trusted Host composition registers provider instances. Prompts, project
 configuration, RPC payloads, models, and extensions cannot select an
 executable, module path, or provider implementation. Registry resolution of a
-descriptor with `implementedInThisLine: false` fails closed with
+descriptor marked unavailable fails closed with
 `subagent_provider_unavailable`. The fake conformance drives the frozen
 `ChildAgentProvider` contract through the public Foundation spawn entry; it is
 not a production implementation.
@@ -88,13 +88,14 @@ retried.
 Mailbox `send`, acknowledgement, `wait_any`, `wait_all`, and query operations
 are bounded durable facts within the current Session. A wait timeout does not
 cancel a child. Cross-Session messaging, queue ownership, claim, handoff, and
-DAG scheduling remain Line 12B work.
+DAG scheduling remain outside this single-Host runtime.
 
 Reload restores safe supervisor facts and validates an active `spawnId` through
 the provider's `lookupSpawn` surface before trusted continuation. A missing or
-invalid handle is durably marked `lost` and its mailbox is sealed; it is never
-reported as live or falsely `closed`. Resume rebuilds execution context from the
-durable child transcript and Context boundary. A fork resume starts a new
+invalid handle is durably marked `lost` and its mailbox rejects further
+messages; it is never reported as live or falsely considered cleanly closed.
+Resume rebuilds execution context from the durable child transcript and
+Context boundary. A fork resume starts a new
 process rather than reviving the old process. Agent-provider suspension receipts
 remain provisional; only the continued terminal receipt becomes the immutable
 AttemptReceipt. Optional worktree apply is fail-closed; an apply conflict or
@@ -147,17 +148,14 @@ raw-receipt command.
 
 ## Capability ownership
 
-The machine-readable ledger is
-`packages/agent/src/harness/line12a-subagent-capabilities.ts`.
+The machine-readable capability ledger in the agent package is authoritative.
 
 - Implemented: `90-97`, `99-118` (28 capabilities).
-- Consumed by direct reference to sealed Foundation closures:
+- Consumed by direct reference to Foundation closures:
   `2`, `6`, `8`, `9`, `17-20`, `26`, `29-34`, `98` (16 capabilities).
-- Deferred to 12B: `119-126`, `130`, `131`.
-- Deferred to 13: `132`, `133`, `138`.
-- Deferred to 14: `134`, `137`, `139`, `141-144`, `149`, `150`.
-- Deferred to 15: `147`, `148`.
-- Capability `140` remains on the Line 11 extension track and is excluded.
+- Outside this runtime: `119-126`, `130`, `131`, `132`, `133`, `138`,
+  `134`, `137`, `139`, `141-144`, `147-150`.
+- Capability `140` remains on the extension track and is excluded.
 
-The Line 12A ledger does not change the sealed Foundation manifest or Line 11
+This capability ledger does not change the Foundation manifest or extension
 closure semantics.

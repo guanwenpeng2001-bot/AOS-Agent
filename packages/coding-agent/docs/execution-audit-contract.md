@@ -1,12 +1,11 @@
 # Execution Audit / Replay Contract
 
-This document freezes the current boundary for the Execution Audit, read-only
-Replay work. It is based on the existing Run, Context, Capability,
-ModelBroker, Policy, Sandbox, Session, and RPC contracts.
-The contract and independent fixture `test/fixtures/execution-audit-contract.ts`
-were introduced during T0. The current implementation folds existing ledgers
-into this contract and adds only the explicitly listed RPC behavior; it does
-not introduce a second audit ledger.
+This document defines the current boundary for the Execution Audit, read-only
+Replay work. It is based on the existing Run, Context, Capability, ModelBroker,
+Policy, Sandbox, Session, and RPC contracts. The contract and fixture
+`test/fixtures/execution-audit-contract.ts` describe the current implementation,
+which folds existing ledgers into this contract and adds only the explicitly
+listed RPC behavior; it does not introduce a second audit ledger.
 
 The fixture is the machine-checked list of scalar values and public field
 shapes. This document defines their meaning, source mapping, and security
@@ -480,8 +479,9 @@ or Run. See [Sandbox Operation Worker contract](worker-contract.md).
 
 ### Native child-agent lifecycle projection
 
-Line 12A exposes a separate digest-bound `subagent.lifecycle` projection for
-Audit and RPC consumers. It is not a new Audit event family and does not alter
+The native child-agent runtime exposes a separate digest-bound
+`subagent.lifecycle` projection for Audit and RPC consumers. It is not a new
+Audit event family and does not alter
 the current `AuditEventType` or Session custom-source unions. Its exact allowlist is:
 
 ```text
@@ -757,7 +757,7 @@ starts a Run. Replay of a historical `task.credential` transition is an
 observation only; it never issues, renews, revokes, or settles a lease, never
 calls the credential provider, and never rewrites a Run terminal.
 
-## 8. T0 acceptance cases and ownership
+## 8. Acceptance cases
 
 The reusable fixture freezes these cases:
 

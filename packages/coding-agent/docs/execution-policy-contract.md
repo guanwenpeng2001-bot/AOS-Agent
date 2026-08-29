@@ -1,9 +1,8 @@
-# Execution Policy / Sandbox Contract (T0 freeze)
+# Execution Policy / Sandbox Contract
 
-This document freezes the current contract for the policy and sandbox work. It is
-the integration boundary for T1-T7. The contract is additive: T0 does not
-change the current runtime, settings parser, RPC protocol, CLI, or tool
-execution behavior.
+This document defines the current contract for policy and sandbox execution.
+The contract is additive and does not change the current runtime, settings
+parser, RPC protocol, CLI, or tool execution behavior.
 
 ## 1. Names and ownership
 
@@ -142,7 +141,7 @@ registered profile name; callers cannot submit an inline policy object.
 }
 ```
 
-The declaration shape used by T1/T2 is:
+The declaration shape used by policy integration is:
 
 ```ts
 type WorkspaceScope =
@@ -217,7 +216,7 @@ is explicitly not an isolation claim. Its public summary must show
 ## 4. Trust and narrowing
 
 The existing `ProjectTrustStore` and `resolveProjectTrusted` result are the
-only project-trust authority. T2 must not create a second trust store.
+only project-trust authority. No additional trust store may be created.
 
 Effective policy resolution is:
 
@@ -384,9 +383,9 @@ required sandbox capabilities, protocol support, and Task Credential target.
 The Host activates the child and projects credentials only after the Run is
 accepted. A missing capability fails closed with
 `sandbox_capability_insufficient`; a missing Worker credential target fails
-with `task_credential_target_unavailable`. These canonical errors were added
-to close sealed-contract omissions; they are additive vocabulary, not a schema
-redesign. Neither failure falls back to Host execution.
+with `task_credential_target_unavailable`. These canonical errors close
+contract omissions; they are additive vocabulary, not a schema redesign.
+Neither failure falls back to Host execution.
 
 Heartbeat is process liveness only. Task Credential lease/heartbeat governs
 credential TTL and revocation, while the Session writer lease/fencing contract
@@ -400,10 +399,10 @@ less-isolated fallback. See [Sandbox Operation Worker contract](worker-contract.
 
 ### Native child-agent projection
 
-Line 12A child agents receive a distinct immutable Binding. Before spawn, the
+Native child agents receive a distinct immutable Binding. Before spawn, the
 Host projects instructions, Skills, MCP selection, model, Sandbox, Git, and
 Budget from the parent Binding and persists a digest-bound proof that every
-field is equal or narrower. Resource selectors use the sealed
+field is equal or narrower. Resource selectors use the fixed
 `selectorsNarrow` relation, Budget fields use minimum limits, managed locks
 cannot be removed, and Policy or Capability revision changes require an
 explicit Host tightening proof. A widening fails with
@@ -413,7 +412,7 @@ The projection does not copy credentials, environment/header values, MCP
 material, provider handles, or a Sandbox authority into the child. Child tool
 operations still pass through the existing Tool Gateway and Execution Policy;
 an optional Operation Worker remains a separate non-Agent execution boundary.
-`in_process` and `fork` are the Line 12A implementations. The
+`in_process` and `fork` are the current implementations. The
 `agent_runtime_host`, `acp`, and `sdk` descriptors freeze registration and
 capability-negotiation contracts only and remain fail-closed unavailable. See
 [Native Subagent Runtime Contract](subagent-contract.md).
@@ -581,9 +580,9 @@ into `allow`, satisfy a missing provider capability, or suppress a ledger
 violation. The no-self-report rule applies equally to success summaries and
 failure recovery.
 
-## 11. Required T0 acceptance cases
+## 11. Acceptance cases
 
-The T0 fixture and later implementation tests must preserve these cases:
+The fixture and implementation tests must preserve these cases:
 
 | Case | Expected result |
 | --- | --- |
@@ -596,7 +595,3 @@ The T0 fixture and later implementation tests must preserve these cases:
 | Agent/Extension/MCP self-report says access was safe | Self-report ignored; local policy/provider evidence remains authoritative. |
 | Settings change during a Run | Existing immutable binding remains unchanged; next Run resolves again. |
 | Resume | New binding and handle; old approval and handle are not reused. |
-
-T0 owns this contract document and the fixture test only. Production types,
-settings integration, lifecycle wiring, sandbox execution, RPC/CLI behavior,
-and provider adapters belong to T1-T7.
