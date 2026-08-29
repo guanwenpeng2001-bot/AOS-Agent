@@ -461,16 +461,9 @@ class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 		return joinArtifactPath(root, "blobs", id.slice(0, 2), id.slice(2));
 	}
 
-	private async readRoot(): Promise<string> {
+	private async candidateRoots(): Promise<string[]> {
 		const roots = await this.roots();
-		if (roots.legacy === undefined) return roots.current;
-		try {
-			await nodeFileSystemPromises().access(roots.current);
-			return roots.current;
-		} catch (error) {
-			if (isNodeNotFoundError(error)) return roots.legacy;
-			throw error;
-		}
+		return roots.legacy === undefined ? [roots.current] : [roots.current, roots.legacy];
 	}
 
 	async put(id: ArtifactId, content: Uint8Array): Promise<void> {
@@ -486,9 +479,15 @@ class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 	async get(id: ArtifactId): Promise<Uint8Array | undefined> {
 		const fs = nodeFileSystemPromises();
 		try {
-			return Uint8Array.from(await fs.readFile(this.path(await this.readRoot(), id)));
+			for (const root of await this.candidateRoots()) {
+				try {
+					return Uint8Array.from(await fs.readFile(this.path(root, id)));
+				} catch (error) {
+					if (!isNodeNotFoundError(error)) throw error;
+				}
+			}
+			return undefined;
 		} catch (error) {
-			if (isNodeNotFoundError(error)) return undefined;
 			throw new ArtifactStoreError("storage", `Failed to read artifact blob ${id}`, error instanceof Error ? error : undefined);
 		}
 	}
@@ -496,10 +495,16 @@ class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 	async has(id: ArtifactId): Promise<boolean> {
 		const fs = nodeFileSystemPromises();
 		try {
-			await fs.access(this.path(await this.readRoot(), id));
-			return true;
+			for (const root of await this.candidateRoots()) {
+				try {
+					await fs.access(this.path(root, id));
+					return true;
+				} catch (error) {
+					if (!isNodeNotFoundError(error)) throw error;
+				}
+			}
+			return false;
 		} catch (error) {
-			if (isNodeNotFoundError(error)) return false;
 			throw new ArtifactStoreError("storage", `Failed to inspect artifact blob ${id}`, error instanceof Error ? error : undefined);
 		}
 	}
@@ -507,10 +512,16 @@ class SessionFileArtifactBlobStore implements ArtifactBlobStore {
 	async remove(id: ArtifactId): Promise<boolean> {
 		const fs = nodeFileSystemPromises();
 		try {
-			await fs.unlink(this.path(await this.readRoot(), id));
-			return true;
+			for (const root of await this.candidateRoots()) {
+				try {
+					await fs.unlink(this.path(root, id));
+					return true;
+				} catch (error) {
+					if (!isNodeNotFoundError(error)) throw error;
+				}
+			}
+			return false;
 		} catch (error) {
-			if (isNodeNotFoundError(error)) return false;
 			throw new ArtifactStoreError("storage", `Failed to remove artifact blob ${id}`, error instanceof Error ? error : undefined);
 		}
 	}

@@ -156,6 +156,37 @@ describe("Context ledger content addressed artifacts", () => {
 		await artifacts.writer.releaseLease();
 	});
 
+	it("falls back to a legacy blob when the current artifact directory exists", async () => {
+		const root = createTempDir();
+		const { session, repo } = await createSession(root, "mixed-artifact-roots");
+		const metadata = await session.getMetadata();
+		const legacyContent = new TextEncoder().encode("legacy artifact in mixed roots");
+		const legacyId = sha256Hex(legacyContent);
+		const manifestStore = new SessionArtifactStore(session, {
+			blobStore: new InMemoryArtifactBlobStore(),
+			ownerId: "mixed-artifact-fixture",
+		});
+		await manifestStore.put(legacyContent);
+		await manifestStore.writer.releaseLease();
+		const legacyBlobPath = join(`${metadata.path}.t5-artifacts`, "blobs", legacyId.slice(0, 2), legacyId.slice(2));
+		mkdirSync(join(`${metadata.path}.t5-artifacts`, "blobs", legacyId.slice(0, 2)), { recursive: true });
+		writeFileSync(legacyBlobPath, legacyContent);
+
+		const reopened = await repo.open(metadata);
+		const artifacts = new SessionArtifactStore(reopened, { ownerId: "mixed-artifact-reader" });
+		const currentContent = new TextEncoder().encode("current artifact in mixed roots");
+		const current = await artifacts.put(currentContent);
+		const currentBlobPath = join(`${metadata.path}.context-artifacts`, "blobs", current.id.slice(0, 2), current.id.slice(2));
+
+		expect((await artifacts.get(legacyId)).content).toEqual(legacyContent);
+		expect(await artifacts.blobs.has(legacyId)).toBe(true);
+		expect(await artifacts.blobs.remove(legacyId)).toBe(true);
+		expect(existsSync(legacyBlobPath)).toBe(false);
+		expect(Uint8Array.from(readFileSync(currentBlobPath))).toEqual(currentContent);
+		expect(existsSync(join(`${metadata.path}.t5-artifacts`, "blobs", current.id.slice(0, 2), current.id.slice(2)))).toBe(false);
+		await artifacts.writer.releaseLease();
+	});
+
 	it("detects ACL denial, retention expiry, missing blobs, corruption, and digest mismatch", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "artifact-cas", createdAt: 1 }));
 		const artifacts = new InMemoryArtifactStore(session, { ownerId: "artifact-cas" });
