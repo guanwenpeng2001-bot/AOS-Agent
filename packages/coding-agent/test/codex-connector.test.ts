@@ -748,7 +748,7 @@ describe("private Codex app-server connector", () => {
 
 		const timeout = new FakeCodexServer({ autoComplete: false });
 		const timeoutDriver = new PrivateCodexAppServerDriver(
-			driverOptions(timeout, { limits: { operationTimeoutMs: 20, requestTimeoutMs: 20 } }),
+			driverOptions(timeout, { limits: { operationTimeoutMs: 1_000, requestTimeoutMs: 5_000 } }),
 		);
 		const timeoutHandle = await timeoutDriver.spawn(spawnRequest({ operationNonce: "nonce-timeout" }));
 		await expect(timeoutDriver.read(timeoutHandle)).rejects.toMatchObject({
