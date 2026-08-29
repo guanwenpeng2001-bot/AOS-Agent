@@ -14,7 +14,7 @@ npm run build
 npm install --global --ignore-scripts ./packages/coding-agent
 ```
 
-The build also generates the local AOS-owned model registry under `.artifacts/aos-model-registry/`; its source policy and reproducibility contract are documented in [`../ai/AOS-MODEL-REGISTRY.md`](../ai/AOS-MODEL-REGISTRY.md).
+The build also generates the local AOS-owned model registry under `.artifacts/aos-model-registry/`; its source policy and reproducibility contract are documented in [`../ai/aos-model-registry.md`](../ai/aos-model-registry.md).
 
 Start the agent with:
 
