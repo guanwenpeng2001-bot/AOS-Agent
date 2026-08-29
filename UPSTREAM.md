@@ -23,7 +23,7 @@ The deterministic upstream JSONL test fixtures are retained as test data, not ru
 
 For a future update, fetch upstream out of tree, select and record a new full commit SHA, compare source and legal notices, exclude generated outputs and transient data, review package/runtime changes, and then import the reviewed snapshot. Do not update this baseline by silently following a branch.
 
-The AOS build owns its provider-neutral model registry outside the imported source snapshot. Its source policy, normalization boundary, input hashes, and review status are documented in [`packages/ai/AOS-MODEL-REGISTRY.md`](packages/ai/AOS-MODEL-REGISTRY.md); generated output under `.artifacts/aos-model-registry/` is ignored and is not part of this import.
+The AOS build owns its provider-neutral model registry outside the imported source snapshot. Its source policy, normalization boundary, input hashes, and review status are documented in [`packages/ai/aos-model-registry.md`](packages/ai/aos-model-registry.md); generated output under `.artifacts/aos-model-registry/` is ignored and is not part of this import.
 
 ## Rebrand boundary
 

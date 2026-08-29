@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const syncVersionsScript = fileURLToPath(new URL("./sync-versions.js", import.meta.url));
+const syncVersionsScript = fileURLToPath(new URL("./sync-versions.mjs", import.meta.url));
 
 async function writeManifest(root, relativeDirectory, manifest) {
 	const directory = join(root, relativeDirectory);

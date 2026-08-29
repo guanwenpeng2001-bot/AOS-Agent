@@ -70,7 +70,7 @@ The registry boundary accepts reviewed source records for official provider cata
 
 The current candidate inputs include sources that are approved for local refresh only and sources that remain pending. They may be used for a local build when the documented conditions are met, but the generated registry must not be committed, packaged, or redistributed. User-supplied catalogs are opt-in only and are not loaded by this baseline.
 
-See [`AOS-MODEL-REGISTRY.md`](packages/ai/AOS-MODEL-REGISTRY.md) for the generation contract:
+See [`aos-model-registry.md`](packages/ai/aos-model-registry.md) for the generation contract:
 
 ```sh
 npm run generate:aos-model-registry
