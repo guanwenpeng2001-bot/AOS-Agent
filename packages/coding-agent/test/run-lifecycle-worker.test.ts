@@ -25,8 +25,8 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import {
 	WorkerSandboxProvider,
 	createWorkerRequestFingerprint,
-} from "../src/core/worker-sandbox-provider.ts";
-import { OperationWorkerSupervisor } from "../src/core/worker-supervisor.ts";
+} from "../src/core/worker/sandbox-provider.ts";
+import { OperationWorkerSupervisor } from "../src/core/worker/supervisor.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 
 const MODEL = { provider: "anthropic", id: "claude-sonnet-5", thinkingLevel: "high" as const };

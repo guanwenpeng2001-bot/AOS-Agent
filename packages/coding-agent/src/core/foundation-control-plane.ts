@@ -189,12 +189,12 @@ import {
 	workerTransitionAllowed,
 	type WorkerRecord,
 	type WorkerTransitionReceipt,
-} from "./worker.ts";
+} from "./worker/lifecycle.ts";
 import type {
 	WorkerSandboxFact,
 	WorkerSandboxProvider,
 	WorkerSandboxRecovery,
-} from "./worker-sandbox-provider.ts";
+} from "./worker/sandbox-provider.ts";
 
 /**
  * Service state shared by all coding-agent entry surfaces.

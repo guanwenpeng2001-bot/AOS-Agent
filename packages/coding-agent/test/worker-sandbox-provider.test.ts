@@ -60,7 +60,7 @@ import {
 	type OperationWorkerEventFrame,
 	type OperationWorkerRequestFrame,
 	validateOperationWorkerEventFrame,
-} from "../src/core/worker-protocol.ts";
+} from "../src/core/worker/protocol.ts";
 import {
 	WorkerSandboxProvider,
 	createWorkerRequestFingerprint,
@@ -69,13 +69,13 @@ import {
 	type WorkerSandboxProviderOptions,
 	type WorkerSandboxPreflightFacts,
 	type WorkerSandboxProfile,
-} from "../src/core/worker-sandbox-provider.ts";
+} from "../src/core/worker/sandbox-provider.ts";
 import {
 	OperationWorkerSupervisor,
 	type WorkerActivationPlan,
 	type WorkerSupervisorConfig,
-} from "../src/core/worker-supervisor.ts";
-import type { WorkerBinding, WorkerRecord } from "../src/core/worker.ts";
+} from "../src/core/worker/supervisor.ts";
+import type { WorkerBinding, WorkerRecord } from "../src/core/worker/lifecycle.ts";
 import { runOperationWorkerProcess } from "../src/worker-entry.ts";
 import {
 	createCodingAgentHarness,

@@ -82,7 +82,7 @@ import {
 	validateOperationWorkerLeaseReference,
 	type SafeLeaseProjection,
 	type SafeLeaseReference,
-} from "./worker-protocol.ts";
+} from "./worker/protocol.ts";
 import {
 	TaskCredentialStore,
 	type TaskCredentialSession,

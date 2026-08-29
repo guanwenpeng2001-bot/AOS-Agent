@@ -21,9 +21,9 @@ import {
 	type OperationWorkerEventFrame,
 	type OperationWorkerProtocolState,
 	type OperationWorkerRequestFrame,
-} from "../src/core/worker-protocol.ts";
+} from "../src/core/worker/protocol.ts";
 import { FakeWorkerProtocolTransportV1 } from "./fixtures/worker-protocol-fake-transport.ts";
-import type { WorkerBinding } from "../src/core/worker.ts";
+import type { WorkerBinding } from "../src/core/worker/lifecycle.ts";
 
 const binding: WorkerBinding = {
 	schemaVersion: 1,

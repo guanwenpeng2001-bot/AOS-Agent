@@ -47,7 +47,7 @@ import {
 import {
 	validateOperationWorkerLeaseProjection,
 	type SafeLeaseProjection,
-} from "../worker-protocol.ts";
+} from "../worker/protocol.ts";
 
 export const EXTERNAL_CONNECTOR_OPERATION_OBJECT_TYPE = "external_connector_operation" as const;
 export const EXTERNAL_CONNECTOR_MAPPING_OBJECT_TYPE = "external_connector_mapping" as const;

@@ -40,8 +40,8 @@ import {
 	type SandboxOperationRequest,
 	type SandboxOperationResult,
 } from "./sandbox.ts";
-import type { SafeLeaseProjection, SafeLeaseReference } from "./worker-protocol.ts";
-import type { WorkerRuntimeSandboxOperationProvider } from "./worker-runtime.ts";
+import type { SafeLeaseProjection, SafeLeaseReference } from "./worker/protocol.ts";
+import type { WorkerRuntimeSandboxOperationProvider } from "./worker/runtime.ts";
 
 export interface SandboxHandleOperationProviderOptions {
 	readonly providerId: string;

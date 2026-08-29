@@ -2,8 +2,8 @@ import type { WorkerReceipt } from "@aos-agent/agent-core";
 import type {
 	OperationWorkerEventFrame,
 	OperationWorkerRequestFrame,
-} from "../../src/core/worker-protocol.ts";
-import type { WorkerBinding } from "../../src/core/worker.ts";
+} from "../../src/core/worker/protocol.ts";
+import type { WorkerBinding } from "../../src/core/worker/lifecycle.ts";
 
 const MAX_FRAME_BYTES = 64 * 1024;
 

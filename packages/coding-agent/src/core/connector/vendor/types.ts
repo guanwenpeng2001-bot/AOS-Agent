@@ -37,7 +37,7 @@ import type {
 	ExternalResolvedModelProjection,
 	ExternalTranslatedModelProjection,
 } from "../model-projection.ts";
-import type { SafeLeaseProjection } from "../../worker-protocol.ts";
+import type { SafeLeaseProjection } from "../../worker/protocol.ts";
 
 export interface ExternalConnectorDriverHandle {
 	readonly externalSessionId: string;

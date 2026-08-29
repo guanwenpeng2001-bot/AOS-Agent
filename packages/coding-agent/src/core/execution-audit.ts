@@ -142,7 +142,7 @@ import {
 	validateWorkerRecord,
 	type WorkerLifecycleStatus,
 	type WorkerRecord,
-} from "./worker.ts";
+} from "./worker/lifecycle.ts";
 import type { SafeSubagentLifecycleProjection } from "./subagent/composition.ts";
 import {
 	CHILD_LIFECYCLE_STATUSES,

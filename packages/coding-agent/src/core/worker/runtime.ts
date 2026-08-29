@@ -16,8 +16,8 @@ import {
 	type SafeLeaseReference,
 	type OperationWorkerEventFrame,
 	type OperationWorkerRequestFrame,
-} from "./worker-protocol.ts";
-import type { WorkerBinding } from "./worker.ts";
+} from "./protocol.ts";
+import type { WorkerBinding } from "./lifecycle.ts";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
 

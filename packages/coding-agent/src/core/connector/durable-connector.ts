@@ -76,7 +76,7 @@ import {
 	validateOperationWorkerLeaseReference,
 	type SafeLeaseProjection,
 	type SafeLeaseReference,
-} from "../worker-protocol.ts";
+} from "../worker/protocol.ts";
 
 export interface ExternalConnectorCredentialRuntime {
 	/** Host-owned lifecycle authority; Connector code never receives material. */

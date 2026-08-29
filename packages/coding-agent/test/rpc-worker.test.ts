@@ -15,13 +15,13 @@ import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { WorkerLifecycleStatus, WorkerRecord } from "../src/core/worker.ts";
+import type { WorkerLifecycleStatus, WorkerRecord } from "../src/core/worker/lifecycle.ts";
 import {
 	createAgentRuntimeCompositionFactory,
 	createAgentSession,
 	createWorkerSandboxComposition,
 } from "../src/index.ts";
-import type { WorkerSandboxProvider } from "../src/core/worker-sandbox-provider.ts";
+import type { WorkerSandboxProvider } from "../src/core/worker/sandbox-provider.ts";
 import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
 import { RpcHostController, type RpcWorkerRegistry } from "../src/modes/rpc/rpc-host.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";

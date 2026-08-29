@@ -4,11 +4,11 @@ import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
 	serializeWorkerFrameLine,
 	type OperationWorkerEventFrame,
-} from "./core/worker-protocol.ts";
+} from "./core/worker/protocol.ts";
 import {
 	OperationWorkerRuntime,
 	type WorkerRuntimeSandboxOperationProvider,
-} from "./core/worker-runtime.ts";
+} from "./core/worker/runtime.ts";
 import { attachJsonlLineReader, createJsonlLineWriter } from "./modes/rpc/jsonl.ts";
 
 export interface WorkerEntryOptions {

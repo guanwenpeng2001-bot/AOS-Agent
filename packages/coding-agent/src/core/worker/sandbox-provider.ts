@@ -19,14 +19,14 @@ import {
 import {
 	OperationWorkerSupervisor,
 	type WorkerSupervisorConfig,
-} from "./worker-supervisor.ts";
+} from "./supervisor.ts";
 import {
 	validateOperationWorkerLeaseProjection,
 	validateOperationWorkerLeaseReference,
 	type SafeLeaseProjection,
 	type SafeLeaseReference,
 	type WorkerCancelReason,
-} from "./worker-protocol.ts";
+} from "./protocol.ts";
 import {
 	parseWorkerRecord,
 	serializeWorkerRecord,
@@ -34,7 +34,7 @@ import {
 	type WorkerBinding,
 	type WorkerRecord,
 	type WorkerTransitionReceipt,
-} from "./worker.ts";
+} from "./lifecycle.ts";
 
 export interface WorkerSandboxProfile {
 	readonly profileId: string;

@@ -17,7 +17,7 @@ import {
 	type TaskCredentialWorkerTarget,
 } from "../src/core/task-credential-service.ts";
 import type { TaskCredentialSession } from "../src/core/task-credential-store.ts";
-import type { SafeLeaseProjection, SafeLeaseReference } from "../src/core/worker-protocol.ts";
+import type { SafeLeaseProjection, SafeLeaseReference } from "../src/core/worker/protocol.ts";
 
 const NOW = "2026-08-21T00:00:00.000Z";
 const SECRET = "worker-secret-must-never-cross-boundary";

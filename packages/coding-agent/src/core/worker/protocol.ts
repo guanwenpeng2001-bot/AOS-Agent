@@ -26,7 +26,7 @@ import {
 	WORKER_SCHEMA_VERSION,
 	validateWorkerBinding,
 	type WorkerBinding,
-} from "./worker.ts";
+} from "./lifecycle.ts";
 
 export const WORKER_PROTOCOL_SCHEMA_VERSION = 1 as const;
 

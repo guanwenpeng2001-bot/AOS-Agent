@@ -7,7 +7,7 @@ import type { SandboxOperationRequest } from "@aos-agent/agent-core";
 import {
 	OperationWorkerSupervisor,
 	type WorkerSupervisorConfig,
-} from "../src/core/worker-supervisor.ts";
+} from "../src/core/worker/supervisor.ts";
 import {
 	WORKER_SCHEMA_VERSION,
 	applyWorkerTransition,
@@ -15,7 +15,7 @@ import {
 	type WorkerBinding,
 	type WorkerLifecycleState,
 	type WorkerLifecycleStatus,
-} from "../src/core/worker.ts";
+} from "../src/core/worker/lifecycle.ts";
 
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
 const supervisors: OperationWorkerSupervisor[] = [];

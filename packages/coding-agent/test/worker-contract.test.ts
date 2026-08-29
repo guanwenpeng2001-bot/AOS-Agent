@@ -16,7 +16,7 @@ import {
 	type WorkerLifecycleState,
 	type WorkerLifecycleStatus,
 	type WorkerTransition,
-} from "../src/core/worker.ts";
+} from "../src/core/worker/lifecycle.ts";
 
 const BASE_TIME_MS = Date.parse("2026-08-21T00:00:00.000Z");
 

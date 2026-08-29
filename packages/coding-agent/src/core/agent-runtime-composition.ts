@@ -40,7 +40,7 @@ import {
 	type WorkerSandboxProfile,
 	type WorkerSandboxProviderOptions,
 	WorkerSandboxProvider,
-} from "./worker-sandbox-provider.ts";
+} from "./worker/sandbox-provider.ts";
 
 /** Host-only inputs for constructing a branded Worker sandbox composition. */
 export type WorkerSandboxCompositionOptions = Omit<WorkerSandboxProviderOptions, "profile"> & {

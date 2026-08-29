@@ -142,7 +142,7 @@ import {
 	WORKER_LIFECYCLE_STATUSES,
 	type WorkerLifecycleStatus,
 	type WorkerRecord,
-} from "../../core/worker.ts";
+} from "../../core/worker/lifecycle.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { type JsonAgentSessionEvent, toJsonEvent } from "../json-event.ts";

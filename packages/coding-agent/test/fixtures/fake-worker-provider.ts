@@ -11,8 +11,8 @@ import {
 import type {
 	SafeLeaseProjection,
 	SafeLeaseReference,
-} from "../../src/core/worker-protocol.ts";
-import type { WorkerRuntimeSandboxOperationProvider } from "../../src/core/worker-runtime.ts";
+} from "../../src/core/worker/protocol.ts";
+import type { WorkerRuntimeSandboxOperationProvider } from "../../src/core/worker/runtime.ts";
 
 export type FakeWorkerStartBehaviorV1 = "success" | "provider-error" | "throw" | "correlation-drift" | "oversized-frame" | "pending";
 export type FakeWorkerCredentialActionV1 = "project" | "renew" | "revoke";

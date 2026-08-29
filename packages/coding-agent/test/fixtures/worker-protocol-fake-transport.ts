@@ -6,8 +6,8 @@ import {
 	OperationWorkerProtocolSession,
 	type OperationWorkerEventFrame,
 	type OperationWorkerRequestFrame,
-} from "../../src/core/worker-protocol.ts";
-import type { WorkerBinding } from "../../src/core/worker.ts";
+} from "../../src/core/worker/protocol.ts";
+import type { WorkerBinding } from "../../src/core/worker/lifecycle.ts";
 
 export type FakeWorkerTransportModeV1 = "ready" | "slow" | "cancel_ack" | "receipt" | "disconnect" | "malformed" | "oversized_data";
 

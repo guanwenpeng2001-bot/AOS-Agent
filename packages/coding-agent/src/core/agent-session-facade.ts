@@ -166,7 +166,7 @@ import {
 	FoundationControlPlane,
 	type SchedulerSafeStatus,
 } from "./foundation-control-plane.ts";
-import type { WorkerSandboxProvider } from "./worker-sandbox-provider.ts";
+import type { WorkerSandboxProvider } from "./worker/sandbox-provider.ts";
 import { createAllTools } from "./tools/index.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { buildSystemPrompt, type BuildSystemPromptOptions } from "./system-prompt.ts";

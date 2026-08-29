@@ -29,7 +29,7 @@ import {
 	type OperationWorkerRequestFrame,
 	type SafeLeaseProjection,
 	type SafeLeaseReference,
-} from "./worker-protocol.ts";
+} from "./protocol.ts";
 import {
 	WORKER_SCHEMA_VERSION,
 	applyWorkerHeartbeat,
@@ -43,12 +43,12 @@ import {
 	type WorkerLifecycleState,
 	type WorkerLifecycleStatus,
 	type WorkerRecord,
-} from "./worker.ts";
+} from "./lifecycle.ts";
 import {
 	killProcessTree,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
-} from "../utils/shell.ts";
+} from "../../utils/shell.ts";
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 15_000;

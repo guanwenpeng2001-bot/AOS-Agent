@@ -9,9 +9,9 @@ import {
 	type SafeLeaseReference,
 	type OperationWorkerEventFrame,
 	type OperationWorkerRequestFrame,
-} from "../src/core/worker-protocol.ts";
-import { OperationWorkerRuntime } from "../src/core/worker-runtime.ts";
-import type { WorkerBinding } from "../src/core/worker.ts";
+} from "../src/core/worker/protocol.ts";
+import { OperationWorkerRuntime } from "../src/core/worker/runtime.ts";
+import type { WorkerBinding } from "../src/core/worker/lifecycle.ts";
 import { runOperationWorkerProcess } from "../src/worker-entry.ts";
 import { FakeWorkerProviderV1 } from "./fixtures/fake-worker-provider.ts";
 

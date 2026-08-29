@@ -66,7 +66,7 @@ import type {
 	TaskGraphRecord,
 	TaskGraphStatus,
 } from "../../core/scheduler/task-graph.ts";
-import type { WorkerLifecycleStatus } from "../../core/worker.ts";
+import type { WorkerLifecycleStatus } from "../../core/worker/lifecycle.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
