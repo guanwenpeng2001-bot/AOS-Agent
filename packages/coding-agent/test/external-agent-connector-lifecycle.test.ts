@@ -2590,7 +2590,11 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 	});
 
 	it("fences admission and drains a supervisor added during concurrent disposal", async () => {
-		const value = await fixture();
+		// This assertion coordinates a late supervisor admission with connector draining.
+		// Keep full-suite contention outside the test-only 10 ms disposal deadline.
+		const value = await fixture({
+			supervisionDeadlines: { dispose: { hardMs: 1_000, idleMs: 1_000 } },
+		});
 		persistAttempt(value);
 		value.driver.readHangs = true;
 		value.driver.eventNextHangs = true;
