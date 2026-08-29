@@ -46,6 +46,7 @@ const REQUIRED_PACKAGE_FILES = Object.freeze([
 	"package/dist/core/packaged-external-agent-driver.js",
 	"package/dist/core/packaged-external-agent-driver.d.ts",
 	"package/dist/core/external-connector-assets/fake-connector.json",
+	"package/dist/core/external-connector-assets/fake-connector-process.mjs",
 	"package/package.json",
 ]);
 const RUNTIME_STATES = Object.freeze(["passed", "failed", "unavailable", "not_run"]);
@@ -425,6 +426,10 @@ function runInstalledRuntimes(options) {
 		copyFileSync(
 			join(packageDirectory, "dist", "core", "external-connector-assets", "fake-connector.json"),
 			join(compiledDirectory, "external-connector-assets", "fake-connector.json"),
+		);
+		copyFileSync(
+			join(packageDirectory, "dist", "core", "external-connector-assets", "fake-connector-process.mjs"),
+			join(compiledDirectory, "external-connector-assets", "fake-connector-process.mjs"),
 		);
 		compiledResult = runProbe("compiled", executablePath, [], {
 			...options,

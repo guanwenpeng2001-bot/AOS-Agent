@@ -19,22 +19,27 @@ import {
 	readControlPlaneState,
 	writeControlPlaneState,
 } from "./control-plane-atomic-storage.ts";
-import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
-import {
-	buildModelBrokerSettings,
-	parseModelBrokerSettings,
-	type ModelBrokerModelDescriptor,
-	type ModelBrokerSettings,
-	type ModelBrokerSettingsBuildOptions,
-	type ModelBrokerSettingsConfig,
-	type ModelBrokerSettingsInput,
-} from "./model-broker-settings.ts";
 import {
 	buildExecutionPolicySettings,
 	type ExecutionPolicySettings,
 	type ExecutionPolicySettingsConfig,
 	type ExecutionPolicySettingsSelectionOptions,
 } from "./execution-policy-settings.ts";
+import {
+	buildExternalConnectorTargetSettings,
+	type ExternalConnectorSettingsConfig,
+} from "./external-connector-settings.ts";
+import type { ExternalConnectorTargetConfig } from "./external-connector-target-config.ts";
+import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import {
+	buildModelBrokerSettings,
+	type ModelBrokerModelDescriptor,
+	type ModelBrokerSettings,
+	type ModelBrokerSettingsBuildOptions,
+	type ModelBrokerSettingsConfig,
+	type ModelBrokerSettingsInput,
+	parseModelBrokerSettings,
+} from "./model-broker-settings.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -183,6 +188,7 @@ export interface Settings {
 	mcp?: McpSettingsConfig; // MCP server configs (env/header names only, never values)
 	modelBroker?: ModelBrokerSettingsInput; // Route selection only; never provider credentials or endpoints
 	executionPolicy?: ExecutionPolicySettingsConfig;
+	externalConnectors?: ExternalConnectorSettingsConfig;
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -340,6 +346,7 @@ export class SettingsManager {
 	private untrustedProjectCapabilitySettings: CapabilitySettingsInput;
 	private untrustedProjectModelBrokerSettings: ModelBrokerSettingsInput | undefined;
 	private untrustedProjectExecutionPolicySettings: unknown;
+	private untrustedProjectExternalConnectorSettings: unknown;
 	private modifiedFields = new Set<keyof Settings>(); // Track global fields modified during session
 	private modifiedNestedFields = new Map<keyof Settings, Set<string>>(); // Track global nested field modifications
 	private modifiedProjectFields = new Set<keyof Settings>(); // Track project fields modified during session
@@ -360,6 +367,7 @@ export class SettingsManager {
 		untrustedProjectCapabilitySettings: CapabilitySettingsInput = {},
 		untrustedProjectModelBrokerSettings: ModelBrokerSettingsInput | undefined = undefined,
 		untrustedProjectExecutionPolicySettings: unknown = undefined,
+		untrustedProjectExternalConnectorSettings: unknown = undefined,
 	) {
 		this.storage = storage;
 		this.globalSettings = initialGlobal;
@@ -368,6 +376,7 @@ export class SettingsManager {
 		this.untrustedProjectCapabilitySettings = untrustedProjectCapabilitySettings;
 		this.untrustedProjectModelBrokerSettings = untrustedProjectModelBrokerSettings;
 		this.untrustedProjectExecutionPolicySettings = untrustedProjectExecutionPolicySettings;
+		this.untrustedProjectExternalConnectorSettings = untrustedProjectExternalConnectorSettings;
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
@@ -408,6 +417,9 @@ export class SettingsManager {
 		const untrustedProjectExecutionPolicySettings = projectTrusted
 			? undefined
 			: SettingsManager.loadRawProjectExecutionPolicySettings(storage);
+		const untrustedProjectExternalConnectorSettings = projectTrusted
+			? undefined
+			: SettingsManager.loadRawProjectExternalConnectorSettings(storage);
 
 		return new SettingsManager(
 			storage,
@@ -420,6 +432,7 @@ export class SettingsManager {
 			untrustedProjectCapabilitySettings,
 			untrustedProjectModelBrokerSettings,
 			untrustedProjectExecutionPolicySettings,
+			untrustedProjectExternalConnectorSettings,
 		);
 	}
 
@@ -490,6 +503,13 @@ export class SettingsManager {
 		const load = SettingsManager.tryLoadFromStorage(storage, "project", true);
 		if (load.error) return undefined;
 		return load.settings.executionPolicy;
+	}
+
+	/** Read only raw project Connector settings so untrusted selection fails closed. */
+	private static loadRawProjectExternalConnectorSettings(storage: SettingsStorage): unknown {
+		const load = SettingsManager.tryLoadFromStorage(storage, "project", true);
+		if (load.error) return undefined;
+		return load.settings.externalConnectors;
 	}
 
 	/** Migrate old settings format to new format */
@@ -580,7 +600,12 @@ export class SettingsManager {
 			this.projectSettingsLoadError = null;
 			this.untrustedProjectCapabilitySettings = SettingsManager.loadRawProjectCapabilitySettings(this.storage);
 			this.untrustedProjectModelBrokerSettings = SettingsManager.loadRawProjectModelBrokerSettings(this.storage);
-			this.untrustedProjectExecutionPolicySettings = SettingsManager.loadRawProjectExecutionPolicySettings(this.storage);
+			this.untrustedProjectExecutionPolicySettings = SettingsManager.loadRawProjectExecutionPolicySettings(
+				this.storage,
+			);
+			this.untrustedProjectExternalConnectorSettings = SettingsManager.loadRawProjectExternalConnectorSettings(
+				this.storage,
+			);
 			this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 			return;
 		}
@@ -626,7 +651,9 @@ export class SettingsManager {
 		return buildExecutionPolicySettings({
 			...options,
 			global: this.globalSettings.executionPolicy,
-			project: this.projectTrusted ? this.projectSettings.executionPolicy : this.untrustedProjectExecutionPolicySettings,
+			project: this.projectTrusted
+				? this.projectSettings.executionPolicy
+				: this.untrustedProjectExecutionPolicySettings,
 			projectTrusted: this.projectTrusted,
 		});
 	}
@@ -644,6 +671,21 @@ export class SettingsManager {
 			...options,
 			global: this.globalSettings.modelBroker,
 			project: this.projectTrusted ? this.projectSettings.modelBroker : this.untrustedProjectModelBrokerSettings,
+			projectTrusted: this.projectTrusted,
+		});
+	}
+
+	/**
+	 * Return the branded External Connector target configuration for this trust
+	 * state. The global user catalog may select a default; project and Role
+	 * settings can only select or narrow it after the existing trust decision.
+	 */
+	getExternalConnectorTargetSettings(): ExternalConnectorTargetConfig | undefined {
+		return buildExternalConnectorTargetSettings({
+			global: this.globalSettings.externalConnectors,
+			project: this.projectTrusted
+				? this.projectSettings.externalConnectors
+				: this.untrustedProjectExternalConnectorSettings,
 			projectTrusted: this.projectTrusted,
 		});
 	}
@@ -692,7 +734,12 @@ export class SettingsManager {
 		this.modifiedProjectNestedFields.clear();
 		this.untrustedProjectCapabilitySettings = SettingsManager.loadRawProjectCapabilitySettings(this.storage);
 		this.untrustedProjectModelBrokerSettings = SettingsManager.loadRawProjectModelBrokerSettings(this.storage);
-		this.untrustedProjectExecutionPolicySettings = SettingsManager.loadRawProjectExecutionPolicySettings(this.storage);
+		this.untrustedProjectExecutionPolicySettings = SettingsManager.loadRawProjectExecutionPolicySettings(
+			this.storage,
+		);
+		this.untrustedProjectExternalConnectorSettings = SettingsManager.loadRawProjectExternalConnectorSettings(
+			this.storage,
+		);
 
 		const projectLoad = SettingsManager.tryLoadFromStorage(this.storage, "project", this.projectTrusted);
 		if (!projectLoad.error) {

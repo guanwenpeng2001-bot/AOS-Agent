@@ -3,20 +3,18 @@ import type { ThinkingLevel } from "@aos-agent/agent-core";
 import type { Model } from "@aos-agent/ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
+import {
+	type AgentRuntimeCompositionFactory,
+	createAgentRuntimeCompositionFactory,
+} from "./agent-runtime-composition.ts";
 import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
-import {
-	createAgentRuntimeCompositionFactory,
-	type AgentRuntimeCompositionFactory,
-} from "./agent-runtime-composition.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import {
-	createDefaultMCPAuthManagerOptions,
-	type MCPAuthManagerOptions,
-} from "./mcp-auth-manager.ts";
+import { createDefaultMCPAuthManagerOptions, type MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
 import type { ModelBroker } from "./model-broker.ts";
 import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
+import { createPackagedExternalConnectorRegistryFactory } from "./packaged-external-connector-runtime.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -24,11 +22,7 @@ import {
 	type ResourceLoaderReloadOptions,
 } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
-import {
-	type CreateAgentSessionOptions,
-	type CreateAgentSessionResult,
-	createAgentSession,
-} from "./sdk.ts";
+import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 
@@ -257,9 +251,27 @@ export async function createAgentSessionServices(
 	});
 	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
 
-	const mcpAuthManagerOptions =
-		options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
-	const runtimeComposition = options.runtimeComposition ?? createAgentRuntimeCompositionFactory();
+	const mcpAuthManagerOptions = options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
+	let runtimeComposition = options.runtimeComposition;
+	if (runtimeComposition === undefined) {
+		const externalConnectorTargetConfig = settingsManager.getExternalConnectorTargetSettings();
+		const externalConnectorRegistry =
+			externalConnectorTargetConfig?.selectedTarget === undefined
+				? undefined
+				: await createPackagedExternalConnectorRegistryFactory({
+						target: externalConnectorTargetConfig.selectedTarget,
+						agentDir,
+					});
+		// The settings-derived composition is a complete fallback. An explicit Host
+		// composition above wins as a whole; authority fields are never merged.
+		runtimeComposition =
+			externalConnectorTargetConfig === undefined
+				? createAgentRuntimeCompositionFactory()
+				: createAgentRuntimeCompositionFactory({
+						externalConnectorTargetConfig,
+						...(externalConnectorRegistry === undefined ? {} : { externalConnectorRegistry }),
+					});
+	}
 
 	return {
 		cwd,

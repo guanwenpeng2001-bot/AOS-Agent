@@ -2,9 +2,19 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Result, createConnectorCapabilitySnapshot } from "@aos-agent/agent-core";
+import { createConnectorCapabilitySnapshot, Result } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import type { ExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import { createExternalConnectorRegistry } from "../src/core/external-agent-registry.ts";
+import { createProductionExternalAgentConnector } from "../src/core/external-connector-production.ts";
 import {
+	externalConnectorProcessContainment,
+	FileExternalConnectorSupervisorPrivateStateStore,
+} from "../src/core/external-connector-supervisor.ts";
+import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/types.ts";
+import {
+	type CreateAgentSessionRuntimeFactory,
 	createAgentRuntimeCompositionFactory,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -12,17 +22,7 @@ import {
 	createRpcHostController,
 	ModelRuntime,
 	SettingsManager,
-	type CreateAgentSessionRuntimeFactory,
 } from "../src/index.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { createExternalConnectorRegistry } from "../src/core/external-agent-registry.ts";
-import type { ExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
-import { createProductionExternalAgentConnector } from "../src/core/external-connector-production.ts";
-import {
-	FileExternalConnectorSupervisorPrivateStateStore,
-	externalConnectorProcessContainment,
-} from "../src/core/external-connector-supervisor.ts";
-import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/types.ts";
 
 describe("RPC initialize external connector readiness projection", () => {
 	it("projects public readiness details without effects or private connector values", async () => {
@@ -152,13 +152,15 @@ describe("RPC initialize external connector readiness projection", () => {
 			controller = createRpcHostController(runtime);
 			await controller.start();
 			const before = { ...effects };
-			const expectedReadiness = [{
-				schemaVersion: 1,
-				providerId,
-				trust: "host_configured",
-				status: "quarantined",
-				reasonCode: "cleanup_unconfirmed",
-			}];
+			const expectedReadiness = [
+				{
+					schemaVersion: 1,
+					providerId,
+					trust: "host_configured",
+					status: "quarantined",
+					reasonCode: "cleanup_unconfirmed",
+				},
+			];
 
 			const first = await controller.dispatch({ id: "readiness-first", type: "initialize", protocolVersion: 1 });
 			if (first === undefined || first.command !== "initialize" || !first.success) {
@@ -166,6 +168,18 @@ describe("RPC initialize external connector readiness projection", () => {
 			}
 			expect(first.data.externalConnectors).toEqual([expectedDescriptor]);
 			expect(first.data.externalConnectorReadiness).toEqual(expectedReadiness);
+			expect(first.data.externalConnectorRuntimeStatus).toEqual([
+				expect.objectContaining({
+					schemaVersion: 1,
+					providerId,
+					availability: "unavailable",
+					reasonCode: "status_source_missing",
+					readiness: expect.objectContaining({
+						state: "quarantined",
+						reasonCode: "cleanup_unconfirmed",
+					}),
+				}),
+			]);
 			expect(effects).toEqual(before);
 
 			const second = await controller.dispatch({ id: "readiness-second", type: "initialize", protocolVersion: 1 });
@@ -174,11 +188,24 @@ describe("RPC initialize external connector readiness projection", () => {
 			}
 			expect(second.data.externalConnectors).toEqual([expectedDescriptor]);
 			expect(second.data.externalConnectorReadiness).toEqual(expectedReadiness);
+			expect(second.data.externalConnectorRuntimeStatus).toEqual([
+				expect.objectContaining({
+					schemaVersion: 1,
+					providerId,
+					availability: "unavailable",
+					reasonCode: "status_source_missing",
+					readiness: expect.objectContaining({
+						state: "quarantined",
+						reasonCode: "cleanup_unconfirmed",
+					}),
+				}),
+			]);
 			expect(effects).toEqual(before);
 
 			const publicProjection = JSON.stringify({
 				descriptors: second.data.externalConnectors,
 				readiness: second.data.externalConnectorReadiness,
+				runtimeStatus: second.data.externalConnectorRuntimeStatus,
 			});
 			for (const privateValue of [
 				root,

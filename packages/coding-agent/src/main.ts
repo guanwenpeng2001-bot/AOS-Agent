@@ -5,8 +5,9 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { Session, type ProvisionedEntry } from "@aos-agent/agent-core";
+import { type ProvisionedEntry, Session } from "@aos-agent/agent-core";
 import { type ImageContent, modelsAreEqual } from "@aos-agent/ai";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
@@ -34,6 +35,7 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
 import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
+import type { AgentRuntimeCompositionFactory } from "./core/agent-runtime-composition.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntimeFromManager,
@@ -43,10 +45,6 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./core/agent-session-services.ts";
-import {
-	createAgentRuntimeCompositionFactory,
-	type AgentRuntimeCompositionFactory,
-} from "./core/agent-runtime-composition.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
@@ -54,6 +52,7 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
+import { InMemoryCodingAgentModelsStore } from "./core/models-store.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
@@ -614,30 +613,87 @@ async function promptForMissingSessionCwd(
 
 export interface MainOptions {
 	extensionFactories?: InlineExtension[];
-	/** Trusted Host-only authority graph; CLI arguments and RPC cannot populate it. */
+	/**
+	 * Trusted Host authority graph. When omitted, explicit user-local settings
+	 * may populate only the External Connector slice after project trust is
+	 * resolved. CLI arguments and RPC payloads cannot populate this graph.
+	 */
 	runtimeComposition?: AgentRuntimeCompositionFactory;
+}
+
+function parseTopLevelArgs(args: string[]): Args {
+	const parsed = parseArgs(args);
+	if (parsed.diagnostics.length > 0) {
+		for (const diagnostic of parsed.diagnostics) {
+			const color = diagnostic.type === "error" ? chalk.red : chalk.yellow;
+			console.error(color(`${diagnostic.type === "error" ? "Error" : "Warning"}: ${diagnostic.message}`));
+		}
+		if (parsed.diagnostics.some((diagnostic) => diagnostic.type === "error")) process.exit(1);
+	}
+	time("parseArgs");
+	return parsed;
+}
+
+async function handleRuntimeMetadataCommand(parsed: Args, agentDir: string): Promise<void> {
+	if (parsed.version) {
+		console.log(VERSION);
+		process.exit(0);
+	}
+	if ((parsed.help || parsed.listModels !== undefined) && !isPlainRuntimeMetadataCommand(parsed)) {
+		// Preserve the non-interactive stdout protocol boundary without starting
+		// the runtime merely to install its output guard.
+		takeOverStdout();
+	}
+	if (parsed.help) {
+		// Top-level help is static metadata. Extension flags intentionally require
+		// a normal runtime because metadata commands never execute extensions.
+		printHelp();
+		process.exit(0);
+	}
+	if (parsed.listModels !== undefined) {
+		// This metadata-only catalog reads models.json and auth.json through
+		// read-only stores. It cannot write migrations/model caches or execute
+		// extension providers.
+		const modelRuntime = await ModelRuntime.create({
+			credentials: new ReadOnlyAuthStorage(join(agentDir, "auth.json")),
+			modelsPath: join(agentDir, "models.json"),
+			modelsStore: new InMemoryCodingAgentModelsStore(),
+			allowModelNetwork: false,
+			signal: AbortSignal.timeout(15_000),
+		});
+		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
+		await listModels(modelRuntime, searchPattern, AbortSignal.timeout(15_000));
+		process.exit(0);
+	}
 }
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
-	const runtimeComposition = options?.runtimeComposition ?? createAgentRuntimeCompositionFactory();
+	const runtimeComposition = options?.runtimeComposition;
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.AOS_AGENT_OFFLINE);
 	if (offlineMode) {
 		process.env.AOS_AGENT_OFFLINE = "1";
 		process.env.AOS_AGENT_SKIP_VERSION_CHECK = "1";
 	}
+	const cwd = process.cwd();
+	const agentDir = getAgentDir();
 
 	if (await runAuthCommand(args)) {
 		return;
 	}
+	// Package/config subcommands own their flags. Defer top-level parsing until
+	// their existing dispatcher has had a chance to consume the command.
+	const packageCommand = new Set(["install", "remove", "uninstall", "update", "list", "config"]).has(
+		args[0] ?? "",
+	);
+	let parsed = packageCommand ? undefined : parseTopLevelArgs(args);
+	if (parsed !== undefined) await handleRuntimeMetadataCommand(parsed, agentDir);
 
 	if (process.platform === "win32") {
 		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
 	}
 
-	const cwd = process.cwd();
-	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
@@ -658,23 +714,11 @@ export async function main(args: string[], options?: MainOptions) {
 	if (await handleConfigCommand(args, { extensionFactories })) {
 		return;
 	}
-
-	const parsed = parseArgs(args);
-	if (parsed.diagnostics.length > 0) {
-		for (const d of parsed.diagnostics) {
-			const color = d.type === "error" ? chalk.red : chalk.yellow;
-			console.error(color(`${d.type === "error" ? "Error" : "Warning"}: ${d.message}`));
-		}
-		if (parsed.diagnostics.some((d) => d.type === "error")) {
-			process.exit(1);
-		}
-	}
-	time("parseArgs");
-
-	if (parsed.version) {
-		console.log(VERSION);
-		process.exit(0);
-	}
+	parsed ??= parseTopLevelArgs(args);
+	await handleRuntimeMetadataCommand(parsed, agentDir);
+	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
+	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
+	if (shouldTakeOverStdout) takeOverStdout();
 
 	if (parsed.export) {
 		let result: string;
@@ -688,12 +732,6 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 		console.log(`Exported to: ${result}`);
 		process.exit(0);
-	}
-
-	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
-	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
-	if (shouldTakeOverStdout) {
-		takeOverStdout();
 	}
 
 	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) {
@@ -792,7 +830,9 @@ export async function main(args: string[], options?: MainOptions) {
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,
-			runtimeComposition,
+			// An explicit Host factory wins as one indivisible authority graph.
+			// Settings derivation occurs only when this option is absent.
+			...(runtimeComposition === undefined ? {} : { runtimeComposition }),
 			settingsManager: runtimeSettingsManager,
 			modelRuntimeSignal: AbortSignal.timeout(15_000),
 			extensionFlagValues: parsed.unknownFlags,
@@ -911,23 +951,9 @@ export async function main(args: string[], options?: MainOptions) {
 	time("createAgentSessionRuntime");
 	const { services, session, modelFallbackMessage } = runtime;
 	if (initialSessionName !== undefined) session.setSessionName(initialSessionName);
-	const { settingsManager, modelRuntime, resourceLoader } = services;
+	const { settingsManager, modelRuntime } = services;
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
-
-	if (parsed.help) {
-		const extensionFlags = resourceLoader
-			.getExtensions()
-			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
-		printHelp(extensionFlags);
-		process.exit(0);
-	}
-
-	if (parsed.listModels !== undefined) {
-		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
-		await listModels(modelRuntime, searchPattern, AbortSignal.timeout(15_000));
-		process.exit(0);
-	}
 
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;

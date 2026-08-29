@@ -14,9 +14,9 @@
 import * as crypto from "node:crypto";
 import {
 	AgentOperationError,
-	fingerprintFoundationValue,
 	type CanonicalRunResult,
 	type FoundationError,
+	fingerprintFoundationValue,
 	LayeredResultSettlement,
 	type Result as ResultValue,
 	type ThinkingLevel,
@@ -50,6 +50,7 @@ import {
 	serializeExternalConnectorSelection,
 } from "../../core/external-agent-registry.ts";
 import {
+	type ExternalConnectorProductAdmission,
 	executePreparedExternalConnectorProductRun,
 	externalConnectorProductIdentity,
 	persistExternalConnectorProductAdmissionBeforeAcceptance,
@@ -57,7 +58,6 @@ import {
 	preflightExternalConnectorProductRecovery,
 	prepareExternalConnectorProductRun,
 	recoverExternalConnectorProductRun,
-	type ExternalConnectorProductAdmission,
 } from "../../core/external-connector-product.ts";
 import type { ExternalModelFallbackDecision } from "../../core/external-model-projection.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
@@ -115,7 +115,6 @@ import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manag
 import type { SourceInfo } from "../../core/source-info.ts";
 import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatusV1 } from "../../core/subagent.ts";
 import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
-import { raceWithAbortSignal } from "../../utils/abort.ts";
 import {
 	isTaskCredentialScope,
 	serializeTaskCredentialDeliveryReceipt,
@@ -144,6 +143,7 @@ import {
 	type WorkerLifecycleStatus,
 	type WorkerRecordV1,
 } from "../../core/worker.ts";
+import { raceWithAbortSignal } from "../../utils/abort.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { type JsonAgentSessionEvent, toJsonEvent } from "../json-event.ts";
 import type {
@@ -3857,6 +3857,7 @@ export class RpcHostController {
 					if (externalConnectorRegistry !== undefined) {
 						initializeData.externalConnectors = externalConnectorRegistry.list();
 						initializeData.externalConnectorReadiness = externalConnectorRegistry.readiness();
+						initializeData.externalConnectorRuntimeStatus = externalConnectorRegistry.runtimeStatus();
 					}
 					const initializeResponse: RpcAutomationResponse = {
 						id,
@@ -5511,7 +5512,10 @@ export class RpcHostController {
 								}
 								const recoveryPolicyBinding = recoveryBinding.session.getActiveExecutionPolicyBinding();
 								const recoveryCapabilityBinding = recoveryBinding.session.getActiveCapabilityBinding();
-								if (recoveryPolicyBinding === undefined || recoveryPolicyBinding.runId !== command.sourceRunId) {
+								if (
+									recoveryPolicyBinding === undefined ||
+									recoveryPolicyBinding.runId !== command.sourceRunId
+								) {
 									recoveryBinding.activeReservation = undefined;
 									recoveryReservation.release();
 									clearRunDeadline(recoveryBinding, command.sourceRunId);

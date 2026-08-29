@@ -8,27 +8,25 @@
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/agent-session.ts";
-import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
-import type { ChildLifecycleStatusV1 } from "../../core/subagent.ts";
-import type { SchedulerSafeStatus } from "../../core/foundation-control-plane.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
+import type { RunBindingAssociation } from "../../core/binding-handles.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { RunBindingAssociation } from "../../core/binding-handles.ts";
+import type { ConnectorRuntimeStatus } from "../../core/connector-runtime-status.ts";
 import type {
 	AuditQuery,
 	AuditQueryResult,
 	AuditReplayQuery,
 	AuditReplayResult,
 } from "../../core/execution-audit-query.ts";
+import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../../core/external-agent-input.ts";
 import type {
 	ExternalConnectorDescriptor,
 	ExternalConnectorReadinessStatus,
 	ExternalConnectorSelection,
 } from "../../core/external-agent-registry.ts";
-import type { CanonicalExternalAgentArtifactReference } from "../../core/external-agent-input.ts";
-import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
-import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
+import type { SchedulerSafeStatus } from "../../core/foundation-control-plane.ts";
 import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/mcp-content.ts";
 import type { MCPContentPublicErrorCode } from "../../core/mcp-error-codes.ts";
 import type {
@@ -36,19 +34,7 @@ import type {
 	MCPResourceListResult,
 	MCPResourceTemplateListResult,
 } from "../../core/mcp-types.ts";
-import type { TaskGateRecord, TaskGateStatus } from "../../core/task-gate.ts";
-import type {
-	TaskGraphNodeDefinition,
-	TaskGraphNodeView,
-	TaskGraphRecord,
-	TaskGraphStatus,
-} from "../../core/task-graph.ts";
-import type {
-	TaskCredentialDeliveryReceipt,
-	TaskCredentialGrant,
-	TaskCredentialScope,
-	TaskCredentialStatus,
-} from "../../core/task-credential-lease.ts";
+import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
 import type {
 	AutomationError,
 	PublicCapabilityBindingLedgerRecord,
@@ -65,6 +51,21 @@ import type {
 	RunStatus,
 } from "../../core/run-lifecycle.ts";
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
+import type { ChildLifecycleStatusV1 } from "../../core/subagent.ts";
+import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
+import type {
+	TaskCredentialDeliveryReceipt,
+	TaskCredentialGrant,
+	TaskCredentialScope,
+	TaskCredentialStatus,
+} from "../../core/task-credential-lease.ts";
+import type { TaskGateRecord, TaskGateStatus } from "../../core/task-gate.ts";
+import type {
+	TaskGraphNodeDefinition,
+	TaskGraphNodeView,
+	TaskGraphRecord,
+	TaskGraphStatus,
+} from "../../core/task-graph.ts";
 import type { WorkerLifecycleStatus } from "../../core/worker.ts";
 
 // ============================================================================
@@ -1012,6 +1013,8 @@ export interface InitializeData {
 	externalConnectors?: ReadonlyArray<ExternalConnectorDescriptor>;
 	/** Passive, redacted readiness projected by the trusted Host. */
 	externalConnectorReadiness?: ReadonlyArray<ExternalConnectorReadinessStatus>;
+	/** Passive, secret-free runtime status projected from captured in-memory facts. */
+	externalConnectorRuntimeStatus?: ReadonlyArray<ConnectorRuntimeStatus>;
 }
 
 /** Data returned by a successful `run.start` / `run.resume`. */
@@ -1305,19 +1308,6 @@ export type RpcAutomationResponse =
 
 // Re-export the redacted capability binding view consumed by get_capabilities.
 export type { CapabilityBindingView } from "../../core/capability-registry.ts";
-// Re-export the safe MCP content catalog/result types consumed by the wire.
-export type {
-	MCPContentProvenance,
-	MCPNormalizedContentBlock,
-	MCPNormalizedPromptMessage,
-} from "../../core/mcp-content.ts";
-export type {
-	MCPPromptArgumentSummary,
-	MCPPromptListResult,
-	MCPPromptSummary,
-	MCPResourceListResult,
-	MCPResourceSummary,
-} from "../../core/mcp-types.ts";
 // Re-export public audit query/replay types.
 export type {
 	AuditEvent,
@@ -1334,6 +1324,40 @@ export type {
 	ExternalConnectorReadinessStatus,
 	ExternalConnectorSelection,
 } from "../../core/external-agent-registry.ts";
+// Re-export the safe MCP content catalog/result types consumed by the wire.
+export type {
+	MCPContentProvenance,
+	MCPNormalizedContentBlock,
+	MCPNormalizedPromptMessage,
+} from "../../core/mcp-content.ts";
+export type {
+	MCPPromptArgumentSummary,
+	MCPPromptListResult,
+	MCPPromptSummary,
+	MCPResourceListResult,
+	MCPResourceSummary,
+} from "../../core/mcp-types.ts";
+// Re-export the core Automation Host types for consumers.
+export type {
+	AutomationError,
+	AutomationErrorCode,
+	PublicContextSnapshot,
+	PublicContextSourceDrift,
+	PublicContextSourceReceipt,
+	PublicRunReceipt as RunReceipt,
+	PublicRunRecord as RunRecord,
+	PublicRunStreamEvent as RunStreamEvent,
+	RunRecoveryState,
+	RunStatus,
+	RunTerminalStatus,
+} from "../../core/run-lifecycle.ts";
+// Re-export public Task Credential types.
+export type {
+	TaskCredentialDeliveryReceipt,
+	TaskCredentialGrant,
+	TaskCredentialScope,
+	TaskCredentialStatus,
+} from "../../core/task-credential-lease.ts";
 // Re-export public Task Gate types.
 export type {
 	TaskGateErrorCode,
@@ -1353,24 +1377,3 @@ export type {
 	TaskGraphStatus,
 	TaskGraphSummary,
 } from "../../core/task-graph.ts";
-// Re-export public Task Credential types.
-export type {
-	TaskCredentialDeliveryReceipt,
-	TaskCredentialGrant,
-	TaskCredentialScope,
-	TaskCredentialStatus,
-} from "../../core/task-credential-lease.ts";
-// Re-export the core Automation Host types for consumers.
-export type {
-	AutomationError,
-	AutomationErrorCode,
-	PublicContextSnapshot,
-	PublicContextSourceDrift,
-	PublicContextSourceReceipt,
-	PublicRunReceipt as RunReceipt,
-	PublicRunRecord as RunRecord,
-	PublicRunStreamEvent as RunStreamEvent,
-	RunRecoveryState,
-	RunStatus,
-	RunTerminalStatus,
-} from "../../core/run-lifecycle.ts";

@@ -1641,17 +1641,32 @@ Response:
         "revision": 1,
         "capabilitySnapshotDigest": {"algorithm": "sha256", "value": "..."}
       }
+    ],
+    "externalConnectorRuntimeStatus": [
+      {
+        "schemaVersion": 1,
+        "providerId": "trusted-connector",
+        "availability": "unavailable",
+        "reasonCode": "status_source_missing",
+        "readiness": {"state": "ready", "reasonCode": "ready", "observedAgeMs": 12, "expiresInMs": 299988}
+      }
     ]
   }
 }
 ```
 
-The response advertises the host version, the current `sessionId`, and the run, audit, task gate, task graph, and task credential commands available on this host. `taskGateCommands`, `taskGraphCommands`, `taskCredentialCommands`, `workerCommands`, `subagentCommands`, and `externalConnectors` are optional and additive. `subagentCommands` is present only when trusted Host composition supplies the current Session's Run-owned child registry. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
+The response advertises the host version, the current `sessionId`, and the run, audit, task gate, task graph, and task credential commands available on this host. `taskGateCommands`, `taskGraphCommands`, `taskCredentialCommands`, `workerCommands`, `subagentCommands`, `externalConnectors`, `externalConnectorReadiness`, and `externalConnectorRuntimeStatus` are optional and additive. `subagentCommands` is present only when trusted Host composition supplies the current Session's Run-owned child registry. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
 
 `externalConnectors` is the safe descriptor list from the single trusted
 connector registry. Each entry pins the provider, revision, provider class,
 and capability snapshot digest; it contains no endpoint, command, path,
 credential, or vendor-driver detail.
+
+`externalConnectorRuntimeStatus` is an optional passive, read-only projection
+from already captured readiness and aggregate facts. Producing it does not probe
+a connector, start a process, read credentials, execute a task, or perform
+network or filesystem I/O. The projection contains no command, path, endpoint,
+environment, credential, account, vendor payload, or private supervisor value.
 
 Unsupported version:
 ```json
@@ -2451,7 +2466,7 @@ Graphs are scoped to the current Session. `task.graph.*` commands require an ini
 
 Each Graph mutation is persisted as a Session custom entry with `customType: "task.graph"` (schemaVersion 1): `create` writes the complete validated definition with all pending node snapshots, and each `node.attached` / `node.succeeded` / `node.failed` / `node.cancelled` transition writes the full node snapshot, `previousNodeRevision`, and `clientRequestId`. On session load the Host folds entries in file order and rejects a mismatched `sessionId`, an unsupported schema, unknown dependencies, dependency cycles, non-contiguous `nodeRevision`s, a second Run association for one node, or illegal status jumps; malformed entries never reach RPC, Audit, or model context, and `task.graph` custom entries never enter the LLM context.
 
-Task Graph preserves the existing single-active-run boundary. A Graph is shared state and dependency structure, not concurrency: `task.graph.create` with many nodes does not start, queue, or preempt any Run, the host still rejects a second active Run with `session_busy`, and `attach` only associates Runs that were accepted through the normal Run RPC (including normal Policy preflight). Parallel Worker execution is not implemented: real parallelism requires a future multi-Session Coordinator / Worker platform.
+Task Graph preserves the existing single-active-run boundary. A Graph is shared state and dependency structure, not concurrency: `task.graph.create` with many nodes does not start, queue, or preempt any Run, the host still rejects a second active Run with `session_busy`, and `attach` only associates Runs that were accepted through the normal Run RPC (including normal Policy preflight). Without trusted Scheduler composition the Graph remains writable and exposes eligible nodes, but it does not advance them automatically. Parallel Worker execution is not implemented: real parallelism requires a future multi-Session Coordinator / Worker platform.
 
 #### Audit summary
 
@@ -2683,11 +2698,10 @@ Current external traces never contain an `AgentInstance`.
 The local connector closure regression exercises this RPC selection through the
 standard product composition and separately verifies RuntimeLimits, passive
 runtime-status projection, and terminal `side_effect_unknown` retry handling.
-It adds no RPC status command. The External Agent Connector contract and the
-architecture convergence are implemented. Product entry wiring (default
-CLI/RPC/SDK composition and settings-based connector registration) and the final
+Runtime status is projected in `initialize`; it adds no writable RPC command.
+Settings-based product entry composition is implemented, while the final
 promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor
-certification) are not complete. This checkout does not claim product readiness.
+certification) is not complete. This checkout does not claim product readiness.
 
 ### Structured errors
 
