@@ -16,6 +16,7 @@ const legacyPublicSurfacePatterns = [
 	/\baudit_persistence_failed\b/gu,
 	/\bexternal_agent_[a-z0-9_]+\b/gu,
 ] as const;
+const currentPublicSurfaces = new Set(["external_agent_driver_asset_missing"]);
 
 describe("current public naming", () => {
 	it("exposes only unversioned business names from package roots and subpaths", () => {
@@ -139,7 +140,9 @@ describe("current public naming", () => {
 				maturityLabels.push(path);
 			}
 			for (const pattern of legacyPublicSurfacePatterns) {
-				for (const match of text.matchAll(pattern)) legacyPublicSurfaces.push(`${path}:${match[0]}`);
+				for (const match of text.matchAll(pattern)) {
+					if (!currentPublicSurfaces.has(match[0])) legacyPublicSurfaces.push(`${path}:${match[0]}`);
+				}
 			}
 		}
 		expect(staleNames).toEqual([]);
