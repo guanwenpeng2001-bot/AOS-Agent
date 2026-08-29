@@ -7,7 +7,7 @@ credential implementation is implied.
 
 The source contract is `src/core/runtime/remote-operation.ts`. The fixture is
 `test/fixtures/fake-remote-provider.ts`, and
-`test/remote-operation-contract.test.ts` runs the same cases through a local
+`test/worker/remote-operation-contract.test.ts` runs the same cases through a local
 adapter and the fake transport.
 
 ## Identity and binding

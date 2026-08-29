@@ -1,4 +1,4 @@
-import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry } from "./runtime/model-runtime-test-utils.ts";
 /**
  * Tests for ExtensionRunner - conflict detection, error handling, tool wrapping.
  */

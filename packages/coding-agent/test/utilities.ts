@@ -1,4 +1,4 @@
-import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { createModelRegistry, getModelRuntime } from "./runtime/model-runtime-test-utils.ts";
 /**
  * Shared test utilities for coding-agent tests.
  */

@@ -50,7 +50,7 @@ import type { SchedulerSelectionReservationStore } from "../../src/core/schedule
 import type { SubagentCompositionOptions } from "../../src/core/subagent/composition.ts";
 import { createTaskCredentialTestProvider } from "../../src/core/policy/task-credential-provider.ts";
 import { TaskGraphStore } from "../../src/core/scheduler/task-graph.ts";
-import { createExternalConnectorTestRuntime } from "../external-connector-test-supervision.ts";
+import { createExternalConnectorTestRuntime } from "../connector/external-connector-test-supervision.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,

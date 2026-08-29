@@ -9,7 +9,7 @@ import { SettingsManager } from "../../../src/core/runtime/settings-manager.ts";
 import { ModelSelectorComponent } from "../../../src/modes/interactive/components/model-selector.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
-import { createModelRegistry, getModelRuntime } from "../../model-runtime-test-utils.ts";
+import { createModelRegistry, getModelRuntime } from "../../runtime/model-runtime-test-utils.ts";
 
 function observeRefreshRender(): { tui: TUI; renderedAfterRefresh: Promise<void> } {
 	let renderCount = 0;

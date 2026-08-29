@@ -6,7 +6,7 @@ import { ENV_CODING_AGENT_DIR } from "../src/config.ts";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { runMigrations } from "../src/migrations.ts";
 
-import { createModelRegistry } from "./model-runtime-test-utils.ts";
+import { createModelRegistry } from "./runtime/model-runtime-test-utils.ts";
 
 describe("config value env var syntax migration", () => {
 	const tempDirs: string[] = [];

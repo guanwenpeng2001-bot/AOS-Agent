@@ -1,4 +1,4 @@
-import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "../model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "../runtime/model-runtime-test-utils.ts";
 /**
  * Local test harness for the new coding-agent test suite.
  */

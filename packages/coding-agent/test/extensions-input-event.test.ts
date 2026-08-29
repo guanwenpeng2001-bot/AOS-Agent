@@ -7,7 +7,7 @@ import { discoverAndLoadExtensions } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../src/core/extensions/runner.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 
-import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry } from "./runtime/model-runtime-test-utils.ts";
 
 describe("Input Event", () => {
 	let tempDir: string;
