@@ -18,6 +18,7 @@ import type {
 	ExternalConnectorProcessTerminationRequest,
 	ExternalConnectorProcessTerminationResult,
 	ExternalConnectorProcessTerminationOptions,
+	ExternalConnectorSupervisorDeadlineOverrides,
 	ExternalConnectorSupervisorPrivateState,
 } from "../src/core/external-connector-supervisor.ts";
 import {
@@ -221,7 +222,9 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 	}
 }
 
-export function createExternalConnectorTestSupervision() {
+export function createExternalConnectorTestSupervision(
+	deadlines: ExternalConnectorSupervisorDeadlineOverrides = {},
+) {
 	const processController = new TestExternalConnectorProcessController();
 	const privateStateStore = new TestExternalConnectorPrivateStateStore();
 	const containment = externalConnectorProcessContainment();
@@ -233,11 +236,11 @@ export function createExternalConnectorTestSupervision() {
 			processController,
 			privateStateStore,
 			deadlines: {
-				start: { hardMs: 1_000, idleMs: 1_000 },
-				event: { hardMs: 1_000, idleMs: 1_000 },
-				receipt: { hardMs: 1_000, idleMs: 1_000 },
-				cancel: { hardMs: 1_000, idleMs: 1_000 },
-				dispose: { hardMs: 10, idleMs: 10 },
+				start: { hardMs: 1_000, idleMs: 1_000, ...deadlines.start },
+				event: { hardMs: 1_000, idleMs: 1_000, ...deadlines.event },
+				receipt: { hardMs: 1_000, idleMs: 1_000, ...deadlines.receipt },
+				cancel: { hardMs: 1_000, idleMs: 1_000, ...deadlines.cancel },
+				dispose: { hardMs: 10, idleMs: 10, ...deadlines.dispose },
 			},
 		},
 	};

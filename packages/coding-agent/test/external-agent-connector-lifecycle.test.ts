@@ -48,6 +48,7 @@ import {
 	isCanonicalExternalConnectorMapping,
 	type CanonicalExternalConnectorMapping,
 } from "../src/core/external-session-mapping.ts";
+import type { ExternalConnectorSupervisorDeadlineOverrides } from "../src/core/external-connector-supervisor.ts";
 import {
 	decodeRuntimeLimitsOperationNonce,
 	encodeRuntimeLimitsOperationNonce,
@@ -637,6 +638,7 @@ async function fixture(
 		toolGateway?: boolean;
 		runtimeLimits?: RuntimeLimitsSource;
 		credential?: ExternalConnectorCredentialRuntime;
+		supervisionDeadlines?: ExternalConnectorSupervisorDeadlineOverrides;
 	} = {},
 ): Promise<Fixture> {
 	const resolvedBinding = binding();
@@ -645,7 +647,7 @@ async function fixture(
 	store.bindings.set(resolvedBinding.bindingId, resolvedBinding);
 	const driver = new FakeDriver();
 	driver.store = store;
-	const supervision = createExternalConnectorTestSupervision();
+	const supervision = createExternalConnectorTestSupervision(options.supervisionDeadlines);
 	const connector = new DurableExternalAgentConnector({
 		providerId,
 		capability: snapshot,
@@ -2125,7 +2127,11 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 	});
 
 	it("retains private state when confirmed startup cleanup cannot be durably deleted", async () => {
-		const value = await fixture();
+		// This assertion targets the durable-delete failure after a confirmed reap.
+		// Keep full-suite contention outside the test-only 10 ms disposal deadline.
+		const value = await fixture({
+			supervisionDeadlines: { dispose: { hardMs: 1_000, idleMs: 1_000 } },
+		});
 		persistAttempt(value);
 		value.store.operations.set(value.attempt.attemptId, operationFor(value, "running"));
 		await persistSupervisorIdentity(value);
