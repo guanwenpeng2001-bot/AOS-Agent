@@ -28,8 +28,8 @@ import {
 import {
 	buildExternalConnectorTargetSettings,
 	type ExternalConnectorSettingsConfig,
-} from "./external-connector-settings.ts";
-import type { ExternalConnectorTargetConfig } from "./external-connector-target-config.ts";
+} from "./connector/settings.ts";
+import type { ExternalConnectorTargetConfig } from "./connector/target-config.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import {
 	buildModelBrokerSettings,

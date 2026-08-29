@@ -4,7 +4,7 @@ import {
 	type ExternalConnectorTargetCatalogConfig,
 	type ExternalConnectorTargetConfig,
 	type ExternalConnectorTargetSelectionConfig,
-} from "./external-connector-target-config.ts";
+} from "./target-config.ts";
 
 /** User-local catalog plus an explicit default target selection. */
 export interface ExternalConnectorGlobalSettings {

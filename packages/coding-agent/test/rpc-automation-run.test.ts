@@ -33,11 +33,11 @@ import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
 import type { PreparedSessionScopeRebind } from "../src/core/current-session-scope.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
-import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import { createDurableExternalAgentConnector } from "../src/core/connector/durable-connector.ts";
 import type {
 	CanonicalExternalAgentArtifactReference,
 	ExternalAgentArtifactInspection,
-} from "../src/core/external-agent-input.ts";
+} from "../src/core/connector/input.ts";
 import { createExternalConnectorRegistry } from "../src/index.ts";
 import {
 	SessionExternalConnectorDurableStore,
@@ -46,16 +46,16 @@ import {
 	transitionExternalConnectorOperation,
 	type ExternalConnectorDurableStore,
 	type ExternalConnectorOperation,
-} from "../src/core/external-agent-operation.ts";
+} from "../src/core/connector/operation.ts";
 import {
 	externalConnectorProductIdentity,
 	persistExternalConnectorProductAdmissionBeforeAcceptance,
 	persistExternalConnectorProductRunAfterAcceptance,
 	prepareExternalConnectorProductRun,
 	type ExternalConnectorProductExecutionInput,
-} from "../src/core/external-connector-product.ts";
-import { cloneCanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
-import type { ExternalModelSupportMatrix } from "../src/core/external-model-projection.ts";
+} from "../src/core/connector/product-run.ts";
+import { cloneCanonicalExternalConnectorMapping } from "../src/core/connector/session-mapping.ts";
+import type { ExternalModelSupportMatrix } from "../src/core/connector/model-projection.ts";
 import type { Extension, ExtensionContext, ToolDefinition } from "../src/core/extensions/index.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
@@ -85,7 +85,7 @@ import type {
 	ExternalConnectorDriverWriteRequest,
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
-} from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/vendor/types.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 
 const rpcIo = vi.hoisted(() => ({

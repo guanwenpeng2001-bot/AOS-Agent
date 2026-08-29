@@ -14,7 +14,7 @@ import {
 	parseCanonicalExternalAgentInput,
 	serializeCanonicalExternalAgentInput,
 	validateCanonicalExternalAgentInput,
-} from "../src/core/external-agent-input.ts";
+} from "../src/core/connector/input.ts";
 
 const IMAGE_ID = "1".repeat(64);
 const FILE_ID = "2".repeat(64);

@@ -7,7 +7,7 @@ import {
 	type ExternalCapabilityBehaviorEvidenceInput,
 	type ExternalCapabilityEvidenceInput,
 	type ExternalCapabilityTruthFlags,
-} from "../src/core/external-model-projection.ts";
+} from "../src/core/connector/model-projection.ts";
 
 function behaviorEvidence(id: string): ExternalCapabilityBehaviorEvidenceInput {
 	return {

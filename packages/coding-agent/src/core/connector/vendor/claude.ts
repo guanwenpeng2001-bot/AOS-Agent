@@ -25,12 +25,12 @@ import {
 import {
 	createDurableExternalAgentConnector,
 	type ExternalAgentConnectorRuntimeOptions,
-} from "../external-agent-connector.ts";
+} from "../durable-connector.ts";
 import {
 	isExternalConnectorMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
-} from "../external-session-mapping.ts";
-import { ExternalConnectorSupervisorError } from "../external-connector-supervisor.ts";
+} from "../session-mapping.ts";
+import { ExternalConnectorSupervisorError } from "../supervisor.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,

@@ -12,24 +12,24 @@ import {
 	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import { DurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import { DurableExternalAgentConnector } from "../src/core/connector/durable-connector.ts";
 import type {
 	ExternalConnectorDurableStore,
 	ExternalConnectorOperation,
-} from "../src/core/external-agent-operation.ts";
-import { ProductionExternalConnectorProcessController } from "../src/core/external-connector-process-controller.ts";
+} from "../src/core/connector/operation.ts";
+import { ProductionExternalConnectorProcessController } from "../src/core/connector/process-controller.ts";
 import {
 	createProductionExternalAgentConnector,
 	createProductionExternalConnectorSupervision,
 	getProductionExternalConnectorStartupStatus,
 	getProductionExternalConnectorTarget,
-} from "../src/core/external-connector-production.ts";
-import { cloneCanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
+} from "../src/core/connector/production.ts";
+import { cloneCanonicalExternalConnectorMapping } from "../src/core/connector/session-mapping.ts";
 import {
 	ExternalConnectorBoundedSupervisor,
 	FileExternalConnectorSupervisorPrivateStateStore,
 	externalConnectorProcessContainment,
-} from "../src/core/external-connector-supervisor.ts";
+} from "../src/core/connector/supervisor.ts";
 import {
 	DEFAULT_RUNTIME_LIMITS,
 	encodeRuntimeLimitsOperationNonce,
@@ -45,7 +45,7 @@ import {
 	type ExternalConnectorResolvedTarget,
 	type ExternalConnectorTargetDefinition,
 } from "../src/index.ts";
-import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/types.ts";
+import type { ExternalConnectorVendorDriver } from "../src/core/connector/vendor/types.ts";
 
 const processOptions = {
 	executablePath: process.execPath,

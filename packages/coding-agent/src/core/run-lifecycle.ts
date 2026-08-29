@@ -79,7 +79,7 @@ import {
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
 	type SandboxLifecycleLedgerRecord,
 } from "./execution-policy-ledger.ts";
-import { type ExternalConnectorSelection, serializeExternalConnectorSelection } from "./external-agent-registry.ts";
+import { type ExternalConnectorSelection, serializeExternalConnectorSelection } from "./connector/registry.ts";
 import type { McpAttachment } from "./mcp-attachment.ts";
 import {
 	type LegacyAutomationRunLedgerSourceEntry,

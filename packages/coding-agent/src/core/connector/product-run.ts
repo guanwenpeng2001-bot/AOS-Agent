@@ -40,17 +40,17 @@ import {
 	type CanonicalExternalAgentInput,
 	type CanonicalExternalAgentRequestFingerprint,
 	type ExternalAgentInputAdmissionOptions,
-} from "./external-agent-input.ts";
+} from "./input.ts";
 import {
 	isExternalResolvedModelProjection,
 	type ExternalModelFallbackDecision,
 	type ExternalModelTranslationResult,
 	type ExternalResolvedModelProjection,
 	type ExternalTranslatedModelProjection,
-} from "./external-model-projection.ts";
-import type { PolicyBinding } from "./execution-policy.ts";
-import type { CapabilityBinding } from "./capability-registry.ts";
-import { createPolicyBindingLedgerRecord } from "./execution-policy-ledger.ts";
+} from "./model-projection.ts";
+import type { PolicyBinding } from "../execution-policy.ts";
+import type { CapabilityBinding } from "../capability-registry.ts";
+import { createPolicyBindingLedgerRecord } from "../execution-policy-ledger.ts";
 import {
 	bindExternalConnectorToolGatewayConsumer,
 	getExternalConnectorToolGatewayCatalogSnapshot,
@@ -59,13 +59,13 @@ import {
 	type ExternalConnectorRegistry,
 	type ExternalConnectorResolvedSelection,
 	type ExternalConnectorSelection,
-} from "./external-agent-registry.ts";
+} from "./registry.ts";
 import {
 	EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE,
 	SessionExternalConnectorDurableStore,
 	type ExternalConnectorExecutionInput,
 	type ExternalConnectorToolGatewayTerminal,
-} from "./external-agent-operation.ts";
+} from "./operation.ts";
 
 const DECLARED_AT = "1970-01-01T00:00:00.000Z";
 

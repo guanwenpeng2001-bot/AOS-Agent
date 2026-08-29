@@ -9,18 +9,18 @@ import {
 	createDurableExternalAgentConnector,
 	type ExternalAgentConnectorRuntimeOptions,
 	type ExternalConnectorStartupRecoveryResult,
-} from "./external-agent-connector.ts";
+} from "./durable-connector.ts";
 import {
 	ProductionExternalConnectorProcessController,
 	resolveProductionExternalConnectorDriverProvenance,
 	type ProductionExternalConnectorDriverProvenance,
 	type ProductionExternalConnectorProcessWithProvenance,
-} from "./external-connector-process-controller.ts";
+} from "./process-controller.ts";
 import {
 	assertExternalConnectorCapabilityWithinTarget,
 	externalConnectorProcessForTarget,
 	type ExternalConnectorResolvedTarget,
-} from "./external-connector-target-config.ts";
+} from "./target-config.ts";
 import {
 	FileExternalConnectorSupervisorPrivateStateStore,
 	runExternalConnectorHostDispose,
@@ -28,8 +28,8 @@ import {
 	externalConnectorProcessContainment,
 	type ExternalConnectorSupervisorDeadlineOverrides,
 	type ExternalConnectorSupervisorLimits,
-} from "./external-connector-supervisor.ts";
-import type { RuntimeClock } from "./runtime-clock.ts";
+} from "./supervisor.ts";
+import type { RuntimeClock } from "../runtime-clock.ts";
 import {
 	resolveRuntimeLimitsSource,
 	runtimeLimitsFromSupervisorOptions,
@@ -38,8 +38,8 @@ import {
 	runtimeLimitsSupervisorDeadlines,
 	runtimeLimitsSupervisorLimits,
 	type RuntimeLimitsSource,
-} from "./runtime-limits.ts";
-import type { ExternalConnectorVendorDriver } from "./vendor-drivers/types.ts";
+} from "../runtime-limits.ts";
+import type { ExternalConnectorVendorDriver } from "./vendor/types.ts";
 
 export interface ProductionExternalConnectorSupervisionOptions {
 	readonly privateStatePath: string;

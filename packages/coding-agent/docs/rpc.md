@@ -3076,7 +3076,7 @@ Source files:
 - [`src/core/task-gate.ts`](../src/core/task-gate.ts) - Task Gate record, status/action constants, transition, and mutation service types
 - [`src/core/task-graph.ts`](../src/core/task-graph.ts) - Task Graph record, node status/availability constants, DAG definition, transition, and mutation service types
 - [`src/core/subagent-composition.ts`](../src/core/subagent-composition.ts), [`src/core/subagent-supervisor.ts`](../src/core/subagent-supervisor.ts), and [`src/core/subagent-registry.ts`](../src/core/subagent-registry.ts) - trusted child-agent composition, Run-owned lifecycle projections, provider registry, and unavailable-provider registration contracts
-- [`src/core/external-agent-registry.ts`](../src/core/external-agent-registry.ts) and [`src/core/external-agent-connector.ts`](../src/core/external-agent-connector.ts) - the single trusted External Connector registry and executor implementation; vendor drivers remain private, with Host wiring in [`src/modes/rpc/rpc-host.ts`](../src/modes/rpc/rpc-host.ts)
+- [`src/core/connector/registry.ts`](../src/core/connector/registry.ts) and [`src/core/connector/durable-connector.ts`](../src/core/connector/durable-connector.ts) - the single trusted External Connector registry and executor implementation; vendor drivers remain private, with Host wiring in [`src/modes/rpc/rpc-host.ts`](../src/modes/rpc/rpc-host.ts)
 
 ### Model
 

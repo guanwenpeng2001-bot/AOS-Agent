@@ -9,13 +9,13 @@ import {
 	externalConnectorMinimalEnvironment,
 	ProductionExternalConnectorProcessController,
 	resolveProductionExternalConnectorDriverProvenance,
-} from "../src/core/external-connector-process-controller.ts";
+} from "../src/core/connector/process-controller.ts";
 import {
 	ExternalConnectorBoundedSupervisor,
 	externalConnectorProcessContainment,
 	type ExternalConnectorProcessHandle,
 	type ExternalConnectorProcessLaunchRequest,
-} from "../src/core/external-connector-supervisor.ts";
+} from "../src/core/connector/supervisor.ts";
 import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock } from "../src/core/runtime-clock.ts";
 
 function request(operationNonce = "production-nonce"): ExternalConnectorProcessLaunchRequest {

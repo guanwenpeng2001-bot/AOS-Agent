@@ -11,7 +11,7 @@ import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { CanonicalExternalAgentArtifactReference } from "../../core/external-agent-input.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
 import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/mcp-types.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/mcp-auth.ts";
 import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-broker.ts";

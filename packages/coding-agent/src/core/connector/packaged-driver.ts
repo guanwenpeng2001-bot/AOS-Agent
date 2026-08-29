@@ -491,7 +491,7 @@ function packagedAssetDirectory(): string {
 	const compiled = COMPILED_BUN_URL_MARKERS.some((marker) => import.meta.url.includes(marker));
 	return compiled
 		? join(dirname(process.execPath), "external-connector-assets")
-		: join(dirname(fileURLToPath(import.meta.url)), "external-connector-assets");
+		: join(dirname(fileURLToPath(import.meta.url)), "assets");
 }
 
 /** Exact packaged process module admitted by settings-based product composition. */

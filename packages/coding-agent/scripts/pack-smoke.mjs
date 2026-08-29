@@ -43,10 +43,10 @@ const INTERNAL_PACKAGE_DIRECTORIES = Object.freeze([
 const REQUIRED_PACKAGE_FILES = Object.freeze([
 	"package/dist/external-connector.js",
 	"package/dist/external-connector.d.ts",
-	"package/dist/core/packaged-external-agent-driver.js",
-	"package/dist/core/packaged-external-agent-driver.d.ts",
-	"package/dist/core/external-connector-assets/fake-connector.json",
-	"package/dist/core/external-connector-assets/fake-connector-process.mjs",
+	"package/dist/core/connector/packaged-driver.js",
+	"package/dist/core/connector/packaged-driver.d.ts",
+	"package/dist/core/connector/assets/fake-connector.json",
+	"package/dist/core/connector/assets/fake-connector-process.mjs",
 	"package/package.json",
 ]);
 const RUNTIME_STATES = Object.freeze(["passed", "failed", "unavailable", "not_run"]);
@@ -424,11 +424,11 @@ function runInstalledRuntimes(options) {
 			{ cwd: options.installDirectory, env: options.env },
 		);
 		copyFileSync(
-			join(packageDirectory, "dist", "core", "external-connector-assets", "fake-connector.json"),
+			join(packageDirectory, "dist", "core", "connector", "assets", "fake-connector.json"),
 			join(compiledDirectory, "external-connector-assets", "fake-connector.json"),
 		);
 		copyFileSync(
-			join(packageDirectory, "dist", "core", "external-connector-assets", "fake-connector-process.mjs"),
+			join(packageDirectory, "dist", "core", "connector", "assets", "fake-connector-process.mjs"),
 			join(compiledDirectory, "external-connector-assets", "fake-connector-process.mjs"),
 		);
 		compiledResult = runProbe("compiled", executablePath, [], {
@@ -519,7 +519,7 @@ function validateDryRunInputs(repoRoot) {
 		}
 	}
 	const fixture = JSON.parse(readFileSync(
-		join(repoRoot, "packages", "coding-agent", "src", "core", "external-connector-assets", "fake-connector.json"),
+		join(repoRoot, "packages", "coding-agent", "src", "core", "connector", "assets", "fake-connector.json"),
 		"utf8",
 	));
 	if (

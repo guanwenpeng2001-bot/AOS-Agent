@@ -12,7 +12,7 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { RunBindingAssociation } from "../../core/binding-handles.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { ConnectorRuntimeStatus } from "../../core/connector-runtime-status.ts";
+import type { ConnectorRuntimeStatus } from "../../core/connector/runtime-status.ts";
 import type {
 	AuditQuery,
 	AuditQueryResult,
@@ -20,12 +20,12 @@ import type {
 	AuditReplayResult,
 } from "../../core/execution-audit-query.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
-import type { CanonicalExternalAgentArtifactReference } from "../../core/external-agent-input.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
 import type {
 	ExternalConnectorDescriptor,
 	ExternalConnectorReadinessStatus,
 	ExternalConnectorSelection,
-} from "../../core/external-agent-registry.ts";
+} from "../../core/connector/registry.ts";
 import type { SchedulerSafeStatus } from "../../core/foundation-control-plane.ts";
 import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/mcp-content.ts";
 import type { MCPContentPublicErrorCode } from "../../core/mcp-error-codes.ts";
@@ -1323,7 +1323,7 @@ export type {
 	ExternalConnectorDescriptor,
 	ExternalConnectorReadinessStatus,
 	ExternalConnectorSelection,
-} from "../../core/external-agent-registry.ts";
+} from "../../core/connector/registry.ts";
 // Re-export the safe MCP content catalog/result types consumed by the wire.
 export type {
 	MCPContentProvenance,

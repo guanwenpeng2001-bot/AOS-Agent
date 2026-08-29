@@ -16,7 +16,7 @@ import {
 	serializePublicAutomationError,
 	serializePublicRunReceipt,
 } from "../src/core/run-lifecycle.ts";
-import { cloneExternalConnectorTerminalEvidence } from "../src/core/vendor-drivers/types.ts";
+import { cloneExternalConnectorTerminalEvidence } from "../src/core/connector/vendor/types.ts";
 
 const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [
 	{
@@ -305,7 +305,7 @@ describe("External Connector public exports", () => {
 
 	it("keeps vendor driver modules outside the package export map", () => {
 		const require = createRequire(import.meta.url);
-		expect(() => require.resolve("aos-agent/core/vendor-drivers/types")).toThrow(
+		expect(() => require.resolve("aos-agent/core/connector/vendor/types")).toThrow(
 			/Package subpath|not defined by "exports"/u,
 		);
 	});

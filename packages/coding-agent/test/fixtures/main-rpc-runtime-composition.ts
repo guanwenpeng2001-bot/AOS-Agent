@@ -32,8 +32,8 @@ import {
 	type AgentRuntimeCompositionContext,
 	type SchedulerRuntimeOptions,
 } from "../../src/index.ts";
-import { createDurableExternalAgentConnector } from "../../src/core/external-agent-connector.ts";
-import { SessionExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
+import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
+import { SessionExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";
 import {
 	externalConnectorProcessContainment,
 	FileExternalConnectorSupervisorPrivateStateStore,
@@ -43,7 +43,7 @@ import {
 	type ExternalConnectorProcessLaunchRequest,
 	type ExternalConnectorProcessTerminationRequest,
 	type ExternalConnectorProcessTerminationResult,
-} from "../../src/core/external-connector-supervisor.ts";
+} from "../../src/core/connector/supervisor.ts";
 import { createSessionManagerStorage } from "../../src/core/session-manager-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { SchedulerSelectionReservationStore } from "../../src/core/scheduler-selection-reservations.ts";
@@ -56,7 +56,7 @@ import type {
 	ExternalConnectorDriverLookup,
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
-} from "../../src/core/vendor-drivers/types.ts";
+} from "../../src/core/connector/vendor/types.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("./fake-worker-child.ts", import.meta.url));

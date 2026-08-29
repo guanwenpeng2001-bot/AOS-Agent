@@ -1,11 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
-import { ProductionExternalConnectorProcessController } from "../../src/core/external-connector-process-controller.ts";
+import { ProductionExternalConnectorProcessController } from "../../src/core/connector/process-controller.ts";
 import {
 	ExternalConnectorBoundedSupervisor,
 	FileExternalConnectorSupervisorPrivateStateStore,
 	externalConnectorProcessContainment,
-} from "../../src/core/external-connector-supervisor.ts";
+} from "../../src/core/connector/supervisor.ts";
 
 const [privateStatePath, targetPidPath, readyPath] = process.argv.slice(2);
 if (privateStatePath === undefined || targetPidPath === undefined || readyPath === undefined) {

@@ -4,7 +4,7 @@ import {
 	FoundationError,
 	type ConnectorCapabilitySnapshot,
 } from "@aos-agent/agent-core";
-import type { ProductionExternalConnectorProcessWithProvenance } from "./external-connector-process-controller.ts";
+import type { ProductionExternalConnectorProcessWithProvenance } from "./process-controller.ts";
 
 export const EXTERNAL_CONNECTOR_TARGET_CONFIG_SCHEMA_VERSION = 1 as const;
 

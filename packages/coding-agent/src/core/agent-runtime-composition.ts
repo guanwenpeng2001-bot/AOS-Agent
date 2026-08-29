@@ -2,19 +2,19 @@ import type { AgentHarness, Session, ToolGateway, ToolGatewayProvider } from "@a
 import { createFoundationToolGateway, FoundationError, fingerprintFoundationValue, Result } from "@aos-agent/agent-core";
 import type { Models } from "@aos-agent/ai";
 import type { CapabilityRegistry } from "./capability-registry.ts";
-import { type ConnectorRetryPolicy, DEFAULT_CONNECTOR_RETRY_POLICY } from "./connector-retry-circuit.ts";
-import type { ExternalConnectorRegistry } from "./external-agent-registry.ts";
+import { type ConnectorRetryPolicy, DEFAULT_CONNECTOR_RETRY_POLICY } from "./connector/retry-circuit.ts";
+import type { ExternalConnectorRegistry } from "./connector/registry.ts";
 import {
 	assertExternalConnectorCapabilityWithinTarget,
 	type ExternalConnectorResolvedTarget,
 	type ExternalConnectorTargetConfig,
 	isTrustedExternalConnectorTargetConfig,
-} from "./external-connector-target-config.ts";
-import type { ExternalToolGatewayPolicyAuthority } from "./external-tool-gateway-authority.ts";
+} from "./connector/target-config.ts";
+import type { ExternalToolGatewayPolicyAuthority } from "./connector/tool-gateway.ts";
 import {
 	bindCanonicalExternalToolGatewayPolicy,
 	createCanonicalExternalToolGateway,
-} from "./external-tool-gateway-authority.ts";
+} from "./connector/tool-gateway.ts";
 import type { SchedulerCompositionOptions } from "./foundation-control-plane.ts";
 import type { MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";

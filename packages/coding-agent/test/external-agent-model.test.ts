@@ -18,7 +18,7 @@ import {
 	type ExternalModelFieldSupport,
 	type ExternalModelProjectionField,
 	type ExternalModelSupportMatrix,
-} from "../src/core/external-model-projection.ts";
+} from "../src/core/connector/model-projection.ts";
 
 const NOW = "2026-08-27T00:00:00.000Z";
 

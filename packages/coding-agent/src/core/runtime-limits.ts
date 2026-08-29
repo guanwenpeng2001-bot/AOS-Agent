@@ -1,12 +1,12 @@
 /** Canonical finite runtime limits for one External Connector Attempt. */
 
 import { fingerprintFoundationValue, type Fingerprint } from "@aos-agent/agent-core";
-import { isExternalConnectorMappingIdentifier } from "./external-session-mapping.ts";
+import { isExternalConnectorMappingIdentifier } from "./connector/session-mapping.ts";
 import type {
 	ExternalConnectorSegmentDeadline,
 	ExternalConnectorSupervisorDeadlineOverrides,
 	ExternalConnectorSupervisorLimits,
-} from "./external-connector-supervisor.ts";
+} from "./connector/supervisor.ts";
 
 export const RUNTIME_LIMIT_NAMES = [
 	"startupHardMs",

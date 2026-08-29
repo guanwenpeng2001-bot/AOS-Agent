@@ -22,12 +22,12 @@ import {
 	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
-import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import { createDurableExternalAgentConnector } from "../src/core/connector/durable-connector.ts";
+import { SessionExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
 import {
 	bindCanonicalExternalToolGatewayPolicy,
 	createCanonicalExternalToolGateway,
-} from "../src/core/external-tool-gateway-authority.ts";
+} from "../src/core/connector/tool-gateway.ts";
 import type { CapabilityBinding } from "../src/core/capability-registry.ts";
 import type { ExternalAgentConnector } from "../src/index.ts";
 import {
@@ -35,12 +35,12 @@ import {
 	resolveExecutionPolicyProfile,
 	type ExecutionPolicyProfile,
 } from "../src/core/execution-policy.ts";
-import { classifyExternalToolPolicyOperation } from "../src/core/external-tool-policy-operation.ts";
+import { classifyExternalToolPolicyOperation } from "../src/core/connector/tool-policy.ts";
 import {
 	createExternalConnectorRegistry,
 	type ExternalConnectorRegistration,
 } from "../src/index.ts";
-import type { ExternalConnectorActivationSource } from "../src/core/external-connector-readiness.ts";
+import type { ExternalConnectorActivationSource } from "../src/core/connector/readiness.ts";
 import {
 	executeExternalConnectorProductRun,
 	executePreparedExternalConnectorProductRun,
@@ -48,7 +48,7 @@ import {
 	preflightExternalConnectorProductRecovery,
 	prepareExternalConnectorProductRun,
 	type ExternalConnectorProductExecutionInput,
-} from "../src/core/external-connector-product.ts";
+} from "../src/core/connector/product-run.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,
@@ -56,7 +56,7 @@ import type {
 	ExternalConnectorDriverWriteRequest,
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
-} from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/vendor/types.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 

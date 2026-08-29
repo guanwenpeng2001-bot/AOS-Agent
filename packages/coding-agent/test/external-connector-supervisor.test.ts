@@ -18,7 +18,7 @@ import {
 	type ExternalConnectorProcessTerminationOptions,
 	type ExternalConnectorSupervisorLimits,
 	type ExternalConnectorSupervisorSegment,
-} from "../src/core/external-connector-supervisor.ts";
+} from "../src/core/connector/supervisor.ts";
 import type { RuntimeClock } from "../src/core/runtime-clock.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 

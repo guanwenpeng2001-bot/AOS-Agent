@@ -10,7 +10,7 @@ import {
 	DEFAULT_CONNECTOR_RETRY_POLICY,
 	type ConnectorRetryFailureInput,
 	type ConnectorRetryPolicy,
-} from "../src/core/connector-retry-circuit.ts";
+} from "../src/core/connector/retry-circuit.ts";
 import { withRuntimeClock } from "../src/core/runtime-clock.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 

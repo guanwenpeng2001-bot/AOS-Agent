@@ -42,13 +42,13 @@ import {
 	type CanonicalExternalAgentInput,
 	type ExternalAgentArtifactInspection,
 	gateCanonicalExternalAgentInputBeforeAcceptance,
-} from "../../core/external-agent-input.ts";
+} from "../../core/connector/input.ts";
 import {
 	type ExternalConnectorResolvedSelection,
 	type ExternalConnectorSelection,
 	isExternalConnectorSelection,
 	serializeExternalConnectorSelection,
-} from "../../core/external-agent-registry.ts";
+} from "../../core/connector/registry.ts";
 import {
 	type ExternalConnectorProductAdmission,
 	executePreparedExternalConnectorProductRun,
@@ -58,8 +58,8 @@ import {
 	preflightExternalConnectorProductRecovery,
 	prepareExternalConnectorProductRun,
 	recoverExternalConnectorProductRun,
-} from "../../core/external-connector-product.ts";
-import type { ExternalModelFallbackDecision } from "../../core/external-model-projection.ts";
+} from "../../core/connector/product-run.ts";
+import type { ExternalModelFallbackDecision } from "../../core/connector/model-projection.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS, MCPAuthError } from "../../core/mcp-auth.ts";
 import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/mcp-auth-storage.ts";

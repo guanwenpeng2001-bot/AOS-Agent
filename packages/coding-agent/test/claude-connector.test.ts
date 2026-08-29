@@ -13,19 +13,19 @@ import {
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import * as packageEntry from "../src/index.ts";
-import type { CanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
+import type { CanonicalExternalConnectorMapping } from "../src/core/connector/session-mapping.ts";
 import {
 	PRIVATE_CLAUDE_AGENT_SDK_VERSION,
 	PrivateClaudeAgentSdkDriver,
 	type PrivateClaudeAgentSdkCompanion,
 	type PrivateClaudeCompanionQuery,
 	type PrivateClaudeCompanionQueryRequest,
-} from "../src/core/vendor-drivers/claude.ts";
+} from "../src/core/connector/vendor/claude.ts";
 import type {
 	ExternalConnectorDriverEvent,
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverSpawnRequest,
-} from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/vendor/types.ts";
 
 const now = "2026-08-28T00:00:00.000Z";
 const providerId = "private-claude-fixture";
@@ -628,7 +628,7 @@ describe("private Claude Agent SDK connector driver", () => {
 			new URL("../src/vendor-driver-companions/claude-entry.ts", import.meta.url),
 			"utf8",
 		);
-		const coreSource = await readFile(new URL("../src/core/vendor-drivers/claude.ts", import.meta.url), "utf8");
+		const coreSource = await readFile(new URL("../src/core/connector/vendor/claude.ts", import.meta.url), "utf8");
 		expect(manifest.optionalDependencies["@anthropic-ai/claude-agent-sdk"]).toBe("0.3.246");
 		expect(manifest.optionalDependencies.zod).toBe("4.4.3");
 		expect(companionSource).toContain('from "@anthropic-ai/claude-agent-sdk"');

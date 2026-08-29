@@ -11,7 +11,7 @@ export {
 	type ExternalConnectorRegistry,
 	type ExternalConnectorResolvedSelection,
 	type ExternalConnectorSelection,
-} from "./core/external-agent-registry.ts";
+} from "./core/connector/registry.ts";
 export {
 	EXTERNAL_CONNECTOR_TARGET_CONFIG_SCHEMA_VERSION,
 	ExternalConnectorTargetConfigError,
@@ -31,7 +31,7 @@ export {
 	type ExternalConnectorTargetSelectionConfig,
 	type ExternalConnectorTargetSelectionSource,
 	type ExternalConnectorTrustedTarget,
-} from "./core/external-connector-target-config.ts";
+} from "./core/connector/target-config.ts";
 export {
 	PACKAGED_EXTERNAL_AGENT_DRIVER_NAMES,
 	PackagedExternalAgentDriverAssetError,
@@ -46,7 +46,7 @@ export {
 	type PackagedExternalAgentDriverReceipt,
 	type PackagedExternalAgentDriverToolResult,
 	type PackagedExternalAgentDriverTrace,
-} from "./core/packaged-external-agent-driver.ts";
+} from "./core/connector/packaged-driver.ts";
 export {
 	CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS,
 	CANONICAL_EXTERNAL_AGENT_INPUT_SCHEMA_VERSION,
@@ -59,11 +59,11 @@ export {
 	type CanonicalExternalAgentInput,
 	type ExternalAgentArtifactInspection,
 	type ExternalAgentInputAdmissionOptions,
-} from "./core/external-agent-input.ts";
+} from "./core/connector/input.ts";
 export {
 	projectExternalModelForExecution,
 	type ExternalModelFallbackDecision,
 	type ExternalModelProjectionGateInput,
 	type ExternalModelProjectionGateResult,
 	type ExternalResolvedModelProjection,
-} from "./core/external-model-projection.ts";
+} from "./core/connector/model-projection.ts";

@@ -47,36 +47,36 @@ import {
 	type ExternalConnectorReconcileReason,
 	type ExternalConnectorToolGatewayIntent,
 	type ExternalConnectorToolGatewayTerminal,
-} from "./external-agent-operation.ts";
+} from "./operation.ts";
 import {
 	cloneCanonicalExternalConnectorMapping,
 	isCanonicalExternalConnectorMappingTimestamp,
 	isExternalConnectorMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
-} from "./external-session-mapping.ts";
+} from "./session-mapping.ts";
 import type {
 	ExternalConnectorDriverEvent,
 	ExternalConnectorDriverHandle,
 	ExternalConnectorVendorDriver,
-} from "./vendor-drivers/types.ts";
+} from "./vendor/types.ts";
 import {
 	calculateScopeDigest,
 	isTaskCredentialIdentifier,
 	normalizeTaskCredentialScopes,
 	type TaskCredentialScope,
-} from "./task-credential-lease.ts";
+} from "../task-credential-lease.ts";
 import type {
 	TaskCredentialLifecycleReasonCode,
 	TaskCredentialRunIssueContext,
 	TaskCredentialService,
 	TaskCredentialWorkerTarget,
-} from "./task-credential-service.ts";
+} from "../task-credential-service.ts";
 import {
 	validateOperationWorkerLeaseProjection,
 	validateOperationWorkerLeaseReference,
 	type SafeLeaseProjection,
 	type SafeLeaseReference,
-} from "./worker-protocol.ts";
+} from "../worker-protocol.ts";
 
 export interface ExternalConnectorCredentialRuntime {
 	/** Host-owned lifecycle authority; Connector code never receives material. */
@@ -99,8 +99,8 @@ import {
 	type ExternalConnectorSupervisorPrivateStateEntry,
 	type ExternalConnectorSupervisorReference,
 	type ExternalConnectorSupervisorPrivateStateStore,
-} from "./external-connector-supervisor.ts";
-import type { RuntimeClock } from "./runtime-clock.ts";
+} from "./supervisor.ts";
+import type { RuntimeClock } from "../runtime-clock.ts";
 import {
 	decodeRuntimeLimitsOperationNonce,
 	encodeRuntimeLimitsOperationNonce,
@@ -112,18 +112,18 @@ import {
 	type RuntimeLimitsOperationNonce,
 	type RuntimeLimitsSnapshot,
 	type RuntimeLimitsSource,
-} from "./runtime-limits.ts";
+} from "../runtime-limits.ts";
 import {
 	translateExternalModelProjection,
 	type ExternalModelTranslationResult,
 	type ExternalResolvedModelProjection,
-} from "./external-model-projection.ts";
+} from "./model-projection.ts";
 import {
 	cloneExternalConnectorTerminalEvidence,
 	isExternalConnectorDriverHandle,
 	isExternalConnectorDriverLookup,
 	type ExternalConnectorTerminalEvidence,
-} from "./vendor-drivers/types.ts";
+} from "./vendor/types.ts";
 
 export interface ExternalAgentConnectorRuntimeOptions {
 	readonly providerId: string;

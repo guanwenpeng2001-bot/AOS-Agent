@@ -28,7 +28,7 @@ import {
 	externalConnectorAttemptId,
 	type ExternalConnectorCredentialRuntime,
 	type ExternalConnectorToolGatewayConsumer,
-} from "../src/core/external-agent-connector.ts";
+} from "../src/core/connector/durable-connector.ts";
 import type {
 	ExternalConnectorDurableStore,
 	ExternalConnectorOperation,
@@ -36,19 +36,19 @@ import type {
 	ExternalConnectorToolGatewayExecution,
 	ExternalConnectorToolGatewayIntent,
 	ExternalConnectorToolGatewayTerminal,
-} from "../src/core/external-agent-operation.ts";
+} from "../src/core/connector/operation.ts";
 import {
 	cloneExternalConnectorOperation,
 	externalConnectorToolGatewayExchangeId,
 	SessionExternalConnectorDurableStore,
 	transitionExternalConnectorOperation,
-} from "../src/core/external-agent-operation.ts";
+} from "../src/core/connector/operation.ts";
 import {
 	cloneCanonicalExternalConnectorMapping,
 	isCanonicalExternalConnectorMapping,
 	type CanonicalExternalConnectorMapping,
-} from "../src/core/external-session-mapping.ts";
-import type { ExternalConnectorSupervisorDeadlineOverrides } from "../src/core/external-connector-supervisor.ts";
+} from "../src/core/connector/session-mapping.ts";
+import type { ExternalConnectorSupervisorDeadlineOverrides } from "../src/core/connector/supervisor.ts";
 import {
 	decodeRuntimeLimitsOperationNonce,
 	encodeRuntimeLimitsOperationNonce,
@@ -63,7 +63,7 @@ import type {
 	ExternalConnectorDriverWriteRequest,
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
-} from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/vendor/types.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 import type { SessionEntry } from "../src/core/session-manager.ts";
 import {

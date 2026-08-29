@@ -26,28 +26,28 @@ import {
 	isCanonicalExternalConnectorMappingTimestamp,
 	isExternalConnectorMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
-} from "./external-session-mapping.ts";
+} from "./session-mapping.ts";
 import {
 	fingerprintCanonicalExternalAgentInput,
 	validateCanonicalExternalAgentInput,
 	type CanonicalExternalAgentInput,
 	type CanonicalExternalAgentRequestFingerprint,
-} from "./external-agent-input.ts";
+} from "./input.ts";
 import {
 	isExternalResolvedModelProjection,
 	isExternalTranslatedModelProjection,
 	type ExternalResolvedModelProjection,
 	type ExternalTranslatedModelProjection,
-} from "./external-model-projection.ts";
+} from "./model-projection.ts";
 import {
 	isTaskCredentialDeliveryReceipt,
 	serializeTaskCredentialDeliveryReceipt,
 	type TaskCredentialDeliveryReceipt,
-} from "./task-credential-lease.ts";
+} from "../task-credential-lease.ts";
 import {
 	validateOperationWorkerLeaseProjection,
 	type SafeLeaseProjection,
-} from "./worker-protocol.ts";
+} from "../worker-protocol.ts";
 
 export const EXTERNAL_CONNECTOR_OPERATION_OBJECT_TYPE = "external_connector_operation" as const;
 export const EXTERNAL_CONNECTOR_MAPPING_OBJECT_TYPE = "external_connector_mapping" as const;

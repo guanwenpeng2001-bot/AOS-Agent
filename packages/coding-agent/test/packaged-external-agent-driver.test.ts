@@ -3,7 +3,7 @@ import {
 	PackagedExternalAgentDriverAssetError,
 	loadPackagedExternalAgentDriver,
 	runPackagedExternalAgentDriverFixture,
-} from "../src/core/packaged-external-agent-driver.ts";
+} from "../src/core/connector/packaged-driver.ts";
 
 describe("packaged External Agent driver fixture", () => {
 	it("loads the immutable default-off fake Connector fixture", () => {

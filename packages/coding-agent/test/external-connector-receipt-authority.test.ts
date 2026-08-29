@@ -9,11 +9,11 @@ import {
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import * as publicApi from "../src/index.ts";
-import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import { createDurableExternalAgentConnector } from "../src/core/connector/durable-connector.ts";
 import {
 	createExternalConnectorRegistry,
 	settleExternalConnectorRecoveryFailure,
-} from "../src/core/external-agent-registry.ts";
+} from "../src/core/connector/registry.ts";
 import type {
 	ExternalConnectorDurableStore,
 	ExternalConnectorExecutionInput,
@@ -22,9 +22,9 @@ import type {
 	ExternalConnectorToolGatewayIntent,
 	ExternalConnectorToolGatewayIntentWrite,
 	ExternalConnectorToolGatewayTerminal,
-} from "../src/core/external-agent-operation.ts";
-import type { CanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
-import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/operation.ts";
+import type { CanonicalExternalConnectorMapping } from "../src/core/connector/session-mapping.ts";
+import type { ExternalConnectorVendorDriver } from "../src/core/connector/vendor/types.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 
 const NOW = "2026-08-28T00:00:00.000Z";

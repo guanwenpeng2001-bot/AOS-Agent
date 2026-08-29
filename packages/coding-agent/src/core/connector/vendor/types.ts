@@ -30,14 +30,14 @@ import {
 	isCanonicalExternalConnectorMappingTimestamp,
 	isExternalConnectorMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
-} from "../external-session-mapping.ts";
-import type { CanonicalExternalAgentInput } from "../external-agent-input.ts";
+} from "../session-mapping.ts";
+import type { CanonicalExternalAgentInput } from "../input.ts";
 import type {
 	ExternalModelSupportMatrix,
 	ExternalResolvedModelProjection,
 	ExternalTranslatedModelProjection,
-} from "../external-model-projection.ts";
-import type { SafeLeaseProjection } from "../worker-protocol.ts";
+} from "../model-projection.ts";
+import type { SafeLeaseProjection } from "../../worker-protocol.ts";
 
 export interface ExternalConnectorDriverHandle {
 	readonly externalSessionId: string;

@@ -47,7 +47,7 @@ import {
 	ConnectorRetryCircuit,
 	type ConnectorRetryGuarantee,
 	type ConnectorRetryPolicy,
-} from "./connector-retry-circuit.ts";
+} from "./connector/retry-circuit.ts";
 import {
 	applySchedulerWakeFire,
 	isSchedulerQueueTerminal,

@@ -7,8 +7,8 @@ import {
 	type ConnectorCapabilitySnapshot,
 	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
-import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
-import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import { createDurableExternalAgentConnector } from "../src/core/connector/durable-connector.ts";
+import { SessionExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
 import type {
 	ExternalConnectorProcessController,
 	ExternalConnectorProcessHandle,
@@ -20,17 +20,17 @@ import type {
 	ExternalConnectorProcessTerminationOptions,
 	ExternalConnectorSupervisorDeadlineOverrides,
 	ExternalConnectorSupervisorPrivateState,
-} from "../src/core/external-connector-supervisor.ts";
+} from "../src/core/connector/supervisor.ts";
 import {
 	externalConnectorProcessContainment,
 	InMemoryExternalConnectorSupervisorPrivateStateStore,
-} from "../src/core/external-connector-supervisor.ts";
+} from "../src/core/connector/supervisor.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
-} from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/vendor/types.ts";
 
 let registrationRuntimeId = 0;
 

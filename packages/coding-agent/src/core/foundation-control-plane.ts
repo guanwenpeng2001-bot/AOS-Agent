@@ -72,7 +72,7 @@ import {
 	POLICY_DECISION_CUSTOM_TYPE,
 	type PolicyDecisionLedgerRecord,
 } from "./execution-policy-ledger.ts";
-import { classifyExternalToolPolicyOperation } from "./external-tool-policy-operation.ts";
+import { classifyExternalToolPolicyOperation } from "./connector/tool-policy.ts";
 import {
 	createMCPDefaultTransportFactory,
 	MCPLifecycleManager,
@@ -111,7 +111,7 @@ import type { SessionEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type {
 	ExternalConnectorRegistry,
-} from "./external-agent-registry.ts";
+} from "./connector/registry.ts";
 import type { SandboxHandle, SandboxProvider, SandboxSession } from "./sandbox.ts";
 import { SandboxSession as ConcreteSandboxSession } from "./sandbox.ts";
 import type { ToolDefinition, ExtensionRunner } from "./extensions/index.ts";

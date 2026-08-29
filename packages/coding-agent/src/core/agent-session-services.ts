@@ -14,7 +14,7 @@ import { createDefaultMCPAuthManagerOptions, type MCPAuthManagerOptions } from "
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
 import type { ModelBroker } from "./model-broker.ts";
 import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
-import { createPackagedExternalConnectorRegistryFactory } from "./packaged-external-connector-runtime.ts";
+import { createPackagedExternalConnectorRegistryFactory } from "./connector/packaged-runtime.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,

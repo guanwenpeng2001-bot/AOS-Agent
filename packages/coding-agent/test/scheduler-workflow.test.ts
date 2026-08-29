@@ -45,7 +45,7 @@ import { SchedulerSelectionReservationStore } from "../src/core/scheduler-select
 import {
 	CONNECTOR_RETRY_DECISION_OBJECT_TYPE,
 	type ConnectorRetryPolicy,
-} from "../src/core/connector-retry-circuit.ts";
+} from "../src/core/connector/retry-circuit.ts";
 import { withRuntimeClock, type RuntimeClock } from "../src/core/runtime-clock.ts";
 import { SchedulerHost, type SchedulerWake } from "../src/core/scheduler.ts";
 import {

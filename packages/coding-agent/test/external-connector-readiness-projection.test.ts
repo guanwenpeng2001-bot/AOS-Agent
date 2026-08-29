@@ -5,14 +5,14 @@ import { join } from "node:path";
 import { createConnectorCapabilitySnapshot, Result } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import type { ExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
-import { createExternalConnectorRegistry } from "../src/core/external-agent-registry.ts";
-import { createProductionExternalAgentConnector } from "../src/core/external-connector-production.ts";
+import type { ExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
+import { createExternalConnectorRegistry } from "../src/core/connector/registry.ts";
+import { createProductionExternalAgentConnector } from "../src/core/connector/production.ts";
 import {
 	externalConnectorProcessContainment,
 	FileExternalConnectorSupervisorPrivateStateStore,
-} from "../src/core/external-connector-supervisor.ts";
-import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/supervisor.ts";
+import type { ExternalConnectorVendorDriver } from "../src/core/connector/vendor/types.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentRuntimeCompositionFactory,

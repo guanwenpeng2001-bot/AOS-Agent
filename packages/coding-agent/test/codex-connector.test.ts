@@ -7,17 +7,17 @@ import {
 	type ToolExecutionResult,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import type { CanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
+import type { CanonicalExternalConnectorMapping } from "../src/core/connector/session-mapping.ts";
 import {
 	PRIVATE_CODEX_APP_SERVER_IDENTITY,
 	PrivateCodexAppServerDriver,
 	type PrivateCodexAppServerDriverOptions,
 	type PrivateCodexAppServerTransport,
-} from "../src/core/vendor-drivers/codex.ts";
+} from "../src/core/connector/vendor/codex.ts";
 import type {
 	ExternalConnectorDriverEvent,
 	ExternalConnectorDriverSpawnRequest,
-} from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/vendor/types.ts";
 import * as packageEntry from "../src/index.ts";
 
 const now = "2026-08-28T00:00:00.000Z";

@@ -2,15 +2,15 @@
 
 import { Buffer } from "node:buffer";
 import { EXTERNAL_ERROR_MESSAGES, FoundationError } from "@aos-agent/agent-core";
-import { LockedAtomicFileStorage } from "./control-plane-atomic-storage.ts";
-import { isExternalConnectorMappingIdentifier } from "./external-session-mapping.ts";
-import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
+import { LockedAtomicFileStorage } from "../control-plane-atomic-storage.ts";
+import { isExternalConnectorMappingIdentifier } from "./session-mapping.ts";
+import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "../runtime-clock.ts";
 import {
 	isExternalConnectorDriverEvent,
 	isExternalConnectorTerminalEvidence,
 	type ExternalConnectorDriverEvent,
 	type ExternalConnectorDriverHandle,
-} from "./vendor-drivers/types.ts";
+} from "./vendor/types.ts";
 
 export const EXTERNAL_CONNECTOR_SUPERVISOR_SCHEMA_VERSION = 1 as const;
 export const EXTERNAL_CONNECTOR_SUPERVISOR_SEGMENTS = ["start", "event", "receipt", "cancel", "dispose"] as const;

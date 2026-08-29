@@ -20,7 +20,7 @@ import {
 	type PrivateClaudeAgentSdkCompanion,
 	type PrivateClaudeCompanionQueryRequest,
 	type PrivateClaudeSelectedTool,
-} from "../core/vendor-drivers/claude.ts";
+} from "../core/connector/vendor/claude.ts";
 
 function asFoundationJson(value: unknown): FoundationJsonValue {
 	return JSON.parse(canonicalFoundationJson(value)) as FoundationJsonValue;

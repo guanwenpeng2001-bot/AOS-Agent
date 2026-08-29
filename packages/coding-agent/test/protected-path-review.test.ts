@@ -47,7 +47,7 @@ import {
 	type FoundationControlPlaneOptions,
 } from "../src/core/foundation-control-plane.ts";
 import { resolveHostPathForPolicy } from "../src/core/policy-filesystem.ts";
-import { classifyExternalToolPolicyOperation } from "../src/core/external-tool-policy-operation.ts";
+import { classifyExternalToolPolicyOperation } from "../src/core/connector/tool-policy.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";

@@ -111,7 +111,7 @@ independent terminal authority. Current external traces contain no
 ## Private vendor boundary
 
 Vendor protocol drivers, process handles, probing, startup, cancellation, and
-supervision types are implementation details under `src/core/vendor-drivers`.
+supervision types are implementation details under `src/core/connector/vendor`.
 They are not package-root exports and their package subpaths are not importable.
 A vendor driver can translate a protocol, but it cannot introduce a second
 registry, mapping, receipt, provider taxonomy, or execution contract.

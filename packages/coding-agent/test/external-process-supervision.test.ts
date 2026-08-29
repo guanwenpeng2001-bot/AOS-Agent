@@ -9,23 +9,23 @@ import {
 	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import type { ExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import type { ExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
 import {
 	ProductionExternalConnectorProcessController,
 	type ProductionExternalConnectorProcessWithProvenance,
-} from "../src/core/external-connector-process-controller.ts";
+} from "../src/core/connector/process-controller.ts";
 import {
 	createProductionExternalAgentConnector,
 	getProductionExternalConnectorStartupStatus,
-} from "../src/core/external-connector-production.ts";
+} from "../src/core/connector/production.ts";
 import {
 	FileExternalConnectorSupervisorPrivateStateStore,
 	externalConnectorProcessContainment,
 	type ExternalConnectorProcessHandle,
 	type ExternalConnectorProcessLaunchRequest,
 	type ExternalConnectorSupervisorPrivateState,
-} from "../src/core/external-connector-supervisor.ts";
-import type { ExternalConnectorVendorDriver } from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/supervisor.ts";
+import type { ExternalConnectorVendorDriver } from "../src/core/connector/vendor/types.ts";
 
 const SUPPORTED_PLATFORM = process.platform === "linux" || process.platform === "darwin" || process.platform === "win32";
 const PROVIDER_ID = "product-process-supervision-connector";

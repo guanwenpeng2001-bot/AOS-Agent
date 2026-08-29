@@ -79,7 +79,7 @@ import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import type {
 	ExternalConnectorRegistry,
-} from "./external-agent-registry.ts";
+} from "./connector/registry.ts";
 import {
 	getLatestCompactionEntry,
 	SessionManager,

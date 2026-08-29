@@ -13,16 +13,16 @@ import {
 	projectConnectorRuntimeStatus,
 	type ConnectorRuntimeAggregateSnapshot,
 	type ConnectorRuntimeAggregateSnapshotInput,
-} from "../src/core/connector-runtime-status.ts";
+} from "../src/core/connector/runtime-status.ts";
 import {
 	DEFAULT_CONNECTOR_RETRY_POLICY,
 	type ConnectorCircuitFact,
-} from "../src/core/connector-retry-circuit.ts";
+} from "../src/core/connector/retry-circuit.ts";
 import {
 	createDescriptorExternalConnectorActivationSource,
 	createExternalConnectorReadinessSnapshot,
-} from "../src/core/external-connector-readiness.ts";
-import { createExternalConnectorRegistry } from "../src/core/external-agent-registry.ts";
+} from "../src/core/connector/readiness.ts";
+import { createExternalConnectorRegistry } from "../src/core/connector/registry.ts";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/core/runtime-limits.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 

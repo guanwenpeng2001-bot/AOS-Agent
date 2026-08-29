@@ -64,7 +64,7 @@ import {
 	type ExternalConnectorTargetDefinition,
 	type ExternalConnectorResolvedTarget,
 } from "../src/index.ts";
-import { createExternalConnectorRegistry } from "../src/core/external-agent-registry.ts";
+import { createExternalConnectorRegistry } from "../src/core/connector/registry.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";

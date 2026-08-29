@@ -3,12 +3,12 @@ import {
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
-import { PolicyError, type PolicyOperationRequest } from "./execution-policy.ts";
+import { PolicyError, type PolicyOperationRequest } from "../execution-policy.ts";
 import {
 	assertPathInsideWorkspace,
 	resolveHostPathForPolicy,
 	type HostFilesystemRoots,
-} from "./policy-filesystem.ts";
+} from "../policy-filesystem.ts";
 
 export interface ExternalToolPolicyOperationInput {
 	readonly request: ToolGatewayRequest;

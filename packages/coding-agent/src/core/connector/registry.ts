@@ -30,7 +30,7 @@ import {
 	type ExternalCapabilityEvidenceInput,
 	type ExternalCapabilityTruthSnapshot,
 	type ExternalResolvedModelProjection,
-} from "./external-model-projection.ts";
+} from "./model-projection.ts";
 import {
 	DEFAULT_EXTERNAL_CONNECTOR_READINESS_TTL_MS,
 	createDescriptorExternalConnectorActivationSource,
@@ -43,7 +43,7 @@ import {
 	type ExternalConnectorActivationSource,
 	type ExternalConnectorReadinessReasonCode,
 	type ExternalConnectorReadinessSnapshot,
-} from "./external-connector-readiness.ts";
+} from "./readiness.ts";
 import {
 	getHostSupervisedExternalAgentConnectorImplementation,
 	getHostSupervisedExternalConnectorRecoveryFailureSettler,
@@ -51,21 +51,21 @@ import {
 	type ExternalConnectorToolGatewayConsumer,
 	type ExternalConnectorToolGatewayScope,
 	type HostSupervisedExternalAgentConnectorImplementation,
-} from "./external-agent-connector.ts";
-import { getProductionExternalConnectorStartupStatus } from "./external-connector-production.ts";
-import type { PolicyBinding } from "./execution-policy.ts";
-import { createPolicyBindingLedgerRecord } from "./execution-policy-ledger.ts";
+} from "./durable-connector.ts";
+import { getProductionExternalConnectorStartupStatus } from "./production.ts";
+import type { PolicyBinding } from "../execution-policy.ts";
+import { createPolicyBindingLedgerRecord } from "../execution-policy-ledger.ts";
 import {
 	runExternalConnectorHostDispose,
 	runExternalConnectorHostOperation,
 	type ExternalConnectorSegmentDeadline,
-} from "./external-connector-supervisor.ts";
+} from "./supervisor.ts";
 import {
 	projectConnectorRuntimeStatus,
 	type ConnectorRuntimeStatus,
 	type ConnectorRuntimeStatusSource,
-} from "./connector-runtime-status.ts";
-import type { RuntimeClock } from "./runtime-clock.ts";
+} from "./runtime-status.ts";
+import type { RuntimeClock } from "../runtime-clock.ts";
 
 /** The only current provider class admitted by the open connector registry. */
 export const EXTERNAL_CONNECTOR_PROVIDER_CLASSES = Object.freeze(["external_connector"] as const);

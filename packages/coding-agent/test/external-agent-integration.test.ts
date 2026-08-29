@@ -17,17 +17,17 @@ import {
 	createExternalConnectorRegistry,
 	type CanonicalExternalAgentInput,
 } from "../src/index.ts";
-import { createDurableExternalAgentConnector } from "../src/core/external-agent-connector.ts";
+import { createDurableExternalAgentConnector } from "../src/core/connector/durable-connector.ts";
 import {
 	executeExternalConnectorProductRun as executeExternalConnectorProductRunWithPolicy,
 	type ExternalConnectorProductExecutionInput,
-} from "../src/core/external-connector-product.ts";
+} from "../src/core/connector/product-run.ts";
 import {
 	resolveExecutionPolicyProfile,
 	type ExecutionPolicyProfile,
 } from "../src/core/execution-policy.ts";
 import { ExecutionAuditAdapter } from "../src/core/execution-audit.ts";
-import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
+import { SessionExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
 import type { SessionEntry } from "../src/core/session-manager.ts";
 import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
 import type {
@@ -37,12 +37,12 @@ import type {
 	ExternalConnectorDriverWriteRequest,
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
-} from "../src/core/vendor-drivers/types.ts";
-import { cloneExternalConnectorTerminalEvidence } from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/vendor/types.ts";
+import { cloneExternalConnectorTerminalEvidence } from "../src/core/connector/vendor/types.ts";
 import type {
 	ExternalModelProjectionField,
 	ExternalModelSupportMatrix,
-} from "../src/core/external-model-projection.ts";
+} from "../src/core/connector/model-projection.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 
 const NOW = "2026-08-27T00:00:00.000Z";

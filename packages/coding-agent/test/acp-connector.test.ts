@@ -37,22 +37,22 @@ import * as packageEntry from "../src/index.ts";
 import {
 	getHostSupervisedExternalAgentConnectorImplementation,
 	isHostSupervisedExternalAgentConnector,
-} from "../src/core/external-agent-connector.ts";
-import { SessionExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
-import { classifyExternalToolPolicyOperation } from "../src/core/external-tool-policy-operation.ts";
+} from "../src/core/connector/durable-connector.ts";
+import { SessionExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
+import { classifyExternalToolPolicyOperation } from "../src/core/connector/tool-policy.ts";
 import { classifyProtectedPathOperation } from "../src/core/protected-path-policy.ts";
-import type { CanonicalExternalConnectorMapping } from "../src/core/external-session-mapping.ts";
+import type { CanonicalExternalConnectorMapping } from "../src/core/connector/session-mapping.ts";
 import {
 	PrivateAcpStableV1Driver,
 	createPrivateAcpExternalAgentConnector,
 	type PrivateAcpStableV1DriverOptions,
 	type PrivateAcpStableV1TransportFactory,
-} from "../src/core/vendor-drivers/acp.ts";
+} from "../src/core/connector/vendor/acp.ts";
 import type {
 	ExternalConnectorDriverEvent,
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverSpawnRequest,
-} from "../src/core/vendor-drivers/types.ts";
+} from "../src/core/connector/vendor/types.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 
 const now = "2026-08-28T00:00:00.000Z";

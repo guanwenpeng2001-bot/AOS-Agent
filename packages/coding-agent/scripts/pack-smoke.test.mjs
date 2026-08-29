@@ -27,15 +27,16 @@ import { digestJson } from "./pack-smoke-common.mjs";
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(packageDirectory, "../..");
-const fixturePath = join(packageDirectory, "src", "core", "external-connector-assets", "fake-connector.json");
+const fixturePath = join(packageDirectory, "src", "core", "connector", "assets", "fake-connector.json");
 const processModulePath = join(
 	packageDirectory,
 	"src",
 	"core",
-	"external-connector-assets",
+	"connector",
+	"assets",
 	"fake-connector-process.mjs",
 );
-const loaderPath = join(packageDirectory, "src", "core", "packaged-external-agent-driver.ts");
+const loaderPath = join(packageDirectory, "src", "core", "connector", "packaged-driver.ts");
 const headSha = "0123456789abcdef0123456789abcdef01234567";
 
 function npmCommand() {
@@ -93,7 +94,8 @@ function assertExecutedTrace(trace) {
 function createStagedPackage(root) {
 	const staged = join(root, "staged-package");
 	const distCore = join(staged, "dist", "core");
-	const assets = join(distCore, "external-connector-assets");
+	const distConnector = join(distCore, "connector");
+	const assets = join(distConnector, "assets");
 	mkdirSync(assets, { recursive: true });
 	const transpiled = ts.transpileModule(readFileSync(loaderPath, "utf8"), {
 		compilerOptions: {
@@ -102,16 +104,16 @@ function createStagedPackage(root) {
 			verbatimModuleSyntax: true,
 		},
 	});
-	writeFileSync(join(distCore, "packaged-external-agent-driver.js"), transpiled.outputText);
+	writeFileSync(join(distConnector, "packaged-driver.js"), transpiled.outputText);
 	writeFileSync(
-		join(distCore, "packaged-external-agent-driver.d.ts"),
+		join(distConnector, "packaged-driver.d.ts"),
 		"export declare function loadPackagedExternalAgentDriver(name: string): unknown;\nexport declare function runPackagedExternalAgentDriverFixture(): Promise<unknown>;\n",
 	);
 	writeFileSync(
 		join(staged, "dist", "external-connector.js"),
-		'export { loadPackagedExternalAgentDriver, runPackagedExternalAgentDriverFixture } from "./core/packaged-external-agent-driver.js";\n',
+		'export { loadPackagedExternalAgentDriver, runPackagedExternalAgentDriverFixture } from "./core/connector/packaged-driver.js";\n',
 	);
-	writeFileSync(join(staged, "dist", "external-connector.d.ts"), "export * from './core/packaged-external-agent-driver.js';\n");
+	writeFileSync(join(staged, "dist", "external-connector.d.ts"), "export * from './core/connector/packaged-driver.js';\n");
 	copyFileSync(fixturePath, join(assets, "fake-connector.json"));
 	copyFileSync(processModulePath, join(assets, "fake-connector-process.mjs"));
 	writeFileSync(join(staged, "npm-shrinkwrap.json"), '{"name":"aos-agent","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"aos-agent","version":"1.0.0"}}}\n');
@@ -152,21 +154,21 @@ test("package-content validation catches missing public exports and assets", () 
 	const files = [
 		"dist/external-connector.js",
 		"dist/external-connector.d.ts",
-		"dist/core/packaged-external-agent-driver.js",
-		"dist/core/packaged-external-agent-driver.d.ts",
-		"dist/core/external-connector-assets/fake-connector.json",
-		"dist/core/external-connector-assets/fake-connector-process.mjs",
+		"dist/core/connector/packaged-driver.js",
+		"dist/core/connector/packaged-driver.d.ts",
+		"dist/core/connector/assets/fake-connector.json",
+		"dist/core/connector/assets/fake-connector-process.mjs",
 		"package.json",
 		"npm-shrinkwrap.json",
 	].map((path) => ({ path }));
 	assert.equal(assertPackageContents({ files }).length, files.length);
 	assert.throws(
 		() => assertPackageContents({ files: files.filter(({ path }) => !path.endsWith("fake-connector.json")) }),
-		/missing package\/dist\/core\/external-connector-assets\/fake-connector\.json/u,
+		/missing package\/dist\/core\/connector\/assets\/fake-connector\.json/u,
 	);
 	assert.throws(
 		() => assertPackageContents({ files: files.filter(({ path }) => !path.endsWith("fake-connector-process.mjs")) }),
-		/missing package\/dist\/core\/external-connector-assets\/fake-connector-process\.mjs/u,
+		/missing package\/dist\/core\/connector\/assets\/fake-connector-process\.mjs/u,
 	);
 });
 
@@ -267,11 +269,11 @@ test("external npm install executes the packed public subpath in Node, Bun, and 
 			install,
 		);
 		copyFileSync(
-			join(install, "node_modules", "aos-agent", "dist", "core", "external-connector-assets", "fake-connector.json"),
+			join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "fake-connector.json"),
 			join(compiledDirectory, "external-connector-assets", "fake-connector.json"),
 		);
 		copyFileSync(
-			join(install, "node_modules", "aos-agent", "dist", "core", "external-connector-assets", "fake-connector-process.mjs"),
+			join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "fake-connector-process.mjs"),
 			join(compiledDirectory, "external-connector-assets", "fake-connector-process.mjs"),
 		);
 		assertExecutedTrace(JSON.parse(run(executable, [], compiledDirectory)).trace);

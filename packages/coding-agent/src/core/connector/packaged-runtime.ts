@@ -11,19 +11,19 @@ import {
 import type {
 	AgentRuntimeCompositionContext,
 	ExternalConnectorRegistryFactory,
-} from "./agent-runtime-composition.ts";
+} from "../agent-runtime-composition.ts";
 import {
 	type ExternalConnectorDurableStore,
 	SessionExternalConnectorDurableStore,
-} from "./external-agent-operation.ts";
-import { createExternalConnectorRegistry } from "./external-agent-registry.ts";
-import { createProductionExternalAgentConnector } from "./external-connector-production.ts";
-import type { ExternalConnectorResolvedTarget } from "./external-connector-target-config.ts";
+} from "./operation.ts";
+import { createExternalConnectorRegistry } from "./registry.ts";
+import { createProductionExternalAgentConnector } from "./production.ts";
+import type { ExternalConnectorResolvedTarget } from "./target-config.ts";
 import {
 	loadPackagedExternalAgentDriver,
 	packagedExternalAgentDriverProcessModulePath,
-} from "./packaged-external-agent-driver.ts";
-import type { ExternalConnectorVendorDriver } from "./vendor-drivers/types.ts";
+} from "./packaged-driver.ts";
+import type { ExternalConnectorVendorDriver } from "./vendor/types.ts";
 
 const PACKAGED_PROVIDER_ID = "aos.fake-connector" as const;
 

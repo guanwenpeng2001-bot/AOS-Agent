@@ -50,7 +50,7 @@ export {
 	type ExternalConnectorTargetSelectionConfig,
 	type ExternalConnectorTargetSelectionSource,
 	type ExternalConnectorTrustedTarget,
-} from "./external-connector-target-config.ts";
+} from "./connector/target-config.ts";
 export {
 	AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
@@ -76,7 +76,7 @@ export { type BashExecutorOptions, type BashResult, executeBashWithOperations } 
 export {
 	classifyExternalToolPolicyOperation,
 	type ExternalToolPolicyOperationInput,
-} from "./external-tool-policy-operation.ts";
+} from "./connector/tool-policy.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
 export {

@@ -20,13 +20,13 @@ import {
 import {
 	createDurableExternalAgentConnector,
 	type ExternalAgentConnectorRuntimeOptions,
-} from "../external-agent-connector.ts";
-import { ExternalConnectorSupervisorError } from "../external-connector-supervisor.ts";
+} from "../durable-connector.ts";
+import { ExternalConnectorSupervisorError } from "../supervisor.ts";
 import {
 	type CanonicalExternalConnectorMapping,
 	isExternalConnectorMappingIdentifier,
-} from "../external-session-mapping.ts";
-import { assertPathInsideWorkspace, type HostFilesystemRoots, resolveHostPathForPolicy } from "../policy-filesystem.ts";
+} from "../session-mapping.ts";
+import { assertPathInsideWorkspace, type HostFilesystemRoots, resolveHostPathForPolicy } from "../../policy-filesystem.ts";
 import type {
 	ExternalConnectorDriverEvent,
 	ExternalConnectorDriverHandle,
