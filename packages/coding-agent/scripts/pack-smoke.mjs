@@ -10,13 +10,14 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import spawn from "cross-spawn";
 import {
-	LINE13_PLATFORMS,
-	LINE13_RUNTIME_KINDS,
+	PLATFORMS,
+	RUNTIME_KINDS,
 	assertChoice,
 	assertExactKeys,
 	assertFullSha,
@@ -27,7 +28,7 @@ import {
 	isMain,
 	parseFlagArguments,
 	writeJsonAtomic,
-} from "./line13-evidence-common.mjs";
+} from "./pack-smoke-common.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = resolve(scriptDirectory, "../../..");
@@ -49,6 +50,8 @@ const REQUIRED_PACKAGE_FILES = Object.freeze([
 ]);
 const RUNTIME_STATES = Object.freeze(["passed", "failed", "unavailable", "not_run"]);
 const RESULT_STATES = Object.freeze(["passed", "failed", "not_run"]);
+// PR-07 replaces this transitional fixture ID during naming convergence.
+export const PACKAGED_FIXTURE_TOOL_CALL_ID = "line13-tool-call";
 
 function npmCommand() {
 	return process.platform === "win32" ? "npm.cmd" : "npm";
@@ -281,7 +284,7 @@ function assertTrace(value) {
 		"trace.toolResult",
 	);
 	if (
-		toolResult.toolCallId !== "line13-tool-call" ||
+		toolResult.toolCallId !== PACKAGED_FIXTURE_TOOL_CALL_ID ||
 		toolResult.toolName !== "fixture.echo" ||
 		toolResult.ok !== true ||
 		toolResult.sideEffectState !== "none" ||
@@ -403,7 +406,7 @@ function runInstalledRuntimes(options) {
 	mkdirSync(join(compiledDirectory, "external-connector-assets"), { recursive: true });
 	const executablePath = join(
 		compiledDirectory,
-		process.platform === "win32" ? "line13-packaged-smoke.exe" : "line13-packaged-smoke",
+		process.platform === "win32" ? "packaged-smoke.exe" : "packaged-smoke",
 	);
 	let compiledResult;
 	try {
@@ -445,7 +448,7 @@ export function createPackageSmokeResult({ headSha, platform, state, runtimes })
 		schemaVersion: 1,
 		type: "package_smoke",
 		headSha: assertFullSha(headSha),
-		platform: assertChoice(platform, LINE13_PLATFORMS, "platform"),
+		platform: assertChoice(platform, PLATFORMS, "platform"),
 		state,
 		evidenceClass: "packaged_execution",
 		outsideRepository: true,
@@ -471,12 +474,12 @@ export function assertPackageSmokeResult(value, options = {}) {
 		!RESULT_STATES.includes(result.state)
 	) throw new Error("Package-smoke identity or state is invalid");
 	assertFullSha(result.headSha);
-	assertChoice(result.platform, LINE13_PLATFORMS, "packageSmoke.platform");
+	assertChoice(result.platform, PLATFORMS, "packageSmoke.platform");
 	assertSha256(result.digest, "packageSmoke.digest");
-	if (!Array.isArray(result.runtimes) || result.runtimes.length !== LINE13_RUNTIME_KINDS.length) {
+	if (!Array.isArray(result.runtimes) || result.runtimes.length !== RUNTIME_KINDS.length) {
 		throw new Error("Package-smoke runtime matrix is incomplete");
 	}
-	for (const [index, runtimeKind] of LINE13_RUNTIME_KINDS.entries()) {
+	for (const [index, runtimeKind] of RUNTIME_KINDS.entries()) {
 		const runtime = assertPlainObject(result.runtimes[index], `packageSmoke.runtimes[${index}]`);
 		assertExactKeys(runtime, ["runtime", "headSha", "state", "digest"], [], `packageSmoke.runtimes[${index}]`);
 		if (
@@ -527,10 +530,10 @@ function validateDryRunInputs(repoRoot) {
 	) throw new Error("Packaged fake Connector fixture metadata is invalid");
 }
 
-export function runLine13PackSmoke(options) {
+export function runPackageSmoke(options) {
 	const repoRoot = options.repoRoot ?? defaultRepoRoot;
 	const headSha = assertFullSha(options.headSha);
-	const platform = assertChoice(options.platform, LINE13_PLATFORMS, "platform");
+	const platform = assertChoice(options.platform, PLATFORMS, "platform");
 	const actualPlatform = platformName();
 	if (actualPlatform !== platform) throw new Error(`Requested ${platform} smoke on ${actualPlatform ?? process.platform}`);
 	const workRoot = assertOutsideRepository(options.workRoot, repoRoot);
@@ -540,14 +543,14 @@ export function runLine13PackSmoke(options) {
 			headSha,
 			platform,
 			state: "not_run",
-			runtimes: LINE13_RUNTIME_KINDS.map((runtime) =>
+			runtimes: RUNTIME_KINDS.map((runtime) =>
 				runtimeResult(runtime, headSha, "not_run", { runtime, state: "not_run" }),
 			),
 		});
 	}
 	mkdirSync(workRoot, { recursive: true });
 	const runDirectory = mkdtempSync(join(workRoot, "run-"));
-	let runtimes = LINE13_RUNTIME_KINDS.map((runtime) =>
+	let runtimes = RUNTIME_KINDS.map((runtime) =>
 		runtimeResult(runtime, headSha, "not_run", { runtime, state: "not_run" }),
 	);
 	try {
@@ -604,7 +607,7 @@ function required(args, flag) {
 }
 
 function printUsage() {
-	console.log(`Usage: node packages/coding-agent/scripts/line13-pack-smoke.mjs [options]
+	console.log(`Usage: node packages/coding-agent/scripts/pack-smoke.mjs [options]
 
 Options:
   --head-sha <sha>              Full candidate commit SHA
@@ -630,24 +633,35 @@ function main() {
 		printUsage();
 		return;
 	}
-	const result = runLine13PackSmoke({
-		headSha: required(args, "--head-sha"),
-		platform: required(args, "--platform"),
-		workRoot: required(args, "--work-root"),
-		candidateTarballOut: resolve(required(args, "--candidate-tarball-out")),
-		dryRun: args["--dry-run"] === true,
+	const dryRun = args["--dry-run"] === true;
+	const workRoot = args["--work-root"] ?? (dryRun
+		? join(tmpdir(), "aos-pack-smoke")
+		: required(args, "--work-root"));
+	const outputPath = args["--out"] ?? (dryRun ? undefined : required(args, "--out"));
+	const result = runPackageSmoke({
+		headSha: args["--head-sha"] ?? (dryRun
+			? runCommand("git", ["rev-parse", "HEAD"], { cwd: defaultRepoRoot }).trim()
+			: required(args, "--head-sha")),
+		platform: args["--platform"] ?? (dryRun
+			? platformName()
+			: required(args, "--platform")),
+		workRoot,
+		candidateTarballOut: resolve(args["--candidate-tarball-out"] ?? (dryRun
+			? join(workRoot, "aos-agent.tgz")
+			: required(args, "--candidate-tarball-out"))),
+		dryRun,
 	});
-	writeJsonAtomic(resolve(required(args, "--out")), result);
+	if (outputPath !== undefined) writeJsonAtomic(resolve(outputPath), result);
 	if (result.state === "passed") {
 		assertPackageSmokeResult(result, { requirePassed: true });
-		console.log(`Line 13 packaged runtime smoke passed: ${result.digest}`);
+		console.log(`Packaged runtime smoke passed: ${result.digest}`);
 		return;
 	}
 	if (result.state === "not_run") {
-		console.log(`Line 13 packaged runtime smoke dry-run validated: ${result.digest}`);
+		console.log(`Packaged runtime smoke dry-run validated: ${result.digest}`);
 		return;
 	}
-	throw new Error(`Line 13 packaged runtime smoke failed: ${result.digest}`);
+	throw new Error(`Packaged runtime smoke failed: ${result.digest}`);
 }
 
 if (isMain(import.meta.url)) {

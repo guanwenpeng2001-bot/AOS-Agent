@@ -579,7 +579,7 @@ const ac22 = defineLine13ResolvedCase({
 					typeof error === "object" && error !== null && "code" in error ? String(error.code) : "unsafe_error";
 			}
 
-			const ownerTest = fileURLToPath(new URL("../../scripts/line13-pack-smoke.test.mjs", import.meta.url));
+			const ownerTest = fileURLToPath(new URL("../../scripts/pack-smoke.test.mjs", import.meta.url));
 			const owner = spawnSync(process.execPath, ["--test", ownerTest], {
 				cwd: packageDirectory,
 				encoding: "utf8",
