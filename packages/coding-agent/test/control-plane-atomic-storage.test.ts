@@ -88,6 +88,10 @@ describe("control-plane atomic storage", () => {
 				'{"generation":"old"}',
 			);
 			expect(readdirSync(tempDir).some((entry) => entry.endsWith(".tmp"))).toBe(false);
+
+			expect(readControlPlaneState(statePath, STORAGE_OPTIONS)).toBe('{"generation":"old"}');
+			writeControlPlaneState(statePath, '{"generation":"new"}', STORAGE_OPTIONS);
+			expect(readControlPlaneState(statePath, STORAGE_OPTIONS)).toBe('{"generation":"new"}');
 		},
 	);
 
