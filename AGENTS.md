@@ -24,15 +24,15 @@
 - Always ask before removing functionality or code that appears intentional.
 - Do not preserve backward compatibility unless the user asks for it.
 - Never hardcode key checks (e.g. `matchesKey(keyData, "ctrl+x")`). Add defaults to `DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS` so they stay configurable.
-- Never modify `packages/ai/src/models.generated.ts` directly; update `packages/ai/scripts/generate-models.ts` instead, then regenerate. Including the resulting `models.generated.ts` diff is always OK, even if regeneration includes unrelated upstream model metadata changes.
+- Never modify generated model catalog output in `packages/ai/src/` directly; update `packages/ai/scripts/generate-models.ts` instead, then regenerate. Including the resulting generated catalog diff is always OK, even if regeneration includes unrelated upstream model metadata changes.
 
 ## Commands
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
 - Never run `npm run build` or `npm test` unless requested by the user.
 - Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root:
-  - Vitest: `node "$(git rev-parse --show-toplevel)/node_modules/vitest/dist/cli.js" --run test/specific.test.ts`
-  - `packages/tui` (`node:test`): `node --test test/specific.test.ts`
+  - Vitest: `node "$(git rev-parse --show-toplevel)/node_modules/vitest/dist/cli.js" --run <path-to-test>`
+  - `packages/tui` (`node:test`): `node --test <path-to-test>`
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
 - Put issue-specific regressions under `packages/coding-agent/test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
@@ -57,7 +57,7 @@ Committing:
 - Only commit files YOU changed in THIS session.
 - Stage explicit paths (`git add <path1> <path2>`); never `git add -A` / `git add .`.
 - Before committing, run `git status` and verify you are only staging your files.
-- `packages/ai/src/models.generated.ts` may always be included alongside your files.
+- Generated model catalog output under `packages/ai/src/` may always be included alongside your files.
 - Message format: `{feat,fix,docs}[(ai,tui,agent,coding-agent)]: <commit message> (optionally multiple lines)`. Message is informative and concise.
 
 Never run (destroys other agents' work or bypasses checks):
@@ -72,7 +72,7 @@ If rebase conflicts occur:
 
 ## Issues and PRs
 
-See `CONTRIBUTING.md` for the contributor gate (auto-close workflows, `lgtm`/`lgtmi`, quality bar).
+See `CONTRIBUTING.md` for owner/maintainer review and the issue quality bar.
 
 When reviewing PRs:
 
@@ -159,9 +159,9 @@ Attribution:
 
    The release script bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check`, commits `Release vX.Y.Z`, tags `vX.Y.Z`, adds fresh `## [Unreleased]` changelog sections, commits `Add [Unreleased] section for next cycle`, then pushes `main` and the tag. Do not rerun the release script after a tag was pushed.
 
-4. **CI verifies the npm release**: pushing the `vX.Y.Z` tag triggers `.github/workflows/build-binaries.yml`. The `publish-npm` job uses npm trusted publishing through GitHub Actions OIDC with environment `npm-publish`; no local `npm publish`, `npm whoami`, OTP, or WebAuthn flow is required. After publishing, CI verifies every public workspace package resolves at the exact release version and that its npm tarball is available.
+4. **Publish npm packages with CI**: after the release tag exists, manually dispatch `.github/workflows/publish-npm.yml` with the exact package version and tag. The workflow checks out that tag, verifies the nine public workspace packages use the requested version, builds them, and publishes through npm trusted publishing with GitHub Actions OIDC. Do not run local `npm publish`, `npm whoami`, OTP, or WebAuthn flows. The repository does not currently have a workflow that publishes compiled Bun binaries; that is a known gap and is not built in this PR.
 
-5. **If CI publish fails**: inspect the failed job. The publish helper is idempotent and skips package versions already present on npm. Rerun the failed job or workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
+5. **If npm publishing fails**: inspect the failed job. The publish helper is idempotent and skips package versions already present on npm. Rerun the manual workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
 
 ## User Override
 

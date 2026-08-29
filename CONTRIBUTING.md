@@ -18,20 +18,15 @@ Using AI to write code is fine. Submitting AI-generated slop without understandi
 
 If you use an agent, run it from the repository root so it picks up `AGENTS.md` automatically. Your agent must follow the rules and guidelines in that file.
 
-## Contribution Gate
+## Contribution Review
 
-All issues and PRs from new contributors are auto-closed by default.
+All issues and PRs are reviewed by an owner or maintainer. There is no automated contributor-gate workflow.
 
 Issues submitted Friday through Sunday are not guaranteed to be reviewed.  If something is urgent, ask on Discord: https://discord.com/invite/3cU7Bz4UPx
 
-Maintainers review auto-closed issues daily and reopen worthwhile ones. Issues that do not meet the quality bar below will not be reopened or receive a reply.
+Maintainers triage issues against the quality bar below and may close reports that do not meet it without replying.
 
-Approval happens through maintainer replies on issues:
-
-- `lgtmi`: your future issues will not be auto-closed
-- `lgtm`: your future issues and PRs will not be auto-closed
-
-The command must be at the start of the reply (optionally after one or more `@username` mentions) or at the end. `lgtmi` does not grant rights to submit PRs. Only `lgtm` grants rights to submit PRs.
+Before opening a PR, get approval for the proposed change from an owner or maintainer. Approval allows the PR to be reviewed but does not guarantee that it will be merged.
 
 ## Quality Bar For Issues
 
@@ -45,7 +40,7 @@ If you open an issue, keep it short, concrete, and worth reading.
 - Explain why it matters.
 - If you want to implement the change yourself, say so.
 
-If the issue is real and written well, a maintainer may reopen it or reply with `lgtmi` or `lgtm` in the command position described above.
+If the issue is real and written well, a maintainer may accept it for further investigation or implementation.
 
 ## Blocking
 
@@ -55,7 +50,7 @@ If you send a large volume of issues through automation, your GitHub account wil
 
 ## Before Submitting a PR
 
-Do not open a PR unless you have already been approved by a maintainer using `lgtm` in the command position described above.
+Do not open a PR unless an owner or maintainer has approved the proposed change.
 
 Before submitting a PR:
 
@@ -66,7 +61,7 @@ npm run check
 
 Both must pass.
 
-Do not edit `CHANGELOG.md`. Changelog entries are added by maintainers.
+Do not edit `packages/*/CHANGELOG.md`. Changelog entries are added by maintainers.
 
 If you are adding a new provider to `packages/ai`, see `AGENTS.md` for required tests.
 
@@ -76,9 +71,9 @@ Ask on [Discord](https://discord.com/invite/nKXTsAcmbT).
 
 ## FAQ
 
-### Why are new issues and PRs auto-closed?
+### Why are issues and PRs reviewed by maintainers?
 
-AOS Agent receives more issues than the maintainers can responsibly review in real time. Many reports do not meet the quality bar in this guide or do not follow CONTRIBUTING.md. Some are slung at the repository mindlessly via an agent instead of being reviewed and shaped by the person submitting them. Auto-closing creates a buffer so maintainers can review the tracker on their own schedule and reopen the issues that meet the quality bar.
+AOS Agent receives more issues than the maintainers can responsibly review in real time. Many reports do not meet the quality bar in this guide or do not follow CONTRIBUTING.md. Some are slung at the repository mindlessly via an agent instead of being reviewed and shaped by the person submitting them. Owner or maintainer review keeps triage decisions with the people responsible for the project.
 
 ### Why are weekend issues lower priority?
 
