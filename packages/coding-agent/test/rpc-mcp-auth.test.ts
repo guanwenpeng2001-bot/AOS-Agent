@@ -221,6 +221,10 @@ async function startFakeOAuthServer(): Promise<FakeOAuthServer> {
 	let origin = "http://127.0.0.1";
 	const server: Server = createServer(async (req, res) => {
 		const url = new URL(req.url ?? "/", origin);
+		if (url.pathname === "/ready") {
+			sendJson(res, 200, { ready: true });
+			return;
+		}
 		if (url.pathname === "/.well-known/oauth-protected-resource") {
 			counts.prm += 1;
 			sendJson(res, 200, {
@@ -359,6 +363,21 @@ async function startFakeOAuthServer(): Promise<FakeOAuthServer> {
 			}),
 	};
 	runningServers.push(fake);
+	// Socket binding alone was not a strong enough readiness boundary under
+	// full-suite load. Complete one accepted request before capability discovery,
+	// retrying transient Windows accept races instead of degrading the MCP catalog.
+	let readiness: Response | undefined;
+	for (let attempt = 0; attempt < 20; attempt += 1) {
+		try {
+			readiness = await fetch(`${origin}/ready`);
+			break;
+		} catch (error) {
+			if (attempt === 19) throw error;
+			await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		}
+	}
+	if (readiness === undefined) throw new Error("Fake OAuth server readiness did not complete");
+	if (!readiness.ok) throw new Error(`Fake OAuth server readiness failed: ${readiness.status}`);
 	return fake;
 }
 
