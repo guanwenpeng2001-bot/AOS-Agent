@@ -330,7 +330,7 @@ export type ImagesFunction<TApi extends ImagesApi = ImagesApi, TOptions extends 
 	options?: TOptions,
 ) => Promise<AssistantImages>;
 
-export interface TextSignatureV1 {
+export interface TextSignature {
 	v: 1;
 	id: string;
 	phase?: "commentary" | "final_answer";
@@ -339,7 +339,7 @@ export interface TextSignatureV1 {
 export interface TextContent {
 	type: "text";
 	text: string;
-	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
+	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignature JSON)
 }
 
 export interface ThinkingContent {

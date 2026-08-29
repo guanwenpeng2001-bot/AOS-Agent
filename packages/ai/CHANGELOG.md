@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Renamed `TextSignatureV1` to `TextSignature`; the wire field `v` remains `1`.
+
 ### Fixed
 
 - Made clean and offline checkouts use reproducible tracked model catalogs generated from the canonical catalog scripts.
