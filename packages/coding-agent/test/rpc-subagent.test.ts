@@ -11,7 +11,7 @@ import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { SafeSubagentLifecycleProjection } from "../src/core/subagent-composition.ts";
+import type { SafeSubagentLifecycleProjection } from "../src/core/subagent/composition.ts";
 import { RpcHostController, type RpcSubagentRegistry } from "../src/modes/rpc/rpc-host.ts";
 
 vi.mock("@aos-agent/ai/compat", () => ({

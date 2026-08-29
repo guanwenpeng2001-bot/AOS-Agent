@@ -77,9 +77,9 @@ import type { SchedulerSelectionReservationStore } from "../src/core/scheduler/s
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type {
 	SubagentCompositionOptions,
-} from "../src/core/subagent-composition.ts";
-import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
-import type { PlanSubagentSpawnInput } from "../src/core/subagent-supervisor.ts";
+} from "../src/core/subagent/composition.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent/registry.ts";
+import type { PlanSubagentSpawnInput } from "../src/core/subagent/supervisor.ts";
 import { createTaskCredentialTestProvider } from "../src/core/task-credential-provider.ts";
 import { TaskGraphStore } from "../src/core/scheduler/task-graph.ts";
 import { createCodingAgentHarness } from "../src/server/create-harness.ts";

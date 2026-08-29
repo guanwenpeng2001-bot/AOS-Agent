@@ -179,7 +179,7 @@ import type { PromptTaskDependencyName } from "./prompt-task-adapter.ts";
 import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
 import type {
 	SubagentComposition,
-} from "./subagent-composition.ts";
+} from "./subagent/composition.ts";
 import {
 	createAgentSessionReadProjection,
 	type AgentSessionReadProjection,

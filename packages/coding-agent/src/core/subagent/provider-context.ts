@@ -9,7 +9,7 @@ import {
 import {
 	forkChildContext,
 	type ChildContextForkResult,
-} from "./subagent-context-fork.ts";
+} from "./context-fork.ts";
 
 export interface LoadParentContextInput {
 	readonly schemaVersion: 1;

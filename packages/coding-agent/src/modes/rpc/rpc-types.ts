@@ -51,8 +51,8 @@ import type {
 	RunStatus,
 } from "../../core/run-lifecycle.ts";
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
-import type { ChildLifecycleStatus } from "../../core/subagent.ts";
-import type { SafeSubagentLifecycleProjection } from "../../core/subagent-composition.ts";
+import type { ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
+import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
 import type {
 	TaskCredentialDeliveryReceipt,
 	TaskCredentialGrant,

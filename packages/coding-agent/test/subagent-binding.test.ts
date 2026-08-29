@@ -27,7 +27,7 @@ import {
 	type ChildBindingProjectionField,
 	type ProjectChildBindingInput,
 	type McpInheritanceApprovalAuthority,
-} from "../src/core/subagent-binding.ts";
+} from "../src/core/subagent/binding.ts";
 import {
 	resolveExecutionPolicy,
 	type ExecutionPolicyProfile,

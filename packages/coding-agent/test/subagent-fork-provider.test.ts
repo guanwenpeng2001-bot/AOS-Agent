@@ -46,11 +46,11 @@ import {
 } from "@aos-agent/agent-core";
 import { createAssistantMessageEventStream, createModels, fakeProvider } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
-import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent/registry.ts";
 import {
 	CHILD_BINDING_PROJECTION_FIELDS,
 	CHILD_BINDING_PROJECTION_OBJECT_TYPE,
-} from "../src/core/subagent-binding.ts";
+} from "../src/core/subagent/binding.ts";
 import {
 	CHILD_AGENT_PROTOCOL_FEATURES,
 	CHILD_AGENT_PROTOCOL_VERSION,
@@ -58,18 +58,18 @@ import {
 	serializeChildAgentFrameLine,
 	type ChildAgentInitializeRequest,
 	type ChildAgentRequestFrame,
-} from "../src/core/subagent-fork-protocol.ts";
+} from "../src/core/subagent/fork-protocol.ts";
 import {
 	ForkChildAgentProvider,
 	type ChildAgentProcess,
 	type ChildAgentProcessSpawnSpec,
-} from "../src/core/subagent-fork-provider.ts";
+} from "../src/core/subagent/fork-provider.ts";
 import {
 	SubagentSupervisor,
 	type PlanSubagentSpawnInput,
 	type SubagentSpawnPlan,
-} from "../src/core/subagent-supervisor.ts";
-import type { LoadParentContext } from "../src/core/subagent-provider-context.ts";
+} from "../src/core/subagent/supervisor.ts";
+import type { LoadParentContext } from "../src/core/subagent/provider-context.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const PROVIDER_ID = "native.fork";

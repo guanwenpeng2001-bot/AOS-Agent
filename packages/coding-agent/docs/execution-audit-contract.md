@@ -77,7 +77,7 @@ The source files that establish these facts are:
 - `src/core/scheduler/task-graph.ts` for Task Graph record, node transition, DAG, and fold facts;
 - `src/core/task-credential-lease.ts` and `src/core/task-credential-store.ts`
   for Task Credential grant, transition, and fold facts;
-- `src/core/subagent-composition.ts` and `src/core/execution-audit.ts` for the
+- `src/core/subagent/composition.ts` and `src/core/execution-audit.ts` for the
   digest-bound child lifecycle projection and its read-only replay guard;
 - `src/modes/rpc/rpc-types.ts` and `src/modes/rpc/rpc-mode.ts` for existing
   public RPC behavior.

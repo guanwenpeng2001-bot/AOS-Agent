@@ -27,7 +27,7 @@ import {
 	type ChildContextForkPlan,
 	type ChildRuntimeCriterion,
 	type ChildRuntimeLayer,
-} from "./subagent-context-fork.ts";
+} from "./context-fork.ts";
 
 export const CHILD_AGENT_PROTOCOL_SCHEMA_VERSION = 1 as const;
 export const CHILD_AGENT_PROTOCOL_VERSION = 1 as const;

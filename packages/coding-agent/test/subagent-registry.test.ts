@@ -11,7 +11,7 @@ import {
 	IN_PROCESS_PROVIDER,
 	type SubagentProviderDescriptor, type SubagentCapabilityRequirements,
 	SubagentProviderRegistry,
-} from "../src/core/subagent-registry.ts";
+} from "../src/core/subagent/registry.ts";
 
 type NativeExecutable = ChildAgentProvider & TaskExecutorProvider;
 

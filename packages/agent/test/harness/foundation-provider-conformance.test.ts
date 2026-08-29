@@ -3,7 +3,7 @@ import {
 	AGENT_RUNTIME_HOST_PROVIDER,
 	type SubagentProviderDescriptor,
 	SubagentProviderRegistry,
-} from "../../../coding-agent/src/core/subagent-registry.ts";
+} from "../../../coding-agent/src/core/subagent/registry.ts";
 import {
 	type AttemptReceipt,
 	type ChildAgentProvider,

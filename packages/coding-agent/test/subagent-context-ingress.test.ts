@@ -19,13 +19,13 @@ import {
 	SUBAGENT_CONTEXT_MAX_ITEMS,
 	SUBAGENT_CONTEXT_TEXT_MAX_BYTES,
 	validateSafeChildMailboxContext,
-} from "../src/core/subagent-context-ingress.ts";
+} from "../src/core/subagent/context-ingress.ts";
 import {
 	SubagentMailbox,
 	type ChildMailboxEndpoint,
 	type SendChildMailboxMessageInput,
-} from "../src/core/subagent-mailbox.ts";
-import type { ChildAgentRosterEntry } from "../src/core/subagent-supervisor.ts";
+} from "../src/core/subagent/mailbox.ts";
+import type { ChildAgentRosterEntry } from "../src/core/subagent/supervisor.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const SESSION_ID = "session-context-ingress";

@@ -16,12 +16,12 @@ import type {
 	ChildMailboxMessage,
 	ConsumeChildMailboxInput,
 	SubagentMailbox,
-} from "./subagent-mailbox.ts";
+} from "./mailbox.ts";
 import {
 	projectSafeChildResult,
 	type SafeChildResultProjection,
 	validateSafeChildResultProjection,
-} from "./subagent-result.ts";
+} from "./result.ts";
 
 export const SUBAGENT_CONTEXT_MESSAGE_MAX_BYTES = 8_192;
 export const SUBAGENT_CONTEXT_TEXT_MAX_BYTES = 4_096;

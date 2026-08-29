@@ -44,11 +44,11 @@ import {
 	createSubagentComposition,
 	SubagentComposition,
 	type SubagentCompositionOptions,
-} from "../src/core/subagent-composition.ts";
+} from "../src/core/subagent/composition.ts";
 import {
 	createMcpInheritanceApprovalAuthority,
 	type McpInheritanceApprovalAuthority,
-} from "../src/core/subagent-binding.ts";
+} from "../src/core/subagent/binding.ts";
 import {
 	resolveExecutionPolicy,
 	type ExecutionPolicyProfile,
@@ -60,14 +60,14 @@ import {
 	type PolicyLedgerSessionEntry,
 } from "../src/core/execution-policy-ledger.ts";
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
-import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
-import type { PlanSubagentSpawnInput } from "../src/core/subagent-supervisor.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent/registry.ts";
+import type { PlanSubagentSpawnInput } from "../src/core/subagent/supervisor.ts";
 import type { SchedulerNativeAgentResolveInput } from "../src/core/scheduler/dispatch.ts";
 import type {
 	ChildWorktreeIdentity,
 	OwnedWorktreeState,
 	WorktreeAdapter,
-} from "../src/core/subagent-worktree.ts";
+} from "../src/core/subagent/worktree.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const APPROVED_AT = "2026-01-01T00:01:00.000Z";

@@ -16,7 +16,7 @@ import {
 	type ChildWorktreeIdentity,
 	type OwnedWorktreeState,
 	type WorktreeAdapter,
-} from "../src/core/subagent-worktree.ts";
+} from "../src/core/subagent/worktree.ts";
 
 const BASE_DIGEST = `sha256:${"a".repeat(64)}`;
 const TARGET_DIGEST = `sha256:${"b".repeat(64)}`;

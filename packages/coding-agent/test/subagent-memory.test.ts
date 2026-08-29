@@ -11,7 +11,7 @@ import {
 import {
 	cleanupChildMemoryScope,
 	createChildMemoryScope,
-} from "../src/core/subagent-memory.ts";
+} from "../src/core/subagent/memory.ts";
 
 function memoryFixture(id: string) {
 	const session = new Session(new InMemorySessionStorage({ id, createdAt: 1 }));

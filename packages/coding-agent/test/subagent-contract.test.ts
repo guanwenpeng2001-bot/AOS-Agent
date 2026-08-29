@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as subagentContract from "../src/core/subagent.ts";
+import * as subagentContract from "../src/core/subagent/lifecycle.ts";
 import {
 	CHILD_LIFECYCLE_STATUSES,
 	SUBAGENT_FORBIDDEN_KEYS,
@@ -14,7 +14,7 @@ import {
 	type ChildAgentTransition,
 	type ChildLifecycleStatus,
 	type CreateChildAgentRecordInput,
-} from "../src/core/subagent.ts";
+} from "../src/core/subagent/lifecycle.ts";
 
 const BASE_TIME_MS = Date.parse("2026-08-22T00:00:00.000Z");
 const creation: CreateChildAgentRecordInput = {

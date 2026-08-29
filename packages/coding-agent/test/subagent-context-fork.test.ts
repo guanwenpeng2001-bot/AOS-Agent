@@ -21,7 +21,7 @@ import {
 	TASK_PACKAGE_MAX_CRITERIA,
 	validateChildContextForkPlan,
 	type ForkChildContextInput,
-} from "../src/core/subagent-context-fork.ts";
+} from "../src/core/subagent/context-fork.ts";
 
 const ARTIFACT_DIGEST = `sha256:${"cd".repeat(32)}`;
 

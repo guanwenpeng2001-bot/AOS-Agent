@@ -113,8 +113,8 @@ import {
 } from "../../core/run-lifecycle.ts";
 import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
-import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatus } from "../../core/subagent.ts";
-import type { SafeSubagentLifecycleProjection } from "../../core/subagent-composition.ts";
+import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
+import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
 import {
 	isTaskCredentialScope,
 	serializeTaskCredentialDeliveryReceipt,

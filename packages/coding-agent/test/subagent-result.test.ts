@@ -41,7 +41,7 @@ import {
 	validateSafeChildResultProjection,
 	type ChildResultTransportHost,
 	type ChildTaskSettlementAdapterInput,
-} from "../src/core/subagent-result.ts";
+} from "../src/core/subagent/result.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const NOW_MS = Date.parse(NOW);

@@ -44,7 +44,7 @@ import { writeToolSystemPromptContribution } from "../core/tools/write.ts";
 import {
 	createSubagentComposition,
 	type SubagentCompositionOptions,
-} from "../core/subagent-composition.ts";
+} from "../core/subagent/composition.ts";
 
 export interface CodingAgentHarnessTool extends HarnessTool {
 	promptSnippet?: string;

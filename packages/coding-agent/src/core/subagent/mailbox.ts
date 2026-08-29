@@ -12,8 +12,8 @@ import {
 	type ResultValue,
 	type SessionLedger,
 } from "@aos-agent/agent-core";
-import { SUBAGENT_PROVIDER_KINDS } from "./subagent.ts";
-import type { ChildAgentRosterEntry } from "./subagent-supervisor.ts";
+import { SUBAGENT_PROVIDER_KINDS } from "./lifecycle.ts";
+import type { ChildAgentRosterEntry } from "./supervisor.ts";
 
 export const SUBAGENT_MAILBOX_SENT_OBJECT_TYPE = "subagent.mailbox_message_sent";
 export const SUBAGENT_MAILBOX_ACK_OBJECT_TYPE = "subagent.mailbox_message_acknowledged";

@@ -183,7 +183,7 @@ import {
 	type SchedulerNativeAgentPlanner,
 	type SubagentCompositionOptions,
 	type SubagentComposition,
-} from "./subagent-composition.ts";
+} from "./subagent/composition.ts";
 import {
 	parseWorkerRecord,
 	workerTransitionAllowed,

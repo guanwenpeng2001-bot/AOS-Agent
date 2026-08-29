@@ -2,7 +2,7 @@ import { validateEventPayloadForCategory } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import * as publicApi from "../src/index.ts";
 import type { ExternalAgentConnector } from "../src/index.ts";
-import { SUBAGENT_PROVIDER_KINDS } from "../src/core/subagent.ts";
+import { SUBAGENT_PROVIDER_KINDS } from "../src/core/subagent/lifecycle.ts";
 
 function acceptsExternalConnector(connector: ExternalAgentConnector): ExternalAgentConnector {
 	return connector;

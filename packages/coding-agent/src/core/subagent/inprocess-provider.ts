@@ -51,15 +51,15 @@ import {
 	type TaskExecutorProvider,
 	type ToolGateway,
 } from "@aos-agent/agent-core";
-import type { ChildContextForkResult } from "./subagent-context-fork.ts";
-import { cleanupChildMemoryScope, createChildMemoryScope } from "./subagent-memory.ts";
+import type { ChildContextForkResult } from "./context-fork.ts";
+import { cleanupChildMemoryScope, createChildMemoryScope } from "./memory.ts";
 import {
 	projectProviderChildContext,
 	type LoadParentContext,
-} from "./subagent-provider-context.ts";
-import { IN_PROCESS_PROVIDER } from "./subagent-registry.ts";
-import type { SubagentProviderSpawnPlan, SubagentSupervisor } from "./subagent-supervisor.ts";
-import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "./scheduler/executors.ts";
+} from "./provider-context.ts";
+import { IN_PROCESS_PROVIDER } from "./registry.ts";
+import type { SubagentProviderSpawnPlan, SubagentSupervisor } from "./supervisor.ts";
+import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "../scheduler/executors.ts";
 
 export interface ChildAgentHarnessCreateInput {
 	readonly session: Session;

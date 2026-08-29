@@ -37,25 +37,25 @@ import {
 	SubagentContextIngress,
 	renderSubagentNextTurnContext,
 	type SafeSubagentNextTurnContext,
-} from "./subagent-context-ingress.ts";
-import { ForkChildAgentProvider } from "./subagent-fork-provider.ts";
-import type { LoadParentContext } from "./subagent-provider-context.ts";
+} from "./context-ingress.ts";
+import { ForkChildAgentProvider } from "./fork-provider.ts";
+import type { LoadParentContext } from "./provider-context.ts";
 import {
 	InProcessChildAgentProvider,
 	type ChildAgentHarnessCreateInput,
-} from "./subagent-inprocess-provider.ts";
+} from "./inprocess-provider.ts";
 import {
 	SubagentMailbox,
 	type ChildMailboxEndpoint,
 	type ChildMailboxMessage,
 	type ConsumeChildMailboxInput,
-} from "./subagent-mailbox.ts";
+} from "./mailbox.ts";
 import {
 	persistChildBindingProjection,
 	projectChildBinding,
 	type McpInheritanceApprovalAuthority,
-} from "./subagent-binding.ts";
-import { cleanupChildMemoryScope, createChildMemoryScope } from "./subagent-memory.ts";
+} from "./binding.ts";
+import { cleanupChildMemoryScope, createChildMemoryScope } from "./memory.ts";
 import {
 	FORK_PROVIDER,
 	IN_PROCESS_PROVIDER,
@@ -63,14 +63,14 @@ import {
 	type ExecutableSubagentProvider,
 	type SubagentProviderDescriptor,
 	type SubagentProviderKind,
-} from "./subagent-registry.ts";
+} from "./registry.ts";
 import {
 	projectSafeChildResult,
 	settleChildTaskResult,
 	type ChildTaskSettlementPolicy,
 	type SafeChildResultProjection,
-} from "./subagent-result.ts";
-import { SubagentSupervisor, type PlanSubagentSpawnInput, type SubagentSpawnPlan } from "./subagent-supervisor.ts";
+} from "./result.ts";
+import { SubagentSupervisor, type PlanSubagentSpawnInput, type SubagentSpawnPlan } from "./supervisor.ts";
 import {
 	applyChildWorktree,
 	cleanupChildWorktree,
@@ -79,21 +79,21 @@ import {
 	type ChildWorktreeIdentity,
 	type ChildWorktreeRecord,
 	type WorktreeAdapter,
-} from "./subagent-worktree.ts";
-import type { ChildAgentRecord, ChildLifecycleStatus } from "./subagent.ts";
-import type { RunSubagentLifecycleHooks } from "./run-lifecycle.ts";
+} from "./worktree.ts";
+import type { ChildAgentRecord, ChildLifecycleStatus } from "./lifecycle.ts";
+import type { RunSubagentLifecycleHooks } from "../run-lifecycle.ts";
 import type {
 	PromptTaskCompositionRootOptions,
 	PromptTaskSubagentCompositionInput,
 	PromptTaskSubagentSpawnInput,
 	PromptTaskSubagentSpawnResult,
-} from "./prompt-task-adapter.ts";
+} from "../prompt-task-adapter.ts";
 import type {
 	SchedulerNativeAgentBridge,
 	SchedulerNativeAgentResolution,
 	SchedulerNativeAgentResolveInput,
 	SchedulerNativeAgentRevalidateInput,
-} from "./scheduler/dispatch.ts";
+} from "../scheduler/dispatch.ts";
 
 type ExecutableChildProviderV1 = ChildAgentProvider & TaskExecutorProvider & {
 	close(attemptId: string): Promise<ResultValue<void, FoundationError>>;

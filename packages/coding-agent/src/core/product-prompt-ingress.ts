@@ -41,7 +41,7 @@ import {
 	type ProductPromptDependencySnapshotContext,
 } from "./product-prompt-binding-authority.ts";
 import { isRuntimeSessionSurface, type RuntimeSessionSurface } from "./runtime-session-surface.ts";
-import type { SubagentComposition } from "./subagent-composition.ts";
+import type { SubagentComposition } from "./subagent/composition.ts";
 
 export type { ProductPromptDependencySnapshotContext } from "./product-prompt-binding-authority.ts";
 

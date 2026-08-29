@@ -43,23 +43,23 @@ import {
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
-import { attachJsonlLineReader } from "../modes/rpc/jsonl.ts";
-import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../utils/shell.ts";
-import { FORK_PROVIDER } from "./subagent-registry.ts";
+import { attachJsonlLineReader } from "../../modes/rpc/jsonl.ts";
+import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
+import { FORK_PROVIDER } from "./registry.ts";
 import {
 	CHILD_BINDING_PROJECTION_OBJECT_TYPE,
 	validateChildBindingProjection,
 	type ChildBindingProjection,
-} from "./subagent-binding.ts";
-import type { ChildContextForkResult } from "./subagent-context-fork.ts";
+} from "./binding.ts";
+import type { ChildContextForkResult } from "./context-fork.ts";
 import {
 	projectProviderChildContext,
 	type LoadParentContext,
-} from "./subagent-provider-context.ts";
+} from "./provider-context.ts";
 import {
 	childAgentQuotaAttribution,
 	type ChildAgentBackgroundAttach,
-} from "./subagent-inprocess-provider.ts";
+} from "./inprocess-provider.ts";
 import {
 	CHILD_AGENT_PROTOCOL_FEATURES,
 	CHILD_AGENT_PROTOCOL_MAX_FRAME_BYTES,
@@ -72,8 +72,8 @@ import {
 	type ChildAgentInitializeRequest,
 	type ChildAgentProtocolFrame,
 	type ChildAgentTranscriptRef,
-} from "./subagent-fork-protocol.ts";
-import type { SubagentProviderSpawnPlan, SubagentSupervisor } from "./subagent-supervisor.ts";
+} from "./fork-protocol.ts";
+import type { SubagentProviderSpawnPlan, SubagentSupervisor } from "./supervisor.ts";
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_TURN_TIMEOUT_MS = 15_000;

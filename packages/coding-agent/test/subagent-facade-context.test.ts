@@ -26,7 +26,7 @@ import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { SubagentComposition } from "../src/core/subagent-composition.ts";
+import type { SubagentComposition } from "../src/core/subagent/composition.ts";
 
 const MODEL: Model<"anthropic-messages"> = {
 	id: "fake-model",

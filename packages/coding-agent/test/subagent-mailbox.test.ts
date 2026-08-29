@@ -6,8 +6,8 @@ import {
 	SubagentMailbox,
 	type ChildMailboxEndpoint,
 	type SendChildMailboxMessageInput,
-} from "../src/core/subagent-mailbox.ts";
-import type { ChildAgentRosterEntry } from "../src/core/subagent-supervisor.ts";
+} from "../src/core/subagent/mailbox.ts";
+import type { ChildAgentRosterEntry } from "../src/core/subagent/supervisor.ts";
 
 const START = Date.parse("2026-01-01T00:00:00.000Z");
 

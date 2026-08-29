@@ -1,12 +1,12 @@
-import { FoundationError } from "../../../agent/src/harness/foundation/errors.ts";
+import { FoundationError } from "../../../../agent/src/harness/foundation/errors.ts";
 import type {
 	ChildAgentProvider,
 	ExecutionProviderDescriptor,
 	TaskExecutorProvider,
-} from "../../../agent/src/harness/foundation/providers.ts";
-import { SUBAGENT_PROVIDER_KINDS, type SubagentProviderKind } from "./subagent.ts";
+} from "../../../../agent/src/harness/foundation/providers.ts";
+import { SUBAGENT_PROVIDER_KINDS, type SubagentProviderKind } from "./lifecycle.ts";
 
-export type { SubagentProviderKind } from "./subagent.ts";
+export type { SubagentProviderKind } from "./lifecycle.ts";
 
 export interface SubagentProviderDescriptor {
 	readonly schemaVersion: 1;

@@ -37,10 +37,10 @@ import { ProductPromptIngress } from "../src/core/product-prompt-ingress.ts";
 import {
 	SubagentComposition,
 	type ProductPromptCompositionPolicy,
-} from "../src/core/subagent-composition.ts";
-import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
-import type { PlanSubagentSpawnInput, SubagentSpawnPlan } from "../src/core/subagent-supervisor.ts";
-import type { ChildTaskSettlementPolicy } from "../src/core/subagent-result.ts";
+} from "../src/core/subagent/composition.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent/registry.ts";
+import type { PlanSubagentSpawnInput, SubagentSpawnPlan } from "../src/core/subagent/supervisor.ts";
+import type { ChildTaskSettlementPolicy } from "../src/core/subagent/result.ts";
 
 const MODEL = getModel("openai", "gpt-4o-mini");
 const NOW = "2026-08-22T00:00:00.000Z";

@@ -39,7 +39,7 @@ import {
 	type TaskEnvelopePublicProjection,
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
-import { CHILD_CONTEXT_FORK_SCOPES, type ChildContextForkScope } from "./subagent.ts";
+import { CHILD_CONTEXT_FORK_SCOPES, type ChildContextForkScope } from "./lifecycle.ts";
 
 export const CHILD_CONTEXT_FORK_SCHEMA_VERSION = 1 as const;
 export const TASK_PACKAGE_GOAL_MAX_CHARS = 4096;

@@ -36,7 +36,7 @@ import {
 	type ChildAgentInitializeRequest,
 	type ChildAgentTurnCompletedEvent,
 	type ChildAgentTurnRequest,
-} from "./core/subagent-fork-protocol.ts";
+} from "./core/subagent/fork-protocol.ts";
 
 export interface ChildAgentTurnResult {
 	readonly receipt: AttemptReceipt;

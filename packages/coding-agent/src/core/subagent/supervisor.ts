@@ -43,8 +43,8 @@ import {
 	validateChildAgentRecord,
 	type ChildAgentRecord,
 	type ChildLifecycleStatus,
-} from "./subagent.ts";
-import type { SubagentProviderDescriptor } from "./subagent-registry.ts";
+} from "./lifecycle.ts";
+import type { SubagentProviderDescriptor } from "./registry.ts";
 
 export const SUBAGENT_LIFECYCLE_OBJECT_TYPE = "subagent.lifecycle_transitioned";
 export const SUBAGENT_SUPERVISOR_CONTROL_OBJECT_TYPE = "subagent.supervisor_control";

@@ -143,13 +143,13 @@ import {
 	type WorkerLifecycleStatus,
 	type WorkerRecord,
 } from "./worker.ts";
-import type { SafeSubagentLifecycleProjection } from "./subagent-composition.ts";
+import type { SafeSubagentLifecycleProjection } from "./subagent/composition.ts";
 import {
 	CHILD_LIFECYCLE_STATUSES,
 	SUBAGENT_PROVIDER_KINDS,
 	type ChildLifecycleStatus,
 	type SubagentProviderKind,
-} from "./subagent.ts";
+} from "./subagent/lifecycle.ts";
 import {
 	SCHEDULER_DURABLE_EVENT_CATEGORIES,
 	SCHEDULER_FORBIDDEN_PAYLOAD_KEYS,

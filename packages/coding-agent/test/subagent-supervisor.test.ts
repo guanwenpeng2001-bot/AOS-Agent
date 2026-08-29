@@ -28,13 +28,13 @@ import {
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent/registry.ts";
 import {
 	SUBAGENT_SUPERVISOR_CONTROL_OBJECT_TYPE,
 	SubagentSupervisor,
 	type PlanSubagentSpawnInput,
 	type SubagentSpawnPlan,
-} from "../src/core/subagent-supervisor.ts";
+} from "../src/core/subagent/supervisor.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const PROVIDER_ID = "native.in_process";
