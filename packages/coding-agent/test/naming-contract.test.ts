@@ -6,7 +6,70 @@ import { repoRoot } from "./support/public-roots.ts";
 const SOURCE_DIRECTORIES = ["packages/agent/src", "packages/coding-agent/src", "packages/ai/src"] as const;
 
 const sourceNamingContractPattern =
-	/\bexport\s+(?:(?:declare|default|async)\s+)*(?:type|interface|class|function|const)\s+(?<versionedExport>[A-Za-z_$][\w$]*V\d+)\b|\bexport\s+(?:(?:declare|default|async)\s+)*(?:type|interface|class|function|const)\s+(?<trustedExport>Trusted[A-Z][\w$]*)|(?<lineIdentifier>\bLine13T5[\w$]*|\bLine1[0-9][\w$]*)|(?<ticket>\bT[0-9]{1,2}\b)|(?<faux>[Ff][Aa][Uu][Xx])|(?<fixturePrefix>\b[Ll][Ii][Nn][Ee]13[-.])/gu;
+	/\bexport\s+(?:(?:declare|default|async|abstract)\s+)*(?:type|interface|class|function|const)\s+(?<versionedExport>[A-Za-z_$][\w$]*V\d+)\b|\bexport\s+(?:(?:declare|default|async|abstract)\s+)*(?:type|interface|class|function|const)\s+(?<trustedExport>Trusted[A-Z][\w$]*)|(?<lineIdentifier>\bLine13T5[\w$]*|\bLine1[0-9][\w$]*)|(?<ticket>\bT[0-9]{1,2}\b)|(?<faux>[Ff][Aa][Uu][Xx])|(?<fixturePrefix>\b[Ll][Ii][Nn][Ee]13[-.])/gu;
+
+const trustedNamedExportPattern =
+	/\bexport\s+(?:type\s+)?\{[^}]*\b(?<trustedNamedExport>Trusted[A-Z][\w$]*)\b[^}]*\}/gu;
+
+function maskCommentsAndStrings(source: string): string {
+	const masked = source.split("");
+	let quote: string | undefined;
+	let index = 0;
+	while (index < source.length) {
+		const character = source[index];
+		const nextCharacter = source[index + 1];
+		if (quote !== undefined) {
+			if (character === "\\") {
+				masked[index] = " ";
+				index += 1;
+				if (index < source.length) {
+					if (source[index] !== "\r" && source[index] !== "\n") masked[index] = " ";
+					index += 1;
+				}
+				continue;
+			}
+			if (character === quote) quote = undefined;
+			if (character !== "\r" && character !== "\n") masked[index] = " ";
+			index += 1;
+			continue;
+		}
+
+		if (character === "'" || character === '"' || character === "`") {
+			quote = character;
+			masked[index] = " ";
+			index += 1;
+			continue;
+		}
+		if (character === "/" && nextCharacter === "/") {
+			masked[index] = " ";
+			masked[index + 1] = " ";
+			index += 2;
+			while (index < source.length && source[index] !== "\r" && source[index] !== "\n") {
+				masked[index] = " ";
+				index += 1;
+			}
+			continue;
+		}
+		if (character === "/" && nextCharacter === "*") {
+			masked[index] = " ";
+			masked[index + 1] = " ";
+			index += 2;
+			while (index < source.length) {
+				if (source[index] === "*" && source[index + 1] === "/") {
+					masked[index] = " ";
+					masked[index + 1] = " ";
+					index += 2;
+					break;
+				}
+				if (source[index] !== "\r" && source[index] !== "\n") masked[index] = " ";
+				index += 1;
+			}
+			continue;
+		}
+		index += 1;
+	}
+	return masked.join("");
+}
 
 function collectTypeScriptFiles(directory: string, files: string[]): void {
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -94,6 +157,13 @@ describe("source naming contract", () => {
 				} else if (groups?.fixturePrefix !== undefined) {
 					violations.push(`${location}: fixture prefix ${groups.fixturePrefix}`);
 				}
+			}
+			for (const match of maskCommentsAndStrings(source).matchAll(trustedNamedExportPattern)) {
+				const trustedNamedExport = match.groups?.trustedNamedExport;
+				if (trustedNamedExport === undefined) continue;
+				const index = match.index ?? 0;
+				const location = `${relative(root, path).replaceAll("\\", "/")}:${lineNumber(source, index)}`;
+				violations.push(`${location}: Trusted export ${trustedNamedExport}`);
 			}
 		}
 

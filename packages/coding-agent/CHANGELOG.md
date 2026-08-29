@@ -61,6 +61,7 @@
 
 ### Fixed
 
+- Source naming contract now flags Trusted named re-exports and version-suffixed `export abstract class` declarations.
 - Scheduler restarts now reclaim interrupted capacity and quota reservations before dispatching new work.
 - First-start migrations can no longer leave corrupted configuration or account files after interrupted writes.
 - Updated External Connector coverage to exercise current package, product-composition, runtime-limit, runtime-status, and durable retry behavior; the final promotion evidence gate remains outstanding, so this checkout does not claim product readiness.
