@@ -49,6 +49,8 @@ import {
 	createTrustedWorkerSandboxComposition,
 	buildExternalConnectorTargetConfig,
 	ExternalConnectorTargetConfigError,
+	InteractiveMode,
+	runPrintMode,
 	SchedulerExecutorRegistry,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionContext,
@@ -144,6 +146,17 @@ function runtimeFactory(fixture: RuntimeFixture): CreateAgentSessionRuntimeFacto
 			diagnostics: fixture.services.diagnostics,
 		};
 	};
+}
+
+async function createExternalConnectorSurfaceRuntime(sessionId: string) {
+	const fixture = await createRuntimeFixture(createAgentRuntimeCompositionFactory({
+		externalConnectorRegistry: (context) => createTestExternalConnectorRegistry(context.sessionId),
+	}));
+	return await createAgentSessionRuntime(runtimeFactory(fixture), {
+		cwd: fixture.cwd,
+		agentDir: fixture.cwd,
+		session: { mode: "memory", id: sessionId },
+	});
 }
 
 function createGateway(sessionId: string): ToolGateway {
@@ -1763,6 +1776,29 @@ describe("AgentRuntimeComposition", () => {
 			await direct.session.dispose();
 			await fromServices.session.dispose();
 		}
+	});
+
+	it("carries the composed External Connector registry through the TUI Session", async () => {
+		const runtime = await createExternalConnectorSurfaceRuntime("composition-tui-surface");
+		const registry = runtime.runtimeComposition.externalConnectorRegistry;
+		const interactiveMode = new InteractiveMode(runtime, { tuiMode: "regular" });
+		try {
+			expect(runtime.runtimeComposition).toBe(runtime.session.agentRuntimeComposition);
+			expect(runtime.session.getExternalConnectorRegistry()).toBe(registry);
+			expect(registry?.list()).toHaveLength(1);
+		} finally {
+			interactiveMode.stop("transcript");
+			await runtime.dispose();
+		}
+	});
+
+	it("carries the composed External Connector registry through the print Session", async () => {
+		const runtime = await createExternalConnectorSurfaceRuntime("composition-print-surface");
+		const registry = runtime.runtimeComposition.externalConnectorRegistry;
+		expect(runtime.runtimeComposition).toBe(runtime.session.agentRuntimeComposition);
+		expect(runtime.session.getExternalConnectorRegistry()).toBe(registry);
+		expect(registry?.list()).toHaveLength(1);
+		expect(await runPrintMode(runtime, { mode: "text" })).toBe(0);
 	});
 
 	it("disposes the allocated Session when initial runtime composition validation fails", async () => {
