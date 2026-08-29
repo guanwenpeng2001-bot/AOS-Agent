@@ -11,7 +11,7 @@ import type { AgentMessage, AgentToolResult } from "@aos-agent/agent-core";
 import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { type SessionEntry, sessionEntryToContextMessages } from "../../src/core/session-manager.ts";
+import { type SessionEntry, sessionEntryToContextMessages } from "../../src/core/session/manager.ts";
 import type { ExtensionFactory } from "../../src/index.ts";
 import { createHarness } from "./harness.ts";
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_CODING_AGENT_DIR } from "../src/config.ts";
-import { FOUNDATION_FACT_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
+import { FOUNDATION_FACT_CUSTOM_TYPE } from "../src/core/session/manager-storage.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");

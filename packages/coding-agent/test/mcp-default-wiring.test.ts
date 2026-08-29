@@ -22,12 +22,12 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 	type AgentSessionServices,
-} from "../src/core/agent-session-services.ts";
+} from "../src/core/session/services.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createDefaultMCPAuthManagerOptions } from "../src/core/mcp-auth-manager.ts";
 import { MCPAuthStorage } from "../src/core/mcp-auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 
 const HTTP_SERVER_URL = "https://mcp.example.invalid/mcp";
 const ISSUER_URL = "https://issuer.example.invalid";

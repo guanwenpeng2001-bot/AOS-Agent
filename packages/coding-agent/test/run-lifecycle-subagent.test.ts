@@ -3,8 +3,8 @@ import {
 	createRunLifecycleCoordinator,
 	registerRunSubagentLifecycleHooks,
 	type RunSubagentLifecycleHooks,
-} from "../src/core/run-lifecycle.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+} from "../src/core/session/run-lifecycle.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 
 const MODEL = { provider: "fake", id: "fake-model", thinkingLevel: "high" as const };

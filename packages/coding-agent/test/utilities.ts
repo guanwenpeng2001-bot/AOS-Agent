@@ -10,7 +10,7 @@ import { Agent } from "@aos-agent/agent-core";
 import type { OAuthCredentials } from "@aos-agent/ai";
 import { getModel, streamSimple } from "@aos-agent/ai/compat";
 import { builtinProviders } from "@aos-agent/ai/providers/all";
-import { AgentSession } from "../src/core/agent-session.ts";
+import { AgentSession } from "../src/core/session/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import type {
@@ -21,7 +21,7 @@ import type {
 } from "../src/core/extensions/index.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createCodingTools } from "../src/index.ts";
 

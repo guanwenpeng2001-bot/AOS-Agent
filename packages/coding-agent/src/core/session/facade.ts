@@ -60,41 +60,41 @@ import {
 	materializeAgentRuntimeComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
-} from "./agent-runtime-composition.ts";
-import type { CapabilityBinding, CapabilityCatalogView } from "./capability-registry.ts";
-import { ExtensionRunner, type ContextUsage, type ReplacedSessionContext, type SessionStartEvent, type ToolDefinition, type ToolInfo } from "./extensions/index.ts";
-import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import { wrapRegisteredTools } from "./extensions/wrapper.ts";
-import { wrapToolDefinitions } from "./tools/tool-definition-wrapper.ts";
-import { ModelRegistry } from "./model-registry.ts";
-import { ModelBroker, type ModelResolution, type NormalizedModelReference } from "./model-broker.ts";
+} from "../agent-runtime-composition.ts";
+import type { CapabilityBinding, CapabilityCatalogView } from "../capability-registry.ts";
+import { ExtensionRunner, type ContextUsage, type ReplacedSessionContext, type SessionStartEvent, type ToolDefinition, type ToolInfo } from "../extensions/index.ts";
+import { emitSessionShutdownEvent } from "../extensions/runner.ts";
+import { wrapRegisteredTools } from "../extensions/wrapper.ts";
+import { wrapToolDefinitions } from "../tools/tool-definition-wrapper.ts";
+import { ModelRegistry } from "../model-registry.ts";
+import { ModelBroker, type ModelResolution, type NormalizedModelReference } from "../model-broker.ts";
 import {
 	persistModelAttempt,
 	persistModelBinding,
 	type ModelAttemptLedgerRecord,
 	type ModelBindingLedgerRecord,
-} from "./model-broker-ledger.ts";
-import { classifyProviderFailure } from "./execution-error.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
-import type { ResourceLoader } from "./resource-loader.ts";
+} from "../model-broker-ledger.ts";
+import { classifyProviderFailure } from "../execution-error.ts";
+import type { ModelRuntime } from "../model-runtime.ts";
+import type { ResourceLoader } from "../resource-loader.ts";
 import type {
 	ExternalConnectorRegistry,
-} from "./connector/registry.ts";
+} from "../connector/registry.ts";
 import {
 	getLatestCompactionEntry,
 	SessionManager,
 	type BranchSummaryEntry,
 	type CompactionEntry as LegacyCompactionEntry,
 	type SessionEntry,
-} from "./session-manager.ts";
+} from "./manager.ts";
 import {
 	type CodingAgentSessionMetadata,
 	createHarnessCompatibilityWriter,
 	normalizeSessionName,
 	SessionManagerStorage,
-} from "./session-manager-storage.ts";
-import type { SettingsManager } from "./settings-manager.ts";
-import type { BashResult } from "./bash-executor.ts";
+} from "./manager-storage.ts";
+import type { SettingsManager } from "../settings-manager.ts";
+import type { BashResult } from "../bash-executor.ts";
 import {
 	ContextMemoryStore,
 	CONTEXT_MEMORY_CUSTOM_TYPE,
@@ -121,16 +121,16 @@ import type {
 	MCPResourceTemplateListResult,
 	MCPServerConfigView,
 	MCPConnectionStatus,
-} from "./mcp-types.ts";
-import { MCPError } from "./mcp-types.ts";
-import type { MCPAuthManager, MCPAuthStartOptions, MCPAuthStartResult } from "./mcp-auth-manager.ts";
-import type { MCPCredentialStatus } from "./mcp-auth-storage.ts";
+} from "../mcp-types.ts";
+import { MCPError } from "../mcp-types.ts";
+import type { MCPAuthManager, MCPAuthStartOptions, MCPAuthStartResult } from "../mcp-auth-manager.ts";
+import type { MCPCredentialStatus } from "../mcp-auth-storage.ts";
 import {
 	MCPContentError,
 	mapMCPNormalizedBlocksToAgentContent,
 	type MCPGetPromptResult,
 	type MCPReadResourceResult,
-} from "./mcp-content.ts";
+} from "../mcp-content.ts";
 import {
 	McpAttachmentRegistry,
 	MCP_ATTACHMENT_CUSTOM_TYPE,
@@ -142,7 +142,7 @@ import {
 	wrapMcpPromptAttachment,
 	wrapMcpResourceAttachment,
 	type McpAttachment,
-} from "./mcp-attachment.ts";
+} from "../mcp-attachment.ts";
 import type {
 	PolicyApprovalRequest,
 	PolicyApprovalSource,
@@ -151,39 +151,39 @@ import type {
 	PolicyReviewEvidence,
 	PolicyReviewerIdentity,
 	PublicPolicySummary,
-} from "./execution-policy.ts";
-import type { BindingHandle } from "./binding-handles.ts";
-import type { TaskCredentialService } from "./task-credential-service.ts";
-import type { TaskCredentialProviderAvailability } from "./task-credential-provider.ts";
-import type { BashOperations } from "./tools/bash.ts";
-import { exportSessionToHtml } from "./export-html/index.ts";
-import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import { calculateContextTokens, estimateContextTokens, shouldCompact, type CompactionPreparation as LegacyCompactionPreparation, type CompactionResult } from "./compaction/index.ts";
-import { expandPromptTemplate } from "./prompt-templates.ts";
-import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
-import { stripFrontmatter } from "../utils/frontmatter.ts";
+} from "../execution-policy.ts";
+import type { BindingHandle } from "../binding-handles.ts";
+import type { TaskCredentialService } from "../task-credential-service.ts";
+import type { TaskCredentialProviderAvailability } from "../task-credential-provider.ts";
+import type { BashOperations } from "../tools/bash.ts";
+import { exportSessionToHtml } from "../export-html/index.ts";
+import type { BashExecutionMessage, CustomMessage } from "../messages.ts";
+import { calculateContextTokens, estimateContextTokens, shouldCompact, type CompactionPreparation as LegacyCompactionPreparation, type CompactionResult } from "../compaction/index.ts";
+import { expandPromptTemplate } from "../prompt-templates.ts";
+import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "../auth-guidance.ts";
+import { stripFrontmatter } from "../../utils/frontmatter.ts";
 import {
 	FoundationControlPlane,
 	type SchedulerSafeStatus,
-} from "./foundation-control-plane.ts";
-import type { WorkerSandboxProvider } from "./worker/sandbox-provider.ts";
-import { createAllTools } from "./tools/index.ts";
-import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
-import { buildSystemPrompt, type BuildSystemPromptOptions } from "./system-prompt.ts";
+} from "../foundation-control-plane.ts";
+import type { WorkerSandboxProvider } from "../worker/sandbox-provider.ts";
+import { createAllTools } from "../tools/index.ts";
+import { normalizeToolResultImages } from "../../utils/tool-result-images.ts";
+import { buildSystemPrompt, type BuildSystemPromptOptions } from "../system-prompt.ts";
 import {
 	BUILTIN_CODING_AGENT_PROVIDER_ID,
 	ProductPromptIngress,
 	type ProductPromptDependencySnapshotContext,
-} from "./product-prompt-ingress.ts";
-import type { PromptTaskDependencyName } from "./prompt-task-adapter.ts";
-import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
+} from "../product-prompt-ingress.ts";
+import type { PromptTaskDependencyName } from "../prompt-task-adapter.ts";
+import type { RuntimeSessionSurface } from "../runtime-session-surface.ts";
 import type {
 	SubagentComposition,
-} from "./subagent/composition.ts";
+} from "../subagent/composition.ts";
 import {
 	createAgentSessionReadProjection,
 	type AgentSessionReadProjection,
-} from "./session-read-projection.ts";
+} from "./read-projection.ts";
 
 /**
  * Construction inputs for the compatibility facade. The canonical Session and

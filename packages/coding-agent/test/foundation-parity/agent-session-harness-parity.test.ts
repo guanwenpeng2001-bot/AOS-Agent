@@ -23,11 +23,11 @@ import {
 import { getModel } from "@aos-agent/ai/compat";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { AgentSession } from "../../src/core/agent-session.ts";
+import { AgentSession } from "../../src/core/session/agent-session.ts";
 import { createExtensionRuntime } from "../../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../../src/core/resource-loader.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { SessionManager } from "../../src/core/session/manager.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
 
 const BASE_MODELS = createModels();

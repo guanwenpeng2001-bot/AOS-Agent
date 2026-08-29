@@ -14,7 +14,7 @@ import {
 	type LegacyAutomationRunLedgerSourceEntry,
 } from "../src/core/migrations/automation-run-ledger.ts";
 import { PrivateMigrationError } from "../src/core/migrations/session-entry.ts";
-import type { CanonicalAutomationRunProjection } from "../src/core/automation-run-projection.ts";
+import type { CanonicalAutomationRunProjection } from "../src/core/session/automation-run-projection.ts";
 
 const SESSION_ID = "session-1";
 const RUN_ID = "run-1";

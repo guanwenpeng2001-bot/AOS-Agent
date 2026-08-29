@@ -44,8 +44,8 @@ import {
 	type ExternalConnectorProcessTerminationRequest,
 	type ExternalConnectorProcessTerminationResult,
 } from "../../src/core/connector/supervisor.ts";
-import { createSessionManagerStorage } from "../../src/core/session-manager-storage.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { createSessionManagerStorage } from "../../src/core/session/manager-storage.ts";
+import { SessionManager } from "../../src/core/session/manager.ts";
 import type { SchedulerSelectionReservationStore } from "../../src/core/scheduler/selection-reservations.ts";
 import type { SubagentCompositionOptions } from "../../src/core/subagent/composition.ts";
 import { createTaskCredentialTestProvider } from "../../src/core/task-credential-provider.ts";

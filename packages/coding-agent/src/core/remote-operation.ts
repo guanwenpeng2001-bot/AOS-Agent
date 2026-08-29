@@ -21,7 +21,7 @@
  * Erasable TypeScript only (no enums, namespaces, or parameter properties).
  */
 
-import type { RunId, RunStatus, RunTerminalStatus, SessionId } from "./run-lifecycle.ts";
+import type { RunId, RunStatus, RunTerminalStatus, SessionId } from "./session/run-lifecycle.ts";
 
 export const REMOTE_OPERATION_SCHEMA_VERSION = 1 as const;
 export const REMOTE_OPERATION_CUSTOM_TYPE = "remote.operation" as const;

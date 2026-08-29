@@ -6,7 +6,7 @@
  */
 
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.ts";
-import type { ContextInstructionBlock } from "./context-engine.ts";
+import type { ContextInstructionBlock } from "./session/context-engine.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 
 export interface BuildSystemPromptOptions {

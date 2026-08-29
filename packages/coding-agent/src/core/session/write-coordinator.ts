@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import lockfile from "proper-lockfile";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { resolvePath } from "../utils/paths.ts";
+import { resolvePath } from "../../utils/paths.ts";
 
 /** The lock is intentionally short-lived: one complete JSONL mutation. */
 export const DEFAULT_SESSION_WRITE_LOCK_TIMEOUT_MS = 2_000;

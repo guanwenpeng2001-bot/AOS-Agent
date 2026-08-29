@@ -4,7 +4,7 @@
 
 import { setKeybindings } from "@aos-agent/tui";
 import { KeybindingsManager } from "../core/keybindings.ts";
-import type { SessionInfo, SessionListProgress } from "../core/session-manager.ts";
+import type { SessionInfo, SessionListProgress } from "../core/session/manager.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { SessionSelectorComponent } from "../modes/interactive/components/session-selector.ts";
 import { createStartupTui, startStartupTui } from "./startup-ui.ts";

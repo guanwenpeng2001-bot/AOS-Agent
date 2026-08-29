@@ -41,9 +41,9 @@ import { SchedulerMessageOrchestrator } from "../src/core/scheduler/messages.ts"
 import { SchedulerWorkflowController } from "../src/core/scheduler/workflow.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler/queue.ts";
 import { SchedulerSelectionReservationStore } from "../src/core/scheduler/selection-reservations.ts";
-import type { RunHandle } from "../src/core/run-lifecycle.ts";
+import type { RunHandle } from "../src/core/session/run-lifecycle.ts";
 import { SchedulerHost, type SchedulerQueueEntry } from "../src/core/scheduler/host.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { TaskGraphStore } from "../src/core/scheduler/task-graph.ts";
 import { withRuntimeClock } from "../src/core/runtime-clock.ts";

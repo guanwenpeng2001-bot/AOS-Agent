@@ -20,8 +20,8 @@ import {
 	createRunLifecycleCoordinator,
 	registerRunWorkerLifecycleHooks,
 	type RunWorkerLifecycleHooks,
-} from "../src/core/run-lifecycle.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+} from "../src/core/session/run-lifecycle.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import {
 	WorkerSandboxProvider,
 	createWorkerRequestFingerprint,

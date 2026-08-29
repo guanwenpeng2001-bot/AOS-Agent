@@ -5,9 +5,9 @@ import {
 	freezeContext,
 	resolveContext,
 	type ContextSnapshot,
-} from "../src/core/context-engine.ts";
-import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+} from "../src/core/session/context-engine.ts";
+import { createRunLifecycleCoordinator } from "../src/core/session/run-lifecycle.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { createHarness, createHarnessWithExtensions, fakeModel } from "./test-harness.ts";
 import { assistantMsg, createTestResourceLoader, userMsg } from "./utilities.ts";

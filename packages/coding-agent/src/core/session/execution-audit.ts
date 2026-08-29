@@ -31,7 +31,7 @@ import {
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import type { ContextSnapshot, ContextSourceReceipt } from "./context-engine.ts";
-import { serializePublicRunBindingAssociation, type RunBindingAssociation } from "./binding-handles.ts";
+import { serializePublicRunBindingAssociation, type RunBindingAssociation } from "../binding-handles.ts";
 import {
 	isOpaqueCapabilityBindingId,
 	isOpaqueCapabilityDescriptorId,
@@ -44,14 +44,14 @@ import type {
 	ModelBudgetLimit,
 	ModelReference,
 	ModelUsage,
-} from "./model-broker-ledger.ts";
+} from "../model-broker-ledger.ts";
 import type {
 	PolicyApprovalLedgerRecord,
 	PolicyBindingLedgerRecord,
 	PolicyDecisionLedgerRecord,
 	PolicyViolationLedgerRecord,
 	SandboxLifecycleLedgerRecord,
-} from "./execution-policy-ledger.ts";
+} from "../execution-policy-ledger.ts";
 import type {
 	PolicyAction,
 	PolicyApprovalOutcome,
@@ -64,15 +64,15 @@ import type {
 	SandboxCapabilities,
 	SandboxStatus,
 	WorkspaceScope,
-} from "./execution-policy.ts";
-import type { SessionEntry } from "./session-manager.ts";
+} from "../execution-policy.ts";
+import type { SessionEntry } from "./manager.ts";
 import {
 	FOUNDATION_DURABLE_CUSTOM_TYPE,
 	FOUNDATION_ENTRY_CUSTOM_TYPE,
 	FOUNDATION_FACT_CUSTOM_TYPE,
 	FOUNDATION_LANE_CUSTOM_TYPE,
 	FOUNDATION_RECORD_CUSTOM_TYPE,
-} from "./session-manager-storage.ts";
+} from "./manager-storage.ts";
 import {
 	AutomationRunProjectionError,
 	projectAutomationRuns,
@@ -92,13 +92,13 @@ import {
 	type LegacyAutomationRunModelReference,
 	type LegacyAutomationRunReceipt,
 	type LegacyAutomationRunRecord,
-} from "./migrations/automation-run-ledger.ts";
+} from "../migrations/automation-run-ledger.ts";
 import {
 	isLegalTaskCredentialTransition,
 	TASK_CREDENTIAL_SCHEMA_VERSION,
 	type TaskCredentialGrant,
 	type TaskCredentialStatus,
-} from "./task-credential-lease.ts";
+} from "../task-credential-lease.ts";
 import {
 	canonicalTaskCredentialIssuePayload,
 	canonicalTaskCredentialProjectPayload,
@@ -109,8 +109,8 @@ import {
 	TASK_CREDENTIAL_CUSTOM_TYPE,
 	type TaskCredentialPersistedAction,
 	type TaskCredentialTransition,
-} from "./task-credential-store.ts";
-import { isRemoteOperationReceipt, type RemoteOperationReceipt } from "./remote-operation.ts";
+} from "../task-credential-store.ts";
+import { isRemoteOperationReceipt, type RemoteOperationReceipt } from "../remote-operation.ts";
 import {
 	isTaskGateTransition,
 	taskGateCommandType,
@@ -120,7 +120,7 @@ import {
 	type TaskGateAction,
 	type TaskGateRecord,
 	type TaskGateTransition,
-} from "./task-gate.ts";
+} from "../task-gate.ts";
 import {
 	canonicalTaskGraphAttachPayload,
 	canonicalTaskGraphCreatePayload,
@@ -135,26 +135,26 @@ import {
 	type TaskGraphNodeRecord,
 	type TaskGraphNodeStatus,
 	type TaskGraphTransition,
-} from "./scheduler/task-graph.ts";
+} from "../scheduler/task-graph.ts";
 import {
 	WORKER_FORBIDDEN_KEYS,
 	workerTransitionAllowed,
 	validateWorkerRecord,
 	type WorkerLifecycleStatus,
 	type WorkerRecord,
-} from "./worker/lifecycle.ts";
-import type { SafeSubagentLifecycleProjection } from "./subagent/composition.ts";
+} from "../worker/lifecycle.ts";
+import type { SafeSubagentLifecycleProjection } from "../subagent/composition.ts";
 import {
 	CHILD_LIFECYCLE_STATUSES,
 	SUBAGENT_PROVIDER_KINDS,
 	type ChildLifecycleStatus,
 	type SubagentProviderKind,
-} from "./subagent/lifecycle.ts";
+} from "../subagent/lifecycle.ts";
 import {
 	SCHEDULER_DURABLE_EVENT_CATEGORIES,
 	SCHEDULER_FORBIDDEN_PAYLOAD_KEYS,
 	type SchedulerDurableEventCategory,
-} from "./scheduler/host.ts";
+} from "../scheduler/host.ts";
 
 export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;

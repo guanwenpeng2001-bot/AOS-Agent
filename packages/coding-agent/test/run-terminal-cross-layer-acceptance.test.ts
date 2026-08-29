@@ -2,8 +2,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { Session } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import { projectAutomationRuns } from "../src/core/automation-run-projection.ts";
-import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
+import { projectAutomationRuns } from "../src/core/session/automation-run-projection.ts";
+import { ExecutionAuditQuery } from "../src/core/session/execution-audit-query.ts";
 import {
 	createRunLifecycleCoordinator,
 	RUN_LEDGER_CUSTOM_TYPE,
@@ -11,9 +11,9 @@ import {
 	type PublicRunReceipt,
 	type RunHandle,
 	type RunLifecycleCoordinator,
-} from "../src/core/run-lifecycle.ts";
-import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+} from "../src/core/session/run-lifecycle.ts";
+import { createSessionManagerStorage } from "../src/core/session/manager-storage.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import {
 	observeCanonicalTerminal,
 	writeCanonicalRunResult,

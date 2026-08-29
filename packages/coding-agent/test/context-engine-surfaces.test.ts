@@ -5,8 +5,8 @@ import {
 	compareContextSources,
 	freezeContext,
 	resolveContext,
-} from "../src/core/context-engine.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+} from "../src/core/session/context-engine.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import type { GetContextData } from "../src/modes/rpc/rpc-types.ts";
 
 function buildSnapshot(sessionId: string, id: string) {

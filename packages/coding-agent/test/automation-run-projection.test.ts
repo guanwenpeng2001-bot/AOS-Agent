@@ -11,7 +11,7 @@ import {
 	type TaskResult,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import { AutomationRunProjectionError, projectAutomationRuns } from "../src/core/automation-run-projection.ts";
+import { AutomationRunProjectionError, projectAutomationRuns } from "../src/core/session/automation-run-projection.ts";
 
 const SESSION_ID = "session-projection";
 const LANE_ID = "main";

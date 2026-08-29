@@ -36,7 +36,7 @@ import {
 	type AuditWarning,
 	type AuditQueryScope,
 } from "./execution-audit.ts";
-import { loadEntriesFromFile, type FileEntry, type SessionEntry } from "./session-manager.ts";
+import { loadEntriesFromFile, type FileEntry, type SessionEntry } from "./manager.ts";
 
 /** Maximum number of `.jsonl` candidates inspected in one directory query. */
 export const AUDIT_MAX_SESSION_CANDIDATES = 256;

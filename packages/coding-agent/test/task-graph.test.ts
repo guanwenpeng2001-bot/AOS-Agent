@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isAutomationErrorCode, type RunStatus, type RunTerminalStatus } from "../src/core/run-lifecycle.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { isAutomationErrorCode, type RunStatus, type RunTerminalStatus } from "../src/core/session/run-lifecycle.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { TASK_GATE_CUSTOM_TYPE, TaskGateStore, type TaskGateRecord, type TaskGateStatus } from "../src/core/task-gate.ts";
 import {
 	TASK_GRAPH_CUSTOM_TYPE,

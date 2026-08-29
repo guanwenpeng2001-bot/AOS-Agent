@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { resolvePath } from "../utils/paths.ts";
+import { resolvePath } from "../../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type {
 	AgentRuntimeComposition,
 	AgentRuntimeCompositionFactory,
-} from "./agent-runtime-composition.ts";
+} from "../agent-runtime-composition.ts";
 import {
 	CurrentSessionScope,
 	type PreparedSessionScopeRebind,
 	type SessionScopePostCommitFailure,
-} from "./current-session-scope.ts";
+} from "./current-scope.ts";
 import {
 	bindAgentSessionRuntimeReload,
 	createAgentSessionForkTarget,
@@ -20,19 +20,19 @@ import {
 	pauseAgentSessionAdmission,
 	resumeAgentSessionAdmission,
 	useAgentSessionForkTarget,
-} from "./agent-session-facade.ts";
-import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
+} from "./facade.ts";
+import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./services.ts";
 import type {
 	ProjectTrustContext,
 	ReplacedSessionContext,
 	SessionShutdownEvent,
 	SessionStartEvent,
-} from "./extensions/index.ts";
-import { emitSessionShutdownEvent } from "./extensions/runner.ts";
-import type { CreateAgentSessionResult } from "./sdk.ts";
-import { assertSessionCwdExists } from "./session-cwd.ts";
-import { createSessionManagerForOptions, type SessionCreationOptions } from "./session-creation.ts";
-import { SessionManager } from "./session-manager.ts";
+} from "../extensions/index.ts";
+import { emitSessionShutdownEvent } from "../extensions/runner.ts";
+import type { CreateAgentSessionResult } from "../sdk.ts";
+import { assertSessionCwdExists } from "./cwd.ts";
+import { createSessionManagerForOptions, type SessionCreationOptions } from "./creation.ts";
+import { SessionManager } from "./manager.ts";
 
 /**
  * Result returned by runtime creation.
@@ -792,4 +792,4 @@ export {
 	type CreateAgentSessionServicesOptions,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-} from "./agent-session-services.ts";
+} from "./services.ts";

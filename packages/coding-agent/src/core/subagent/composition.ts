@@ -81,7 +81,7 @@ import {
 	type WorktreeAdapter,
 } from "./worktree.ts";
 import type { ChildAgentRecord, ChildLifecycleStatus } from "./lifecycle.ts";
-import type { RunSubagentLifecycleHooks } from "../run-lifecycle.ts";
+import type { RunSubagentLifecycleHooks } from "../session/run-lifecycle.ts";
 import type {
 	PromptTaskCompositionRootOptions,
 	PromptTaskSubagentCompositionInput,

@@ -1,7 +1,7 @@
 import type { Component } from "@aos-agent/tui";
 import { Box, Container, Spacer, Text } from "@aos-agent/tui";
 import type { EntryRenderer } from "../../../core/extensions/types.ts";
-import type { CustomEntry } from "../../../core/session-manager.ts";
+import type { CustomEntry } from "../../../core/session/manager.ts";
 import { theme } from "../theme/theme.ts";
 
 /**

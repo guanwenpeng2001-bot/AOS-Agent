@@ -15,9 +15,9 @@ import {
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import { RpcHostController } from "../src/modes/rpc/rpc-host.ts";
 
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));

@@ -22,16 +22,16 @@ import {
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
-import { AgentSession } from "../src/core/agent-session.ts";
+import { AgentSession } from "../src/core/session/agent-session.ts";
 import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
 import {
 	getAgentCanonicalSession,
 	getAgentSessionLedger,
 	type AgentSessionLedgerProjection,
-} from "../src/core/agent-session-facade.ts";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+} from "../src/core/session/facade.ts";
+import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
-import type { PreparedSessionScopeRebind } from "../src/core/current-session-scope.ts";
+import type { PreparedSessionScopeRebind } from "../src/core/session/current-scope.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import { createDurableExternalAgentConnector } from "../src/core/connector/durable-connector.ts";
 import type {
@@ -60,8 +60,8 @@ import type { Extension, ExtensionContext, ToolDefinition } from "../src/core/ex
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { encodeRuntimeLimitsOperationNonce } from "../src/core/runtime-limits.ts";
-import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/run-lifecycle.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/session/run-lifecycle.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcClient, type RpcRunStreamEvent } from "../src/modes/rpc/rpc-client.ts";
 import {

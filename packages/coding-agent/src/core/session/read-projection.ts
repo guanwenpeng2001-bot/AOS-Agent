@@ -5,7 +5,7 @@ import type {
 	SessionHeader,
 	SessionManager,
 	SessionTreeNode,
-} from "./session-manager.ts";
+} from "./manager.ts";
 
 /** Deterministic, read-only compatibility projection over a canonical Session. */
 export interface AgentSessionReadProjection {

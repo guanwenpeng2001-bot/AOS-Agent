@@ -14,7 +14,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import { CallToolRequestSchema, ListToolsRequestSchema, type JSONRPCMessage, type Tool } from "@modelcontextprotocol/sdk/types";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentSession } from "../src/core/agent-session.ts";
+import { AgentSession } from "../src/core/session/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import {
 	CapabilityRegistry,
@@ -22,7 +22,7 @@ import {
 	type CapabilityCatalogInput,
 } from "../src/core/capability-registry.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";

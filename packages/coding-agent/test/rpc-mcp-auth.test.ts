@@ -11,13 +11,13 @@ import {
 	getModel,
 } from "@aos-agent/ai/compat";
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { AgentSession } from "../src/core/agent-session.ts";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { AgentSession } from "../src/core/session/agent-session.ts";
+import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
 import { CapabilityRegistry } from "../src/core/capability-registry.ts";
 import { MCPAuthStorage } from "../src/core/mcp-auth-storage.ts";
-import { SessionManager, type SessionEntry } from "../src/core/session-manager.ts";
+import { SessionManager, type SessionEntry } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputSink, type RpcWireRecord } from "../src/modes/rpc/rpc-host.ts";
 import type {

@@ -17,8 +17,8 @@ import {
 	POLICY_VIOLATION_CUSTOM_TYPE,
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
 } from "../../../src/core/execution-policy-ledger.ts";
-import { createRunLifecycleCoordinator } from "../../../src/core/run-lifecycle.ts";
-import { SessionManager } from "../../../src/core/session-manager.ts";
+import { createRunLifecycleCoordinator } from "../../../src/core/session/run-lifecycle.ts";
+import { SessionManager } from "../../../src/core/session/manager.ts";
 import type { SandboxOperationRequest } from "../../../src/core/sandbox.ts";
 import {
 	FAKE_SANDBOX_PROVIDER_ID,

@@ -19,8 +19,8 @@ import { readdir, stat } from "fs/promises";
 import { join, resolve } from "path";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
-import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
-import { normalizePath, resolvePath } from "../utils/paths.ts";
+import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../../config.ts";
+import { normalizePath, resolvePath } from "../../utils/paths.ts";
 import {
 	CONTEXT_SNAPSHOT_CUSTOM_TYPE,
 	CONTEXT_SNAPSHOT_SCHEMA_VERSION,
@@ -32,8 +32,8 @@ import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
-} from "./messages.ts";
-import { SessionWriteCoordinator } from "./session-write-coordinator.ts";
+} from "../messages.ts";
+import { SessionWriteCoordinator } from "./write-coordinator.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 

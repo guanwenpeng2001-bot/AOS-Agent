@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
-import { SessionManager } from "../../src/core/session-manager.ts";
-import { createRunLifecycleCoordinator, type RunModelReference } from "../../src/core/run-lifecycle.ts";
+import { SessionManager } from "../../src/core/session/manager.ts";
+import { createRunLifecycleCoordinator, type RunModelReference } from "../../src/core/session/run-lifecycle.ts";
 import { observeCanonicalTerminal } from "../support/canonical-run-terminal.ts";
 
 const [sessionFile, phase] = process.argv.slice(2);

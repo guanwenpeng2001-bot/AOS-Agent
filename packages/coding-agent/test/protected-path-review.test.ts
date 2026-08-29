@@ -22,10 +22,10 @@ import {
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
-import { AgentSession } from "../src/core/agent-session.ts";
-import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
+import { AgentSession } from "../src/core/session/agent-session.ts";
+import { getAgentCanonicalSession } from "../src/core/session/facade.ts";
 import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
-import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
+import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/session/services.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { buildCapabilitySettings } from "../src/core/capability-settings.ts";
 import {
@@ -49,7 +49,7 @@ import {
 import { resolveHostPathForPolicy } from "../src/core/policy-filesystem.ts";
 import { classifyExternalToolPolicyOperation } from "../src/core/connector/tool-policy.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { fakeModel } from "./test-harness.ts";
 import { createTestResourceLoader } from "./utilities.ts";

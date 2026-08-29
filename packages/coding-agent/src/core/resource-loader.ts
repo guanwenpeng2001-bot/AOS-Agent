@@ -16,11 +16,11 @@ import {
 	loadExtensionsCached,
 } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
-import { findGitPaths } from "./footer-data-provider.ts";
+import { findGitPaths } from "./session/footer-data-provider.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
-import type { ContextScope, ContextSourceInput, ContextTrust } from "./context-engine.ts";
+import type { ContextScope, ContextSourceInput, ContextTrust } from "./session/context-engine.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";

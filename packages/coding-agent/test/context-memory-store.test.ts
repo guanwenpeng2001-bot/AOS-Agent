@@ -7,7 +7,7 @@ import {
 	getProjectMemoryFilePath,
 	memoryReceiptMeta,
 	memoryToContextSourceInputs,
-} from "../src/core/context-memory-store.ts";
+} from "../src/core/session/context-memory-store.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("context-memory-store", () => {

@@ -33,7 +33,7 @@ import {
 	schedulerBindingRequirementDigest,
 } from "./scheduler/executors.ts";
 import { SchedulerSelectionReservationStore } from "./scheduler/selection-reservations.ts";
-import type { SessionManager } from "./session-manager.ts";
+import type { SessionManager } from "./session/manager.ts";
 import type { SubagentCompositionOptions } from "./subagent/composition.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import {

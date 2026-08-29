@@ -1,8 +1,8 @@
 import { fakeAssistantMessage } from "@aos-agent/ai";
 import { Container, Text } from "@aos-agent/tui";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentSession, AgentSessionEvent, ExtensionBindings } from "../../../src/core/agent-session.ts";
-import type { PreparedSessionScopeRebind } from "../../../src/core/current-session-scope.ts";
+import type { AgentSession, AgentSessionEvent, ExtensionBindings } from "../../../src/core/session/agent-session.ts";
+import type { PreparedSessionScopeRebind } from "../../../src/core/session/current-scope.ts";
 import type { ExtensionUIContext } from "../../../src/core/extensions/index.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme, type Theme, theme } from "../../../src/modes/interactive/theme/theme.ts";

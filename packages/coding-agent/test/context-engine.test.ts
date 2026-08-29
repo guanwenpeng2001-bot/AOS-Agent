@@ -10,7 +10,7 @@ import {
 	resolveContext,
 	selectIncludedInstructionBlocks,
 	type ContextSourceInput,
-} from "../src/core/context-engine.ts";
+} from "../src/core/session/context-engine.ts";
 import { estimateContextTokens } from "../src/core/compaction/compaction.ts";
 
 function source(partial: Partial<ContextSourceInput> & Pick<ContextSourceInput, "sourceId" | "content">): ContextSourceInput {

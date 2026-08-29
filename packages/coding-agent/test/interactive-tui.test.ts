@@ -3,7 +3,7 @@ import { Container, isViewportTUI, Text } from "@aos-agent/tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { CapabilityError, type CapabilityBinding, type CapabilityCatalogView } from "../src/core/capability-registry.ts";
-import type { ContextSnapshot, ContextSourceDrift } from "../src/core/context-engine.ts";
+import type { ContextSnapshot, ContextSourceDrift } from "../src/core/session/context-engine.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../src/core/execution-policy.ts";
 import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
 import {

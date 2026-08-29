@@ -20,7 +20,7 @@ import {
 	freezeContext,
 	resolveContext,
 	type ContextSourceInput,
-} from "../src/core/context-engine.ts";
+} from "../src/core/session/context-engine.ts";
 
 const PNG_1PX =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

@@ -3,16 +3,16 @@
  */
 
 import type { AgentMessage } from "@aos-agent/agent-core";
-import type { AgentSession } from "../agent-session.ts";
+import type { AgentSession } from "../session/agent-session.ts";
 import type { ImageContent, Model, Provider, ProviderHeaders } from "@aos-agent/ai";
 import type { KeyId } from "@aos-agent/tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
-import { validateContextExtensionContribution } from "../context-engine.ts";
+import { validateContextExtensionContribution } from "../session/context-engine.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
-import type { AgentSessionReadProjection } from "../session-read-projection.ts";
+import type { AgentSessionReadProjection } from "../session/read-projection.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type {
 	BeforeAgentStartEvent,

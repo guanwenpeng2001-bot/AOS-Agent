@@ -11,7 +11,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { type Settings, SettingsManager } from "../src/core/settings-manager.ts";
 
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";

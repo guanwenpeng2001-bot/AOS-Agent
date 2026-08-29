@@ -15,7 +15,7 @@ import {
 	isAutomationErrorCode,
 	serializePublicAutomationError,
 	serializePublicRunReceipt,
-} from "../src/core/run-lifecycle.ts";
+} from "../src/core/session/run-lifecycle.ts";
 import { cloneExternalConnectorTerminalEvidence } from "../src/core/connector/vendor/types.ts";
 
 const CURRENT_EXTERNAL_AUTOMATION_ERROR_ROWS = [

@@ -7,7 +7,7 @@
 
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
-import type { SessionStats } from "../../core/agent-session.ts";
+import type { SessionStats } from "../../core/session/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { RunBindingAssociation } from "../../core/binding-handles.ts";
 import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
@@ -18,7 +18,7 @@ import type {
 	AuditQueryResult,
 	AuditReplayQuery,
 	AuditReplayResult,
-} from "../../core/execution-audit-query.ts";
+} from "../../core/session/execution-audit-query.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
 import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
 import type {
@@ -49,7 +49,7 @@ import type {
 	RunModelBudgetSummary,
 	RunRecoveryState,
 	RunStatus,
-} from "../../core/run-lifecycle.ts";
+} from "../../core/session/run-lifecycle.ts";
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
 import type { ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
@@ -1317,7 +1317,7 @@ export type {
 	AuditReplayQuery,
 	AuditReplayResult,
 	AuditWarning,
-} from "../../core/execution-audit-query.ts";
+} from "../../core/session/execution-audit-query.ts";
 // Re-export the only current External Connector selection surface.
 export type {
 	ExternalConnectorDescriptor,
@@ -1350,7 +1350,7 @@ export type {
 	RunRecoveryState,
 	RunStatus,
 	RunTerminalStatus,
-} from "../../core/run-lifecycle.ts";
+} from "../../core/session/run-lifecycle.ts";
 // Re-export public Task Credential types.
 export type {
 	TaskCredentialDeliveryReceipt,

@@ -47,23 +47,23 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { BashResult } from "../bash-executor.ts";
-import type { AgentSession } from "../agent-session.ts";
+import type { AgentSession } from "../session/agent-session.ts";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
-import type { ContextExtensionContribution } from "../context-engine.ts";
+import type { ContextExtensionContribution } from "../session/context-engine.ts";
 import type { EventBus } from "../event-bus.ts";
 import type { ExecOptions, ExecResult } from "../exec.ts";
-import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
+import type { ReadonlyFooterDataProvider } from "../session/footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
-import type { AgentSessionReadProjection } from "../session-read-projection.ts";
+import type { AgentSessionReadProjection } from "../session/read-projection.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
 	CustomEntry,
 	SessionEntry,
-} from "../session-manager.ts";
+} from "../session/manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
@@ -92,7 +92,7 @@ export type {
 	ContextExtensionContribution,
 	ContextExtensionContributionReceipt,
 	ContextExtensionVisibility,
-} from "../context-engine.ts";
+} from "../session/context-engine.ts";
 
 // ============================================================================
 // UI Context

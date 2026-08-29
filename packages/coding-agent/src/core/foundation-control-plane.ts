@@ -107,7 +107,7 @@ import type { McpAttachmentBindingRefs } from "./mcp-attachment.ts";
 import { mapMCPToolsToDefinitions, type MCPToolDefinitionResult } from "./mcp-tool-adapter.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { SessionEntry, SessionManager } from "./session-manager.ts";
+import type { SessionEntry, SessionManager } from "./session/manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type {
 	ExternalConnectorRegistry,
@@ -144,7 +144,7 @@ import {
 	registerRunSchedulerLifecycleHooks,
 	type RunLifecycleCoordinator,
 	type RunSchedulerLifecycleHooks,
-} from "./run-lifecycle.ts";
+} from "./session/run-lifecycle.ts";
 import {
 	runtimeClockFor,
 	withRuntimeClock,

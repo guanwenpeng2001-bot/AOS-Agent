@@ -22,13 +22,13 @@ import {
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
-import type { AgentSession, AgentSessionEvent, ExtensionBindings, SessionStats } from "../../core/agent-session.ts";
-import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/agent-session-facade.ts";
-import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import type { AgentSession, AgentSessionEvent, ExtensionBindings, SessionStats } from "../../core/session/agent-session.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/session/facade.ts";
+import type { AgentSessionRuntime } from "../../core/session/runtime.ts";
 import { CapabilityError } from "../../core/capability-registry.ts";
-import type { PreparedSessionScopeRebind } from "../../core/current-session-scope.ts";
-import { ExecutionAuditError, projectSubagentAuditSource } from "../../core/execution-audit.ts";
-import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
+import type { PreparedSessionScopeRebind } from "../../core/session/current-scope.ts";
+import { ExecutionAuditError, projectSubagentAuditSource } from "../../core/session/execution-audit.ts";
+import { ExecutionAuditQuery } from "../../core/session/execution-audit-query.ts";
 import type { TaskCredentialGatePreflight } from "../../core/execution-policy.ts";
 import { PolicyError } from "../../core/execution-policy.ts";
 import type {
@@ -87,7 +87,7 @@ import type {
 	RunResult,
 	RunStreamEvent,
 	RunUsageSnapshot,
-} from "../../core/run-lifecycle.ts";
+} from "../../core/session/run-lifecycle.ts";
 import {
 	createAutomationError,
 	createRunLifecycleCoordinator,
@@ -110,8 +110,8 @@ import {
 	serializePublicSessionEntry,
 	serializePublicSessionEvent,
 	serializePublicSessionTreeNode,
-} from "../../core/run-lifecycle.ts";
-import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
+} from "../../core/session/run-lifecycle.ts";
+import { loadEntriesFromFile, type SessionEntry } from "../../core/session/manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";

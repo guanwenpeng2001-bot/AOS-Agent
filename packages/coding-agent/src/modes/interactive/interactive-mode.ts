@@ -60,16 +60,16 @@ import {
 	type AgentSessionReadProjection,
 	type ExtensionBindings,
 	parseSkillBlock,
-} from "../../core/agent-session.ts";
-import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
-import type { PreparedSessionScopeRebind } from "../../core/current-session-scope.ts";
+} from "../../core/session/agent-session.ts";
+import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/session/runtime.ts";
+import type { PreparedSessionScopeRebind } from "../../core/session/current-scope.ts";
 import {
 	CACHE_TTL_MS,
 	type CacheMiss,
 	collectCacheMisses,
 	computeCacheWaste,
 	detectCacheMiss,
-} from "../../core/cache-stats.ts";
+} from "../../core/session/cache-stats.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -83,7 +83,7 @@ import type {
 	ProjectTrustContext,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
-import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
+import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/session/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
@@ -95,17 +95,17 @@ import {
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
-import { serializePublicContextDrift, serializePublicContextSnapshot } from "../../core/run-lifecycle.ts";
-import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
-import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
-import { createSessionManagerStorage } from "../../core/session-manager-storage.ts";
+import { serializePublicContextDrift, serializePublicContextSnapshot } from "../../core/session/run-lifecycle.ts";
+import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session/cwd.ts";
+import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session/manager.ts";
+import { createSessionManagerStorage } from "../../core/session/manager-storage.ts";
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
-import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import { getUsageCostBreakdown } from "../../core/session/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";

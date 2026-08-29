@@ -1,5 +1,5 @@
-import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
-import { resolvePath } from "../utils/paths.ts";
+import { getDefaultSessionDir, SessionManager } from "./manager.ts";
+import { resolvePath } from "../../utils/paths.ts";
 
 export type SessionCreationOptions =
 	| { readonly mode: "memory"; readonly id?: string }

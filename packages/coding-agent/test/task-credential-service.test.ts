@@ -19,7 +19,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+import type { SessionEntry } from "../src/core/session/manager.ts";
 import {
 	TaskCredentialError,
 	calculateScopeDigest,

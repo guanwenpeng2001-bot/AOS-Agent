@@ -6,7 +6,7 @@ import {
 import type {
 	AutomationRunProjection,
 	CanonicalAutomationRunProjection,
-} from "../automation-run-projection.ts";
+} from "../session/automation-run-projection.ts";
 import {
 	isLegacyExternalExecutionRef as isExternalExecutionRef,
 	type LegacyExternalExecutionRef as ExternalExecutionRef,

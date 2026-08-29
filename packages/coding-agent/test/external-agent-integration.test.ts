@@ -26,10 +26,10 @@ import {
 	resolveExecutionPolicyProfile,
 	type ExecutionPolicyProfile,
 } from "../src/core/execution-policy.ts";
-import { ExecutionAuditAdapter } from "../src/core/execution-audit.ts";
+import { ExecutionAuditAdapter } from "../src/core/session/execution-audit.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
-import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
+import type { SessionEntry } from "../src/core/session/manager.ts";
+import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session/manager-storage.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,

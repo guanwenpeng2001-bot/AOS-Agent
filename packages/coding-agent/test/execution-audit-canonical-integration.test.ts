@@ -17,10 +17,10 @@ import {
 	ExecutionAuditAdapter,
 	ExecutionAuditError,
 	type AuditSession,
-} from "../src/core/execution-audit.ts";
-import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
-import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session-manager-storage.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+} from "../src/core/session/execution-audit.ts";
+import { ExecutionAuditQuery } from "../src/core/session/execution-audit-query.ts";
+import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../src/core/session/manager-storage.ts";
+import type { SessionEntry } from "../src/core/session/manager.ts";
 
 const SESSION_ID = "session-canonical-audit";
 const LANE_ID = "main";

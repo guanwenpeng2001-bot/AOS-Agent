@@ -7,7 +7,7 @@ import {
 	type TaskResult,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
+import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../src/core/session/run-lifecycle.ts";
 import type { SchedulerMessage } from "../src/core/scheduler/host.ts";
 import {
 	SCHEDULER_MESSAGE_OBJECT_TYPES,
@@ -16,8 +16,8 @@ import {
 	type SchedulerMessageSessionEndpoint,
 	type SchedulerResultReference,
 } from "../src/core/scheduler/messages.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
+import { createSessionManagerStorage } from "../src/core/session/manager-storage.ts";
 import { createTaskGraphStore, type TaskGraphStore } from "../src/core/scheduler/task-graph.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 

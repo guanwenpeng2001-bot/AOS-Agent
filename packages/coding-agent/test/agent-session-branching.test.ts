@@ -12,14 +12,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@aos-agent/ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AgentSession } from "../src/core/agent-session.ts";
+import type { AgentSession } from "../src/core/session/agent-session.ts";
 import {
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-} from "../src/core/agent-session-runtime.ts";
+} from "../src/core/session/runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { API_KEY } from "./utilities.ts";
 

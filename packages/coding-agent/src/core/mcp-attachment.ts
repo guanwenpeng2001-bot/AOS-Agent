@@ -11,7 +11,7 @@ import {
 	normalizeMCPMimeType,
 	sanitizeMCPText,
 } from "./mcp-content.ts";
-import type { ContextSourceInput } from "./context-engine.ts";
+import type { ContextSourceInput } from "./session/context-engine.ts";
 import { DEFAULT_MCP_CONTENT_LIMITS } from "./mcp-types.ts";
 
 export const MCP_ATTACHMENT_SCHEMA_VERSION = 1 as const;

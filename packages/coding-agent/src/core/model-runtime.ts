@@ -43,7 +43,7 @@ import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelBroker, type ModelBudget, type ModelRouteCandidate } from "./model-broker.ts";
 import type { ModelBrokerSettings } from "./model-broker-settings.ts";
 import { ModelConfig } from "./model-config.ts";
-import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
+import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./session/models-store.ts";
 import {
 	type AuthStatus,
 	type CompatibilityRequestConfig,

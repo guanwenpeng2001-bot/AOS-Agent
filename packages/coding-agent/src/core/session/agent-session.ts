@@ -6,8 +6,8 @@ import type {
 	ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model } from "@aos-agent/ai";
-import type { CompactionResult } from "./compaction/index.ts";
-import type { AgentRuntimeCompositionFactory } from "./agent-runtime-composition.ts";
+import type { CompactionResult } from "../compaction/index.ts";
+import type { AgentRuntimeCompositionFactory } from "../agent-runtime-composition.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -19,18 +19,18 @@ import type {
 	SessionStartEvent,
 	ShutdownHandler,
 	ToolDefinition,
-} from "./extensions/index.ts";
-import type { CapabilityRegistry } from "./capability-registry.ts";
-import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
-import type { MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
-import type { ModelBroker } from "./model-broker.ts";
-import type { ModelRuntime } from "./model-runtime.ts";
-import type { ResourceLoader } from "./resource-loader.ts";
-import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
-import type { SandboxProvider } from "./sandbox.ts";
-import type { SessionEntry, SessionManager } from "./session-manager.ts";
-import type { SettingsManager } from "./settings-manager.ts";
-import type { TaskCredentialProviderAvailability } from "./task-credential-provider.ts";
+} from "../extensions/index.ts";
+import type { CapabilityRegistry } from "../capability-registry.ts";
+import type { MCPAuthProviderResolver, MCPTransportFactory } from "../mcp-types.ts";
+import type { MCPAuthManagerOptions } from "../mcp-auth-manager.ts";
+import type { ModelBroker } from "../model-broker.ts";
+import type { ModelRuntime } from "../model-runtime.ts";
+import type { ResourceLoader } from "../resource-loader.ts";
+import type { RuntimeSessionSurface } from "../runtime-session-surface.ts";
+import type { SandboxProvider } from "../sandbox.ts";
+import type { SessionEntry, SessionManager } from "./manager.ts";
+import type { SettingsManager } from "../settings-manager.ts";
+import type { TaskCredentialProviderAvailability } from "../task-credential-provider.ts";
 
 /** Parsed skill block from a user message. */
 export interface ParsedSkillBlock {
@@ -182,5 +182,5 @@ export {
 	createLegacyAgentSession,
 	type CanonicalAgentSessionOptions,
 	type CanonicalAgentSessionServices,
-} from "./agent-session-facade.ts";
-export type { AgentSessionReadProjection } from "./session-read-projection.ts";
+} from "./facade.ts";
+export type { AgentSessionReadProjection } from "./read-projection.ts";

@@ -12,7 +12,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@aos-agent/tui";
-import type { SessionTreeNode } from "../../../core/session-manager.ts";
+import type { SessionTreeNode } from "../../../core/session/manager.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { formatKeyText, keyHint } from "./keybinding-hints.ts";

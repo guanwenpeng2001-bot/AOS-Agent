@@ -30,7 +30,7 @@ import {
 	type WorkflowStore,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
+import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../src/core/session/run-lifecycle.ts";
 import {
 	createSchedulerExecutorRuntimeSnapshot,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
@@ -61,7 +61,7 @@ import {
 	type SchedulerWorkflowPolicyFact,
 	schedulerWorkflowExternalIds,
 } from "../src/core/scheduler/workflow.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 import { createTaskGraphStore, type TaskGraphStore } from "../src/core/scheduler/task-graph.ts";

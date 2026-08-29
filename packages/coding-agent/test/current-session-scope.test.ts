@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	CurrentSessionScope,
 	type SessionScopeTransitionOptions,
-} from "../src/core/current-session-scope.ts";
+} from "../src/core/session/current-scope.ts";
 
 interface TestScope {
 	id: "old" | "candidate";

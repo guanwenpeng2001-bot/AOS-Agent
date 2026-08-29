@@ -14,7 +14,7 @@ import { Server } from "@modelcontextprotocol/sdk/server";
 import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentSession } from "../src/core/agent-session.ts";
+import { AgentSession } from "../src/core/session/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
 import {
@@ -22,12 +22,12 @@ import {
 	createCapabilityBindingView,
 	createCapabilityId,
 } from "../src/core/capability-registry.ts";
-import { assertSnapshotMetadataOnly } from "../src/core/context-engine.ts";
+import { assertSnapshotMetadataOnly } from "../src/core/session/context-engine.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "../src/core/resource-loader.ts";
 import type { ExecutionPolicyProfile } from "../src/core/execution-policy.ts";
 import type { SandboxHandle, SandboxProvider } from "../src/core/sandbox.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";

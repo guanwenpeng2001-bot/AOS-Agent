@@ -5,8 +5,8 @@ import {
 	computeCacheWaste,
 	detectCacheMiss,
 	type ModelPriceSource,
-} from "../src/core/cache-stats.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+} from "../src/core/session/cache-stats.ts";
+import type { SessionEntry } from "../src/core/session/manager.ts";
 
 const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
 

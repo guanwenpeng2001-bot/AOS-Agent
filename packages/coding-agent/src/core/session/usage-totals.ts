@@ -1,5 +1,5 @@
 import type { Usage } from "@aos-agent/ai/compat";
-import type { SessionEntry } from "./session-manager.ts";
+import type { SessionEntry } from "./manager.ts";
 
 export interface UsageTotals {
 	input: number;

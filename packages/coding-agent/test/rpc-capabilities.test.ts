@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import type { CapabilityBinding } from "../src/core/capability-registry.ts";
-import type { SessionEntry, SessionTreeNode } from "../src/core/session-manager.ts";
+import type { SessionEntry, SessionTreeNode } from "../src/core/session/manager.ts";
 import {
 	serializePublicContextDrift,
 	serializePublicContextSnapshot,
@@ -10,7 +10,7 @@ import {
 	serializePublicSessionEntry,
 	serializePublicSessionEvent,
 	serializePublicSessionTreeNode,
-} from "../src/core/run-lifecycle.ts";
+} from "../src/core/session/run-lifecycle.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 
 const PATH_MARKER_WIN = "C:\\audit-private\\capability-source";

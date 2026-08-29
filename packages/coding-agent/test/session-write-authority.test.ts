@@ -8,16 +8,16 @@ import * as publicApi from "../src/index.ts";
 import {
 	createAgentSessionForkTarget,
 	getAgentCanonicalSession,
-} from "../src/core/agent-session-facade.ts";
+} from "../src/core/session/facade.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import {
 	createHarnessCompatibilityWriter,
 	createSessionManagerStorage,
 	FOUNDATION_ENTRY_CUSTOM_TYPE,
 	FOUNDATION_FACT_CUSTOM_TYPE,
 	FOUNDATION_LANE_CUSTOM_TYPE,
-} from "../src/core/session-manager-storage.ts";
+} from "../src/core/session/manager-storage.ts";
 
 const userMessage: AgentMessage = { role: "user", content: "canonical user", timestamp: 1 };
 

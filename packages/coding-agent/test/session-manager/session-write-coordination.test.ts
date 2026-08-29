@@ -5,20 +5,20 @@ import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ExecutionAuditQuery } from "../../src/core/execution-audit-query.ts";
+import { ExecutionAuditQuery } from "../../src/core/session/execution-audit-query.ts";
 import {
 	loadEntriesFromFile,
 	SessionManager,
 	type SessionEntry,
-} from "../../src/core/session-manager.ts";
+} from "../../src/core/session/manager.ts";
 import {
 	createSessionManagerStorage,
 	FOUNDATION_ENTRY_CUSTOM_TYPE,
-} from "../../src/core/session-manager-storage.ts";
+} from "../../src/core/session/manager-storage.ts";
 import {
 	SessionWriteCoordinationError,
 	SessionWriteCoordinator,
-} from "../../src/core/session-write-coordinator.ts";
+} from "../../src/core/session/write-coordinator.ts";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const workerPath = fileURLToPath(new URL("./session-write-worker.ts", import.meta.url));

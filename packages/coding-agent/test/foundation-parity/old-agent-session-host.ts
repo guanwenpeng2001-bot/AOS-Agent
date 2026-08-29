@@ -25,13 +25,13 @@ import {
 	type FakeResponseStep,
 } from "@aos-agent/ai/compat";
 import { Type } from "typebox";
-import type { AgentSessionEvent } from "../../src/core/agent-session.ts";
+import type { AgentSessionEvent } from "../../src/core/session/agent-session.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-} from "../../src/core/agent-session-runtime.ts";
+} from "../../src/core/session/runtime.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type {
 	SessionBeforeSwitchEvent,

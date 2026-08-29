@@ -11,8 +11,8 @@ import {
 	hasForbiddenSchedulerAuditValue,
 	type AuditEvent,
 	type AuditSession,
-} from "../src/core/execution-audit.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+} from "../src/core/session/execution-audit.ts";
+import type { SessionEntry } from "../src/core/session/manager.ts";
 import {
 	AUDIT_CONTRACT_CASES,
 	AUDIT_CURSOR_SORT_KEYS,

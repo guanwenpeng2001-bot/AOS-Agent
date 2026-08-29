@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { getModel } from "@aos-agent/ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 
 describe("createAgentSession session manager defaults", () => {
 	let tempDir: string;

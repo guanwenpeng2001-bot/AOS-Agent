@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeAssistantMessage, registerFakeProvider } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentSession, ExtensionBindings } from "../../../src/core/agent-session.ts";
+import type { AgentSession, ExtensionBindings } from "../../../src/core/session/agent-session.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-} from "../../../src/core/agent-session-runtime.ts";
+} from "../../../src/core/session/runtime.ts";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionFactory } from "../../../src/index.ts";

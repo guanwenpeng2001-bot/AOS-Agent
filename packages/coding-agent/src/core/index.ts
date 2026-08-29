@@ -10,7 +10,7 @@ export {
 	type ModelCycleResult,
 	type PromptOptions,
 	type SessionStats,
-} from "./agent-session.ts";
+} from "./session/agent-session.ts";
 export {
 	createAgentRuntimeCompositionFactory,
 	createWorkerSandboxComposition,
@@ -56,7 +56,7 @@ export {
 	type CreateAgentSessionRuntimeFactory,
 	type CreateAgentSessionRuntimeResult,
 	createAgentSessionRuntime,
-} from "./agent-session-runtime.ts";
+} from "./session/runtime.ts";
 export {
 	RUNTIME_SESSION_SURFACES,
 	createRuntimeSessionSurfaceAdapter,
@@ -71,7 +71,7 @@ export {
 	type CreateAgentSessionServicesOptions,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-} from "./agent-session-services.ts";
+} from "./session/services.ts";
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export {
 	classifyExternalToolPolicyOperation,
@@ -313,7 +313,7 @@ export {
 	type SessionBoundaryKind,
 	type SessionBoundaryRecord,
 	type SessionBoundaryStatus,
-} from "./session-boundary.ts";
+} from "./session/boundary.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
 export {
 	PROMPT_TASK_DEPENDENCY_NAMES,

@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentSession } from "../src/core/agent-session.ts";
-import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { AgentSession } from "../src/core/session/agent-session.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/session/facade.ts";
+import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
-import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
+import { ExecutionAuditQuery } from "../src/core/session/execution-audit-query.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import {
 	RpcHostController,

@@ -2,7 +2,7 @@
 
 RPC mode enables headless operation of the coding agent via a JSON protocol over stdin/stdout by default or a local TCP socket when `--rpc-listen` is used. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
 
-**Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `aos-agent` instead of spawning a subprocess. See [`src/core/agent-session.ts`](../src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](../src/modes/rpc/rpc-client.ts).
+**Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `aos-agent` instead of spawning a subprocess. See [`src/core/session/agent-session.ts`](../src/core/session/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](../src/modes/rpc/rpc-client.ts).
 
 ## Starting RPC Mode
 
@@ -3072,7 +3072,7 @@ Source files:
 - [`src/core/messages.ts`](../src/core/messages.ts) - `BashExecutionMessage`
 - [`src/modes/json-event.ts`](../src/modes/json-event.ts) - `JsonAgentSessionEvent`
 - [`src/modes/rpc/rpc-types.ts`](../src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
-- [`src/core/run-lifecycle.ts`](../src/core/run-lifecycle.ts) - Automation Host run types, run record/receipt/stream event types, structured error type
+- [`src/core/session/run-lifecycle.ts`](../src/core/session/run-lifecycle.ts) - Automation Host run types, run record/receipt/stream event types, structured error type
 - [`src/core/task-gate.ts`](../src/core/task-gate.ts) - Task Gate record, status/action constants, transition, and mutation service types
 - [`src/core/scheduler/task-graph.ts`](../src/core/scheduler/task-graph.ts) - Task Graph record, node status/availability constants, DAG definition, transition, and mutation service types
 - [`src/core/subagent/composition.ts`](../src/core/subagent/composition.ts), [`src/core/subagent/supervisor.ts`](../src/core/subagent/supervisor.ts), and [`src/core/subagent/registry.ts`](../src/core/subagent/registry.ts) - trusted child-agent composition, Run-owned lifecycle projections, provider registry, and unavailable-provider registration contracts

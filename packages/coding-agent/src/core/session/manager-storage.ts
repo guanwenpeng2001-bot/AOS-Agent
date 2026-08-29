@@ -41,9 +41,9 @@ import type {
 	SessionEntry,
 	SessionHeader,
 	SessionInfoEntry,
-} from "./session-manager.ts";
-import { registerSessionReadProjectionInitializer, type SessionManager } from "./session-manager.ts";
-import { createCustomMessage } from "./messages.ts";
+} from "./manager.ts";
+import { registerSessionReadProjectionInitializer, type SessionManager } from "./manager.ts";
+import { createCustomMessage } from "../messages.ts";
 
 /** Reserved custom-entry types used to store canonical Harness state in the existing JSONL file. */
 export const FOUNDATION_ENTRY_CUSTOM_TYPE = "__aos.foundation.entry.v1";

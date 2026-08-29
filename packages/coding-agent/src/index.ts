@@ -39,7 +39,7 @@ export {
 	type PromptOptions,
 	parseSkillBlock,
 	type SessionStats,
-} from "./core/agent-session.ts";
+} from "./core/session/agent-session.ts";
 export {
 	SchedulerComposition,
 	type SchedulerSafeStatus,
@@ -443,7 +443,7 @@ export {
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
-export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
+export type { ReadonlyFooterDataProvider } from "./core/session/footer-data-provider.ts";
 export { convertToLlm } from "./core/messages.ts";
 export {
 	classifyFallbackEligibility,
@@ -824,7 +824,7 @@ export {
 	type SessionBoundaryKind,
 	type SessionBoundaryRecord,
 	type SessionBoundaryStatus,
-} from "./core/session-boundary.ts";
+} from "./core/session/boundary.ts";
 export {
 	type BranchSummaryEntry,
 	buildContextEntries,
@@ -849,7 +849,7 @@ export {
 	type SessionTreeNode,
 	sessionEntryToContextMessages,
 	type ThinkingLevelChangeEntry,
-} from "./core/session-manager.ts";
+} from "./core/session/manager.ts";
 export {
 	DEFAULT_SESSION_WRITE_LOCK_RETRY_DELAY_MS,
 	DEFAULT_SESSION_WRITE_LOCK_STALE_MS,
@@ -858,7 +858,7 @@ export {
 	SessionWriteCoordinator,
 	type SessionWriteCoordinationErrorCode,
 	type SessionWriteCoordinatorOptions,
-} from "./core/session-write-coordinator.ts";
+} from "./core/session/write-coordinator.ts";
 export {
 	type CompactionSettings,
 	type DefaultProjectTrust,

@@ -1,6 +1,6 @@
 import type { AssistantMessage } from "@aos-agent/ai";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentSessionEvent } from "../src/core/agent-session.ts";
+import type { AgentSessionEvent } from "../src/core/session/agent-session.ts";
 import {
 	buildCapabilityCatalog,
 	resolveCapabilityBinding,
@@ -49,9 +49,9 @@ import {
 	type RunRecord,
 	type RunReservation,
 	type RunResult,
-} from "../src/core/run-lifecycle.ts";
+} from "../src/core/session/run-lifecycle.ts";
 import type { BashExecutionMessage } from "../src/core/messages.ts";
-import { SessionManager, type SessionEntry, type SessionTreeNode } from "../src/core/session-manager.ts";
+import { SessionManager, type SessionEntry, type SessionTreeNode } from "../src/core/session/manager.ts";
 import {
 	observeCanonicalTerminal,
 	type CanonicalTerminalOutcome,

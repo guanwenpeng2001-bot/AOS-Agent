@@ -1,7 +1,7 @@
 import { canonicalFoundationJson, type AgentMessage, type Entry, type LaneRecord } from "@aos-agent/agent-core";
 import type { Usage } from "@aos-agent/ai";
 import { decodeLegacyFoundationRecordV1 } from "../../../../agent/src/harness/foundation/migrations/legacy-foundation-schema.ts";
-import type { SessionEntry } from "../session-manager.ts";
+import type { SessionEntry } from "../session/manager.ts";
 import { PrivateMigrationError } from "./session-entry.ts";
 
 export type ReservedFoundationCompatibilityKind = "entry" | "record" | "lane" | "name" | "label" | "durable";

@@ -41,7 +41,7 @@ import {
 	type SchedulerMessageSessionEndpoint,
 } from "./messages.ts";
 import { SchedulerQueueStore, type SchedulerCancelAttempt } from "./queue.ts";
-import type { RunLedgerSession } from "../run-lifecycle.ts";
+import type { RunLedgerSession } from "../session/run-lifecycle.ts";
 import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "../runtime-clock.ts";
 import {
 	ConnectorRetryCircuit,

@@ -1,4 +1,4 @@
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import type { SchedulerSafeStatus } from "../src/core/foundation-control-plane.ts";
 import { RpcHostController } from "../src/modes/rpc/rpc-host.ts";
 import type {

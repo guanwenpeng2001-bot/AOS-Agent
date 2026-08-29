@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+import type { SessionEntry } from "../src/core/session/manager.ts";
 import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/task-credential-lease.ts";
 import {
 	createTaskCredentialTestProvider,

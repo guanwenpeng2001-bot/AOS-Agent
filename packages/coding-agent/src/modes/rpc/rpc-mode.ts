@@ -3,14 +3,14 @@
  */
 
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
-import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import type { AgentSessionRuntime } from "../../core/session/runtime.ts";
 import {
 	flushRawStdout,
 	takeOverStdout,
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
-import { redactErrorText } from "../../core/run-lifecycle.ts";
+import { redactErrorText } from "../../core/session/run-lifecycle.ts";
 import {
 	ShutdownCoordinator,
 	type ShutdownFailure,

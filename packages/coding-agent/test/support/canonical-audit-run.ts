@@ -10,8 +10,8 @@ import type {
 	TaskResult,
 } from "@aos-agent/agent-core";
 
-import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../../src/core/session-manager-storage.ts";
-import type { SessionEntry } from "../../src/core/session-manager.ts";
+import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../../src/core/session/manager-storage.ts";
+import type { SessionEntry } from "../../src/core/session/manager.ts";
 
 export interface CanonicalAuditRunOptions {
 	readonly sessionId: string;

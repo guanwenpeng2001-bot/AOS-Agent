@@ -26,7 +26,7 @@ import {
 	validateAttemptReceiptForProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import { createRunLifecycleCoordinator, type RunHandle } from "../src/core/run-lifecycle.ts";
+import { createRunLifecycleCoordinator, type RunHandle } from "../src/core/session/run-lifecycle.ts";
 import {
 	type SchedulerHostOptions,
 	type SchedulerHostRunAssociation,
@@ -47,7 +47,7 @@ import {
 	schedulerNodeJoinId,
 } from "../src/core/scheduler/fan-in.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler/queue.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import {
 	type TaskGraphGateLookup,

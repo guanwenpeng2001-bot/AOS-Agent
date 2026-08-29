@@ -12,8 +12,8 @@ import {
 	createRunLifecycleCoordinator,
 	type RunLedgerSession,
 	type RunModelReference,
-} from "../src/core/run-lifecycle.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+} from "../src/core/session/run-lifecycle.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 
 const FOUNDATION_CUSTOM_TYPE = "__aos.foundation.durable.v1";
 const MODEL: RunModelReference = { provider: "test", id: "model", thinkingLevel: "off" };

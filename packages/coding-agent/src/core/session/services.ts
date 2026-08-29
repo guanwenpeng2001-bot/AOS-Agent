@@ -1,30 +1,30 @@
 import { join } from "node:path";
 import type { ThinkingLevel } from "@aos-agent/agent-core";
 import type { Model } from "@aos-agent/ai";
-import { getAgentDir } from "../config.ts";
-import { resolvePath } from "../utils/paths.ts";
+import { getAgentDir } from "../../config.ts";
+import { resolvePath } from "../../utils/paths.ts";
 import {
 	type AgentRuntimeCompositionFactory,
 	createAgentRuntimeCompositionFactory,
-} from "./agent-runtime-composition.ts";
-import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
-import { CapabilityRegistry } from "./capability-registry.ts";
-import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import { createDefaultMCPAuthManagerOptions, type MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
-import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
-import type { ModelBroker } from "./model-broker.ts";
-import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
-import { createPackagedExternalConnectorRegistryFactory } from "./connector/packaged-runtime.ts";
+} from "../agent-runtime-composition.ts";
+import { CapabilityPublicIdentity } from "../capability-public-identity.ts";
+import { CapabilityRegistry } from "../capability-registry.ts";
+import type { SessionStartEvent, ToolDefinition } from "../extensions/index.ts";
+import { createDefaultMCPAuthManagerOptions, type MCPAuthManagerOptions } from "../mcp-auth-manager.ts";
+import type { MCPAuthProviderResolver, MCPTransportFactory } from "../mcp-types.ts";
+import type { ModelBroker } from "../model-broker.ts";
+import { createModelBroker, ModelRuntime } from "../model-runtime.ts";
+import { createPackagedExternalConnectorRegistryFactory } from "../connector/packaged-runtime.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
 	type ResourceLoader,
 	type ResourceLoaderReloadOptions,
-} from "./resource-loader.ts";
-import type { SandboxProvider } from "./sandbox.ts";
-import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
-import type { SessionManager } from "./session-manager.ts";
-import { SettingsManager } from "./settings-manager.ts";
+} from "../resource-loader.ts";
+import type { SandboxProvider } from "../sandbox.ts";
+import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "../sdk.ts";
+import type { SessionManager } from "./manager.ts";
+import { SettingsManager } from "../settings-manager.ts";
 
 /**
  * Non-fatal issues collected while creating services or sessions.

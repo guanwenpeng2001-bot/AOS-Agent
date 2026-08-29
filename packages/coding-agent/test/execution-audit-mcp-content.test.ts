@@ -4,8 +4,8 @@ import {
 	ExecutionAuditAdapter,
 	type AuditEvent,
 	type AuditSession,
-} from "../src/core/execution-audit.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+} from "../src/core/session/execution-audit.ts";
+import type { SessionEntry } from "../src/core/session/manager.ts";
 
 const SESSION_ID = "session-mcp-audit-1";
 const RUN_ID = "run-mcp-audit-1";

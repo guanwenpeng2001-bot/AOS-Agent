@@ -17,9 +17,9 @@ import {
 	createRuntimeSessionSurfaceAdapter,
 } from "../src/index.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/agent-session-facade.ts";
-import type { AgentSession } from "../src/core/agent-session.ts";
-import { ExecutionAuditQuery } from "../src/core/execution-audit-query.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/session/facade.ts";
+import type { AgentSession } from "../src/core/session/agent-session.ts";
+import { ExecutionAuditQuery } from "../src/core/session/execution-audit-query.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";

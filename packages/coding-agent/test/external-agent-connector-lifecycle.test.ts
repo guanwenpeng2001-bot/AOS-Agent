@@ -65,7 +65,7 @@ import type {
 	ExternalConnectorVendorDriver,
 } from "../src/core/connector/vendor/types.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
+import type { SessionEntry } from "../src/core/session/manager.ts";
 import {
 	createTaskCredentialTestProvider,
 	type TaskCredentialProviderReceipt,

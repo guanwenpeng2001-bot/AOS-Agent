@@ -15,7 +15,7 @@ import type { CanonicalExternalAgentArtifactReference } from "../../core/connect
 import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/mcp-types.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/mcp-auth.ts";
 import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-broker.ts";
-import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/run-lifecycle.ts";
+import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/session/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import {
 	attachJsonlLineReader,

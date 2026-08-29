@@ -12,8 +12,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir } from "../config.ts";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { getAgentDir } from "../../config.ts";
+import { canonicalizePath, resolvePath } from "../../utils/paths.ts";
 import {
 	digestContextContent,
 	estimateContextTextTokens,

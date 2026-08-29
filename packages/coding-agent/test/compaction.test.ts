@@ -25,7 +25,7 @@ import {
 	type SessionEntry,
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
-} from "../src/core/session-manager.ts";
+} from "../src/core/session/manager.ts";
 
 // ============================================================================
 // Test fixtures

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { appendPolicyApprovalEntry, POLICY_APPROVAL_CUSTOM_TYPE } from "../src/core/execution-policy-ledger.ts";
 import type { PolicyApprovalRequest } from "../src/core/execution-policy.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import {
 	TASK_GATE_CUSTOM_TYPE,
 	TaskGateError,

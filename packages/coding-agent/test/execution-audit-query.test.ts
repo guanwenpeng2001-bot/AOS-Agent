@@ -8,9 +8,9 @@ import {
 	AUDIT_MAX_SESSION_CANDIDATES,
 	ExecutionAuditQuery,
 	createExecutionAuditQuery,
-} from "../src/core/execution-audit-query.ts";
-import { ExecutionAuditError, type AuditSession, type AuditEvent } from "../src/core/execution-audit.ts";
-import type { FileEntry, SessionEntry } from "../src/core/session-manager.ts";
+} from "../src/core/session/execution-audit-query.ts";
+import { ExecutionAuditError, type AuditSession, type AuditEvent } from "../src/core/session/execution-audit.ts";
+import type { FileEntry, SessionEntry } from "../src/core/session/manager.ts";
 
 const CURRENT_SESSION_ID = "session-query-current";
 const RUN_ID = "run-query-1";

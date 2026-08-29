@@ -1,4 +1,4 @@
-import type { AgentSession, PromptOptions } from "./agent-session.ts";
+import type { AgentSession, PromptOptions } from "./session/agent-session.ts";
 
 export const RUNTIME_SESSION_SURFACES = [
 	"tui",

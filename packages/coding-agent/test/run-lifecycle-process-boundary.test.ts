@@ -4,8 +4,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { createRunLifecycleCoordinator } from "../src/core/session/run-lifecycle.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const workerPath = fileURLToPath(new URL("./fixtures/run-lifecycle-process-worker.ts", import.meta.url));

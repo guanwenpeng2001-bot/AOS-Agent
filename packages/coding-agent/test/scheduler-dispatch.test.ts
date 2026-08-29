@@ -42,7 +42,7 @@ import {
 	validateAttemptReceiptForProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
+import { createRunLifecycleCoordinator } from "../src/core/session/run-lifecycle.ts";
 import type { SchedulerClaim, SchedulerQueueEntry } from "../src/core/scheduler/host.ts";
 import {
 	assembleSchedulerDispatch,
@@ -62,7 +62,7 @@ import {
 } from "../src/core/scheduler/executors.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler/queue.ts";
 import { SchedulerSelectionReservationStore } from "../src/core/scheduler/selection-reservations.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 
 const NOW = "2026-08-22T10:00:00.000Z";

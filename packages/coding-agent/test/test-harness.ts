@@ -27,9 +27,9 @@ import type {
 	Usage,
 } from "@aos-agent/ai";
 import { createAssistantMessageEventStream } from "@aos-agent/ai";
-import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.ts";
+import { AgentSession, type AgentSessionEvent } from "../src/core/session/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import type { Settings } from "../src/core/settings-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { InlineExtension, ResourceLoader } from "../src/index.ts";

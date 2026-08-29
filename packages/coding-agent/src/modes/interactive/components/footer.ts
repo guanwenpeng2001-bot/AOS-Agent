@@ -1,9 +1,9 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@aos-agent/tui";
-import type { AgentSession } from "../../../core/agent-session.ts";
+import type { AgentSession } from "../../../core/session/agent-session.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
-import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
-import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
+import type { ReadonlyFooterDataProvider } from "../../../core/session/footer-data-provider.ts";
+import { addUsageToTotals, createUsageTotals } from "../../../core/session/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
 
 /**

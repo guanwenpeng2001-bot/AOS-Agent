@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SessionEntry } from "../src/core/session-manager.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import type { SessionEntry } from "../src/core/session/manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import {
 	TASK_CREDENTIAL_MAX_TTL_MS,
 	TASK_CREDENTIAL_MIN_TTL_MS,

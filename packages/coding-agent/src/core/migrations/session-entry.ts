@@ -5,7 +5,7 @@ import {
 	type FoundationRecord,
 	type SessionLedger,
 } from "@aos-agent/agent-core";
-import type { FileEntry, SessionEntry } from "../session-manager.ts";
+import type { FileEntry, SessionEntry } from "../session/manager.ts";
 import {
 	decodeCurrentSessionEntry,
 	decodeReservedFoundationCompatibilityWrapper,

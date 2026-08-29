@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import type { ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions } from "@aos-agent/ai";
-import { getAgentDir } from "../config.ts";
-import { raceWithAbortSignal } from "../utils/abort.ts";
-import { getFileRevision, normalizePath } from "../utils/paths.ts";
-import { LockedAtomicFileStorage } from "./control-plane-atomic-storage.ts";
+import { getAgentDir } from "../../config.ts";
+import { raceWithAbortSignal } from "../../utils/abort.ts";
+import { getFileRevision, normalizePath } from "../../utils/paths.ts";
+import { LockedAtomicFileStorage } from "../control-plane-atomic-storage.ts";
 
 type StoredModels = Record<string, ModelsStoreEntry>;
 

@@ -49,7 +49,7 @@ Existing sessions are automatically migrated to the current version (v3) when lo
 ## Source Files
 
 Source history and provenance ([UPSTREAM.md](../../UPSTREAM.md)):
-- [`packages/coding-agent/src/core/session-manager.ts`](UPSTREAM.md) - Session entry types and SessionManager
+- [`packages/coding-agent/src/core/session/manager.ts`](UPSTREAM.md) - Session entry types and SessionManager
 - [`packages/coding-agent/src/core/messages.ts`](UPSTREAM.md) - Extended message types (BashExecutionMessage, CustomMessage, etc.)
 - [`packages/ai/src/types.ts`](UPSTREAM.md) - Base message types (UserMessage, AssistantMessage, ToolResultMessage)
 - [`packages/agent/src/types.ts`](UPSTREAM.md) - AgentMessage union type

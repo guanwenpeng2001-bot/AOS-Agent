@@ -1,7 +1,7 @@
 import type { AssistantMessage, ImageContent } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionShutdownEvent } from "../src/index.ts";
-import type { PreparedSessionScopeRebind } from "../src/core/current-session-scope.ts";
+import type { PreparedSessionScopeRebind } from "../src/core/session/current-scope.ts";
 import { runPrintMode } from "../src/modes/print-mode.ts";
 
 type EmitEvent = SessionShutdownEvent;

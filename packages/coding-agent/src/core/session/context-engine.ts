@@ -11,7 +11,7 @@
 
 import { createHash } from "node:crypto";
 import type { AgentMessage } from "@aos-agent/agent-core";
-import { estimateContextTokens, estimateTokens } from "./compaction/compaction.ts";
+import { estimateContextTokens, estimateTokens } from "../compaction/compaction.ts";
 
 // ---- Custom entry type ------------------------------------------------------
 

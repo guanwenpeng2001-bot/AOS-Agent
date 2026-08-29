@@ -3,7 +3,7 @@ import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@aos-agent/ai/compat";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
-import type { AgentSession } from "./agent-session.ts";
+import type { AgentSession } from "./session/agent-session.ts";
 import {
 	createAgentRuntimeCompositionFactory,
 	createWorkerSandboxComposition,
@@ -13,7 +13,7 @@ import {
 import {
 	createAgentSessionWithRuntimeComposition,
 	recordInitialAgentSessionConfiguration,
-} from "./agent-session-facade.ts";
+} from "./session/facade.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import { CapabilityRegistry } from "./capability-registry.ts";
@@ -36,8 +36,8 @@ import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "./sandbox.ts";
-import { SessionManager } from "./session-manager.ts";
-import { createSessionManagerForOptions, type SessionCreationOptions } from "./session-creation.ts";
+import { SessionManager } from "./session/manager.ts";
+import { createSessionManagerForOptions, type SessionCreationOptions } from "./session/creation.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import { time } from "./timings.ts";
@@ -61,7 +61,7 @@ import {
 // provider-agnostic and does not import the AI compatibility entrypoint itself.
 setDefaultStreamFn(streamSimple);
 
-export type { SessionCreationOptions } from "./session-creation.ts";
+export type { SessionCreationOptions } from "./session/creation.ts";
 
 export {
 	createAgentRuntimeCompositionFactory,
@@ -183,7 +183,7 @@ export interface CreateAgentSessionResult {
 
 // Re-exports
 
-export * from "./agent-session-runtime.ts";
+export * from "./session/runtime.ts";
 export type {
 	ExtensionAPI,
 	ExtensionCommandContext,

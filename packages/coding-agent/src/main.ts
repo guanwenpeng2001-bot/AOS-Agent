@@ -39,12 +39,12 @@ import type { AgentRuntimeCompositionFactory } from "./core/agent-runtime-compos
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntimeFromManager,
-} from "./core/agent-session-runtime.ts";
+} from "./core/session/runtime.ts";
 import {
 	type AgentSessionRuntimeDiagnostic,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-} from "./core/agent-session-services.ts";
+} from "./core/session/services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
@@ -52,7 +52,7 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
-import { InMemoryCodingAgentModelsStore } from "./core/models-store.ts";
+import { InMemoryCodingAgentModelsStore } from "./core/session/models-store.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
@@ -61,9 +61,9 @@ import {
 	getMissingSessionCwdIssue,
 	MissingSessionCwdError,
 	type SessionCwdIssue,
-} from "./core/session-cwd.ts";
-import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
-import { createSessionManagerStorage } from "./core/session-manager-storage.ts";
+} from "./core/session/cwd.ts";
+import { assertValidSessionId, SessionManager } from "./core/session/manager.ts";
+import { createSessionManagerStorage } from "./core/session/manager-storage.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";

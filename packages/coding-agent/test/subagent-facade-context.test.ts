@@ -18,13 +18,13 @@ import {
 } from "@aos-agent/agent-core";
 import { createAssistantMessageEventStream, type Context, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentSession } from "../src/core/agent-session.ts";
+import { AgentSession } from "../src/core/session/agent-session.ts";
 import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
-import { createAgentSessionWithRuntimeComposition } from "../src/core/agent-session-facade.ts";
+import { createAgentSessionWithRuntimeComposition } from "../src/core/session/facade.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { SubagentComposition } from "../src/core/subagent/composition.ts";
 

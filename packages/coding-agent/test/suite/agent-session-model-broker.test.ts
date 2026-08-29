@@ -8,8 +8,8 @@ import {
 	MODEL_BINDING_CUSTOM_TYPE,
 	parseModelBindingEntry,
 } from "../../src/core/model-broker-ledger.ts";
-import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/context-engine.ts";
-import type { SessionEntry } from "../../src/core/session-manager.ts";
+import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/session/context-engine.ts";
+import type { SessionEntry } from "../../src/core/session/manager.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 describe("AgentSession ModelBroker integration", () => {

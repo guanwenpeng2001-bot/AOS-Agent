@@ -12,8 +12,8 @@ import { SchedulerMessageOrchestrator } from "../src/core/scheduler/messages.ts"
 import { SchedulerQueueStore } from "../src/core/scheduler/queue.ts";
 import { withRuntimeClock } from "../src/core/runtime-clock.ts";
 import type { SchedulerOwnershipTransfer, SchedulerQueueEntry } from "../src/core/scheduler/host.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
+import { createSessionManagerStorage } from "../src/core/session/manager-storage.ts";
 import { TaskGateStore } from "../src/core/task-gate.ts";
 import { createTaskGraphStore, type TaskGraphStore } from "../src/core/scheduler/task-graph.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";

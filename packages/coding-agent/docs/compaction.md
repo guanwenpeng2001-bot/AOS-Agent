@@ -6,7 +6,7 @@ LLMs have limited context windows. When conversations grow too long, AOS Agent u
 - [`packages/coding-agent/src/core/compaction/compaction.ts`](UPSTREAM.md) - Auto-compaction logic
 - [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](UPSTREAM.md) - Branch summarization
 - [`packages/coding-agent/src/core/compaction/utils.ts`](UPSTREAM.md) - Shared utilities (file tracking, serialization)
-- [`packages/coding-agent/src/core/session-manager.ts`](UPSTREAM.md) - Entry types (`CompactionEntry`, `BranchSummaryEntry`)
+- [`packages/coding-agent/src/core/session/manager.ts`](UPSTREAM.md) - Entry types (`CompactionEntry`, `BranchSummaryEntry`)
 - [`packages/coding-agent/src/core/extensions/types.ts`](UPSTREAM.md) - Extension event types
 
 For TypeScript definitions in your project, inspect `node_modules/aos-agent/dist/`.

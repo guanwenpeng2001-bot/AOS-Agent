@@ -26,7 +26,7 @@ import {
 	FoundationControlPlane,
 	type FoundationControlPlaneOptions,
 } from "../src/core/foundation-control-plane.ts";
-import { CanonicalAgentSessionServices } from "../src/core/agent-session-facade.ts";
+import { CanonicalAgentSessionServices } from "../src/core/session/facade.ts";
 import {
 	resolveExecutionPolicyProfile,
 	type ExecutionPolicyProfile,
@@ -36,11 +36,11 @@ import {
 	createSandboxHandleOperationProvider,
 } from "../src/core/sandbox-host.ts";
 import { resolveWorkerSandboxOperation, type SandboxHandle } from "../src/core/sandbox.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 import {
 	createHarnessCompatibilityWriter,
 	createSessionManagerStorage,
-} from "../src/core/session-manager-storage.ts";
+} from "../src/core/session/manager-storage.ts";
 import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/task-credential-lease.ts";
 import {
 	createTaskCredentialTestProvider,

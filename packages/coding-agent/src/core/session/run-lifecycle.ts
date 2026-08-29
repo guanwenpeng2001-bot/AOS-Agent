@@ -46,7 +46,7 @@ import {
 	parseRunBindingAssociation,
 	type RunBindingAssociation,
 	serializePublicRunBindingAssociation,
-} from "./binding-handles.ts";
+} from "../binding-handles.ts";
 import type { ContextSnapshot, ContextSourceDrift, ContextSourceReceipt } from "./context-engine.ts";
 import {
 	POLICY_BINDING_CUSTOM_TYPE,
@@ -65,7 +65,7 @@ import {
 	type SandboxCapabilities,
 	type SandboxStatus,
 	toPublicPolicySummary,
-} from "./execution-policy.ts";
+} from "../execution-policy.ts";
 import {
 	createExecutionPolicyLedger,
 	type PolicyBindingLedgerRecord as ExecutionPolicyBindingLedgerRecord,
@@ -78,22 +78,22 @@ import {
 	type PolicyViolationLedgerRecord,
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
 	type SandboxLifecycleLedgerRecord,
-} from "./execution-policy-ledger.ts";
-import { type ExternalConnectorSelection, serializeExternalConnectorSelection } from "./connector/registry.ts";
-import type { McpAttachment } from "./mcp-attachment.ts";
+} from "../execution-policy-ledger.ts";
+import { type ExternalConnectorSelection, serializeExternalConnectorSelection } from "../connector/registry.ts";
+import type { McpAttachment } from "../mcp-attachment.ts";
 import {
 	type LegacyAutomationRunLedgerSourceEntry,
 	reconcileLegacyAutomationRunLedger,
-} from "./migrations/automation-run-ledger.ts";
-import type { ModelRoleSelection, ModelRouteSelection } from "./model-broker.ts";
+} from "../migrations/automation-run-ledger.ts";
+import type { ModelRoleSelection, ModelRouteSelection } from "../model-broker.ts";
 import {
 	MODEL_ATTEMPT_CUSTOM_TYPE,
 	MODEL_BINDING_CUSTOM_TYPE,
 	type PublicModelAttemptLedgerRecord,
 	type PublicModelBindingLedgerRecord,
 	serializePublicModelBrokerLedgerEntry,
-} from "./model-broker-ledger.ts";
-import type { SessionEntry, SessionTreeNode } from "./session-manager.ts";
+} from "../model-broker-ledger.ts";
+import type { SessionEntry, SessionTreeNode } from "./manager.ts";
 
 export type SessionId = string;
 export type RunId = string;
