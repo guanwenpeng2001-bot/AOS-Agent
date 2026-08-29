@@ -9,15 +9,15 @@
 ### Added
 
 - Remote-ready Agent Loop hardening: bounded convergence, stable error classification, safe retry gating, and cancellation/deadline propagation.
-- T4 tool runtime foundations: profile and plugin management, tool gateway/pipeline execution, runtime services, and scoped selector/fencing behavior.
-- T4 authority gates: durable local plugin activation recovery, consumer-shaped ToolGateway fakes, transformer provenance, read-only hooks, scoped reservations, and fail-closed cancellation/deadline settlement.
-- T5 durable context and data foundations: immutable snapshots, fork and rewind planning, scoped memory, content-addressed artifacts, compaction, prompt-cache, and instruction facts.
-- T6 Foundation execution gates: immutable ModelProfile routing and AgentBinding epochs, scoped gateway consumers, and provider-owned lifecycle conformance.
-- T7 durable control objects: Goal/Plan/Stage/Todo, Ask/Reply settlement, and versioned Workflow DSL lifecycle with CAS recovery and explicit budget accounting.
+- Tool runtime support: profile and plugin management, Tool Gateway and pipeline execution, runtime services, and scoped selector/fencing behavior.
+- Tool authority and recovery: durable local plugin activation recovery, consumer-shaped ToolGateway fakes, transformer provenance, read-only hooks, scoped reservations, and fail-closed cancellation/deadline settlement.
+- Durable context and data: immutable snapshots, fork and rewind planning, scoped memory, content-addressed artifacts, compaction, prompt caching, and instruction facts.
+- Foundation execution controls: immutable ModelProfile routing and AgentBinding epochs, scoped gateway consumers, and provider-owned lifecycle conformance.
+- Durable workflow controls: Goal, Plan, Stage, and Todo objects; Ask/Reply settlement; and versioned Workflow DSL lifecycle with compare-and-set recovery and explicit budget accounting.
 - AgentHarness compatibility lifecycle: durable user/assistant/tool event ordering, extension tool and compaction hooks, bounded retry cancellation, automatic overflow compaction continuations, and model invocation context-snapshot provenance.
-- T11 recovery and migration conformance: atomic v4-to-v5 rollback, torn-tail refolding, single-writer fencing, duplicate-request rejection, semantic corruption detection, and unknown-schema fail-closed behavior.
-- T12 Foundation seal: local Workflow evaluation datasets and strict versioned quality, cost, and recovery regression snapshots, with all 79 Foundation closure capabilities backed by implementation evidence.
-- Line 11 Sandbox Operation Worker capability ledger: closes capabilities 74–87, 135, and 136, consumes sealed Foundation capabilities 6, 32, 47, 52, and 61, and preserves explicit later ownership for 88, 89, 132, and 137 without closing capability 140.
+- Recovery and migration safety: atomic v4-to-v5 rollback, torn-tail refolding, single-writer fencing, duplicate-request rejection, semantic corruption detection, and fail-closed handling of unknown schemas.
+- Workflow quality and recovery coverage now include local evaluation datasets and versioned quality, cost, and recovery regression snapshots, with implementation evidence for the Foundation capabilities covered by this release.
+- Sandbox Operation Worker support: capabilities 74–87, 135, and 136 are implemented, worker execution consumes the required Foundation capabilities, and capabilities still outside this release remain explicitly owned without being treated as complete.
 
 ### Changed
 
