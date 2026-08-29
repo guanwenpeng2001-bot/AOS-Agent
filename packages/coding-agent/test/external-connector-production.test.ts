@@ -35,6 +35,7 @@ import {
 	encodeRuntimeLimitsOperationNonce,
 } from "../src/core/runtime-limits.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
+import * as CodingAgent from "../src/index.ts";
 import {
 	createAgentRuntimeCompositionFactory,
 	buildExternalConnectorTargetConfig,
@@ -233,6 +234,56 @@ describe("production External Connector composition", () => {
 		});
 		expect(probeCalls).toBe(0);
 		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("rejects rebinding one vendor driver to a different trusted process target", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-external-production-driver-binding-"));
+		const capability = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: "production-driver-binding-connector",
+			revision: 1,
+			protocol: { name: "production-protocol", version: "1" },
+			modelAccess: "none",
+			resume: false,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		});
+		const driver = Object.freeze({ dispose: async () => undefined }) as unknown as ExternalConnectorVendorDriver;
+		const connector = await createProductionExternalAgentConnector({
+			providerId: capability.providerId,
+			capability,
+			capabilityProbe: async () => Result.ok(capability),
+			store: Object.freeze({}) as ExternalConnectorDurableStore,
+			driver,
+			privateStatePath: join(root, "first.json"),
+			process: processOptions,
+		});
+		try {
+			await expect(createProductionExternalAgentConnector({
+				providerId: capability.providerId,
+				capability,
+				capabilityProbe: async () => Result.ok(capability),
+				store: Object.freeze({}) as ExternalConnectorDurableStore,
+				driver,
+				privateStatePath: join(root, "rebound.json"),
+				process: { ...processOptions, arguments: [...processOptions.arguments, "--different-target"] },
+			})).rejects.toThrow("vendor driver is already bound to another trusted process target");
+		} finally {
+			await connector.dispose();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps production driver evidence getters outside the package root", () => {
+		for (const privateExport of [
+			"getProductionExternalConnectorDriverProvenance",
+			"getProductionExternalConnectorVendorDriver",
+			"getProductionExternalConnectorVendorDriverProcess",
+			"getProductionExternalConnectorVendorDriverProvenance",
+		]) {
+			expect(privateExport in CodingAgent).toBe(false);
+		}
 	});
 
 	it("retains and exposes quarantined startup recovery through registry readiness", async () => {
