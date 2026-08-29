@@ -5,7 +5,7 @@ import type { Budget } from "./budget.ts";
 import type { FoundationProviderCapability } from "./providers.ts";
 import type { ModelRoute } from "./role.ts";
 
-/** T6's draft host adapter is deliberately smaller than the future model gateway. */
+/** The draft host adapter is deliberately smaller than the future model gateway. */
 export const FOUNDATION_HOST_MODEL_CALL_CAPABILITY: FoundationProviderCapability = Object.freeze({
 	schemaVersion: 1,
 	id: "foundation.host.model_call",
@@ -27,7 +27,7 @@ export interface FoundationHostModelCallAdapter {
 }
 
 export interface FoundationHostModelCallAdapterOptions {
-	/** T6 does not infer service-tier support from provider names. */
+	/** The host does not infer service-tier support from provider names. */
 	readonly supportedServiceTiers?: readonly string[];
 }
 
@@ -47,7 +47,7 @@ function validateHostModelCallRequest(request: FoundationHostModelCallRequest, s
 }
 
 /**
- * Adapts the existing host Models collection to the T6 route boundary. The
+ * Adapts the existing host Models collection to the model route boundary. The
  * fallback list is recorded in the route but is intentionally never executed.
  */
 export function createFoundationHostModelCallAdapter(

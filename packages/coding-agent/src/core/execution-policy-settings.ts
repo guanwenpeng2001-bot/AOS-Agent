@@ -603,7 +603,7 @@ export function buildExecutionPolicySettings(options: ExecutionPolicySettingsBui
 
 export const resolveExecutionPolicySettings = buildExecutionPolicySettings;
 
-/** Return an immutable copy suitable for public diagnostics or a T3 binding. */
+/** Return an immutable copy suitable for public diagnostics or a policy binding. */
 export function createExecutionPolicySettingsView(settings: ExecutionPolicySettings): ExecutionPolicySettings {
 	return deepFreeze({
 		...settings,
@@ -623,5 +623,5 @@ export function getExecutionPolicyProfile(settings: ExecutionPolicySettings): Ex
 	return settings.selectedProfile;
 }
 
-/** Keep the narrowing type discoverable to T3/T5 without re-declaring it. */
+/** Keep the narrowing type discoverable to policy consumers without re-declaring it. */
 export type ExecutionPolicyProjectNarrowing = PolicyProfileNarrowing;

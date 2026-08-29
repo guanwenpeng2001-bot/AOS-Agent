@@ -1,5 +1,5 @@
 /**
- * Task Credential / Lease store (T2).
+ * Task Credential / Lease store.
  *
  * Session-scoped store for task credential grants and leases. The store
  * strictly reuses the Session custom-entry single-writer shape
@@ -921,7 +921,7 @@ function validateStoreRevokeRequest(input: TaskCredentialStoreRevokeRequest): vo
 	}
 	assertNoForbiddenPayloadKeys(raw);
 	// The confirmation flag is all-or-nothing: only the literal `true` is
-	// accepted, mirroring the T1 transition option guard.
+	// accepted, mirroring the transition option guard.
 	if (input.providerConfirmedRevoke !== undefined && input.providerConfirmedRevoke !== true) {
 		throw new TaskCredentialError("task_credential_invalid");
 	}

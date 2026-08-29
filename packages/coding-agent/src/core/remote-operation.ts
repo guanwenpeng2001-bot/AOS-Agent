@@ -62,7 +62,7 @@ const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const SAFE_ARTIFACT_DIGEST_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const SAFE_MEDIA_TYPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/;
 const SAFE_RECEIPT_INPUT_ERROR_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-/** The T1 scope fingerprint format: `sha256:` plus 64 lowercase hex characters. */
+/** Scope fingerprints use `sha256:` plus 64 lowercase hex characters. */
 const TASK_LEASE_SCOPE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 /** A portable reference; it contains no local path, URL, payload, or secret. */

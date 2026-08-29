@@ -14,7 +14,7 @@ import type { ServiceContract } from "./service.ts";
 import type { ProfileContract } from "./profile.ts";
 import { parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 
-/** Stable queryable T1 entities. This is an identity/query surface, not a persistence engine. */
+/** Stable queryable Foundation entities. This is an identity/query surface, not a persistence engine. */
 export const FOUNDATION_ENTITY_KINDS = [
 	"execution_correlation", "lineage", "fingerprint", "envelope", "event", "task", "artifact",
 	"role_definition", "role_revision", "model_profile", "agent_binding", "binding_epoch", "agent_instance",
@@ -103,7 +103,7 @@ export function validateFoundationEntityPublicProjection(value: unknown): Result
 export function serializeFoundationEntityPublicProjection(value: FoundationEntityPublicProjection): string { return serializeExactShape(FoundationEntityPublicProjectionSchema, value, "foundation_entity_public_projection"); }
 export function parseFoundationEntityPublicProjection(text: string): ResultValue<FoundationEntityPublicProjection, FoundationError> { return parseExactShape(FoundationEntityPublicProjectionSchema, text, "foundation_entity_public_projection"); }
 
-/** Read-only query adapter for T1 identity surfaces; it does not imply T2 storage. */
+/** Read-only query adapter for Foundation identity surfaces; it does not imply durable storage. */
 export interface FoundationEntityQueryProvider {
 	query(query: FoundationEntityQuery): ResultValue<FoundationEntityQueryResult, FoundationError>;
 }

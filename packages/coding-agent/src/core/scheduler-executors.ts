@@ -1,5 +1,5 @@
 /**
- * Scheduler v1 executor registry, selection, and Host in-process provider (T3).
+ * Scheduler executor registry, selection, and Host in-process provider.
  *
  * The durable source of truth for an opt-in exact choice is the immutable
  * selection fact owned by `SchedulerSelectionReservationStore`. The legacy,
@@ -10,7 +10,7 @@
  * cost/latency/load/affinity scoring, and fails closed with no Host fallback
  * when none remain. The Host in-process TaskExecutor requires an injected
  * attempt-runner seam; a missing runner fails closed and never mints an
- * empty succeeded receipt. T4 binds that seam. Quota reserve wraps the
+ * empty succeeded receipt. Production composition binds that seam. Quota reserve wraps the
  * runner, settles the `BudgetUsage` returned by work, and `runAttempt`
  * propagates the runner's provider-valid `AttemptReceipt` after identity
  * and schema checks. Cancellation may still mint a local cancelled receipt.
@@ -176,7 +176,7 @@ export interface SchedulerHostAttemptWork {
 	readonly receipt: AttemptReceipt;
 }
 
-/** Host attempt-runner seam. T4 binds production work; a missing runner fails closed. */
+/** Host attempt-runner seam. Production composition binds work; a missing runner fails closed. */
 export type SchedulerHostAttemptRunner = (
 	attempt: Attempt,
 	options?: FoundationProviderExecutionOptions,

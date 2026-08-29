@@ -1,5 +1,5 @@
 /**
- * Task Credential / Lease lifecycle service (T4).
+ * Task Credential / Lease lifecycle service.
  *
  * Session-scoped facade that owns the {@link TaskCredentialStore} and turns
  * host lifecycle signals into fail-closed revoke / quarantine / settle
@@ -14,7 +14,7 @@
  * - Resume never restores an old grant: {@link issueForTaskRun} derives a
  *   fresh deterministic execution binding per run context and issues a brand
  *   new grant; the source run's grant stays terminal (revoked/settled).
- * - Every issue / renew / revoke command runs the frozen T3 preflight
+ * - Every issue / renew / revoke command runs the frozen credential preflight
  *   ({@link resolveTaskCredentialPreflight}) through the injected pure
  *   Session resolver BEFORE the provider, the store, and every append: the
  *   resolver supplies the real policy decision, approval state, capability
@@ -145,7 +145,7 @@ export interface TaskCredentialServiceOptions {
 	/** Optional default safe-reference Worker target for this Session. */
 	readonly workerTarget?: TaskCredentialWorkerTarget;
 	/**
-	 * Pure T3 preflight resolver supplied by the Session; absent fails every
+	 * Pure credential preflight resolver supplied by the Session; absent fails every
 	 * issue / renew / revoke command closed (no operation can be proven
 	 * authorized before the provider or the store is touched).
 	 */
@@ -178,7 +178,7 @@ export interface TaskCredentialWorkerTarget {
 }
 
 /**
- * Read-only T3 preflight facts input for one Task Credential operation. The
+ * Read-only preflight facts input for one Task Credential operation. The
  * service supplies the frozen execution binding, the normalized scope facts,
  * the canonical service-clock timestamp, and the host-resolvable Gate /
  * node-attach facts; the Session resolver supplies the frozen policy,
@@ -207,7 +207,7 @@ export interface TaskCredentialPreflightFactsInput {
 	readonly requestedTtlMs: number;
 	/**
 	 * Canonical UTC ISO timestamp from the service clock (injected `now()`);
-	 * the resolver uses it for the provider capability snapshot and the T3
+	 * the resolver uses it for the provider capability snapshot and the
 	 * `nowMs` fact, so the Host preflight can never ignore the service clock.
 	 */
 	readonly requestedAt: string;
@@ -216,7 +216,7 @@ export interface TaskCredentialPreflightFactsInput {
 /**
  * Host-supplied pure Task Credential preflight resolver. The service builds
  * the frozen execution binding and the normalized scope facts and asks the
- * resolver for the frozen T3 preflight decision; the resolver resolves the
+ * resolver for the frozen credential preflight decision; the resolver resolves the
  * Gate / node-attach facts and the Session's frozen policy, capability,
  * sandbox, and provider facts and runs {@link resolveTaskCredentialPreflight}
  * without writing the Session, preparing a binding, or touching the
@@ -814,7 +814,7 @@ export class TaskCredentialService {
 	 * never touched here: it stays in the ledger exactly as it is — this
 	 * method never restores or resurrects it.
 	 *
-	 * The T3 preflight runs for BOTH `issue` and `project` as the first step,
+	 * The credential preflight runs for BOTH `issue` and `project` as the first step,
 	 * before the provider, the store, and every append: the project preflight
 	 * proves the delivery capabilities (per-binding isolation, short-lived
 	 * delivery, delivery receipts, provider delivery scope), so a missing
@@ -852,7 +852,7 @@ export class TaskCredentialService {
 		} catch {
 			return { ok: false, code: "task_credential_binding_invalid" };
 		}
-		// T3 preflight (issue AND project) before the provider, the store, and
+		// Credential preflight (issue AND project) before the provider, the store, and
 		// every append: the project preflight proves the delivery capabilities
 		// (per-binding isolation, short-lived delivery, delivery receipts, and
 		// the provider's declared delivery scope), so a target that cannot
@@ -1051,7 +1051,7 @@ export class TaskCredentialService {
 		if (grant.targetId !== undefined && this.quarantinedTargets.has(grant.targetId)) {
 			return { ok: false, code: "task_credential_binding_invalid" };
 		}
-		// T3 renew preflight: the lease's in-memory execution facts (binding +
+		// Renew preflight: the lease's in-memory execution facts (binding +
 		// normalized scopes) are required; after a reload/restart they are
 		// unknowable and the renew fails closed instead of widening or
 		// guessing scopes, and the current scope/target stay immutable.
@@ -1114,7 +1114,7 @@ export class TaskCredentialService {
 	revoke(input: TaskCredentialServiceRevokeInput): TaskCredentialServiceMutationResult {
 		if (!this.validateRevokeInput(input)) return { ok: false, code: "task_credential_invalid" };
 		if (this.store === undefined) return { ok: false, code: "task_credential_not_found" };
-		// T3 revoke preflight for the command plane: the lease's in-memory
+		// Revoke preflight for the command plane: the lease's in-memory
 		// execution facts (binding + normalized scopes) are required and the
 		// decision is authorized against the lease's current TTL; after a
 		// reload/restart the scope facts are unknowable and the revoke command
@@ -1388,7 +1388,7 @@ export class TaskCredentialService {
 	}
 
 	/**
-	 * Run the frozen T3 preflight for one operation through the injected
+	 * Run the frozen credential preflight for one operation through the injected
 	 * resolver. The resolver is pure and fail-closed: it resolves the Gate /
 	 * node-attach facts and the Session's frozen policy / capability / sandbox
 	 * / provider facts and runs {@link resolveTaskCredentialPreflight}; a

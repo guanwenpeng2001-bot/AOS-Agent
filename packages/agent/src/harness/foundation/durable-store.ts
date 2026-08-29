@@ -96,7 +96,7 @@ export interface DurableCommandIntent {
 }
 
 /**
- * All T7 stores share one owner id by default. This is intentional: multiple
+ * All durable stores share one owner id by default. This is intentional: multiple
  * projections attached to one Session must share its single writer lease.
  */
 export function createStoreWriter(

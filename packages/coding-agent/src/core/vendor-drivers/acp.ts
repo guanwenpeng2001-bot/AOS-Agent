@@ -109,7 +109,7 @@ export interface PrivateAcpStableV1Limits {
 	readonly requestTimeoutMs: number;
 }
 
-/** Trusted Host-injected transport. T6 does not discover or launch a process. */
+/** Trusted Host-injected transport; the host does not discover or launch a process. */
 export interface PrivateAcpStableV1Transport {
 	/** Raw agent-to-client stable-v1 JSONL bytes. */
 	readonly input: ReadableStream<Uint8Array>;

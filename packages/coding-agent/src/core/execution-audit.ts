@@ -809,7 +809,7 @@ export interface ExecutionAuditAdapterOptions {
 	readonly cursorSecret?: AuditCursorSecret;
 }
 
-/** Error carrying one of the stable T0 control-plane error codes. */
+/** Error carrying one of the stable control-plane error codes. */
 export class ExecutionAuditError extends Error {
 	readonly code: AuditErrorCode;
 

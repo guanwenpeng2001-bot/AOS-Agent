@@ -535,7 +535,7 @@ function linkAbortSignal(parent: AbortSignal | undefined): LinkedAbortController
 }
 
 /**
- * Provider-neutral ToolGateway consuming the T1 contracts. It validates every
+ * Provider-neutral ToolGateway consuming the Foundation contracts. It validates every
  * request with the frozen exact-shape schema, routes by `(namespace, toolName)`
  * and never falls through to a broader default when no route matches.
  */
@@ -762,7 +762,7 @@ export interface LocalToolGatewayProviderOptions {
 	readonly capabilities?: readonly FoundationProviderCapability[];
 }
 
-/** Local tool provider: the host executes the tool and returns a validated T1 result. */
+/** Local tool provider: the host executes the tool and returns a validated result. */
 export function createLocalToolGatewayProvider(options: LocalToolGatewayProviderOptions): ToolGatewayProvider {
 	const declared = options.capabilities ?? [];
 	const revision = options.revision;
@@ -808,7 +808,7 @@ export function createLocalToolGatewayProvider(options: LocalToolGatewayProvider
 
 /**
  * Sandbox translator consumed by {@link createSandboxOperationToolGatewayProviderV1}.
- * It maps a T1 ToolGateway request onto a T1 SandboxOperationRequest; the
+ * It maps a ToolGateway request onto a SandboxOperationRequest; the
  * provider stays opaque about how the operation is performed.
  */
 export interface SandboxOperationTranslator {
@@ -859,7 +859,7 @@ export interface SandboxOperationToolGatewayProviderOptions {
 
 /**
  * Sandbox tool provider consuming the frozen {@link SandboxOperationProvider}
- * contract. The WorkerReceipt is exact-shape validated and mapped onto the T1
+ * contract. The WorkerReceipt is exact-shape validated and mapped onto the
  * ToolExecutionResult; the gateway only ever sees provider-neutral values.
  */
 export function createSandboxOperationToolGatewayProvider(

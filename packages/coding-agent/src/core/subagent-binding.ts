@@ -2,7 +2,7 @@
  * Child Binding projection: seven-resource tighten-only inheritance.
  *
  * This module does not spawn, resolve a new Binding, or mutate Foundation
- * contracts. The projection is the durable proof T4 persists before spawn.
+ * contracts. The projection is the durable proof persisted before spawn.
  */
 
 import { Type } from "typebox";

@@ -1,5 +1,5 @@
 /**
- * Production Scheduler T8 deadlock, fairness, and backpressure controller.
+ * Production Scheduler deadlock, fairness, and backpressure controller.
  *
  * Collects wait-for edges from integrated Graph, Gate, Ask, handoff, and
  * queue claim state. Cycle detection is deterministic. A detected cycle

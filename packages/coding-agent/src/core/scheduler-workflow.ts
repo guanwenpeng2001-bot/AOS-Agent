@@ -1,5 +1,5 @@
 /**
- * Production Workflow controller (T7). Default-off. WorkflowStore is the only
+ * Production Workflow controller. Default-off. WorkflowStore is the only
  * Workflow state authority. Local Agent/Tool work goes through the sealed
  * Scheduler dispatch, handoff, fan-in, and Host settlement path. External
  * Agent steps stop at awaiting_dispatch and use SchedulerMessageOrchestratorV1

@@ -1231,7 +1231,7 @@ function mergeNarrowing(
 	) {
 		return { ok: false, error: policyError("policy_profile_untrusted") };
 	}
-	// T0 does not allow a project to introduce a second rule layer. It can
+	// A project cannot introduce a second rule layer. It can
 	// narrow declarative fields, but rules are selected from registered profiles.
 	if (narrowing.rules !== undefined && narrowing.rules.length > 0) {
 		return { ok: false, error: policyError("policy_profile_untrusted") };
@@ -2369,7 +2369,7 @@ export function resolveExecutionPolicy(input: ResolveExecutionPolicyInput): Poli
 export const resolvePolicy = resolveExecutionPolicy;
 
 /**
- * Task Credential / Lease preflight (T3).
+ * Task Credential / Lease preflight.
  *
  * Read-only preflight for one `credential.task.issue` / `renew` / `project` /
  * `revoke` operation. It accepts already-resolved facts only (the frozen

@@ -1,5 +1,5 @@
 /**
- * Scheduler v1 durable queue store (T2 queue / claim / fencing).
+ * Scheduler durable queue store for queueing, claims, and fencing.
  *
  * Persistence uses the existing Session durable ledger as the only
  * authority. Claim fencing is a claim-owned opaque token and lease, not

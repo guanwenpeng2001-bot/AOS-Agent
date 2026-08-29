@@ -428,7 +428,7 @@ export interface SchedulerSafeStatus {
 /**
  * Trusted production Scheduler composition. One coalescing driver owns every
  * tick; component-local drivers remain stopped. Run hooks are registered
- * before the Run coordinator is created so the T4 observation contract cannot
+ * before the Run coordinator is created so the observation contract cannot
  * be bypassed by construction order.
  */
 export class SchedulerComposition {

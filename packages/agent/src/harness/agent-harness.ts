@@ -536,7 +536,7 @@ export interface AgentHarnessOptions {
 	foundationExecution?: AgentHarnessFoundationExecution;
 	/** Trusted provider consumer. Receipts may only be obtained by consuming this provider. */
 	foundationProvider?: TaskExecutorProvider;
-	/** T6 host model-call boundary; defaults to the draft adapter over Models. */
+	/** Host model-call boundary; defaults to the draft adapter over Models. */
 	foundationModelCallAdapter?: FoundationHostModelCallAdapter;
 	/** Host-owned artifact provider; method-bearing providers never enter durable execution state. */
 	artifactStore?: ArtifactStoreProvider;

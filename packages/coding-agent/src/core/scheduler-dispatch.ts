@@ -1,5 +1,5 @@
 /**
- * Scheduler v1 dispatch controller (T4).
+ * Scheduler dispatch controller.
  *
  * After a durable claim this module assembles Dispatch, the immutable
  * AgentBinding / initial BindingEpoch, and a complete ExecutionCorrelation,
@@ -13,7 +13,7 @@
  * fails closed with no fabricated success or Host fallback. Cancel, deadline,
  * claim-expiry, handoff rejection, and deadlock cancellation converge on
  * provider cancelAttempt via the settlement cancel surface. Quota reserve/settle
- * remains the T3 in-process provider path. This module does not tick, scan
+ * remains the in-process provider path. This module does not tick, scan
  * Task Graph, write TaskResult/RunReceipt, or register a production Scheduler.
  */
 import {
@@ -155,7 +155,7 @@ export interface SchedulerDispatchExecutorRequirements {
 }
 
 /**
- * T5/T9 composition input: attach one claimed Scheduler dispatch to a durable
+ * Scheduler composition input: attach one claimed dispatch to a durable
  * Run in the same Session before provider execution starts.
  */
 export interface SchedulerRunDispatchRequest extends SchedulerDispatchRequest {
@@ -820,7 +820,7 @@ export class SchedulerDispatchController {
 	}
 
 	/**
-	 * Dispatch a claimed queue entry as part of one durable Run. T5/T9 call this
+	 * Dispatch a claimed queue entry as part of one durable Run. Scheduler composition calls this
 	 * after attach/composition has selected the Run; association never crosses
 	 * the controller's Session and is installed before provider execution.
 	 */

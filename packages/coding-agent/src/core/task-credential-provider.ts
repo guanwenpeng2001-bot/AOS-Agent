@@ -1,5 +1,5 @@
 /**
- * Task Credential / Lease provider (T2, provider contract).
+ * Task Credential / Lease provider contract.
  *
  * Provider-neutral issuer / target capabilities with material-free request
  * contracts and safe receipts. A `TaskCredentialProvider` bundles two
@@ -16,7 +16,7 @@
  *   delivery receipts), `project` (delivers credential material into a
  *   target environment), `renew`, and `revoke`. The provider-to-target
  *   projection request (the only contract where material flows) is
- *   module-private; every target response is material-free (the T1 core
+ *   module-private; every target response is material-free (the core
  *   delivery receipt or a provider receipt).
  *
  * Every request and receipt type in this module validates through a strict
@@ -258,7 +258,7 @@ export interface TaskCredentialProvider {
  * Configured safe availability facts of one Task Credential provider. The
  * provider object's existence is never treated as an availability proof: the
  * host explicitly configures whether the issuer is reachable and whether the
- * target declares delivery, and the T3 preflight fails closed when the fact
+ * target declares delivery, and the credential preflight fails closed when the fact
  * is absent or false. Never derived from a provider call.
  */
 export interface TaskCredentialProviderAvailability {

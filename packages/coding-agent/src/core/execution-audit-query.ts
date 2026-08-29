@@ -73,7 +73,7 @@ export interface ExecutionAuditQueryOptions {
 /** A SessionManager-like source. The directory is resolved from the server source. */
 export type AuditQuerySession = AuditSession & { readonly getSessionDir?: () => string };
 
-/** Replay accepts the T1 replay filters plus the cross-session scope. */
+/** Replay accepts the base replay filters plus the cross-session scope. */
 export interface AuditReplayQuery extends BaseAuditReplayQuery {
 	readonly scope?: AuditQueryScope;
 }

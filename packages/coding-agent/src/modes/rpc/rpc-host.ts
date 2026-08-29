@@ -1453,7 +1453,7 @@ export class RpcHostController {
 		};
 
 		/**
-		 * Host-resolvable Task Credential issue preflight (T3 contract). The
+		 * Host-resolvable Task Credential issue preflight. The
 		 * control plane enforces the read-only preflight facts it can resolve
 		 * from its own stores before the service is touched: the stage pair
 		 * must appear together or not at all, a binding with a stage pair
@@ -1518,7 +1518,7 @@ export class RpcHostController {
 		};
 
 		/**
-		 * Resolve the T3 Gate fact of one stage pair from the live Task Gate
+		 * Resolve the Gate fact of one stage pair from the live Task Gate
 		 * store. Read-only; never appends. `undefined` means the Gate cannot be
 		 * resolved (the frozen preflight denies with `task_credential_gate_required`).
 		 */
@@ -1534,7 +1534,7 @@ export class RpcHostController {
 		};
 
 		/**
-		 * Resolve the T3 node-attach fact of one graph node from the live Task
+		 * Resolve the node-attach fact of one graph node from the live Task
 		 * Graph store. Read-only; never appends. A missing graph, missing node,
 		 * or a node not attached to the Run is `false` (the frozen preflight
 		 * denies with `task_credential_binding_invalid`).
@@ -4510,7 +4510,7 @@ export class RpcHostController {
 								taskCredentialCommandError(undefined, "task_credential_binding_invalid"),
 							);
 						}
-						// T3 preflight: the host-resolvable read-only facts (gate
+						// Credential preflight: the host-resolvable read-only facts (gate
 						// approval, node attach, TTL bounds, scope structure) must pass
 						// before the service is touched.
 						const preflightDenied = taskCredentialIssuePreflight(currentBinding, {

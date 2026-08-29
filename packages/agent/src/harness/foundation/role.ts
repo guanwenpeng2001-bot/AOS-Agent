@@ -33,7 +33,7 @@ export interface ModelRoute {
 	model: string;
 	effort?: string;
 	serviceTier?: string;
-	/** Fallback is frozen as route metadata in T6; the T6 host never executes it. */
+	/** Fallback is frozen as route metadata; the host never executes it. */
 	fallback?: readonly { readonly provider: string; readonly model: string }[];
 }
 /** Independent immutable ModelProfile revision constructor. */

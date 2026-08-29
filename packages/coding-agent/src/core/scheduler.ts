@@ -1,11 +1,11 @@
 /**
- * Scheduler v1 core (T1 type / state-machine / serializer freeze).
+ * Scheduler core state machine and serializers.
  *
  * Pure Host-side control-plane types for line 12B. This module does not
  * register a production Scheduler, scan Task Graph, tick, claim from a
- * ledger, or construct a types-only facade. T5 is the sole later owner of
- * production tick and Graph ready-scan. Queue persistence is T2. Executor
- * registration is T3. Dispatch wiring is T4.
+ * ledger, or construct a types-only facade. Production composition owns the
+ * tick and Graph ready-scan. Queue persistence, executor registration, and
+ * dispatch wiring live in their dedicated modules.
  *
  * Facts are typed durable `scheduler.*` catalog events on the existing
  * Session ledger. Claim fencing uses an opaque string token with the same
