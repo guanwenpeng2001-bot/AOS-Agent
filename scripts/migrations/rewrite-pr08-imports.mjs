@@ -14,6 +14,8 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 const ARTIFACT_NAMES = new Set([
+	"pr-08-agent-core-mapping.json",
+	"pr-08-agent-core-mapping.md",
 	"pr-08-core-mapping.json",
 	"pr-08-core-mapping.md",
 	"rewrite-pr08-imports.mjs",
@@ -78,11 +80,13 @@ function validateMapping(value) {
 	if (!Array.isArray(value)) throw new Error("PR-08 mapping must be an array");
 	const fromPaths = new Set();
 	for (const row of value) {
+		const hasDomain = typeof row === "object" && row !== null && typeof row.domain === "string" && DOMAINS.has(row.domain);
+		const hasDisposition = typeof row === "object" && row !== null && (row.action === "move" || row.action === "stay");
 		if (
 			typeof row !== "object" || row === null ||
 			typeof row.from !== "string" || typeof row.to !== "string" ||
-			typeof row.domain !== "string" || typeof row.reason !== "string" ||
-			!DOMAINS.has(row.domain) || path.isAbsolute(row.from) || path.isAbsolute(row.to) ||
+			typeof row.reason !== "string" || (!hasDomain && !hasDisposition) ||
+			path.isAbsolute(row.from) || path.isAbsolute(row.to) ||
 			row.from.includes("\\") || row.to.includes("\\")
 		) throw new Error(`Invalid PR-08 mapping row: ${JSON.stringify(row)}`);
 		if (fromPaths.has(row.from)) throw new Error(`Duplicate PR-08 source path: ${row.from}`);

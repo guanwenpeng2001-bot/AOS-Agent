@@ -1,7 +1,32 @@
 import { Type } from "typebox";
-import type { FoundationRecord } from "../session/durable/types.ts";
-import type { Session } from "../session/session.ts";
-import type { SessionLedgerWriter, SessionLedgerWriterOptions } from "../session/ledger-writer.ts";
+import {
+	canonicalFoundationJson,
+	FoundationError,
+	sha256HexValue,
+	validateArtifactRef,
+	validateExactShape,
+	validateGoal,
+	validatePlan,
+	validateStage,
+	validateTaskResultRef,
+	validateTodo,
+	type AcceptanceCriterion,
+	type AcceptanceFact,
+	type ArtifactRef,
+	type FoundationErrorCode,
+	type FoundationRecord,
+	type Goal,
+	type Plan,
+	type PlanStatus,
+	type Session,
+	type SessionLedgerWriter,
+	type SessionLedgerWriterOptions,
+	type Stage,
+	type StageStatus,
+	type TaskResultRef,
+	type Todo,
+	type TodoStatus,
+} from "@aos-agent/agent-core";
 import {
 	asFoundationStoreError,
 	cloneStoreValue,
@@ -19,27 +44,6 @@ import {
 	writeFact,
 	writeTombstone,
 } from "./durable-store.ts";
-import { FoundationError, type FoundationErrorCode } from "./errors.ts";
-import {
-	type AcceptanceCriterion,
-	type AcceptanceFact,
-	type Goal,
-	type PlanStatus,
-	type Plan,
-	type StageStatus,
-	type Stage,
-	type TaskResultRef,
-	type TodoStatus,
-	type Todo,
-	validateGoal,
-	validatePlan,
-	validateStage,
-	validateTaskResultRef,
-	validateTodo,
-} from "./goal.ts";
-import { canonicalFoundationJson, sha256HexValue } from "./identity.ts";
-import { type ArtifactRef, validateArtifactRef } from "./reference.ts";
-import { validateExactShape } from "./schema.ts";
 
 const GOAL_OBJECT_TYPE = "foundation.goal";
 const PLAN_OBJECT_TYPE = "foundation.plan";

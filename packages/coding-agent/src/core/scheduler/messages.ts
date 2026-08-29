@@ -1,7 +1,6 @@
 import {
 	type AcceptanceFact,
 	type ArtifactRef,
-	AskStore,
 	type Ask,
 	canonicalFoundationJson,
 	type Fingerprint,
@@ -17,6 +16,7 @@ import {
 	validateRunReceipt,
 	validateTaskResult,
 } from "@aos-agent/agent-core";
+import { AskStore } from "../../orchestration/ask-store.ts";
 import {
 	applySchedulerMessageAck,
 	parseSchedulerMessage,

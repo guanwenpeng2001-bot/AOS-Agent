@@ -1,17 +1,21 @@
 import { Type } from "typebox";
-import { Result, type ResultValue } from "../result.ts";
 import {
-	type BudgetUsage,
 	BudgetUsageSchema,
-	type Budget,
 	BudgetSchema,
+	FoundationError,
+	parseExactShape,
+	Result,
+	RevisionReferenceSchema,
+	serializeExactShape,
 	validateBudgetUsage,
 	validateBudget,
-} from "./budget.ts";
-import { FoundationError } from "./errors.ts";
-import type { FoundationJsonValue } from "./event-catalog.ts";
-import { type RevisionReference, RevisionReferenceSchema } from "./reference.ts";
-import { parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
+	validateExactShape,
+	type Budget,
+	type BudgetUsage,
+	type FoundationJsonValue,
+	type ResultValue,
+	type RevisionReference,
+} from "@aos-agent/agent-core";
 
 export const FOUNDATION_WORKFLOW_DSL_VERSION = 1 as const;
 export type WorkflowDslVersion = typeof FOUNDATION_WORKFLOW_DSL_VERSION;

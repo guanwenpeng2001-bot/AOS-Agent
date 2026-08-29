@@ -1,9 +1,14 @@
-import type { FoundationRecord } from "../session/durable/types.ts";
-import type { Session } from "../session/session.ts";
-import { SessionLedgerWriter, type SessionLedgerWriterOptions } from "../session/ledger-writer.ts";
-import { FOUNDATION_ERROR_CODES, FoundationError, type FoundationErrorCode } from "./errors.ts";
-import type { FoundationJsonValue } from "./event-catalog.ts";
-import { canonicalFoundationJson } from "./identity.ts";
+import {
+	canonicalFoundationJson,
+	FOUNDATION_ERROR_CODES,
+	FoundationError,
+	SessionLedgerWriter,
+	type FoundationErrorCode,
+	type FoundationJsonValue,
+	type FoundationRecord,
+	type Session,
+	type SessionLedgerWriterOptions,
+} from "@aos-agent/agent-core";
 
 /** Shared options for the small Session-backed Foundation stores. */
 export interface FoundationDurableStoreOptions extends SessionLedgerWriterOptions {

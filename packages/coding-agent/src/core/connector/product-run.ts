@@ -1,7 +1,6 @@
 import {
 	canonicalFoundationJson,
 	cloneDeepFrozen,
-	createGoalStore,
 	createHostTerminalGateAuthority,
 	createModelProfileRevision,
 	createOrderedBindingEpoch,
@@ -34,6 +33,7 @@ import {
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
+import { createGoalStore } from "../../orchestration/goal-store.ts";
 import {
 	gateCanonicalExternalAgentInputBeforeAcceptance,
 	validateCanonicalExternalAgentInput,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AskStore } from "../../src/harness/foundation/ask-store.ts";
+import { AskStore } from "../../../coding-agent/src/orchestration/ask-store.ts";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import type { ProvisionedFoundationRecord } from "../../src/harness/session/durable/types.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";

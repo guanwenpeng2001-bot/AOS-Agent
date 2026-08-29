@@ -23,12 +23,14 @@ import {
 	type SessionLedgerWriter,
 	type SideEffectState,
 	type TaskEnvelope,
-	type AgentStep,
-	type WorkflowStepStatus,
-	type WorkflowStep,
-	WorkflowStore,
-	type Workflow,
 } from "@aos-agent/agent-core";
+import type {
+	AgentStep,
+	Workflow,
+	WorkflowStep,
+	WorkflowStepStatus,
+} from "../../orchestration/workflow.ts";
+import { WorkflowStore } from "../../orchestration/workflow-store.ts";
 import {
 	SchedulerDispatchController,
 	type SchedulerNativeAgentBridge,

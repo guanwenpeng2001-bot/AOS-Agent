@@ -1,18 +1,36 @@
 import { Type } from "typebox";
-import type { ResultValue } from "../result.ts";
-import type { FoundationError } from "./errors.ts";
-import type { FoundationEnvelope } from "./schema.ts";
-import type { Fingerprint } from "./identity.ts";
-import type { ArtifactRef } from "./reference.ts";
-import type { RoleDefinition, RoleRevision, ModelProfile, AgentBinding, BindingEpoch, AgentInstance } from "./role.ts";
-import type { TaskEnvelope, Dispatch, Attempt } from "./task.ts";
-import type { WorkerReceipt, AttemptReceipt, TaskResult, RunReceipt } from "./results.ts";
-import type { Goal, Plan, Stage, Todo, Ask } from "./goal.ts";
+import {
+	parseExactShape,
+	serializeExactShape,
+	validateExactShape,
+	type AgentBinding,
+	type AgentInstance,
+	type ArtifactRef,
+	type Ask,
+	type Attempt,
+	type AttemptReceipt,
+	type BindingEpoch,
+	type Dispatch,
+	type Fingerprint,
+	type FoundationEnvelope,
+	type FoundationError,
+	type Goal,
+	type ModelProfile,
+	type Plan,
+	type PluginContract,
+	type ProfileContract,
+	type ResultValue,
+	type RoleDefinition,
+	type RoleRevision,
+	type RunReceipt,
+	type ServiceContract,
+	type Stage,
+	type TaskEnvelope,
+	type TaskResult,
+	type Todo,
+	type WorkerReceipt,
+} from "@aos-agent/agent-core";
 import type { Workflow } from "./workflow.ts";
-import type { PluginContract } from "./plugin.ts";
-import type { ServiceContract } from "./service.ts";
-import type { ProfileContract } from "./profile.ts";
-import { parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 
 /** Stable queryable Foundation entities. This is an identity/query surface, not a persistence engine. */
 export const FOUNDATION_ENTITY_KINDS = [

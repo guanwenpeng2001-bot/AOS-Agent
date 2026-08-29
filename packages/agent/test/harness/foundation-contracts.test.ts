@@ -9,7 +9,6 @@ import {
 	foundationErrorCategory,
 	FOUNDATION_ERROR_CODES,
 	FoundationObserver,
-	FOUNDATION_ENTITY_KINDS,
 	PROTOCOL_FEATURE_MATRIX,
 	canonicalFoundationJson,
 	createAttempt,
@@ -44,8 +43,6 @@ import {
 	validateWorkerReceiptRef,
 	validateArtifactRef,
 	validateVersionedReference,
-	validateFoundationEntityQuery,
-	validateFoundationEntityId,
 	validateFoundationEnvelope,
 	validateRoleDefinition,
 	validateRoleRevision,
@@ -63,7 +60,6 @@ import {
 	validateStage,
 	validateTodo,
 	validateAsk,
-	validateWorkflow,
 	projectTaskEnvelope,
 	validateTaskEnvelopePublicProjection,
 	type AgentBinding,
@@ -117,6 +113,12 @@ import {
 	type RoleTombstone,
 	requireRoleResolutionTask,
 } from "../../src/harness/foundation/index.ts";
+import {
+	FOUNDATION_ENTITY_KINDS,
+	validateFoundationEntityId,
+	validateFoundationEntityQuery,
+} from "../../../coding-agent/src/orchestration/query.ts";
+import { validateWorkflow } from "../../../coding-agent/src/orchestration/workflow.ts";
 import { FOUNDATION_LEDGER_ERROR_CODES } from "../../src/harness/session/durable/types.ts";
 
 const correlation = createExecutionCorrelation("session-1", "main", { revision: 1 });

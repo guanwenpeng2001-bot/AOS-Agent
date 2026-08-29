@@ -25,11 +25,10 @@ import {
 	type TaskExecutorProvider,
 	type TaskResult,
 	validateAttemptReceiptForProvider,
-	type WorkflowStep,
-	type Workflow,
-	type WorkflowStore,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
+import type { Workflow, WorkflowStep } from "../src/orchestration/workflow.ts";
+import type { WorkflowStore } from "../src/orchestration/workflow-store.ts";
 import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../src/core/session/run-lifecycle.ts";
 import {
 	createSchedulerExecutorRuntimeSnapshot,

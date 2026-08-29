@@ -84,7 +84,7 @@ export {
 	type AgentOperationSignalOptions,
 } from "./operation-signal.ts";
 export * from "./harness/agent-harness.ts";
-// Foundation modular public contracts are the single identity/event/protocol authority.
+// Foundation loop contracts are the single identity/event/protocol authority.
 export * from "./harness/foundation/index.ts";
 export * from "./harness/artifacts.ts";
 export * from "./harness/context/index.ts";

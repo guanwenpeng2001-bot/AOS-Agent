@@ -1,7 +1,20 @@
 import { Type } from "typebox";
-import type { FoundationRecord } from "../session/durable/types.ts";
-import type { Session } from "../session/session.ts";
-import type { SessionLedgerWriter, SessionLedgerWriterOptions } from "../session/ledger-writer.ts";
+import {
+	canonicalFoundationJson,
+	FoundationError,
+	sha256HexValue,
+	validateAsk,
+	validateExactShape,
+	type Ask,
+	type AskReply,
+	type AskStatus,
+	type FoundationErrorCode,
+	type FoundationJsonValue,
+	type FoundationRecord,
+	type Session,
+	type SessionLedgerWriter,
+	type SessionLedgerWriterOptions,
+} from "@aos-agent/agent-core";
 import {
 	asFoundationStoreError,
 	cloneStoreValue,
@@ -18,11 +31,6 @@ import {
 	writeCommandResult,
 	writeFact,
 } from "./durable-store.ts";
-import { FoundationError, type FoundationErrorCode } from "./errors.ts";
-import type { FoundationJsonValue } from "./event-catalog.ts";
-import { type AskReply, type AskStatus, type Ask, validateAsk } from "./goal.ts";
-import { canonicalFoundationJson, sha256HexValue } from "./identity.ts";
-import { validateExactShape } from "./schema.ts";
 
 const ASK_OBJECT_TYPE = "foundation.ask";
 const REPLY_OBJECT_TYPE = "foundation.ask.reply";

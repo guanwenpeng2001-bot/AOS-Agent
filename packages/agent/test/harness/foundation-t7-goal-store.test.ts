@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { type TaskResultRef, validateGoal } from "../../src/harness/foundation/goal.ts";
-import { GoalStore } from "../../src/harness/foundation/goal-store.ts";
+import { GoalStore } from "../../../coding-agent/src/orchestration/goal-store.ts";
 import type { FoundationRecord, ProvisionedFoundationRecord } from "../../src/harness/session/durable/types.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
 	canonicalFoundationJson,
 	createAttempt,
-	createGoalStore,
 	fingerprintFoundationValue,
 	FoundationError,
 	Result,
@@ -30,6 +29,7 @@ import {
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model, Models } from "@aos-agent/ai";
+import { createGoalStore } from "../../orchestration/goal-store.ts";
 import {
 	createPromptTaskAdapter,
 	type PromptTaskDependencyName,
