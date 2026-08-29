@@ -640,7 +640,14 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 }
 
 type RpcExternalConnectorSupervision = ReturnType<typeof createExternalConnectorTestSupervision>;
-const RPC_RECOVERY_EVENT_DEADLINE = Object.freeze({ hardMs: 10_000, idleMs: 10_000 });
+// These recovery cases exercise durable replay, not supervision timeout behavior.
+// Keep the real timer bounded but well outside the assertion window so full-suite
+// CPU and filesystem contention cannot turn a valid replay into a deadline failure.
+const RPC_RECOVERY_EVENT_DEADLINE = Object.freeze({ hardMs: 60_000, idleMs: 60_000 });
+const RPC_RECOVERY_WAIT_TIMEOUT_MS = 30_000;
+
+const RPC_PROCESS_SIGNALS: readonly NodeJS.Signals[] =
+	process.platform === "win32" ? ["SIGINT", "SIGTERM"] : ["SIGINT", "SIGTERM", "SIGHUP"];
 
 interface RpcExternalConnectorFixture {
 	readonly connector: ReturnType<typeof createDurableExternalAgentConnector>;
@@ -1258,8 +1265,9 @@ async function startRpcMode(options: {
 	// runRpcMode is intentionally process-long-lived. Capture only the listeners
 	// this local harness adds so each case can clean them without disturbing the
 	// Vitest worker or unrelated test suites.
-	const signalNames: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];
-	const signalListenersBefore = new Map(signalNames.map((signal) => [signal, new Set(process.listeners(signal))]));
+	const signalListenersBefore = new Map(
+		RPC_PROCESS_SIGNALS.map((signal) => [signal, new Set(process.listeners(signal))]),
+	);
 	const stdinEndListenersBefore = new Set(process.stdin.listeners("end"));
 	const { runtimeHost, cleanup } = await createRuntimeHost(options);
 	void runRpcMode(runtimeHost);
@@ -1344,8 +1352,9 @@ async function startTcpRpcMode(options: {
 	model?: Model<"anthropic-messages">;
 	resourceLoader?: ResourceLoader;
 }): Promise<{ port: number; diagnostics: ConsoleErrorSpy; cleanup: () => Promise<void> }> {
-	const signalNames: NodeJS.Signals[] = process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"];
-	const signalListenersBefore = new Map(signalNames.map((signal) => [signal, new Set(process.listeners(signal))]));
+	const signalListenersBefore = new Map(
+		RPC_PROCESS_SIGNALS.map((signal) => [signal, new Set(process.listeners(signal))]),
+	);
 	const { runtimeHost, cleanup: cleanupRuntime } = await createRuntimeHost(options);
 	const port = await getAvailablePort();
 	const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -2237,7 +2246,7 @@ describe("RPC Automation Host run lifecycle", () => {
 					expect(fixture.driver.readCalls).toBe(1);
 					expect(fixture.toolGatewayRequests).toHaveLength(1);
 				},
-				{ timeout: 10_000 },
+				{ timeout: RPC_RECOVERY_WAIT_TIMEOUT_MS },
 			);
 			expect(terminalEvents(harness.records.map((record) => record as unknown as ParsedOutputLine))).toHaveLength(0);
 			const sessionPath = initialSession.sessionFile;
@@ -2329,7 +2338,7 @@ describe("RPC Automation Host run lifecycle", () => {
 					expect(sourceRunReceipts).toHaveLength(1);
 					expect(sourceRunReceipts[0]).toMatchObject({ payload: { terminalStatus: "completed" } });
 				},
-				{ timeout: 10_000 },
+				{ timeout: RPC_RECOVERY_WAIT_TIMEOUT_MS },
 			);
 			expect(switchedSession).toBeDefined();
 			expect(switchedSession).not.toBe(reloadedSession);
@@ -2787,6 +2796,15 @@ describe("RPC Automation Host run lifecycle", () => {
 
 	it("settles an External Connector deadline once without launching after the signal wins", async () => {
 		const harness = await startInMemoryController({ withAuth: false, responseDelayMs: 0 });
+		const originalSetTimeout = globalThis.setTimeout;
+		let triggerRunDeadline: (() => void) | undefined;
+		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+			const timer = originalSetTimeout(handler, timeout, ...args);
+			if (typeof timeout === "number" && timeout > 55_000 && timeout <= 60_000) {
+				triggerRunDeadline = handler as () => void;
+			}
+			return timer;
+		});
 		try {
 			let releaseExecutionInput!: () => void;
 			const executionInputGate = new Promise<void>((resolve) => {
@@ -2806,9 +2824,20 @@ describe("RPC Automation Host run lifecycle", () => {
 				type: "run.start",
 				message: "deadline before Attempt execution",
 				externalConnector: fixture.selection,
-				deadlineAt: new Date(Date.now() + 25).toISOString(),
+				deadlineAt: new Date(Date.now() + 60_000).toISOString(),
 			});
-			await sleep(30);
+			expect(harness.records).toContainEqual(
+				expect.objectContaining({
+					type: "response",
+					id: "external-deadline-start",
+					success: true,
+					data: expect.objectContaining({ status: "accepted" }),
+				}),
+			);
+			expect(triggerRunDeadline).toBeDefined();
+			// Invoke the exact timer callback installed by RpcHostController. Waiting
+			// 30ms for a 25ms wall-clock deadline let suite load decide the race.
+			triggerRunDeadline?.();
 			releaseExecutionInput();
 			await vi.waitFor(
 				() => {
@@ -2837,6 +2866,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(fixture.processController.launchCalls).toBe(0);
 			expect(fixture.driver.spawnCalls).toBe(0);
 		} finally {
+			setTimeoutSpy.mockRestore();
 			await harness.controller.shutdown();
 			await harness.cleanup();
 		}
@@ -3668,7 +3698,7 @@ describe("RPC Automation Host run lifecycle", () => {
 								status: "running",
 							});
 						},
-						{ timeout: 10_000 },
+						{ timeout: RPC_RECOVERY_WAIT_TIMEOUT_MS },
 					);
 				} else {
 					await seedRpcExternalRecovery(harness.runtimeHost, fixture, sourceRunId, message, testCase.cutpoint, {
@@ -3770,7 +3800,7 @@ describe("RPC Automation Host run lifecycle", () => {
 							: {}),
 					},
 				});
-			}, testCase.persistTerminal ? { timeout: 10_000 } : undefined);
+			}, testCase.persistTerminal ? { timeout: RPC_RECOVERY_WAIT_TIMEOUT_MS } : undefined);
 			const gatewayCalls = fixture.toolGatewayRequests.length + (restoredFixture?.toolGatewayRequests.length ?? 0);
 			expect(gatewayCalls).toBe(testCase.gatewayEffects);
 			expect(restoredFixture?.driver.writes).toEqual(
