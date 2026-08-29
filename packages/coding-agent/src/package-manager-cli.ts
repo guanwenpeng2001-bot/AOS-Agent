@@ -19,10 +19,10 @@ import {
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { DefaultPackageManager } from "./core/package-manager.ts";
-import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
+import { type AppMode, resolveProjectTrusted } from "./core/policy/project-trust.ts";
 import { DefaultResourceLoader } from "./core/resource-loader.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
-import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/policy/trust-manager.ts";
 import { spawnProcess } from "./utils/child-process.ts";
 import { formatVersionCheckError, getLatestAosRelease, isNewerPackageVersion } from "./utils/version-check.ts";
 import {

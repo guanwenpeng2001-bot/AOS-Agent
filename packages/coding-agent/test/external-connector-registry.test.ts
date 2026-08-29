@@ -28,13 +28,13 @@ import {
 	bindCanonicalExternalToolGatewayPolicy,
 	createCanonicalExternalToolGateway,
 } from "../src/core/connector/tool-gateway.ts";
-import type { CapabilityBinding } from "../src/core/capability-registry.ts";
+import type { CapabilityBinding } from "../src/core/policy/capability-registry.ts";
 import type { ExternalAgentConnector } from "../src/index.ts";
 import {
 	authorizePolicyOperation,
 	resolveExecutionPolicyProfile,
 	type ExecutionPolicyProfile,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 import { classifyExternalToolPolicyOperation } from "../src/core/connector/tool-policy.ts";
 import {
 	createExternalConnectorRegistry,

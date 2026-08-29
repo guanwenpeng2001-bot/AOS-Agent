@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Provider } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import type { ExtensionFactory } from "../src/core/sdk.ts";

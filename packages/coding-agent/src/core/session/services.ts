@@ -7,10 +7,10 @@ import {
 	type AgentRuntimeCompositionFactory,
 	createAgentRuntimeCompositionFactory,
 } from "../agent-runtime-composition.ts";
-import { CapabilityPublicIdentity } from "../capability-public-identity.ts";
-import { CapabilityRegistry } from "../capability-registry.ts";
+import { CapabilityPublicIdentity } from "../policy/capability-public-identity.ts";
+import { CapabilityRegistry } from "../policy/capability-registry.ts";
 import type { SessionStartEvent, ToolDefinition } from "../extensions/index.ts";
-import { createDefaultMCPAuthManagerOptions, type MCPAuthManagerOptions } from "../mcp-auth-manager.ts";
+import { createDefaultMCPAuthManagerOptions, type MCPAuthManagerOptions } from "../policy/mcp-auth-manager.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "../mcp-types.ts";
 import type { ModelBroker } from "../model-broker.ts";
 import { createModelBroker, ModelRuntime } from "../model-runtime.ts";
@@ -21,7 +21,7 @@ import {
 	type ResourceLoader,
 	type ResourceLoaderReloadOptions,
 } from "../resource-loader.ts";
-import type { SandboxProvider } from "../sandbox.ts";
+import type { SandboxProvider } from "../policy/sandbox.ts";
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "../sdk.ts";
 import type { SessionManager } from "./manager.ts";
 import { SettingsManager } from "../settings-manager.ts";

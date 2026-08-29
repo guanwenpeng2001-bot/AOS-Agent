@@ -30,18 +30,18 @@ import { CanonicalAgentSessionServices } from "../src/core/session/facade.ts";
 import {
 	resolveExecutionPolicyProfile,
 	type ExecutionPolicyProfile,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 import {
 	createBuiltinToolPolicy,
 	createSandboxHandleOperationProvider,
-} from "../src/core/sandbox-host.ts";
-import { resolveWorkerSandboxOperation, type SandboxHandle } from "../src/core/sandbox.ts";
+} from "../src/core/policy/sandbox-host.ts";
+import { resolveWorkerSandboxOperation, type SandboxHandle } from "../src/core/policy/sandbox.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import {
 	createHarnessCompatibilityWriter,
 	createSessionManagerStorage,
 } from "../src/core/session/manager-storage.ts";
-import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/task-credential-lease.ts";
+import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/policy/task-credential-lease.ts";
 import {
 	createTaskCredentialTestProvider,
 	type TaskCredentialProviderReceipt,
@@ -50,8 +50,8 @@ import {
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
 	type TaskCredentialTestProvider,
-} from "../src/core/task-credential-provider.ts";
-import { TaskCredentialService } from "../src/core/task-credential-service.ts";
+} from "../src/core/policy/task-credential-provider.ts";
+import { TaskCredentialService } from "../src/core/policy/task-credential-service.ts";
 import {
 	parseOperationWorkerFrame,
 	serializeWorkerFrameLine,

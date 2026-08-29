@@ -6,7 +6,7 @@ import { type AssistantMessage, createAssistantMessageEventStream, fakeAssistant
 import { getModel, streamSimple } from "@aos-agent/ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/session/agent-session.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";

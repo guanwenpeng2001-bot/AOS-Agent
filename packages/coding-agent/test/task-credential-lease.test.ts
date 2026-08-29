@@ -43,7 +43,7 @@ import {
 	type TaskCredentialTransitionOptions,
 	type TaskCredentialTtlBounds,
 	type TaskExecutionBinding,
-} from "../src/core/task-credential-lease.ts";
+} from "../src/core/policy/task-credential-lease.ts";
 
 const NOW = Date.parse("2026-08-16T10:00:00.000Z");
 const TTL = 60_000;

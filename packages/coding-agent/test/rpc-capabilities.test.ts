@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
-import type { CapabilityBinding } from "../src/core/capability-registry.ts";
+import type { CapabilityBinding } from "../src/core/policy/capability-registry.ts";
 import type { SessionEntry, SessionTreeNode } from "../src/core/session/manager.ts";
 import {
 	serializePublicContextDrift,

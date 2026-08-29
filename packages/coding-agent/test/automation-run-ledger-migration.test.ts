@@ -5,7 +5,7 @@ import {
 	resolveExecutionPolicy,
 	toPublicPolicySummary,
 	type PolicyDecision,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 import {
 	decodeLegacyAutomationRunLedgerEntryV1,
 	migrateLegacyAutomationRunLedger,

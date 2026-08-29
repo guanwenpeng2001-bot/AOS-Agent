@@ -15,15 +15,15 @@ import {
 	recordInitialAgentSessionConfiguration,
 } from "./session/facade.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
-import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
-import { CapabilityRegistry } from "./capability-registry.ts";
+import { CapabilityPublicIdentity } from "./policy/capability-public-identity.ts";
+import { CapabilityRegistry } from "./policy/capability-registry.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
 import {
 	createDefaultMCPAuthManagerOptions,
 	type MCPAuthManagerOptions,
-} from "./mcp-auth-manager.ts";
+} from "./policy/mcp-auth-manager.ts";
 import { convertToLlm } from "./messages.ts";
 import {
 	type ModelBroker,
@@ -35,7 +35,7 @@ import { findInitialModel } from "./model-resolver.ts";
 import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
-import type { SandboxProvider } from "./sandbox.ts";
+import type { SandboxProvider } from "./policy/sandbox.ts";
 import { SessionManager } from "./session/manager.ts";
 import { createSessionManagerForOptions, type SessionCreationOptions } from "./session/creation.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -200,8 +200,8 @@ export type { Tool } from "./tools/index.ts";
 // MCP OAuth types of the Session's explicit interactive auth methods (SDK
 // contract surface; tokens, authorization URLs, and raw URIs are never part
 // of these records).
-export type { MCPAuthCallbackMode } from "./mcp-auth.ts";
-export type { MCPAuthStartOptions, MCPAuthStartResult } from "./mcp-auth-manager.ts";
+export type { MCPAuthCallbackMode } from "./policy/mcp-auth.ts";
+export type { MCPAuthStartOptions, MCPAuthStartResult } from "./policy/mcp-auth-manager.ts";
 
 // MCP content types of the Session's resource/prompt methods (SDK wire
 // contract surface; raw URIs, prompt args, and remote text are never retained

@@ -19,7 +19,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { SessionEntry } from "./session/manager.ts";
+import type { SessionEntry } from "../session/manager.ts";
 
 export const TASK_GATE_SCHEMA_VERSION = 1 as const;
 export const TASK_GATE_CUSTOM_TYPE = "task.gate" as const;

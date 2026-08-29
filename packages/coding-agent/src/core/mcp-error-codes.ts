@@ -10,7 +10,7 @@
  * fixed templates; raw remote text, tokens, URLs, and raw URIs never surface.
  */
 
-import type { MCPAuthErrorKind } from "./mcp-auth.ts";
+import type { MCPAuthErrorKind } from "./policy/mcp-auth.ts";
 import type { MCPContentErrorCode } from "./mcp-content.ts";
 
 /** Public MCP OAuth error codes of the PR contract. */

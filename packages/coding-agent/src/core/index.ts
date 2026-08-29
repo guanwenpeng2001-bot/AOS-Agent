@@ -141,8 +141,8 @@ export {
 	type TaskCredentialSandboxPreflight,
 	taskCredentialPolicyResource,
 	isTaskCredentialPolicyResource,
-} from "./execution-policy.ts";
-export type { PolicyApprovalLedgerRecord, PolicyApprovalLedgerResolution } from "./execution-policy-ledger.ts";
+} from "./policy/execution.ts";
+export type { PolicyApprovalLedgerRecord, PolicyApprovalLedgerResolution } from "./policy/execution-ledger.ts";
 export {
 	REMOTE_ARTIFACT_KINDS,
 	REMOTE_OPERATION_ERROR_CATEGORIES,
@@ -211,7 +211,7 @@ export {
 	type TaskCredentialTransitionOptions,
 	type TaskCredentialTtlBounds,
 	type TaskExecutionBinding,
-} from "./task-credential-lease.ts";
+} from "./policy/task-credential-lease.ts";
 export {
 	createTaskCredentialNullTarget,
 	type TaskCredentialIssuer,
@@ -228,7 +228,7 @@ export {
 	type TaskCredentialTargetCapabilitiesRequest,
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
-} from "./task-credential-provider.ts";
+} from "./policy/task-credential-provider.ts";
 export {
 	TASK_CREDENTIAL_CUSTOM_TYPE,
 	createTaskCredentialStore,
@@ -246,7 +246,7 @@ export {
 	type TaskCredentialTransition,
 	type TaskCredentialWarning,
 	type TaskCredentialWarningCode,
-} from "./task-credential-store.ts";
+} from "./policy/task-credential-store.ts";
 export { areExperimentalFeaturesEnabled } from "./experimental.ts";
 // Extensions system
 export {

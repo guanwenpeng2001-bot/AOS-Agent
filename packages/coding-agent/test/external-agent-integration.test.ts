@@ -25,7 +25,7 @@ import {
 import {
 	resolveExecutionPolicyProfile,
 	type ExecutionPolicyProfile,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 import { ExecutionAuditAdapter } from "../src/core/session/execution-audit.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
 import type { SessionEntry } from "../src/core/session/manager.ts";

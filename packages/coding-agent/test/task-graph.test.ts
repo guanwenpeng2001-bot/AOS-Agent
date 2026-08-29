@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { isAutomationErrorCode, type RunStatus, type RunTerminalStatus } from "../src/core/session/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { TASK_GATE_CUSTOM_TYPE, TaskGateStore, type TaskGateRecord, type TaskGateStatus } from "../src/core/task-gate.ts";
+import { TASK_GATE_CUSTOM_TYPE, TaskGateStore, type TaskGateRecord, type TaskGateStatus } from "../src/core/policy/task-gate.ts";
 import {
 	TASK_GRAPH_CUSTOM_TYPE,
 	TASK_GRAPH_ERROR_CODES,

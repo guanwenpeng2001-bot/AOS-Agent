@@ -4,7 +4,7 @@ import {
 	type PolicyResource,
 	type PolicyOperationSource,
 	type PublicPolicySummary,
-} from "../../core/execution-policy.ts";
+} from "../../core/policy/execution.ts";
 import { theme } from "./theme/theme.ts";
 
 const POLICY_RESOURCES: ReadonlySet<PolicyResource> = new Set([

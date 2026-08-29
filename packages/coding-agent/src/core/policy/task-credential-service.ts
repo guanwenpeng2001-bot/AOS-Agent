@@ -58,7 +58,7 @@ import type {
 	TaskCredentialGatePreflight,
 	TaskCredentialPreflightOperation,
 	TaskCredentialPreflightResult,
-} from "./execution-policy.ts";
+} from "./execution.ts";
 import {
 	TASK_CREDENTIAL_MIN_TTL_MS,
 	TASK_CREDENTIAL_STATUS,
@@ -82,7 +82,7 @@ import {
 	validateOperationWorkerLeaseReference,
 	type SafeLeaseProjection,
 	type SafeLeaseReference,
-} from "./worker/protocol.ts";
+} from "../worker/protocol.ts";
 import {
 	TaskCredentialStore,
 	type TaskCredentialSession,

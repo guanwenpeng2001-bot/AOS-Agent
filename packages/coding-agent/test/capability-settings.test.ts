@@ -8,12 +8,12 @@ import {
 	createCapabilitySettingsView,
 	createMcpContentCapabilityCandidate,
 	createMcpServerCapabilityCandidate,
-} from "../src/core/capability-settings.ts";
+} from "../src/core/policy/capability-settings.ts";
 import {
 	buildCapabilityCatalog,
 	createCapabilityId,
 	resolveCapabilityBinding,
-} from "../src/core/capability-registry.ts";
+} from "../src/core/policy/capability-registry.ts";
 
 function build(options: {
 	global?: CapabilitySettingsInput;

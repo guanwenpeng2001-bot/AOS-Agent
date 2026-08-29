@@ -11,7 +11,7 @@ import type { OAuthCredentials } from "@aos-agent/ai";
 import { getModel, streamSimple } from "@aos-agent/ai/compat";
 import { builtinProviders } from "@aos-agent/ai/providers/all";
 import { AgentSession } from "../src/core/session/agent-session.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import type {
 	Extension,

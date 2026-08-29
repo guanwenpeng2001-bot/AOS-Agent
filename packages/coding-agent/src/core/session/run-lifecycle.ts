@@ -65,7 +65,7 @@ import {
 	type SandboxCapabilities,
 	type SandboxStatus,
 	toPublicPolicySummary,
-} from "../execution-policy.ts";
+} from "../policy/execution.ts";
 import {
 	createExecutionPolicyLedger,
 	type PolicyBindingLedgerRecord as ExecutionPolicyBindingLedgerRecord,
@@ -78,7 +78,7 @@ import {
 	type PolicyViolationLedgerRecord,
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
 	type SandboxLifecycleLedgerRecord,
-} from "../execution-policy-ledger.ts";
+} from "../policy/execution-ledger.ts";
 import { type ExternalConnectorSelection, serializeExternalConnectorSelection } from "../connector/registry.ts";
 import type { McpAttachment } from "../mcp-attachment.ts";
 import {
@@ -745,7 +745,7 @@ export type AutomationErrorCode =
 	| "task_graph_run_state_mismatch"
 	| "task_graph_persistence_failed"
 	// Task Credential control-plane errors. Keep in sync with
-	// TASK_CREDENTIAL_ERROR_CODES in core/task-credential-lease.ts.
+	// TASK_CREDENTIAL_ERROR_CODES in core/policy/task-credential-lease.ts.
 	| "task_credential_invalid"
 	| "task_credential_binding_invalid"
 	| "task_credential_gate_required"

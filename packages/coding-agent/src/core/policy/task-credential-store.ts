@@ -49,7 +49,7 @@
  * No enum, namespace, parameter property, or dynamic import is used.
  */
 
-import type { SessionEntry } from "./session/manager.ts";
+import type { SessionEntry } from "../session/manager.ts";
 import {
 	TASK_CREDENTIAL_IDENTIFIER_MAX_LENGTH,
 	TASK_CREDENTIAL_MAX_TTL_MS,

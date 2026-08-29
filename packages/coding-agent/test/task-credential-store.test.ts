@@ -11,7 +11,7 @@ import {
 	type TaskCredentialScope,
 	type TaskCredentialTtlBounds,
 	type TaskExecutionBinding,
-} from "../src/core/task-credential-lease.ts";
+} from "../src/core/policy/task-credential-lease.ts";
 import {
 	TASK_CREDENTIAL_CUSTOM_TYPE,
 	TASK_CREDENTIAL_FORBIDDEN_PAYLOAD_KEYS,
@@ -26,7 +26,7 @@ import {
 	type TaskCredentialStoreOptions,
 	type TaskCredentialStoreRevokeRequest,
 	type TaskCredentialWarning,
-} from "../src/core/task-credential-store.ts";
+} from "../src/core/policy/task-credential-store.ts";
 import {
 	createTaskCredentialNullTarget,
 	createTaskCredentialTestProvider,
@@ -38,7 +38,7 @@ import {
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
 	type TaskCredentialTestProvider,
-} from "../src/core/task-credential-provider.ts";
+} from "../src/core/policy/task-credential-provider.ts";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const NOW_MS = Date.parse(NOW);

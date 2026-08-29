@@ -26,7 +26,7 @@ import {
 	isTaskCredentialGrant,
 	type TaskCredentialDeliveryReceipt,
 	type TaskCredentialScope,
-} from "../src/core/task-credential-lease.ts";
+} from "../src/core/policy/task-credential-lease.ts";
 import {
 	createTaskCredentialTestProvider,
 	type TaskCredentialProviderReceipt,
@@ -37,11 +37,11 @@ import {
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
 	type TaskCredentialTestProvider,
-} from "../src/core/task-credential-provider.ts";
+} from "../src/core/policy/task-credential-provider.ts";
 import {
 	TASK_CREDENTIAL_CUSTOM_TYPE,
 	type TaskCredentialSession,
-} from "../src/core/task-credential-store.ts";
+} from "../src/core/policy/task-credential-store.ts";
 import {
 	TaskCredentialService,
 	type TaskCredentialGateInvalidationInput,
@@ -51,8 +51,8 @@ import {
 	type TaskCredentialRunTerminalInput,
 	type TaskCredentialServiceOptions,
 	type TaskCredentialWorkerTarget,
-} from "../src/core/task-credential-service.ts";
-import type { TaskCredentialPreflightOperation } from "../src/core/execution-policy.ts";
+} from "../src/core/policy/task-credential-service.ts";
+import type { TaskCredentialPreflightOperation } from "../src/core/policy/execution.ts";
 
 const NOW = "2026-08-15T12:00:00.000Z";
 const SENTINEL = "sentinel-secret-42";

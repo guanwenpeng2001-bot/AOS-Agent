@@ -53,8 +53,8 @@ import {
 	type HostSupervisedExternalAgentConnectorImplementation,
 } from "./durable-connector.ts";
 import { getProductionExternalConnectorStartupStatus } from "./production.ts";
-import type { PolicyBinding } from "../execution-policy.ts";
-import { createPolicyBindingLedgerRecord } from "../execution-policy-ledger.ts";
+import type { PolicyBinding } from "../policy/execution.ts";
+import { createPolicyBindingLedgerRecord } from "../policy/execution-ledger.ts";
 import {
 	runExternalConnectorHostDispose,
 	runExternalConnectorHostOperation,

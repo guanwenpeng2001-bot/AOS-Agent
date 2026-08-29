@@ -48,9 +48,9 @@ import {
 	type ExternalResolvedModelProjection,
 	type ExternalTranslatedModelProjection,
 } from "./model-projection.ts";
-import type { PolicyBinding } from "../execution-policy.ts";
-import type { CapabilityBinding } from "../capability-registry.ts";
-import { createPolicyBindingLedgerRecord } from "../execution-policy-ledger.ts";
+import type { PolicyBinding } from "../policy/execution.ts";
+import type { CapabilityBinding } from "../policy/capability-registry.ts";
+import { createPolicyBindingLedgerRecord } from "../policy/execution-ledger.ts";
 import {
 	bindExternalConnectorToolGatewayConsumer,
 	getExternalConnectorToolGatewayCatalogSnapshot,

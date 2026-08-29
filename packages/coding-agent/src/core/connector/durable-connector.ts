@@ -64,13 +64,13 @@ import {
 	isTaskCredentialIdentifier,
 	normalizeTaskCredentialScopes,
 	type TaskCredentialScope,
-} from "../task-credential-lease.ts";
+} from "../policy/task-credential-lease.ts";
 import type {
 	TaskCredentialLifecycleReasonCode,
 	TaskCredentialRunIssueContext,
 	TaskCredentialService,
 	TaskCredentialWorkerTarget,
-} from "../task-credential-service.ts";
+} from "../policy/task-credential-service.ts";
 import {
 	validateOperationWorkerLeaseProjection,
 	validateOperationWorkerLeaseReference,

@@ -11,8 +11,8 @@ import type {
 	MCPPromptSummary,
 	MCPResourceSummary,
 	MCPResourceTemplateSummary,
-} from "./mcp-types.ts";
-import { createSyntheticSourceInfo, type SourceInfo, type SourceScope } from "./source-info.ts";
+} from "../mcp-types.ts";
+import { createSyntheticSourceInfo, type SourceInfo, type SourceScope } from "../source-info.ts";
 
 /**
  * v1 settings parsing and trust for the Capability Registry.

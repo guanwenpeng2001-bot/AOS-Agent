@@ -52,7 +52,7 @@ import {
 	serializeSchedulerDispatchRecord,
 	serializeSchedulerQueueEntry,
 } from "./host.ts";
-import type { TaskGateDecisionRequest, TaskGateStore } from "../task-gate.ts";
+import type { TaskGateDecisionRequest, TaskGateStore } from "../policy/task-gate.ts";
 import type { TaskGraphRecord, TaskGraphStore } from "./task-graph.ts";
 
 export const SCHEDULER_DEADLOCK_OBJECT_TYPE = "scheduler.deadlock";

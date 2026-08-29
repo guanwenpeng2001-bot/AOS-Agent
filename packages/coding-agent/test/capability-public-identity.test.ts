@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CapabilityPublicIdentity, getCapabilityPublicIdentityPath } from "../src/core/capability-public-identity.ts";
+import { CapabilityPublicIdentity, getCapabilityPublicIdentityPath } from "../src/core/policy/capability-public-identity.ts";
 
 const PATH_MARKER_WIN = "C:\\audit-private\\capability-source";
 const PATH_MARKER_POSIX = "/audit-private/capability-source";

@@ -30,7 +30,7 @@ import {
 	type SandboxCapabilities,
 	type SandboxStatus,
 	type WorkspaceScope,
-} from "./execution-policy.ts";
+} from "./execution.ts";
 import {
 	createPolicyReviewEvidence,
 	isCanonicalPolicyTimestamp,
@@ -42,7 +42,7 @@ import {
 	type PolicyReviewEvidence,
 	type PolicyReviewerIdentity,
 	type PolicyReviewRequirement,
-} from "./protected-path-policy.ts";
+} from "./protected-path.ts";
 
 export const EXECUTION_POLICY_LEDGER_SCHEMA_VERSION = 1;
 export const POLICY_DECISION_CUSTOM_TYPE = "policy.decision";

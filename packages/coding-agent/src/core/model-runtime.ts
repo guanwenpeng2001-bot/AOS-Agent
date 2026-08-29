@@ -39,7 +39,7 @@ import {
 import * as builtinProviderCatalog from "@aos-agent/ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
-import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
+import { AuthStorage as DefaultAuthStorage } from "./policy/auth-storage.ts";
 import { ModelBroker, type ModelBudget, type ModelRouteCandidate } from "./model-broker.ts";
 import type { ModelBrokerSettings } from "./model-broker-settings.ts";
 import { ModelConfig } from "./model-config.ts";

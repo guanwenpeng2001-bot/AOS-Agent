@@ -9,17 +9,17 @@ import {
 	resolveExecutionPolicy,
 	resolveExecutionPolicyProfile,
 	toPublicPolicySummary,
-} from "../../../src/core/execution-policy.ts";
+} from "../../../src/core/policy/execution.ts";
 import {
 	createExecutionPolicyLedger,
 	POLICY_APPROVAL_CUSTOM_TYPE,
 	POLICY_DECISION_CUSTOM_TYPE,
 	POLICY_VIOLATION_CUSTOM_TYPE,
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
-} from "../../../src/core/execution-policy-ledger.ts";
+} from "../../../src/core/policy/execution-ledger.ts";
 import { createRunLifecycleCoordinator } from "../../../src/core/session/run-lifecycle.ts";
 import { SessionManager } from "../../../src/core/session/manager.ts";
-import type { SandboxOperationRequest } from "../../../src/core/sandbox.ts";
+import type { SandboxOperationRequest } from "../../../src/core/policy/sandbox.ts";
 import {
 	FAKE_SANDBOX_PROVIDER_ID,
 	createFakeSandboxProvider,

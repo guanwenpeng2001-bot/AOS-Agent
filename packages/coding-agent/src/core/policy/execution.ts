@@ -4,7 +4,7 @@ import {
 	isBindingHandle,
 	type BindingHandle,
 	type PublicBindingSummary,
-} from "./binding-handles.ts";
+} from "../binding-handles.ts";
 import {
 	TASK_CREDENTIAL_MAX_SCOPES,
 	TASK_CREDENTIAL_MAX_TTL_MS,
@@ -40,7 +40,7 @@ import {
 	type PolicyReviewRequirement,
 	type ProtectedPathClassification,
 	type ProtectedPathPolicy,
-} from "./protected-path-policy.ts";
+} from "./protected-path.ts";
 
 export {
 	POLICY_EFFECTS,
@@ -55,7 +55,7 @@ export {
 	isPolicyReviewEvidence,
 	isPolicyReviewRequirement,
 	resolvePolicyReviewEvidence,
-} from "./protected-path-policy.ts";
+} from "./protected-path.ts";
 export type {
 	PolicyEffect,
 	PolicyReviewDecision,
@@ -67,7 +67,7 @@ export type {
 	ProtectedPathClassification,
 	ProtectedPathPolicy,
 	ProtectedPathRule,
-} from "./protected-path-policy.ts";
+} from "./protected-path.ts";
 
 /**
  * Pure Execution Policy v1 resolver.

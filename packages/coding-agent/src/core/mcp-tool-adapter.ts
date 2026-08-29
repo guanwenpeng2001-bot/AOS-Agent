@@ -2,7 +2,7 @@ import type { ImageContent, TextContent } from "@aos-agent/ai";
 import type { Tool } from "@modelcontextprotocol/sdk/types";
 import { Type, type TSchema } from "typebox";
 import type { ToolDefinition } from "./extensions/types.ts";
-import type { CapabilityRegistry } from "./capability-registry.ts";
+import type { CapabilityRegistry } from "./policy/capability-registry.ts";
 import { type MCPCallResult, MCPError, mcpNamespaceSegmentError } from "./mcp-types.ts";
 
 /**

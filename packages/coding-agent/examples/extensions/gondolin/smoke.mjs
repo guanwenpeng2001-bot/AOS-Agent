@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createWorkspaceIdentity } from "../../../src/core/execution-policy.ts";
+import { createWorkspaceIdentity } from "../../../src/core/policy/execution.ts";
 import {
 	createGondolinSandboxProvider,
 	GONDOLIN_SANDBOX_PROVIDER_ID,

@@ -1,7 +1,7 @@
 import type { AgentHarness, Session, ToolGateway, ToolGatewayProvider } from "@aos-agent/agent-core";
 import { createFoundationToolGateway, FoundationError, fingerprintFoundationValue, Result } from "@aos-agent/agent-core";
 import type { Models } from "@aos-agent/ai";
-import type { CapabilityRegistry } from "./capability-registry.ts";
+import type { CapabilityRegistry } from "./policy/capability-registry.ts";
 import { type ConnectorRetryPolicy, DEFAULT_CONNECTOR_RETRY_POLICY } from "./connector/retry-circuit.ts";
 import type { ExternalConnectorRegistry } from "./connector/registry.ts";
 import {
@@ -16,7 +16,7 @@ import {
 	createCanonicalExternalToolGateway,
 } from "./connector/tool-gateway.ts";
 import type { SchedulerCompositionOptions } from "./foundation-control-plane.ts";
-import type { MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
+import type { MCPAuthManagerOptions } from "./policy/mcp-auth-manager.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
 import type { ModelBroker } from "./model-broker.ts";
 import {
@@ -25,7 +25,7 @@ import {
 	type RuntimeLimitsSource,
 	resolveRuntimeLimitsSource,
 } from "./runtime-limits.ts";
-import type { SandboxProvider } from "./sandbox.ts";
+import type { SandboxProvider } from "./policy/sandbox.ts";
 import { bindSchedulerInProcessTaskExecutor } from "./scheduler/dispatch.ts";
 import {
 	createSchedulerExecutorRuntimeSnapshot,
@@ -35,7 +35,7 @@ import {
 import { SchedulerSelectionReservationStore } from "./scheduler/selection-reservations.ts";
 import type { SessionManager } from "./session/manager.ts";
 import type { SubagentCompositionOptions } from "./subagent/composition.ts";
-import type { TaskCredentialProvider } from "./task-credential-provider.ts";
+import type { TaskCredentialProvider } from "./policy/task-credential-provider.ts";
 import {
 	type WorkerSandboxProfile,
 	type WorkerSandboxProviderOptions,

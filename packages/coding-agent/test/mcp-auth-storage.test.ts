@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	AuthStorage,
 	ReadOnlyAuthStorage,
-} from "../src/core/auth-storage.ts";
+} from "../src/core/policy/auth-storage.ts";
 import {
 	canonicalizeMCPServerUrl,
 	deriveMCPServerIdentity,
@@ -18,7 +18,7 @@ import {
 	mcpCredentialKey,
 	type MCPStoredTokens,
 	type MCPTokenResponse,
-} from "../src/core/mcp-auth-storage.ts";
+} from "../src/core/policy/mcp-auth-storage.ts";
 
 const INSTALLATION_ID = "a".repeat(64);
 const SERVER_URL = "https://mcp.example.com/api";

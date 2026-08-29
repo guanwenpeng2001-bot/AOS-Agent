@@ -48,7 +48,7 @@ import { createSessionManagerStorage } from "../../src/core/session/manager-stor
 import { SessionManager } from "../../src/core/session/manager.ts";
 import type { SchedulerSelectionReservationStore } from "../../src/core/scheduler/selection-reservations.ts";
 import type { SubagentCompositionOptions } from "../../src/core/subagent/composition.ts";
-import { createTaskCredentialTestProvider } from "../../src/core/task-credential-provider.ts";
+import { createTaskCredentialTestProvider } from "../../src/core/policy/task-credential-provider.ts";
 import { TaskGraphStore } from "../../src/core/scheduler/task-graph.ts";
 import { createExternalConnectorTestRuntime } from "../external-connector-test-supervision.ts";
 import type {

@@ -25,12 +25,12 @@ import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
 import type { AgentSession, AgentSessionEvent, ExtensionBindings, SessionStats } from "../../core/session/agent-session.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/session/facade.ts";
 import type { AgentSessionRuntime } from "../../core/session/runtime.ts";
-import { CapabilityError } from "../../core/capability-registry.ts";
+import { CapabilityError } from "../../core/policy/capability-registry.ts";
 import type { PreparedSessionScopeRebind } from "../../core/session/current-scope.ts";
 import { ExecutionAuditError, projectSubagentAuditSource } from "../../core/session/execution-audit.ts";
 import { ExecutionAuditQuery } from "../../core/session/execution-audit-query.ts";
-import type { TaskCredentialGatePreflight } from "../../core/execution-policy.ts";
-import { PolicyError } from "../../core/execution-policy.ts";
+import type { TaskCredentialGatePreflight } from "../../core/policy/execution.ts";
+import { PolicyError } from "../../core/policy/execution.ts";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -61,8 +61,8 @@ import {
 } from "../../core/connector/product-run.ts";
 import type { ExternalModelFallbackDecision } from "../../core/connector/model-projection.ts";
 import type { McpAttachment } from "../../core/mcp-attachment.ts";
-import { MCP_OAUTH_DEFAULT_TIMEOUT_MS, MCPAuthError } from "../../core/mcp-auth.ts";
-import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/mcp-auth-storage.ts";
+import { MCP_OAUTH_DEFAULT_TIMEOUT_MS, MCPAuthError } from "../../core/policy/mcp-auth.ts";
+import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/policy/mcp-auth-storage.ts";
 import type { MCPGetPromptResult, MCPNormalizedContentBlock, MCPReadResourceResult } from "../../core/mcp-content.ts";
 import { MCPContentError } from "../../core/mcp-content.ts";
 import { mcpAuthErrorPublicCode, mcpContentErrorPublicCode } from "../../core/mcp-error-codes.ts";
@@ -126,9 +126,9 @@ import {
 	TaskCredentialError,
 	type TaskCredentialScope,
 	type TaskCredentialStatus,
-} from "../../core/task-credential-lease.ts";
-import type { TaskCredentialService } from "../../core/task-credential-service.ts";
-import { createTaskGateStore, TaskGateError, type TaskGateStore } from "../../core/task-gate.ts";
+} from "../../core/policy/task-credential-lease.ts";
+import type { TaskCredentialService } from "../../core/policy/task-credential-service.ts";
+import { createTaskGateStore, TaskGateError, type TaskGateStore } from "../../core/policy/task-gate.ts";
 import {
 	createTaskGraphStore,
 	TaskGraphError,

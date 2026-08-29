@@ -1,6 +1,6 @@
 import { lstat, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { PolicyError, type WorkspaceScope } from "./execution-policy.ts";
+import { PolicyError, type WorkspaceScope } from "./execution.ts";
 
 export interface HostFilesystemRoots {
 	readonly workspace: string;

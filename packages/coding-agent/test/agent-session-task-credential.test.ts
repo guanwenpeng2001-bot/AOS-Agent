@@ -16,8 +16,8 @@ import type { Model } from "@aos-agent/ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/session/agent-session.ts";
 import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import type { SandboxProvider } from "../src/core/sandbox.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
+import type { SandboxProvider } from "../src/core/policy/sandbox.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import {
@@ -28,10 +28,10 @@ import {
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
 	type TaskCredentialTestProvider,
-} from "../src/core/task-credential-provider.ts";
-import { TASK_CREDENTIAL_CUSTOM_TYPE } from "../src/core/task-credential-store.ts";
-import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/task-credential-lease.ts";
-import type { TaskCredentialRunIssueContext } from "../src/core/task-credential-service.ts";
+} from "../src/core/policy/task-credential-provider.ts";
+import { TASK_CREDENTIAL_CUSTOM_TYPE } from "../src/core/policy/task-credential-store.ts";
+import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/policy/task-credential-lease.ts";
+import type { TaskCredentialRunIssueContext } from "../src/core/policy/task-credential-service.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 

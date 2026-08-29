@@ -1,4 +1,4 @@
-import { getAgentDir } from "../config.ts";
+import { getAgentDir } from "../../config.ts";
 import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
 import {
 	createBindingHandle,
@@ -6,8 +6,8 @@ import {
 	isBindingHandle,
 	type BindingHandle,
 	type PublicBindingSummary,
-} from "./binding-handles.ts";
-import type { SourceInfo, SourceOrigin, SourceScope } from "./source-info.ts";
+} from "../binding-handles.ts";
+import type { SourceInfo, SourceOrigin, SourceScope } from "../source-info.ts";
 
 export type CapabilityKind =
 	| "builtin_tool"

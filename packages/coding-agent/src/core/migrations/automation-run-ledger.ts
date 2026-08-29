@@ -11,7 +11,7 @@ import {
 	isLegacyExternalExecutionRef as isExternalExecutionRef,
 	type LegacyExternalExecutionRef as ExternalExecutionRef,
 } from "./external-agent-ledger.ts";
-import { POLICY_RESOURCE_CATEGORIES, type PublicPolicySummary } from "../execution-policy.ts";
+import { POLICY_RESOURCE_CATEGORIES, type PublicPolicySummary } from "../policy/execution.ts";
 import {
 	createPrivateMigrationPlan,
 	PrivateMigrationError,

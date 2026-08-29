@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createWorkspaceIdentity, type PolicyBinding, type SandboxCapabilities } from "../src/core/execution-policy.ts";
+import { createWorkspaceIdentity, type PolicyBinding, type SandboxCapabilities } from "../src/core/policy/execution.ts";
 import {
 	SandboxCredentialChannel,
 	SandboxError,
@@ -17,9 +17,9 @@ import {
 	type SandboxHandle,
 	type SandboxOperationResult,
 	type SandboxProvider,
-} from "../src/core/sandbox.ts";
-import { TaskCredentialError, calculateScopeDigest, type TaskCredentialGrant, type TaskCredentialStatus } from "../src/core/task-credential-lease.ts";
-import type { TaskCredentialTargetCapabilities } from "../src/core/task-credential-provider.ts";
+} from "../src/core/policy/sandbox.ts";
+import { TaskCredentialError, calculateScopeDigest, type TaskCredentialGrant, type TaskCredentialStatus } from "../src/core/policy/task-credential-lease.ts";
+import type { TaskCredentialTargetCapabilities } from "../src/core/policy/task-credential-provider.ts";
 import { createGondolinSandboxProvider, GONDOLIN_SANDBOX_PROVIDER_ID } from "../examples/extensions/gondolin/provider.ts";
 import { createFakeGondolinVm, createFakeGondolinVmFactory } from "./fixtures/fake-gondolin-vm.ts";
 import { createFakeSandboxProvider, FAKE_SANDBOX_PROVIDER_ID } from "./fixtures/fake-sandbox-provider.ts";

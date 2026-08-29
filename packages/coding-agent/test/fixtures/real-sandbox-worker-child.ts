@@ -3,10 +3,10 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { ExecutionPolicyProfile } from "../../src/core/execution-policy.ts";
-import { resolveExecutionPolicyProfile } from "../../src/core/execution-policy.ts";
-import { createBuiltinToolPolicy, createSandboxHandleOperationProvider } from "../../src/core/sandbox-host.ts";
-import type { SandboxHandle, SandboxOperationRequest, SandboxOperationResult } from "../../src/core/sandbox.ts";
+import type { ExecutionPolicyProfile } from "../../src/core/policy/execution.ts";
+import { resolveExecutionPolicyProfile } from "../../src/core/policy/execution.ts";
+import { createBuiltinToolPolicy, createSandboxHandleOperationProvider } from "../../src/core/policy/sandbox-host.ts";
+import type { SandboxHandle, SandboxOperationRequest, SandboxOperationResult } from "../../src/core/policy/sandbox.ts";
 import { runOperationWorkerProcess } from "../../src/worker-entry.ts";
 
 const execFileAsync = promisify(execFile);

@@ -15,17 +15,17 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from "@model
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/session/agent-session.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
+import { CapabilityPublicIdentity } from "../src/core/policy/capability-public-identity.ts";
 import {
 	CapabilityRegistry,
 	createCapabilityBindingView,
 	createCapabilityId,
-} from "../src/core/capability-registry.ts";
+} from "../src/core/policy/capability-registry.ts";
 import { assertSnapshotMetadataOnly } from "../src/core/session/context-engine.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "../src/core/resource-loader.ts";
-import type { ExecutionPolicyProfile } from "../src/core/execution-policy.ts";
-import type { SandboxHandle, SandboxProvider } from "../src/core/sandbox.ts";
+import type { ExecutionPolicyProfile } from "../src/core/policy/execution.ts";
+import type { SandboxHandle, SandboxProvider } from "../src/core/policy/sandbox.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";

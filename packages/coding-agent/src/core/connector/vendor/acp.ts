@@ -58,7 +58,7 @@ import {
 	assertPathInsideWorkspace,
 	resolveHostPathForPolicy,
 	type HostFilesystemRoots,
-} from "../../policy-filesystem.ts";
+} from "../../policy/filesystem.ts";
 import { ExternalConnectorSupervisorError } from "../supervisor.ts";
 import type {
 	ExternalConnectorDriverEvent,

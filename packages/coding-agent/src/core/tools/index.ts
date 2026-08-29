@@ -72,7 +72,7 @@ export {
 	type BuiltinToolPolicyHooks,
 	type BuiltinToolPolicyOptions,
 	createBuiltinToolPolicy,
-} from "../sandbox-host.ts";
+} from "../policy/sandbox-host.ts";
 export {
 	type SandboxDirectoryEntry,
 	type SandboxHandle,
@@ -85,7 +85,7 @@ export {
 	SandboxHandleDisposedError,
 	SandboxSession,
 	requireSandboxCapability,
-} from "../sandbox.ts";
+} from "../policy/sandbox.ts";
 
 import type { AgentTool } from "@aos-agent/agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";

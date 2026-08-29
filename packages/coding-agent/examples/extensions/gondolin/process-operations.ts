@@ -1,7 +1,7 @@
 import type {
 	SandboxOperationRequest,
 	SandboxOperationResult,
-} from "../../../src/core/sandbox.ts";
+} from "../../../src/core/policy/sandbox.ts";
 import {
 	GondolinAdapterError,
 	type GondolinAdapterErrorCode,

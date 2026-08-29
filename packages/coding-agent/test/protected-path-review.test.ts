@@ -26,27 +26,27 @@ import { AgentSession } from "../src/core/session/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/session/facade.ts";
 import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/session/services.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { buildCapabilitySettings } from "../src/core/capability-settings.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
+import { buildCapabilitySettings } from "../src/core/policy/capability-settings.ts";
 import {
 	POLICY_EFFECTS,
 	createPolicyReviewEvidence,
 	type ExecutionPolicyProfile,
 	type PolicyBinding,
 	resolveExecutionPolicy,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 import {
 	createExecutionPolicyLedger,
 	POLICY_APPROVAL_CUSTOM_TYPE,
 	type PolicyLedgerSession,
 	type PolicyLedgerSessionEntry,
-} from "../src/core/execution-policy-ledger.ts";
-import { buildExecutionPolicySettings, ExecutionPolicySettingsError } from "../src/core/execution-policy-settings.ts";
+} from "../src/core/policy/execution-ledger.ts";
+import { buildExecutionPolicySettings, ExecutionPolicySettingsError } from "../src/core/policy/execution-settings.ts";
 import {
 	FoundationControlPlane,
 	type FoundationControlPlaneOptions,
 } from "../src/core/foundation-control-plane.ts";
-import { resolveHostPathForPolicy } from "../src/core/policy-filesystem.ts";
+import { resolveHostPathForPolicy } from "../src/core/policy/filesystem.ts";
 import { classifyExternalToolPolicyOperation } from "../src/core/connector/tool-policy.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session/manager.ts";

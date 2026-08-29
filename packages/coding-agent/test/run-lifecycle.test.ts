@@ -5,16 +5,16 @@ import {
 	buildCapabilityCatalog,
 	resolveCapabilityBinding,
 	type CapabilityBinding,
-} from "../src/core/capability-registry.ts";
+} from "../src/core/policy/capability-registry.ts";
 import {
 	resolveExecutionPolicy,
 	type ExecutionPolicyProfile,
 	type PolicyResolutionResult,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 import {
 	POLICY_APPROVAL_CUSTOM_TYPE,
 	POLICY_DECISION_CUSTOM_TYPE,
-} from "../src/core/execution-policy-ledger.ts";
+} from "../src/core/policy/execution-ledger.ts";
 import {
 	CAPABILITY_BINDING_CUSTOM_TYPE,
 	canonicalizeRunRequest,

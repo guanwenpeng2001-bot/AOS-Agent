@@ -6,7 +6,7 @@ import {
 	type PolicyErrorCode,
 	type PolicyResource,
 	type SandboxCapabilities,
-} from "./execution-policy.ts";
+} from "./execution.ts";
 import {
 	TASK_CREDENTIAL_IDENTIFIER_MAX_LENGTH,
 	TASK_CREDENTIAL_MAX_SCOPES,
@@ -40,8 +40,8 @@ import {
 	isBindingHandle,
 	type BindingHandle,
 	type PublicBindingSummary,
-} from "./binding-handles.ts";
-import type { MCPServerConfig } from "./mcp-types.ts";
+} from "../binding-handles.ts";
+import type { MCPServerConfig } from "../mcp-types.ts";
 
 export interface SandboxOperationRequest {
 	readonly bindingId: string;

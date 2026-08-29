@@ -23,11 +23,11 @@ import {
 } from "@modelcontextprotocol/sdk/types";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/session/agent-session.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
-import { CapabilityRegistry } from "../src/core/capability-registry.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
+import { CapabilityPublicIdentity } from "../src/core/policy/capability-public-identity.ts";
+import { CapabilityRegistry } from "../src/core/policy/capability-registry.ts";
 import { MCPContentError } from "../src/core/mcp-content.ts";
-import { PolicyError } from "../src/core/execution-policy.ts";
+import { PolicyError } from "../src/core/policy/execution.ts";
 import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../src/core/session/context-engine.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";

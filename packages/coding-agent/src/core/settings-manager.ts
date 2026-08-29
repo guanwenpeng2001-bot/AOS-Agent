@@ -13,7 +13,7 @@ import {
 	type CapabilitySettings,
 	type CapabilitySettingsInput,
 	type McpSettingsConfig,
-} from "./capability-settings.ts";
+} from "./policy/capability-settings.ts";
 import {
 	hasControlPlaneStateArtifacts,
 	readControlPlaneState,
@@ -24,7 +24,7 @@ import {
 	type ExecutionPolicySettings,
 	type ExecutionPolicySettingsConfig,
 	type ExecutionPolicySettingsSelectionOptions,
-} from "./execution-policy-settings.ts";
+} from "./policy/execution-settings.ts";
 import {
 	buildExternalConnectorTargetSettings,
 	type ExternalConnectorSettingsConfig,

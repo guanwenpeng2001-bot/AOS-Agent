@@ -32,12 +32,12 @@ import {
 	resolveExecutionPolicy,
 	type ExecutionPolicyProfile,
 	type PolicyApprovalRequest,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 import {
 	createExecutionPolicyLedger,
 	type PolicyLedgerSession,
 	type PolicyLedgerSessionEntry,
-} from "../src/core/execution-policy-ledger.ts";
+} from "../src/core/policy/execution-ledger.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const ARTIFACT_DIGEST = `sha256:${"ab".repeat(32)}`;

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { MCPAuthError } from "../src/core/mcp-auth.ts";
+import { MCPAuthError } from "../src/core/policy/mcp-auth.ts";
 import type { McpAttachment } from "../src/core/mcp-attachment.ts";
 import type { MCPGetPromptResult, MCPNormalizedContentBlock, MCPReadResourceResult } from "../src/core/mcp-content.ts";
 import { MCPContentError } from "../src/core/mcp-content.ts";
 import { MCPError, type MCPPromptListResult, type MCPResourceListResult } from "../src/core/mcp-types.ts";
-import { CapabilityError } from "../src/core/capability-registry.ts";
+import { CapabilityError } from "../src/core/policy/capability-registry.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import {
 	formatMcpAttachmentReceipt,

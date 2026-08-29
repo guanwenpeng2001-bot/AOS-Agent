@@ -73,7 +73,7 @@ export {
 	type TaskCredentialServiceSettleInput,
 	type TaskCredentialSignalOutcome,
 	type TaskCredentialWorkerDetachInput,
-} from "./core/task-credential-service.ts";
+} from "./core/policy/task-credential-service.ts";
 // Task Credential / Lease public contract (safe records only; the
 // material-bearing test provider, target projection request, and provider
 // handles stay module-private and are never exported).
@@ -96,7 +96,7 @@ export {
 	type TaskCredentialTransitionOptions,
 	type TaskCredentialTtlBounds,
 	type TaskExecutionBinding,
-} from "./core/task-credential-lease.ts";
+} from "./core/policy/task-credential-lease.ts";
 export {
 	createTaskCredentialNullTarget,
 	type TaskCredentialIssuer,
@@ -113,14 +113,14 @@ export {
 	type TaskCredentialTargetCapabilitiesRequest,
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
-} from "./core/task-credential-provider.ts";
+} from "./core/policy/task-credential-provider.ts";
 export {
 	TASK_CREDENTIAL_CUSTOM_TYPE,
 	type TaskCredentialSession,
 	type TaskCredentialWarning,
 	type TaskCredentialWarningCode,
-} from "./core/task-credential-store.ts";
-export { readStoredCredential } from "./core/auth-storage.ts";
+} from "./core/policy/task-credential-store.ts";
+export { readStoredCredential } from "./core/policy/auth-storage.ts";
 export {
 	canonicalizeMCPServerUrl,
 	deriveMCPServerIdentity,
@@ -136,7 +136,7 @@ export {
 	type MCPStoredTokens,
 	type MCPTokenBinding,
 	type MCPTokenResponse,
-} from "./core/mcp-auth-storage.ts";
+} from "./core/policy/mcp-auth-storage.ts";
 // Compaction
 export {
 	type BranchPreparation,
@@ -207,7 +207,7 @@ export {
 	toPublicCapabilityBindingHandle,
 	toCapabilityBindingHandle,
 	type CapabilityBinding,
-} from "./core/capability-registry.ts";
+} from "./core/policy/capability-registry.ts";
 export {
 	EXECUTION_ASSOCIATION_CUSTOM_TYPE,
 	EXECUTION_ASSOCIATION_SCHEMA_VERSION,
@@ -312,8 +312,8 @@ export {
 	toPolicyBindingHandle,
 	type WorkspacePolicy,
 	type WorkspaceScope,
-} from "./core/execution-policy.ts";
-export type { PolicyApprovalLedgerRecord, PolicyApprovalLedgerResolution } from "./core/execution-policy-ledger.ts";
+} from "./core/policy/execution.ts";
+export type { PolicyApprovalLedgerRecord, PolicyApprovalLedgerResolution } from "./core/policy/execution-ledger.ts";
 export {
 	buildExecutionPolicySettings,
 	createExecutionPolicySettingsView,
@@ -325,7 +325,7 @@ export {
 	parseExecutionPolicySettings,
 	resolveExecutionPolicySettings,
 	validateExecutionPolicySettingsConfig,
-} from "./core/execution-policy-settings.ts";
+} from "./core/policy/execution-settings.ts";
 // Extension system
 export type {
 	AgentEndEvent,
@@ -571,7 +571,7 @@ export {
 	type SandboxOperationResult,
 	type SandboxProvider,
 	type TaskCredentialDeliveryPreflightResult,
-} from "./core/sandbox.ts";
+} from "./core/policy/sandbox.ts";
 export {
 	REMOTE_ARTIFACT_KINDS,
 	REMOTE_OPERATION_ERROR_CATEGORIES,
@@ -938,7 +938,7 @@ export {
 	ProjectTrustStore,
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,
-} from "./core/trust-manager.ts";
+} from "./core/policy/trust-manager.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 export type {

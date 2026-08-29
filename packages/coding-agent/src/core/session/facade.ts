@@ -61,7 +61,7 @@ import {
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
 } from "../agent-runtime-composition.ts";
-import type { CapabilityBinding, CapabilityCatalogView } from "../capability-registry.ts";
+import type { CapabilityBinding, CapabilityCatalogView } from "../policy/capability-registry.ts";
 import { ExtensionRunner, type ContextUsage, type ReplacedSessionContext, type SessionStartEvent, type ToolDefinition, type ToolInfo } from "../extensions/index.ts";
 import { emitSessionShutdownEvent } from "../extensions/runner.ts";
 import { wrapRegisteredTools } from "../extensions/wrapper.ts";
@@ -123,8 +123,8 @@ import type {
 	MCPConnectionStatus,
 } from "../mcp-types.ts";
 import { MCPError } from "../mcp-types.ts";
-import type { MCPAuthManager, MCPAuthStartOptions, MCPAuthStartResult } from "../mcp-auth-manager.ts";
-import type { MCPCredentialStatus } from "../mcp-auth-storage.ts";
+import type { MCPAuthManager, MCPAuthStartOptions, MCPAuthStartResult } from "../policy/mcp-auth-manager.ts";
+import type { MCPCredentialStatus } from "../policy/mcp-auth-storage.ts";
 import {
 	MCPContentError,
 	mapMCPNormalizedBlocksToAgentContent,
@@ -151,10 +151,10 @@ import type {
 	PolicyReviewEvidence,
 	PolicyReviewerIdentity,
 	PublicPolicySummary,
-} from "../execution-policy.ts";
+} from "../policy/execution.ts";
 import type { BindingHandle } from "../binding-handles.ts";
-import type { TaskCredentialService } from "../task-credential-service.ts";
-import type { TaskCredentialProviderAvailability } from "../task-credential-provider.ts";
+import type { TaskCredentialService } from "../policy/task-credential-service.ts";
+import type { TaskCredentialProviderAvailability } from "../policy/task-credential-provider.ts";
 import type { BashOperations } from "../tools/bash.ts";
 import { exportSessionToHtml } from "../export-html/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "../messages.ts";

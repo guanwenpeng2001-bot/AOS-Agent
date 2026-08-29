@@ -3,8 +3,8 @@ import {
 	buildExecutionPolicySettings,
 	ExecutionPolicySettingsError,
 	DEFAULT_REGISTERED_SANDBOX_PROVIDER_IDS,
-} from "../src/core/execution-policy-settings.ts";
-import { resolveExecutionPolicy } from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution-settings.ts";
+import { resolveExecutionPolicy } from "../src/core/policy/execution.ts";
 import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
 
 const hostProfile = {

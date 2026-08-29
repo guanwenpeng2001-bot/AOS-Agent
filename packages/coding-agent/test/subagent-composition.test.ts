@@ -53,12 +53,12 @@ import {
 	resolveExecutionPolicy,
 	type ExecutionPolicyProfile,
 	type PolicyApprovalRequest,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 import {
 	createExecutionPolicyLedger,
 	type PolicyLedgerSession,
 	type PolicyLedgerSessionEntry,
-} from "../src/core/execution-policy-ledger.ts";
+} from "../src/core/policy/execution-ledger.ts";
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 import type { SubagentProviderDescriptor } from "../src/core/subagent/registry.ts";
 import type { PlanSubagentSpawnInput } from "../src/core/subagent/supervisor.ts";

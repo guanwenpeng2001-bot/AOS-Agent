@@ -32,7 +32,7 @@ import {
 	type CapabilityCatalog,
 	type CapabilityCatalogView,
 	toCapabilityBindingHandle,
-} from "./capability-registry.ts";
+} from "./policy/capability-registry.ts";
 import {
 	createMcpServerCapabilityCandidate,
 	contentSummaryId,
@@ -40,7 +40,7 @@ import {
 	type CapabilitySettings,
 	type McpContentCapabilityKind,
 	type McpContentSummary,
-} from "./capability-settings.ts";
+} from "./policy/capability-settings.ts";
 import {
 	type CapabilityBindingInput,
 	type ExecutionPolicyProfile,
@@ -66,12 +66,12 @@ import {
 	resolveExecutionPolicyProfile,
 	toPolicyBindingHandle,
 	toPublicPolicySummary,
-} from "./execution-policy.ts";
+} from "./policy/execution.ts";
 import {
 	createExecutionPolicyLedger,
 	POLICY_DECISION_CUSTOM_TYPE,
 	type PolicyDecisionLedgerRecord,
-} from "./execution-policy-ledger.ts";
+} from "./policy/execution-ledger.ts";
 import { classifyExternalToolPolicyOperation } from "./connector/tool-policy.ts";
 import {
 	createMCPDefaultTransportFactory,
@@ -91,10 +91,10 @@ import { MCPError } from "./mcp-types.ts";
 import {
 	MCPAuthManager as ConcreteMCPAuthManager,
 	type MCPAuthManagerOptions,
-} from "./mcp-auth-manager.ts";
-import type { MCPAuthManager, MCPAuthStartOptions, MCPAuthStartResult } from "./mcp-auth-manager.ts";
-import { MCPAuthError } from "./mcp-auth.ts";
-import type { MCPCredentialStatus } from "./mcp-auth-storage.ts";
+} from "./policy/mcp-auth-manager.ts";
+import type { MCPAuthManager, MCPAuthStartOptions, MCPAuthStartResult } from "./policy/mcp-auth-manager.ts";
+import { MCPAuthError } from "./policy/mcp-auth.ts";
+import type { MCPCredentialStatus } from "./policy/mcp-auth-storage.ts";
 import {
 	MCPContentError,
 	mcpPromptId,
@@ -102,7 +102,7 @@ import {
 	type MCPGetPromptResult,
 	type MCPReadResourceResult,
 } from "./mcp-content.ts";
-import { canonicalizeMCPServerUrl } from "./mcp-auth-storage.ts";
+import { canonicalizeMCPServerUrl } from "./policy/mcp-auth-storage.ts";
 import type { McpAttachmentBindingRefs } from "./mcp-attachment.ts";
 import { mapMCPToolsToDefinitions, type MCPToolDefinitionResult } from "./mcp-tool-adapter.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
@@ -112,8 +112,8 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type {
 	ExternalConnectorRegistry,
 } from "./connector/registry.ts";
-import type { SandboxHandle, SandboxProvider, SandboxSession } from "./sandbox.ts";
-import { SandboxSession as ConcreteSandboxSession } from "./sandbox.ts";
+import type { SandboxHandle, SandboxProvider, SandboxSession } from "./policy/sandbox.ts";
+import { SandboxSession as ConcreteSandboxSession } from "./policy/sandbox.ts";
 import type { ToolDefinition, ExtensionRunner } from "./extensions/index.ts";
 import { wrapToolDefinitions } from "./tools/tool-definition-wrapper.ts";
 import type { BashOperations } from "./tools/bash.ts";
@@ -127,15 +127,15 @@ import {
 	type TaskCredentialProvider,
 	type TaskCredentialProviderAvailability,
 	type TaskCredentialTargetCapabilities,
-} from "./task-credential-provider.ts";
+} from "./policy/task-credential-provider.ts";
 import {
 	TASK_CREDENTIAL_MIN_TTL_MS,
 	TASK_CREDENTIAL_SCHEMA_VERSION,
 	TaskCredentialError,
 	isTaskCredentialIsoTimestamp,
 	isTaskExecutionBinding,
-} from "./task-credential-lease.ts";
-import { TaskCredentialService, type TaskCredentialPreflightFactsInput } from "./task-credential-service.ts";
+} from "./policy/task-credential-lease.ts";
+import { TaskCredentialService, type TaskCredentialPreflightFactsInput } from "./policy/task-credential-service.ts";
 import {
 	registerRunSubagentLifecycleHooks,
 	registerRunWorkerLifecycleHooks,

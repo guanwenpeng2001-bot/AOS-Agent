@@ -5,8 +5,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createWorkspaceIdentity, type PolicyBinding, type SandboxCapabilities } from "../src/core/execution-policy.ts";
-import { SandboxHandleDisposedError, type SandboxHandle } from "../src/core/sandbox.ts";
+import { createWorkspaceIdentity, type PolicyBinding, type SandboxCapabilities } from "../src/core/policy/execution.ts";
+import { SandboxHandleDisposedError, type SandboxHandle } from "../src/core/policy/sandbox.ts";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import { toRemoteOperationErrorInfo } from "../src/core/remote-operation.ts";
 import {

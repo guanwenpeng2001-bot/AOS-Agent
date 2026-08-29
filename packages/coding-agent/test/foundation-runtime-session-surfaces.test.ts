@@ -16,7 +16,7 @@ import {
 	createAgentSession,
 	createRuntimeSessionSurfaceAdapter,
 } from "../src/index.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/session/facade.ts";
 import type { AgentSession } from "../src/core/session/agent-session.ts";
 import { ExecutionAuditQuery } from "../src/core/session/execution-audit-query.ts";

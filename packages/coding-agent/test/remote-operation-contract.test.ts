@@ -25,17 +25,17 @@ import {
 	TASK_CREDENTIAL_CUSTOM_TYPE,
 	TaskCredentialStore,
 	parseTaskCredentialTransition,
-} from "../src/core/task-credential-store.ts";
+} from "../src/core/policy/task-credential-store.ts";
 import {
 	createTaskCredentialTestProvider,
 	type TaskCredentialProvider,
-} from "../src/core/task-credential-provider.ts";
+} from "../src/core/policy/task-credential-provider.ts";
 import {
 	TASK_CREDENTIAL_MIN_TTL_MS,
 	type TaskCredentialGrant,
 	type TaskCredentialScope,
 	type TaskExecutionBinding,
-} from "../src/core/task-credential-lease.ts";
+} from "../src/core/policy/task-credential-lease.ts";
 import {
 	createLocalRemoteProvider,
 	FakeRemoteProvider,

@@ -23,25 +23,25 @@ import {
 	type PolicyOperationSource,
 	type PolicyResource,
 	type WorkspaceScope,
-} from "./execution-policy.ts";
+} from "./execution.ts";
 import {
 	type FilesystemAccessKind,
 	type HostFilesystemRoots,
 	resolveHostPathForPolicy,
-} from "./policy-filesystem.ts";
+} from "./filesystem.ts";
 import {
 	assertProcessEnvironmentAllowed,
 	assertProcessTimeoutAllowed,
 	createExplicitProcessEnvironment,
-} from "./policy-process.ts";
+} from "./process.ts";
 import {
 	resolveWorkerSandboxOperation,
 	type SandboxHandle,
 	type SandboxOperationRequest,
 	type SandboxOperationResult,
 } from "./sandbox.ts";
-import type { SafeLeaseProjection, SafeLeaseReference } from "./worker/protocol.ts";
-import type { WorkerRuntimeSandboxOperationProvider } from "./worker/runtime.ts";
+import type { SafeLeaseProjection, SafeLeaseReference } from "../worker/protocol.ts";
+import type { WorkerRuntimeSandboxOperationProvider } from "../worker/runtime.ts";
 
 export interface SandboxHandleOperationProviderOptions {
 	readonly providerId: string;

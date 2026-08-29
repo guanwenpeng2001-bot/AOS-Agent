@@ -7,8 +7,8 @@ import {
 	LEGACY_PROFILE,
 	type ExecutionPolicyProfile,
 	resolveExecutionPolicyProfile,
-} from "../src/core/execution-policy.ts";
-import { createBuiltinToolPolicy } from "../src/core/sandbox-host.ts";
+} from "../src/core/policy/execution.ts";
+import { createBuiltinToolPolicy } from "../src/core/policy/sandbox-host.ts";
 import {
 	type SandboxHandle,
 	SandboxHandleDisposedError,
@@ -16,7 +16,7 @@ import {
 	type SandboxOperationResult,
 	SandboxSession,
 	type SandboxProvider,
-} from "../src/core/sandbox.ts";
+} from "../src/core/policy/sandbox.ts";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import { createFakeSandboxProvider } from "./fixtures/fake-sandbox-provider.ts";
 import {

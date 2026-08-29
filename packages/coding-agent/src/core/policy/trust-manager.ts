@@ -2,9 +2,9 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
-import { CONFIG_DIR_NAME } from "../config.ts";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
-import { readControlPlaneState, writeControlPlaneState } from "./control-plane-atomic-storage.ts";
+import { CONFIG_DIR_NAME } from "../../config.ts";
+import { canonicalizePath, resolvePath } from "../../utils/paths.ts";
+import { readControlPlaneState, writeControlPlaneState } from "../control-plane-atomic-storage.ts";
 
 export type ProjectTrustDecision = boolean | null;
 

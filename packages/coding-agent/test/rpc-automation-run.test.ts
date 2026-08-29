@@ -30,7 +30,7 @@ import {
 	type AgentSessionLedgerProjection,
 } from "../src/core/session/facade.ts";
 import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
-import { CapabilityError, type CapabilityBinding } from "../src/core/capability-registry.ts";
+import { CapabilityError, type CapabilityBinding } from "../src/core/policy/capability-registry.ts";
 import type { PreparedSessionScopeRebind } from "../src/core/session/current-scope.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import { createDurableExternalAgentConnector } from "../src/core/connector/durable-connector.ts";

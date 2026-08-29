@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
+import { CapabilityPublicIdentity } from "../src/core/policy/capability-public-identity.ts";
 import {
 	buildCapabilityCatalog as buildCapabilityCatalogWithIdentity,
 	type CapabilityBinding,
@@ -23,7 +23,7 @@ import {
 	createCapabilityRevision as createCapabilityRevisionWithIdentity,
 	type ResolveBindingInput,
 	resolveCapabilityBinding,
-} from "../src/core/capability-registry.ts";
+} from "../src/core/policy/capability-registry.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "../src/core/source-info.ts";
 
 const TEST_AGENT_DIR = mkdtempSync(join(tmpdir(), "capability-registry-test-"));

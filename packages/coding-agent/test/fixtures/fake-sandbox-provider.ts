@@ -1,5 +1,5 @@
 import { writeFile } from "node:fs/promises";
-import type { PolicyBinding, SandboxCapabilities } from "../../src/core/execution-policy.ts";
+import type { PolicyBinding, SandboxCapabilities } from "../../src/core/policy/execution.ts";
 import {
 	SandboxError,
 	SandboxHandleDisposedError,
@@ -10,7 +10,7 @@ import {
 	type SandboxOperationRequest,
 	type SandboxOperationResult,
 	type SandboxProvider,
-} from "../../src/core/sandbox.ts";
+} from "../../src/core/policy/sandbox.ts";
 
 export const FAKE_SANDBOX_PROVIDER_ID = "fake-sandbox";
 

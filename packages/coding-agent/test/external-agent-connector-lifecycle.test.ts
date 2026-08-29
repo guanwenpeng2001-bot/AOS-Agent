@@ -74,16 +74,16 @@ import {
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
 	type TaskCredentialTestProvider,
-} from "../src/core/task-credential-provider.ts";
+} from "../src/core/policy/task-credential-provider.ts";
 import type {
 	TaskCredentialDeliveryReceipt,
 	TaskCredentialScope,
-} from "../src/core/task-credential-lease.ts";
+} from "../src/core/policy/task-credential-lease.ts";
 import {
 	TaskCredentialService,
 	type TaskCredentialPreflightResolver,
-} from "../src/core/task-credential-service.ts";
-import type { TaskCredentialSession } from "../src/core/task-credential-store.ts";
+} from "../src/core/policy/task-credential-service.ts";
+import type { TaskCredentialSession } from "../src/core/policy/task-credential-store.ts";
 
 const now = "2026-08-27T00:00:00.000Z";
 const providerId = "third-party-connector";

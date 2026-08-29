@@ -1,4 +1,4 @@
-import { PolicyError, type ExecutionPolicyProfile } from "./execution-policy.ts";
+import { PolicyError, type ExecutionPolicyProfile } from "./execution.ts";
 
 export interface ProcessPolicyEnvironment {
 	readonly env: NodeJS.ProcessEnv;

@@ -51,7 +51,7 @@ import type {
 	PolicyDecisionLedgerRecord,
 	PolicyViolationLedgerRecord,
 	SandboxLifecycleLedgerRecord,
-} from "../execution-policy-ledger.ts";
+} from "../policy/execution-ledger.ts";
 import type {
 	PolicyAction,
 	PolicyApprovalOutcome,
@@ -64,7 +64,7 @@ import type {
 	SandboxCapabilities,
 	SandboxStatus,
 	WorkspaceScope,
-} from "../execution-policy.ts";
+} from "../policy/execution.ts";
 import type { SessionEntry } from "./manager.ts";
 import {
 	FOUNDATION_DURABLE_CUSTOM_TYPE,
@@ -98,7 +98,7 @@ import {
 	TASK_CREDENTIAL_SCHEMA_VERSION,
 	type TaskCredentialGrant,
 	type TaskCredentialStatus,
-} from "../task-credential-lease.ts";
+} from "../policy/task-credential-lease.ts";
 import {
 	canonicalTaskCredentialIssuePayload,
 	canonicalTaskCredentialProjectPayload,
@@ -109,7 +109,7 @@ import {
 	TASK_CREDENTIAL_CUSTOM_TYPE,
 	type TaskCredentialPersistedAction,
 	type TaskCredentialTransition,
-} from "../task-credential-store.ts";
+} from "../policy/task-credential-store.ts";
 import { isRemoteOperationReceipt, type RemoteOperationReceipt } from "../remote-operation.ts";
 import {
 	isTaskGateTransition,
@@ -120,7 +120,7 @@ import {
 	type TaskGateAction,
 	type TaskGateRecord,
 	type TaskGateTransition,
-} from "../task-gate.ts";
+} from "../policy/task-gate.ts";
 import {
 	canonicalTaskGraphAttachPayload,
 	canonicalTaskGraphCreatePayload,

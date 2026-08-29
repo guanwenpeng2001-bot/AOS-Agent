@@ -32,7 +32,7 @@ import {
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 } from "../../src/core/session/runtime.ts";
-import { AuthStorage } from "../../src/core/auth-storage.ts";
+import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import type {
 	SessionBeforeSwitchEvent,
 	SessionShutdownEvent,

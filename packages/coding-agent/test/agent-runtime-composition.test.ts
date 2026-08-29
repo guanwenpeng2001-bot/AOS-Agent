@@ -65,7 +65,7 @@ import {
 	type ExternalConnectorResolvedTarget,
 } from "../src/index.ts";
 import { createExternalConnectorRegistry } from "../src/core/connector/registry.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { AgentSession } from "../src/core/session/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/session/facade.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -80,7 +80,7 @@ import type {
 } from "../src/core/subagent/composition.ts";
 import type { SubagentProviderDescriptor } from "../src/core/subagent/registry.ts";
 import type { PlanSubagentSpawnInput } from "../src/core/subagent/supervisor.ts";
-import { createTaskCredentialTestProvider } from "../src/core/task-credential-provider.ts";
+import { createTaskCredentialTestProvider } from "../src/core/policy/task-credential-provider.ts";
 import { TaskGraphStore } from "../src/core/scheduler/task-graph.ts";
 import { createCodingAgentHarness } from "../src/server/create-harness.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";

@@ -9,7 +9,7 @@ import {
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 } from "../../../src/core/session/runtime.ts";
-import { AuthStorage } from "../../../src/core/auth-storage.ts";
+import { AuthStorage } from "../../../src/core/policy/auth-storage.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
 
 describe("issue #2753 reload stale resource settings", () => {

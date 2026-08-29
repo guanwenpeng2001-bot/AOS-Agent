@@ -18,11 +18,11 @@ import {
 	type RevisionReference,
 	type RoleRevision,
 } from "@aos-agent/agent-core";
-import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
+import { CapabilityPublicIdentity } from "../src/core/policy/capability-public-identity.ts";
 import {
 	CapabilityRegistry,
 	type CapabilityBinding,
-} from "../src/core/capability-registry.ts";
+} from "../src/core/policy/capability-registry.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 
 const NOW = "2026-08-28T00:00:00.000Z";

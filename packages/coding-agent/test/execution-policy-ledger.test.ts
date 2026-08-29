@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ExecutionPolicyProfile, type PolicyBinding, resolveExecutionPolicy } from "../src/core/execution-policy.ts";
+import { type ExecutionPolicyProfile, type PolicyBinding, resolveExecutionPolicy } from "../src/core/policy/execution.ts";
 import {
 	createExecutionPolicyLedger,
 	createPolicyBindingLedgerRecord,
@@ -10,7 +10,7 @@ import {
 	SANDBOX_LIFECYCLE_CUSTOM_TYPE,
 	type PolicyLedgerSession,
 	type PolicyLedgerSessionEntry,
-} from "../src/core/execution-policy-ledger.ts";
+} from "../src/core/policy/execution-ledger.ts";
 
 class MemoryPolicyLedgerSession implements PolicyLedgerSession {
 	private readonly entries: PolicyLedgerSessionEntry[] = [];

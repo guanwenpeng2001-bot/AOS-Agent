@@ -10,13 +10,13 @@ import {
 	CapabilityError,
 	type CapabilityCatalogView,
 	type CapabilityDescriptorView,
-} from "../../core/capability-registry.ts";
+} from "../../core/policy/capability-registry.ts";
 import { theme } from "./theme/theme.ts";
 
 // Stable, redacted capability view types exposed by the Session capability
 // surface. These are type-only: consumers can reference the redacted catalog,
 // descriptor, and binding views without raw config or binding internals.
-export type { CapabilityBindingView, CapabilityCatalogView, CapabilityDescriptorView } from "../../core/capability-registry.ts";
+export type { CapabilityBindingView, CapabilityCatalogView, CapabilityDescriptorView } from "../../core/policy/capability-registry.ts";
 
 /** The three supported `/capabilities` command forms. */
 export function formatCapabilitiesUsage(): string {

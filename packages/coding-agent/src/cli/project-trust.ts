@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import type { ProjectTrustContext } from "../core/extensions/types.ts";
-import type { AppMode } from "../core/project-trust.ts";
+import type { AppMode } from "../core/policy/project-trust.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { showStartupInput, showStartupSelector } from "./startup-ui.ts";
 

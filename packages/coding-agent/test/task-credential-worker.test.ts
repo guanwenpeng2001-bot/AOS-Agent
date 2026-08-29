@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEntry } from "../src/core/session/manager.ts";
-import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/task-credential-lease.ts";
+import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/policy/task-credential-lease.ts";
 import {
 	createTaskCredentialTestProvider,
 	type TaskCredentialProviderReceipt,
@@ -9,14 +9,14 @@ import {
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
 	type TaskCredentialTestProvider,
-} from "../src/core/task-credential-provider.ts";
+} from "../src/core/policy/task-credential-provider.ts";
 import {
 	TaskCredentialService,
 	type TaskCredentialPreflightResolver,
 	type TaskCredentialRunIssueContext,
 	type TaskCredentialWorkerTarget,
-} from "../src/core/task-credential-service.ts";
-import type { TaskCredentialSession } from "../src/core/task-credential-store.ts";
+} from "../src/core/policy/task-credential-service.ts";
+import type { TaskCredentialSession } from "../src/core/policy/task-credential-store.ts";
 import type { SafeLeaseProjection, SafeLeaseReference } from "../src/core/worker/protocol.ts";
 
 const NOW = "2026-08-21T00:00:00.000Z";

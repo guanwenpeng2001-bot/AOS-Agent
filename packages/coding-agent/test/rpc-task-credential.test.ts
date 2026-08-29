@@ -21,7 +21,7 @@ import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { RUN_LEDGER_CUSTOM_TYPE, type RunRecord } from "../src/core/session/run-lifecycle.ts";
-import type { SandboxProvider } from "../src/core/sandbox.ts";
+import type { SandboxProvider } from "../src/core/policy/sandbox.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import {
@@ -32,9 +32,9 @@ import {
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
 	type TaskCredentialTestProvider,
-} from "../src/core/task-credential-provider.ts";
-import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/task-credential-lease.ts";
-import { TASK_CREDENTIAL_CUSTOM_TYPE } from "../src/core/task-credential-store.ts";
+} from "../src/core/policy/task-credential-provider.ts";
+import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../src/core/policy/task-credential-lease.ts";
+import { TASK_CREDENTIAL_CUSTOM_TYPE } from "../src/core/policy/task-credential-store.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
 import type {
 	RpcAutomationResponse,

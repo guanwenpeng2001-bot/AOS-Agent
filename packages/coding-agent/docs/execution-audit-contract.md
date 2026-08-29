@@ -66,16 +66,16 @@ The source files that establish these facts are:
 - `src/core/session/run-lifecycle.ts` for Run and capability ledgers and public Run
   serializers;
 - `src/core/session/context-engine.ts` for metadata-only snapshots;
-- `src/core/capability-registry.ts` for opaque capability identifiers;
+- `src/core/policy/capability-registry.ts` for opaque capability identifiers;
 - `src/core/model-broker-ledger.ts` and `src/core/model-broker.ts` for model
   binding, attempt, and fallback facts;
-- `src/core/execution-policy.ts` and `src/core/execution-policy-ledger.ts`
+- `src/core/policy/execution.ts` and `src/core/policy/execution-ledger.ts`
   for policy and Sandbox facts;
-- `src/core/sandbox.ts` for the side-effecting provider boundary;
+- `src/core/policy/sandbox.ts` for the side-effecting provider boundary;
 - `src/core/session/manager.ts` for Session entry identity and file scope;
-- `src/core/task-gate.ts` for Task Gate record, transition, and fold facts;
+- `src/core/policy/task-gate.ts` for Task Gate record, transition, and fold facts;
 - `src/core/scheduler/task-graph.ts` for Task Graph record, node transition, DAG, and fold facts;
-- `src/core/task-credential-lease.ts` and `src/core/task-credential-store.ts`
+- `src/core/policy/task-credential-lease.ts` and `src/core/policy/task-credential-store.ts`
   for Task Credential grant, transition, and fold facts;
 - `src/core/subagent/composition.ts` and `src/core/session/execution-audit.ts` for the
   digest-bound child lifecycle projection and its read-only replay guard;

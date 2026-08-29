@@ -2,8 +2,8 @@ import { createHmac, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
-import { resolvePath } from "../utils/paths.ts";
-import { readControlPlaneState, writeControlPlaneState } from "./control-plane-atomic-storage.ts";
+import { resolvePath } from "../../utils/paths.ts";
+import { readControlPlaneState, writeControlPlaneState } from "../control-plane-atomic-storage.ts";
 
 /**
  * Installation-scoped public identity for capabilities.

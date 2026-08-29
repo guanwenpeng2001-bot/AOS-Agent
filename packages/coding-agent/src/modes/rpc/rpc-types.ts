@@ -10,7 +10,7 @@ import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/session/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { RunBindingAssociation } from "../../core/binding-handles.ts";
-import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
+import type { CapabilityCatalogView } from "../../core/policy/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { ConnectorRuntimeStatus } from "../../core/connector/runtime-status.ts";
 import type {
@@ -19,7 +19,7 @@ import type {
 	AuditReplayQuery,
 	AuditReplayResult,
 } from "../../core/session/execution-audit-query.ts";
-import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
+import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/policy/execution.ts";
 import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
 import type {
 	ExternalConnectorDescriptor,
@@ -58,8 +58,8 @@ import type {
 	TaskCredentialGrant,
 	TaskCredentialScope,
 	TaskCredentialStatus,
-} from "../../core/task-credential-lease.ts";
-import type { TaskGateRecord, TaskGateStatus } from "../../core/task-gate.ts";
+} from "../../core/policy/task-credential-lease.ts";
+import type { TaskGateRecord, TaskGateStatus } from "../../core/policy/task-gate.ts";
 import type {
 	TaskGraphNodeDefinition,
 	TaskGraphNodeView,
@@ -1307,7 +1307,7 @@ export type RpcAutomationResponse =
 	  };
 
 // Re-export the redacted capability binding view consumed by get_capabilities.
-export type { CapabilityBindingView } from "../../core/capability-registry.ts";
+export type { CapabilityBindingView } from "../../core/policy/capability-registry.ts";
 // Re-export public audit query/replay types.
 export type {
 	AuditEvent,
@@ -1357,13 +1357,13 @@ export type {
 	TaskCredentialGrant,
 	TaskCredentialScope,
 	TaskCredentialStatus,
-} from "../../core/task-credential-lease.ts";
+} from "../../core/policy/task-credential-lease.ts";
 // Re-export public Task Gate types.
 export type {
 	TaskGateErrorCode,
 	TaskGateRecord,
 	TaskGateStatus,
-} from "../../core/task-gate.ts";
+} from "../../core/policy/task-gate.ts";
 // Re-export public Task Graph types.
 export type {
 	TaskGraphErrorCode,

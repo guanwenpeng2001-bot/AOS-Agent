@@ -11,7 +11,7 @@ import {
 	MCPAuthError,
 	MCPAuthFlow,
 	MCP_OAUTH_LOOPBACK_CALLBACK_PATH,
-} from "../src/core/mcp-auth.ts";
+} from "../src/core/policy/mcp-auth.ts";
 
 /** Fake interaction driven by the test; records prompts and events. */
 interface FakeInteractionResult {

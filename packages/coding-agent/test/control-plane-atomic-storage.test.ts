@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import {
 	ControlPlaneStorageError,
 	getControlPlaneLastKnownGoodPath,
@@ -22,7 +22,7 @@ import {
 	writeControlPlaneState,
 } from "../src/core/control-plane-atomic-storage.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { ProjectTrustStore } from "../src/core/trust-manager.ts";
+import { ProjectTrustStore } from "../src/core/policy/trust-manager.ts";
 
 function validateObject(content: string): void {
 	const parsed: unknown = JSON.parse(content);

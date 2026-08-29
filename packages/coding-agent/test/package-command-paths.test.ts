@@ -6,7 +6,7 @@ import { APP_NAME, ENV_CODING_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/co
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResolvedPaths } from "../src/core/package-manager.ts";
 import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
-import { ProjectTrustStore } from "../src/core/trust-manager.ts";
+import { ProjectTrustStore } from "../src/core/policy/trust-manager.ts";
 import { main } from "../src/main.ts";
 import { ConfigSelectorComponent } from "../src/modes/interactive/components/config-selector.ts";
 import { handlePackageCommand } from "../src/package-manager-cli.ts";

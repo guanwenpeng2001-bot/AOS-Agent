@@ -14,8 +14,8 @@ import {
 	type MCPToolDefinitionResult,
 	type MCPToolMappingOptions,
 } from "../src/core/mcp-tool-adapter.ts";
-import { CapabilityPublicIdentity } from "../src/core/capability-public-identity.ts";
-import { CapabilityRegistry } from "../src/core/capability-registry.ts";
+import { CapabilityPublicIdentity } from "../src/core/policy/capability-public-identity.ts";
+import { CapabilityRegistry } from "../src/core/policy/capability-registry.ts";
 import { MCPError, type MCPCallResult } from "../src/core/mcp-types.ts";
 
 function tool(name: string, overrides: Partial<Tool> = {}): Tool {

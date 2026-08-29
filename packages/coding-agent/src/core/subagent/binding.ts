@@ -48,13 +48,13 @@ import {
 	type PolicyApprovalRequest,
 	type PolicyBinding,
 	type PolicyDecision,
-} from "../execution-policy.ts";
+} from "../policy/execution.ts";
 import {
 	InMemoryExecutionPolicyLedger,
 	POLICY_APPROVAL_CUSTOM_TYPE,
 	createPolicyBindingLedgerRecord,
 	type PolicyLedgerEvent,
-} from "../execution-policy-ledger.ts";
+} from "../policy/execution-ledger.ts";
 
 export const CHILD_BINDING_PROJECTION_SCHEMA_VERSION = 1 as const;
 export const CHILD_BINDING_PROJECTION_OBJECT_TYPE = "subagent.child_binding_projection";

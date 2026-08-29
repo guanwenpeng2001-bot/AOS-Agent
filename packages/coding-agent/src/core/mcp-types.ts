@@ -1,6 +1,6 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
-import type { CapabilityAvailability, CapabilityErrorCode } from "./capability-registry.ts";
+import type { CapabilityAvailability, CapabilityErrorCode } from "./policy/capability-registry.ts";
 
 /**
  * Transport kinds supported by the MCP lifecycle v1.

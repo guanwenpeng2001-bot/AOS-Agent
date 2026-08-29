@@ -40,7 +40,7 @@ import {
 } from "../src/core/connector/durable-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
 import { classifyExternalToolPolicyOperation } from "../src/core/connector/tool-policy.ts";
-import { classifyProtectedPathOperation } from "../src/core/protected-path-policy.ts";
+import { classifyProtectedPathOperation } from "../src/core/policy/protected-path.ts";
 import type { CanonicalExternalConnectorMapping } from "../src/core/connector/session-mapping.ts";
 import {
 	PrivateAcpStableV1Driver,

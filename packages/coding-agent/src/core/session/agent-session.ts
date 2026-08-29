@@ -20,17 +20,17 @@ import type {
 	ShutdownHandler,
 	ToolDefinition,
 } from "../extensions/index.ts";
-import type { CapabilityRegistry } from "../capability-registry.ts";
+import type { CapabilityRegistry } from "../policy/capability-registry.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "../mcp-types.ts";
-import type { MCPAuthManagerOptions } from "../mcp-auth-manager.ts";
+import type { MCPAuthManagerOptions } from "../policy/mcp-auth-manager.ts";
 import type { ModelBroker } from "../model-broker.ts";
 import type { ModelRuntime } from "../model-runtime.ts";
 import type { ResourceLoader } from "../resource-loader.ts";
 import type { RuntimeSessionSurface } from "../runtime-session-surface.ts";
-import type { SandboxProvider } from "../sandbox.ts";
+import type { SandboxProvider } from "../policy/sandbox.ts";
 import type { SessionEntry, SessionManager } from "./manager.ts";
 import type { SettingsManager } from "../settings-manager.ts";
-import type { TaskCredentialProviderAvailability } from "../task-credential-provider.ts";
+import type { TaskCredentialProviderAvailability } from "../policy/task-credential-provider.ts";
 
 /** Parsed skill block from a user message. */
 export interface ParsedSkillBlock {

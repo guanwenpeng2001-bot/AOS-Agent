@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setKeybindings, type TUI } from "@aos-agent/tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { AuthStorage } from "../../../src/core/auth-storage.ts";
+import { AuthStorage } from "../../../src/core/policy/auth-storage.ts";
 import { KeybindingsManager } from "../../../src/core/keybindings.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
 import { ModelSelectorComponent } from "../../../src/modes/interactive/components/model-selector.ts";

@@ -26,7 +26,7 @@ import {
 	type CanonicalExternalConnectorMapping,
 	isExternalConnectorMappingIdentifier,
 } from "../session-mapping.ts";
-import { assertPathInsideWorkspace, type HostFilesystemRoots, resolveHostPathForPolicy } from "../../policy-filesystem.ts";
+import { assertPathInsideWorkspace, type HostFilesystemRoots, resolveHostPathForPolicy } from "../../policy/filesystem.ts";
 import type {
 	ExternalConnectorDriverEvent,
 	ExternalConnectorDriverHandle,

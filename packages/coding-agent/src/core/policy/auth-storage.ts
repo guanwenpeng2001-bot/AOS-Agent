@@ -5,14 +5,14 @@
 
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@aos-agent/ai";
 import { join } from "path";
-import { getAgentDir } from "../config.ts";
-import { raceWithAbortSignal } from "../utils/abort.ts";
-import { getFileRevision, normalizePath } from "../utils/paths.ts";
+import { getAgentDir } from "../../config.ts";
+import { raceWithAbortSignal } from "../../utils/abort.ts";
+import { getFileRevision, normalizePath } from "../../utils/paths.ts";
 import {
 	LockedAtomicFileStorage,
 	readControlPlaneState,
-} from "./control-plane-atomic-storage.ts";
-import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
+} from "../control-plane-atomic-storage.ts";
+import { isCommandConfigValue, resolveConfigValue } from "../resolve-config-value.ts";
 
 type AuthStorageData = Record<string, Credential>;
 

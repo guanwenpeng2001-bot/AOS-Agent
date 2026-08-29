@@ -9,7 +9,7 @@ import {
 	type TaskCredentialDeliveryStatus,
 	type TaskCredentialScope,
 	type TaskExecutionBinding,
-} from "../src/core/task-credential-lease.ts";
+} from "../src/core/policy/task-credential-lease.ts";
 import {
 	createTaskCredentialNullTarget,
 	createTaskCredentialTestProvider,
@@ -34,7 +34,7 @@ import {
 	type TaskCredentialTargetCapabilitiesRequest,
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
-} from "../src/core/task-credential-provider.ts";
+} from "../src/core/policy/task-credential-provider.ts";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const SENTINEL = "sentinel-secret-42";

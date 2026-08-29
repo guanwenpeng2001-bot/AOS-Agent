@@ -10,7 +10,7 @@ import {
 	type Provider,
 } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 

@@ -9,7 +9,7 @@ import {
 import * as core from "../src/core/index.ts";
 import { classifyFallbackEligibility } from "../src/core/model-broker.ts";
 import { createOperationBoundary } from "../src/core/operation-boundary.ts";
-import { type SandboxHandle, type SandboxProvider, SandboxSession } from "../src/core/sandbox.ts";
+import { type SandboxHandle, type SandboxProvider, SandboxSession } from "../src/core/policy/sandbox.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import { createSessionManagerStorage } from "../src/core/session/manager-storage.ts";
 

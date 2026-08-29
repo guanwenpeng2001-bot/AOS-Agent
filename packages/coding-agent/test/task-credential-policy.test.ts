@@ -11,14 +11,14 @@ import {
 	type PolicyDecision,
 	type TaskCredentialPreflightInput,
 	type TaskCredentialPreflightResult,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 import {
 	TaskCredentialError,
 	calculateScopeDigest,
 	type TaskCredentialErrorCode,
 	type TaskCredentialScope,
-} from "../src/core/task-credential-lease.ts";
-import type { TaskCredentialTargetCapabilities } from "../src/core/task-credential-provider.ts";
+} from "../src/core/policy/task-credential-lease.ts";
+import type { TaskCredentialTargetCapabilities } from "../src/core/policy/task-credential-provider.ts";
 
 const legacy: ExecutionPolicyProfile = {
 	id: POLICY_DEFAULT_PROFILE,

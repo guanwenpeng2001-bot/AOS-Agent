@@ -104,7 +104,7 @@ import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
-import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
+import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/policy/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/session/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";

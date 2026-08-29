@@ -10,7 +10,7 @@ import { Agent } from "@aos-agent/agent-core";
 import { getModel, streamSimple } from "@aos-agent/ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/session/agent-session.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import {
 	createExtensionRuntime,
 	type Extension,

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAgentCanonicalSession } from "../src/core/session/facade.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { packagedExternalAgentDriverProcessModulePath } from "../src/core/connector/packaged-driver.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,

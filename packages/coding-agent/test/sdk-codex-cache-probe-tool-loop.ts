@@ -25,7 +25,7 @@ import {
 	getOpenAICodexWebSocketDebugStats,
 	streamSimple as streamSimpleOpenAICodexResponses,
 } from "../../ai/src/api/openai-codex-responses.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";

@@ -23,9 +23,9 @@ import {
 	createAgentSessionServices,
 	type AgentSessionServices,
 } from "../src/core/session/services.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { createDefaultMCPAuthManagerOptions } from "../src/core/mcp-auth-manager.ts";
-import { MCPAuthStorage } from "../src/core/mcp-auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
+import { createDefaultMCPAuthManagerOptions } from "../src/core/policy/mcp-auth-manager.ts";
+import { MCPAuthStorage } from "../src/core/policy/mcp-auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 

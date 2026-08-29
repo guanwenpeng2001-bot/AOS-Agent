@@ -7,7 +7,7 @@ import {
 	type ApprovalPolicy,
 	type ExecutionPolicyProfile,
 	resolveExecutionPolicy,
-} from "../src/core/execution-policy.ts";
+} from "../src/core/policy/execution.ts";
 
 const legacy: ExecutionPolicyProfile = {
 	id: POLICY_DEFAULT_PROFILE,

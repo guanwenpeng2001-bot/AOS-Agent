@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createConnectorCapabilitySnapshot, Result } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import type { ExternalConnectorDurableStore } from "../src/core/connector/operation.ts";
 import { createExternalConnectorRegistry } from "../src/core/connector/registry.ts";
 import { createProductionExternalAgentConnector } from "../src/core/connector/production.ts";

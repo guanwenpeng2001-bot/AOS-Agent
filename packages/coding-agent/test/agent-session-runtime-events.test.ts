@@ -14,7 +14,7 @@ import {
 	createAgentSessionServices,
 } from "../src/core/session/runtime.ts";
 import type { AgentSession, ExtensionBindings } from "../src/core/session/agent-session.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { CurrentSessionScope } from "../src/core/session/current-scope.ts";
 import { createExternalConnectorRegistry } from "../src/core/connector/registry.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";

@@ -13,7 +13,7 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
 import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/mcp-types.ts";
-import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/mcp-auth.ts";
+import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/policy/mcp-auth.ts";
 import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-broker.ts";
 import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/session/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";

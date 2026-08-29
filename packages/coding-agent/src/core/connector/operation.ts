@@ -43,7 +43,7 @@ import {
 	isTaskCredentialDeliveryReceipt,
 	serializeTaskCredentialDeliveryReceipt,
 	type TaskCredentialDeliveryReceipt,
-} from "../task-credential-lease.ts";
+} from "../policy/task-credential-lease.ts";
 import {
 	validateOperationWorkerLeaseProjection,
 	type SafeLeaseProjection,

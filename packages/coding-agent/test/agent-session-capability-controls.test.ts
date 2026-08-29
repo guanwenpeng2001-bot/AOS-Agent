@@ -15,12 +15,12 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type JSONRPCMessage, typ
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/session/agent-session.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import {
 	CapabilityRegistry,
 	type CapabilityCatalog,
 	type CapabilityCatalogInput,
-} from "../src/core/capability-registry.ts";
+} from "../src/core/policy/capability-registry.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";

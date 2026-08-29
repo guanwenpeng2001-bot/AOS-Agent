@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { type CredentialStore, createModels, type Provider } from "@aos-agent/ai";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { AuthStorage, FileAuthStorageBackend } from "../src/core/auth-storage.ts";
+import { AuthStorage, FileAuthStorageBackend } from "../src/core/policy/auth-storage.ts";
 
 describe("AuthStorage", () => {
 	const tempDir = join(tmpdir(), `aos-test-auth-storage-${Date.now()}-${Math.random().toString(36).slice(2)}`);

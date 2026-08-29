@@ -8,12 +8,12 @@ import {
 	type ExecutionPolicyProfile,
 	type PolicyErrorCode,
 	type PolicyProfileNarrowing,
-} from "./execution-policy.ts";
+} from "./execution.ts";
 import {
 	preserveManagedProtectedPathRules,
 	type ProtectedPathPolicy,
 	type ProtectedPathRule,
-} from "./protected-path-policy.ts";
+} from "./protected-path.ts";
 
 /** The version of the JSON settings shape owned by the policy settings layer. */
 export const EXECUTION_POLICY_SETTINGS_VERSION = 1 as const;
