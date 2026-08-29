@@ -20,6 +20,10 @@
           "path": "providers.md"
         },
         {
+          "title": "llama.cpp / Local Models",
+          "path": "llama-cpp.md"
+        },
+        {
           "title": "Security",
           "path": "security.md"
         },
@@ -30,6 +34,10 @@
         {
           "title": "Settings",
           "path": "settings.md"
+        },
+        {
+          "title": "Environment Variables",
+          "path": "environment-variables.md"
         },
         {
           "title": "Keybindings",
@@ -90,20 +98,28 @@
       "title": "Reference",
       "items": [
         {
-          "title": "Architecture Atlas: Foundation",
-          "path": "architecture-atlas-foundation.md"
-        },
-        {
-          "title": "Foundation Final Audit",
-          "path": "foundation-final-audit.md"
-        },
-        {
           "title": "Native Subagent Contract",
           "path": "subagent-contract.md"
         },
         {
           "title": "Scheduler Contract",
           "path": "scheduler-contract.md"
+        },
+        {
+          "title": "Sandbox Operation Worker Contract",
+          "path": "worker-contract.md"
+        },
+        {
+          "title": "Execution Audit / Replay Contract",
+          "path": "execution-audit-contract.md"
+        },
+        {
+          "title": "Execution Policy / Sandbox Contract",
+          "path": "execution-policy-contract.md"
+        },
+        {
+          "title": "Remote-Neutral Operation Contract",
+          "path": "remote-operation-contract.md"
         },
         {
           "title": "Session Format",

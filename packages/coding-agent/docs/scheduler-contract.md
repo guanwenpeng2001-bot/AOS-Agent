@@ -1,6 +1,10 @@
 # Scheduler contract
 
-The Line 12B Scheduler is a trusted Host composition over the existing Foundation Task, Binding, Dispatch, Attempt, Result, Workflow, Ask, Session, and Run contracts. It is disabled unless a Host calls `createAgentSessionWithTrustedScheduler` and supplies `enabled: true`; settings, prompts, extensions, models, and RPC callers cannot enable it.
+The Scheduler is a trusted Host composition over the existing Foundation Task,
+Binding, Dispatch, Attempt, Result, Workflow, Ask, Session, and Run contracts.
+It is disabled unless a Host calls `createAgentSessionWithTrustedScheduler` and
+supplies `enabled: true`; settings, prompts, extensions, models, and RPC callers
+cannot enable it.
 
 ## Composition and authority
 
@@ -20,4 +24,7 @@ Automation Host advertises `schedulerCommands: ["scheduler.status"]` only when t
 
 ## Capability closure
 
-Line 12B implements capabilities 119–126, 130, and 131. It consumes sealed Foundation capabilities 3, 5, 6, 10, 16, 26, 47, 51, 53, 55–58, 61, 98, and 127–129 by direct manifest reference. Native Subagent capabilities remain owned by 12A; external connectors by 13; platform hardening by 14; and product UI by 15.
+The Scheduler implements capabilities 119–126, 130, and 131. It consumes
+Foundation capabilities 3, 5, 6, 10, 16, 26, 47, 51, 53, 55–58, 61, 98, and
+127–129 by direct manifest reference. Native subagent capabilities, external
+connectors, platform hardening, and product UI remain separate contract areas.
