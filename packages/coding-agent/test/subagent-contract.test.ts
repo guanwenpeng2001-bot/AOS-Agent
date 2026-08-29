@@ -3,21 +3,21 @@ import * as subagentContract from "../src/core/subagent.ts";
 import {
 	CHILD_LIFECYCLE_STATUSES,
 	SUBAGENT_FORBIDDEN_KEYS,
-	childLifecycleTransitionAllowedV1,
-	createChildAgentRecordV1,
-	parseChildAgentRecordV1,
-	serializeChildAgentRecordV1,
-	transitionChildAgentRecordV1,
-	validateChildAgentRecordV1,
-	validateChildAgentTransitionV1,
-	type ChildAgentRecordV1,
-	type ChildAgentTransitionV1,
-	type ChildLifecycleStatusV1,
-	type CreateChildAgentRecordInputV1,
+	childLifecycleTransitionAllowed,
+	createChildAgentRecord,
+	parseChildAgentRecord,
+	serializeChildAgentRecord,
+	transitionChildAgentRecord,
+	validateChildAgentRecord,
+	validateChildAgentTransition,
+	type ChildAgentRecord,
+	type ChildAgentTransition,
+	type ChildLifecycleStatus,
+	type CreateChildAgentRecordInput,
 } from "../src/core/subagent.ts";
 
 const BASE_TIME_MS = Date.parse("2026-08-22T00:00:00.000Z");
-const creation: CreateChildAgentRecordInputV1 = {
+const creation: CreateChildAgentRecordInput = {
 	schemaVersion: 1,
 	childAgentInstanceId: "child-1",
 	parentAgentInstanceId: "parent-1",
@@ -39,18 +39,18 @@ function at(index: number): string {
 	return new Date(BASE_TIME_MS + index * 1_000).toISOString();
 }
 
-function mustCreate(): ChildAgentRecordV1 {
-	const result = createChildAgentRecordV1(creation);
+function mustCreate(): ChildAgentRecord {
+	const result = createChildAgentRecord(creation);
 	if (!result.ok) throw result.error;
 	return result.value;
 }
 
 function transition(
-	record: ChildAgentRecordV1,
-	to: ChildLifecycleStatusV1,
+	record: ChildAgentRecord,
+	to: ChildLifecycleStatus,
 	index: number,
-	overrides: Partial<ChildAgentTransitionV1> = {},
-): ChildAgentTransitionV1 {
+	overrides: Partial<ChildAgentTransition> = {},
+): ChildAgentTransition {
 	return {
 		schemaVersion: 1,
 		childAgentInstanceId: record.childAgentInstanceId,
@@ -65,16 +65,16 @@ function transition(
 }
 
 function mustTransition(
-	record: ChildAgentRecordV1,
-	to: ChildLifecycleStatusV1,
+	record: ChildAgentRecord,
+	to: ChildLifecycleStatus,
 	index: number,
-): ChildAgentRecordV1 {
-	const result = transitionChildAgentRecordV1(record, transition(record, to, index));
+): ChildAgentRecord {
+	const result = transitionChildAgentRecord(record, transition(record, to, index));
 	if (!result.ok) throw result.error;
 	return result.value.record;
 }
 
-const PATHS: Readonly<Record<ChildLifecycleStatusV1, readonly ChildLifecycleStatusV1[]>> = {
+const PATHS: Readonly<Record<ChildLifecycleStatus, readonly ChildLifecycleStatus[]>> = {
 	spawning: [],
 	running: ["running"],
 	awaiting_input: ["running", "awaiting_input"],
@@ -87,7 +87,7 @@ const PATHS: Readonly<Record<ChildLifecycleStatusV1, readonly ChildLifecycleStat
 	closed: ["running", "succeeded", "closed"],
 };
 
-function recordAt(status: ChildLifecycleStatusV1): ChildAgentRecordV1 {
+function recordAt(status: ChildLifecycleStatus): ChildAgentRecord {
 	let record = mustCreate();
 	let index = 1;
 	for (const next of PATHS[status]) record = mustTransition(record, next, index++);
@@ -127,9 +127,9 @@ describe("line 12A Child Agent core contract", () => {
 		for (const from of CHILD_LIFECYCLE_STATUSES) {
 			for (const to of CHILD_LIFECYCLE_STATUSES) {
 				const record = recordAt(from);
-				const result = transitionChildAgentRecordV1(record, transition(record, to, 20));
+				const result = transitionChildAgentRecord(record, transition(record, to, 20));
 				const expected = LEGAL_EDGES.has(`${from}->${to}`);
-				expect(childLifecycleTransitionAllowedV1(from, to), `${from}->${to}`).toBe(expected);
+				expect(childLifecycleTransitionAllowed(from, to), `${from}->${to}`).toBe(expected);
 				const closeRetry = from === "closed" && to === "closed";
 				expect(result.ok, `${from}->${to}`).toBe(expected || closeRetry);
 				if (result.ok && expected) {
@@ -147,35 +147,35 @@ describe("line 12A Child Agent core contract", () => {
 	it("rejects revision gaps, identity drift, and repeated execution terminals", () => {
 		const running = recordAt("running");
 		expect(
-			transitionChildAgentRecordV1(running, transition(running, "succeeded", 5, { expectedRevision: 99 })),
+			transitionChildAgentRecord(running, transition(running, "succeeded", 5, { expectedRevision: 99 })),
 		).toMatchObject({ ok: false, error: { code: "subagent_conflict" } });
 		for (const drift of [
 			{ childAgentInstanceId: "child-2" },
 			{ parentAgentInstanceId: "parent-2" },
 			{ spawnId: "spawn-2" },
-		] satisfies ReadonlyArray<Partial<ChildAgentTransitionV1>>) {
+		] satisfies ReadonlyArray<Partial<ChildAgentTransition>>) {
 			expect(
-				transitionChildAgentRecordV1(running, transition(running, "succeeded", 5, drift)),
+				transitionChildAgentRecord(running, transition(running, "succeeded", 5, drift)),
 			).toMatchObject({ ok: false, error: { code: "subagent_conflict" } });
 		}
 		const succeeded = mustTransition(running, "succeeded", 5);
 		expect(
-			transitionChildAgentRecordV1(succeeded, transition(succeeded, "failed", 6)),
+			transitionChildAgentRecord(succeeded, transition(succeeded, "failed", 6)),
 		).toMatchObject({ ok: false, error: { code: "subagent_conflict" } });
 	});
 
 	it("makes close idempotent without rewriting the execution terminal", () => {
 		const succeeded = recordAt("succeeded");
 		const close = transition(succeeded, "closed", 5);
-		const first = transitionChildAgentRecordV1(succeeded, close);
+		const first = transitionChildAgentRecord(succeeded, close);
 		expect(first).toMatchObject({ ok: true, value: { idempotent: false, record: { status: "closed" } } });
 		if (!first.ok) return;
-		expect(transitionChildAgentRecordV1(first.value.record, close)).toMatchObject({
+		expect(transitionChildAgentRecord(first.value.record, close)).toMatchObject({
 			ok: true,
 			value: { idempotent: true, record: first.value.record },
 		});
 		expect(
-			transitionChildAgentRecordV1(first.value.record, {
+			transitionChildAgentRecord(first.value.record, {
 				...close,
 				attemptReceiptId: "receipt-other",
 			}),
@@ -187,7 +187,7 @@ describe("line 12A Child Agent core contract", () => {
 		for (const status of ["failed", "lost"] as const) {
 			const record = recordAt(status);
 			expect(
-				transitionChildAgentRecordV1(
+				transitionChildAgentRecord(
 					record,
 					transition(record, "closed", 5, {
 						attemptReceiptId: `receipt-close-${status}`,
@@ -204,7 +204,7 @@ describe("line 12A Child Agent core contract", () => {
 			attemptReceiptId: "receipt-failed",
 			taskResultId: "result-failed",
 		});
-		const failed = transitionChildAgentRecordV1(running, failure);
+		const failed = transitionChildAgentRecord(running, failure);
 		expect(failed).toMatchObject({
 			ok: true,
 			value: {
@@ -221,10 +221,10 @@ describe("line 12A Child Agent core contract", () => {
 			attemptReceiptId: "receipt-failed",
 			taskResultId: "result-failed",
 		});
-		const closed = transitionChildAgentRecordV1(failed.value.record, close);
+		const closed = transitionChildAgentRecord(failed.value.record, close);
 		expect(closed).toMatchObject({ ok: true, value: { idempotent: false } });
 		if (!closed.ok) return;
-		expect(transitionChildAgentRecordV1(closed.value.record, close)).toMatchObject({
+		expect(transitionChildAgentRecord(closed.value.record, close)).toMatchObject({
 			ok: true,
 			value: { idempotent: true, record: closed.value.record },
 		});
@@ -234,14 +234,14 @@ describe("line 12A Child Agent core contract", () => {
 		for (const status of ["succeeded", "cancelled"] as const) {
 			const beforeTerminal = recordAt(status === "succeeded" ? "running" : "cancelling");
 			const withoutReceipt = transition(beforeTerminal, status, 5, { attemptReceiptId: undefined });
-			expect(validateChildAgentTransitionV1(withoutReceipt), status).toBe(false);
-			expect(transitionChildAgentRecordV1(beforeTerminal, withoutReceipt), status).toMatchObject({
+			expect(validateChildAgentTransition(withoutReceipt), status).toBe(false);
+			expect(transitionChildAgentRecord(beforeTerminal, withoutReceipt), status).toMatchObject({
 				ok: false,
 				error: { code: "subagent_conflict" },
 			});
 
 			const terminal = recordAt(status);
-			expect(validateChildAgentRecordV1({ ...terminal, attemptReceiptId: undefined }), status).toBe(false);
+			expect(validateChildAgentRecord({ ...terminal, attemptReceiptId: undefined }), status).toBe(false);
 		}
 	});
 
@@ -250,19 +250,19 @@ describe("line 12A Child Agent core contract", () => {
 		for (const references of [
 			{ attemptReceiptId: "receipt-lost" },
 			{ attemptReceiptId: "receipt-lost", taskResultId: "result-lost" },
-		] satisfies ReadonlyArray<Partial<ChildAgentTransitionV1>>) {
+		] satisfies ReadonlyArray<Partial<ChildAgentTransition>>) {
 			const lost = transition(spawning, "lost", 1, references);
-			expect(validateChildAgentTransitionV1(lost)).toBe(false);
-			expect(transitionChildAgentRecordV1(spawning, lost)).toMatchObject({
+			expect(validateChildAgentTransition(lost)).toBe(false);
+			expect(transitionChildAgentRecord(spawning, lost)).toMatchObject({
 				ok: false,
 				error: { code: "subagent_conflict" },
 			});
 		}
 
 		const lost = recordAt("lost");
-		expect(validateChildAgentRecordV1({ ...lost, attemptReceiptId: "receipt-lost" })).toBe(false);
+		expect(validateChildAgentRecord({ ...lost, attemptReceiptId: "receipt-lost" })).toBe(false);
 		expect(
-			validateChildAgentRecordV1({
+			validateChildAgentRecord({
 				...lost,
 				attemptReceiptId: "receipt-lost",
 				taskResultId: "result-lost",
@@ -272,13 +272,13 @@ describe("line 12A Child Agent core contract", () => {
 
 	it("validates exact record and transition shapes", () => {
 		const record = mustCreate();
-		expect(validateChildAgentRecordV1(record)).toBe(true);
-		expect(validateChildAgentRecordV1({ ...record, unexpected: true })).toBe(false);
-		expect(validateChildAgentRecordV1({ ...record, ancestorIds: ["parent-2"] })).toBe(false);
-		expect(validateChildAgentRecordV1({ ...record, bindingEpochIds: [] })).toBe(false);
-		expect(validateChildAgentTransitionV1(transition(record, "running", 1))).toBe(true);
-		expect(validateChildAgentTransitionV1({ ...transition(record, "running", 1), unexpected: true })).toBe(false);
-		expect(createChildAgentRecordV1({ ...creation, depth: 3 })).toMatchObject({
+		expect(validateChildAgentRecord(record)).toBe(true);
+		expect(validateChildAgentRecord({ ...record, unexpected: true })).toBe(false);
+		expect(validateChildAgentRecord({ ...record, ancestorIds: ["parent-2"] })).toBe(false);
+		expect(validateChildAgentRecord({ ...record, bindingEpochIds: [] })).toBe(false);
+		expect(validateChildAgentTransition(transition(record, "running", 1))).toBe(true);
+		expect(validateChildAgentTransition({ ...transition(record, "running", 1), unexpected: true })).toBe(false);
+		expect(createChildAgentRecord({ ...creation, depth: 3 })).toMatchObject({
 			ok: false,
 			error: { code: "subagent_spawn_invalid" },
 		});
@@ -286,16 +286,16 @@ describe("line 12A Child Agent core contract", () => {
 
 	it("serializes canonically and rejects forbidden production material", () => {
 		const closed = recordAt("closed");
-		const serialized = serializeChildAgentRecordV1(closed);
-		expect(parseChildAgentRecordV1(serialized)).toMatchObject({ ok: true, value: closed });
+		const serialized = serializeChildAgentRecord(closed);
+		expect(parseChildAgentRecord(serialized)).toMatchObject({ ok: true, value: closed });
 		expect(serialized).toBe(JSON.stringify(JSON.parse(serialized)));
 		expect(Object.keys(JSON.parse(serialized) as object)).toEqual(
 			[...Object.keys(JSON.parse(serialized) as object)].sort(),
 		);
 		for (const key of SUBAGENT_FORBIDDEN_KEYS) {
 			const unsafe = { ...closed, [key]: "must-not-persist" };
-			expect(validateChildAgentRecordV1(unsafe), key).toBe(false);
-			expect(() => serializeChildAgentRecordV1(unsafe), key).toThrowError(
+			expect(validateChildAgentRecord(unsafe), key).toBe(false);
+			expect(() => serializeChildAgentRecord(unsafe), key).toThrowError(
 				expect.objectContaining({ code: "subagent_spawn_invalid" }),
 			);
 		}

@@ -61,7 +61,7 @@ export interface OperationExecutionInput {
 	readonly signal?: AbortSignal;
 }
 
-export interface ChildSpawnExecutionInputV1 {
+export interface ChildSpawnExecutionInput {
 	readonly request: ChildSpawnRequest;
 	readonly provider: ChildAgentProvider;
 	readonly correlation: ExecutionCorrelation;
@@ -258,7 +258,7 @@ export async function executeOperation(input: OperationExecutionInput): Promise<
 }
 
 /** Validates the Agent-only spawn result; an Operation Worker has no path to this function. */
-export async function executeAgentSpawnV1(input: ChildSpawnExecutionInputV1): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
+export async function executeAgentSpawn(input: ChildSpawnExecutionInput): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 	if (input.provider.providerClass !== "agent") return Result.err(new FoundationError("agent_instance_not_agent_provider", "Agent spawn requires an Agent provider", { details: { providerId: input.provider.providerId } }));
 	const checkedRequest = validateChildSpawnRequest(input.request);
 	if (!checkedRequest.ok) return checkedRequest;

@@ -4,7 +4,7 @@ import { DurableLedgerError } from "../session/durable/errors.ts";
 import { FoundationError, toFoundationError, type FoundationErrorCode, type PublicExecutionError } from "./errors.ts";
 import { canonicalFoundationJson, extendFoundationLineage, fingerprintFoundationValue, type ExecutionCorrelation, type FoundationLineage } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
-import { executeDispatch, executeOperation, executeAgentSpawnV1, startDispatchAttempt, switchAgentMode, type DispatchAttemptStartResult, type DispatchExecutionInput, type DispatchExecutionResult, type OperationExecutionInput, type ChildSpawnExecutionInputV1, type ModeSwitchExecutionInput } from "./execution.ts";
+import { executeDispatch, executeOperation, executeAgentSpawn, startDispatchAttempt, switchAgentMode, type DispatchAttemptStartResult, type DispatchExecutionInput, type DispatchExecutionResult, type OperationExecutionInput, type ChildSpawnExecutionInput, type ModeSwitchExecutionInput } from "./execution.ts";
 import { validateImmutableAgentBinding } from "./binding.ts";
 import { validateAttemptReceiptForProvider, validateWorkerReceiptForProvider } from "./conformance.ts";
 import {
@@ -551,7 +551,7 @@ export class LayeredResultSettlement {
 		}
 	}
 
-	async executeAgentSpawn(input: ChildSpawnExecutionInputV1): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
+	async executeAgentSpawn(input: ChildSpawnExecutionInput): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 		const checkedRequest = validateChildSpawnRequest(input.request);
 		if (!checkedRequest.ok) return checkedRequest;
 		if (input.provider.providerClass !== "agent") return Result.err(new FoundationError("agent_instance_not_agent_provider", "Agent spawn requires an Agent provider", { details: { providerId: input.provider.providerId } }));
@@ -610,7 +610,7 @@ export class LayeredResultSettlement {
 					if (recovered.value === undefined) return Result.err(new FoundationError("agent_spawn_recovery_required", "Provider cannot recover the durable spawn intent without spawning again", { details: { spawnId: canonicalRequest.spawnId } }));
 					spawned = Result.ok(recovered.value);
 				} else {
-					spawned = await executeAgentSpawnV1({ ...input, request: canonicalRequest });
+					spawned = await executeAgentSpawn({ ...input, request: canonicalRequest });
 				}
 			}
 			if (!spawned.ok) return spawned;

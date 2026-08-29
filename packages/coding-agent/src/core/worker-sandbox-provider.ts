@@ -17,35 +17,35 @@ import {
 	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import {
-	WorkerSupervisorV1,
-	type WorkerSupervisorConfigV1,
+	OperationWorkerSupervisor,
+	type WorkerSupervisorConfig,
 } from "./worker-supervisor.ts";
 import {
-	validateSafeLeaseProjectionV1,
-	validateSafeLeaseReferenceV1,
-	type SafeLeaseProjectionV1,
-	type SafeLeaseReferenceV1,
-	type WorkerCancelReasonV1,
+	validateOperationWorkerLeaseProjection,
+	validateOperationWorkerLeaseReference,
+	type SafeLeaseProjection,
+	type SafeLeaseReference,
+	type WorkerCancelReason,
 } from "./worker-protocol.ts";
 import {
-	parseWorkerRecordV1,
-	serializeWorkerRecordV1,
-	validateWorkerBindingV1,
-	type WorkerBindingV1,
-	type WorkerRecordV1,
-	type WorkerTransitionReceiptV1,
+	parseWorkerRecord,
+	serializeWorkerRecord,
+	validateWorkerBinding,
+	type WorkerBinding,
+	type WorkerRecord,
+	type WorkerTransitionReceipt,
 } from "./worker.ts";
 
-export interface WorkerSandboxProfileV1 {
+export interface WorkerSandboxProfile {
 	readonly profileId: string;
 	readonly profileRevision: number;
 	readonly trusted: true;
-	readonly supervisor: WorkerSupervisorConfigV1;
+	readonly supervisor: WorkerSupervisorConfig;
 }
 
 /** Read-only Host authority facts resolved before a Supervisor may be created. */
-export interface WorkerSandboxPreflightFactsV1 {
-	readonly binding: WorkerBindingV1;
+export interface WorkerSandboxPreflightFacts {
+	readonly binding: WorkerBinding;
 	readonly runAccepted: boolean;
 	readonly sessionOwned: boolean;
 	readonly laneOwned: boolean;
@@ -55,43 +55,43 @@ export interface WorkerSandboxPreflightFactsV1 {
 	readonly credentialLeaseActive: boolean;
 }
 
-export interface WorkerSandboxProviderOptionsV1 {
+export interface WorkerSandboxProviderOptions {
 	readonly providerId: string;
 	/** Omission is the default inline/Host path and creates no Supervisor or child process. */
-	readonly profile?: WorkerSandboxProfileV1;
+	readonly profile?: WorkerSandboxProfile;
 	readonly capabilities?: readonly FoundationProviderCapability[];
 	/** This callback must only read Host authority state. */
 	readonly resolvePreflight: (
 		request: SandboxOperationRequest,
 		options: FoundationProviderExecutionOptions,
-	) => WorkerSandboxPreflightFactsV1 | Promise<WorkerSandboxPreflightFactsV1>;
-	readonly createSupervisor?: (config: WorkerSupervisorConfigV1) => WorkerSupervisorV1;
+	) => WorkerSandboxPreflightFacts | Promise<WorkerSandboxPreflightFacts>;
+	readonly createSupervisor?: (config: WorkerSupervisorConfig) => OperationWorkerSupervisor;
 	readonly requireRegisteredPayload?: boolean;
-	readonly onWorkerRecord?: (record: WorkerRecordV1) => void;
+	readonly onWorkerRecord?: (record: WorkerRecord) => void;
 	readonly maxRetainedRecords?: number;
 }
 
 /** Material-free synchronous target used by TaskCredentialService. */
-export interface WorkerCredentialQueueTargetV1 {
-	project(lease: SafeLeaseProjectionV1): { readonly ok: boolean };
-	renew(lease: SafeLeaseProjectionV1): { readonly ok: boolean };
-	revoke(lease: SafeLeaseReferenceV1): { readonly ok: boolean };
+export interface WorkerCredentialQueueTarget {
+	project(lease: SafeLeaseProjection): { readonly ok: boolean };
+	renew(lease: SafeLeaseProjection): { readonly ok: boolean };
+	revoke(lease: SafeLeaseReference): { readonly ok: boolean };
 }
 
-export type WorkerCredentialDetachReasonV1 = WorkerInvalidationReasonV1 | "lost" | "reclaim";
+export type WorkerCredentialDetachReason = WorkerInvalidationReasonV1 | "lost" | "reclaim";
 
-export interface WorkerCredentialDetachV1 {
+export interface WorkerCredentialDetach {
 	readonly workerId: string;
 	readonly runId?: string;
-	readonly reason: WorkerCredentialDetachReasonV1;
+	readonly reason: WorkerCredentialDetachReason;
 }
 
-export type WorkerSandboxFactV1 =
+export type WorkerSandboxFact =
 	| {
 		readonly type: "record";
-		readonly record: WorkerRecordV1;
-		readonly transitions: readonly WorkerTransitionReceiptV1[];
-		readonly transitionRecords?: readonly WorkerRecordV1[];
+		readonly record: WorkerRecord;
+		readonly transitions: readonly WorkerTransitionReceipt[];
+		readonly transitionRecords?: readonly WorkerRecord[];
 	}
 	| {
 		readonly type: "operation";
@@ -107,19 +107,19 @@ export type WorkerSandboxFactV1 =
 
 interface ActiveWorkerOperationV1 {
 	readonly request: SandboxOperationRequest;
-	readonly supervisor: WorkerSupervisorV1;
+	readonly supervisor: OperationWorkerSupervisor;
 	readonly runId?: string;
 }
 
 type WorkerCredentialCommandV1 =
-	| { readonly type: "project" | "renew"; readonly lease: SafeLeaseProjectionV1 }
-	| { readonly type: "revoke"; readonly lease: SafeLeaseReferenceV1 };
+	| { readonly type: "project" | "renew"; readonly lease: SafeLeaseProjection }
+	| { readonly type: "revoke"; readonly lease: SafeLeaseReference };
 
 interface WorkerCredentialQueueV1 {
 	readonly workerId: string;
-	readonly target: WorkerCredentialQueueTargetV1;
+	readonly target: WorkerCredentialQueueTarget;
 	readonly commands: WorkerCredentialCommandV1[];
-	supervisor?: WorkerSupervisorV1;
+	supervisor?: OperationWorkerSupervisor;
 	drain?: Promise<ResultValue<void, FoundationError>>;
 	liveDrain?: Promise<void>;
 	failure?: Promise<FoundationError | undefined>;
@@ -129,35 +129,35 @@ interface WorkerCredentialQueueV1 {
 }
 
 interface StagedWorkerFactsV1 {
-	readonly records: Map<string, WorkerRecordV1>;
+	readonly records: Map<string, WorkerRecord>;
 	readonly receipts: Map<string, WorkerReceipt>;
 	readonly completedOperationIds: Set<string>;
 	readonly consumedWorkerIds: Set<string>;
 }
 
-type WorkerInvalidationReasonV1 = WorkerCancelReasonV1 | "terminal";
+type WorkerInvalidationReasonV1 = WorkerCancelReason | "terminal";
 
-class WorkerCredentialTargetRegistryV1 implements ReadonlyMap<string, WorkerCredentialQueueTargetV1> {
-	private readonly targets: Map<string, WorkerCredentialQueueTargetV1>;
-	private readonly resolveTarget: (workerId: string) => WorkerCredentialQueueTargetV1 | undefined;
+class WorkerCredentialTargetRegistryV1 implements ReadonlyMap<string, WorkerCredentialQueueTarget> {
+	private readonly targets: Map<string, WorkerCredentialQueueTarget>;
+	private readonly resolveTarget: (workerId: string) => WorkerCredentialQueueTarget | undefined;
 
 	constructor(
-		targets: Map<string, WorkerCredentialQueueTargetV1>,
-		resolveTarget: (workerId: string) => WorkerCredentialQueueTargetV1 | undefined,
+		targets: Map<string, WorkerCredentialQueueTarget>,
+		resolveTarget: (workerId: string) => WorkerCredentialQueueTarget | undefined,
 	) {
 		this.targets = targets;
 		this.resolveTarget = resolveTarget;
 	}
 
 	get size(): number { return this.targets.size; }
-	get(workerId: string): WorkerCredentialQueueTargetV1 | undefined { return this.resolveTarget(workerId); }
+	get(workerId: string): WorkerCredentialQueueTarget | undefined { return this.resolveTarget(workerId); }
 	has(workerId: string): boolean { return this.targets.has(workerId); }
-	entries(): MapIterator<[string, WorkerCredentialQueueTargetV1]> { return this.targets.entries(); }
+	entries(): MapIterator<[string, WorkerCredentialQueueTarget]> { return this.targets.entries(); }
 	keys(): MapIterator<string> { return this.targets.keys(); }
-	values(): MapIterator<WorkerCredentialQueueTargetV1> { return this.targets.values(); }
-	[Symbol.iterator](): MapIterator<[string, WorkerCredentialQueueTargetV1]> { return this.targets[Symbol.iterator](); }
+	values(): MapIterator<WorkerCredentialQueueTarget> { return this.targets.values(); }
+	[Symbol.iterator](): MapIterator<[string, WorkerCredentialQueueTarget]> { return this.targets[Symbol.iterator](); }
 	forEach(
-		callbackfn: (value: WorkerCredentialQueueTargetV1, key: string, map: ReadonlyMap<string, WorkerCredentialQueueTargetV1>) => void,
+		callbackfn: (value: WorkerCredentialQueueTarget, key: string, map: ReadonlyMap<string, WorkerCredentialQueueTarget>) => void,
 		thisArg?: unknown,
 	): void {
 		for (const [key, value] of this.targets) callbackfn.call(thisArg, value, key, this);
@@ -175,8 +175,8 @@ interface WorkerOperationReservationV1 {
 	readonly resolveSettled: () => void;
 }
 
-export interface WorkerSandboxRecoveryV1 {
-	readonly records?: readonly WorkerRecordV1[];
+export interface WorkerSandboxRecovery {
+	readonly records?: readonly WorkerRecord[];
 	readonly receipts?: readonly WorkerReceipt[];
 	readonly operationIds?: readonly string[];
 	readonly workerIds?: readonly string[];
@@ -212,7 +212,7 @@ function snapshotFoundationJson(value: FoundationJsonValue): FoundationJsonValue
 	return freezeFoundationJson(JSON.parse(canonicalFoundationJson(value)) as FoundationJsonValue);
 }
 
-function snapshotProfile(profile: WorkerSandboxProfileV1 | undefined): WorkerSandboxProfileV1 | undefined {
+function snapshotProfile(profile: WorkerSandboxProfile | undefined): WorkerSandboxProfile | undefined {
 	if (profile === undefined) return undefined;
 	const supervisor = Object.freeze({
 		...profile.supervisor,
@@ -229,7 +229,7 @@ function snapshotProfile(profile: WorkerSandboxProfileV1 | undefined): WorkerSan
 	});
 }
 
-function sameWorkerIdentity(left: WorkerRecordV1, right: WorkerRecordV1): boolean {
+function sameWorkerIdentity(left: WorkerRecord, right: WorkerRecord): boolean {
 	return left.providerId === right.providerId &&
 		left.sessionId === right.sessionId &&
 		left.laneId === right.laneId &&
@@ -242,7 +242,7 @@ function sameWorkerIdentity(left: WorkerRecordV1, right: WorkerRecordV1): boolea
 
 function correlationMatchesBinding(
 	correlation: ExecutionCorrelation | undefined,
-	binding: WorkerBindingV1,
+	binding: WorkerBinding,
 	request: SandboxOperationRequest,
 	providerId: string,
 ): boolean {
@@ -262,7 +262,7 @@ function correlationMatchesBinding(
 		(correlation.agentInstanceId === undefined || correlation.agentInstanceId === request.agentInstanceId);
 }
 
-function requestMatchesBinding(request: SandboxOperationRequest, binding: WorkerBindingV1): boolean {
+function requestMatchesBinding(request: SandboxOperationRequest, binding: WorkerBinding): boolean {
 	return binding.providerId.length > 0 &&
 		(request.providerId === undefined || request.providerId === binding.providerId) &&
 		(request.bindingId === undefined || request.bindingId === binding.bindingId) &&
@@ -272,7 +272,7 @@ function requestMatchesBinding(request: SandboxOperationRequest, binding: Worker
 		(request.deadlineAt === undefined || binding.deadlineAt !== undefined && binding.deadlineAt <= request.deadlineAt);
 }
 
-export function createWorkerRequestFingerprintV1(request: SandboxOperationRequest): string {
+export function createWorkerRequestFingerprint(request: SandboxOperationRequest): string {
 	return `sha256:${createHash("sha256").update(canonicalFoundationJson(request)).digest("hex")}`;
 }
 
@@ -281,12 +281,12 @@ export function createWorkerRequestFingerprintV1(request: SandboxOperationReques
  * A profile must be explicitly configured; otherwise every start fails before
  * Supervisor construction and the existing inline/Host path remains inert.
  */
-export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
+export class WorkerSandboxProvider implements SandboxOperationProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerClass = "operation_worker" as const;
 	readonly providerId: string;
 
-	private readonly options: WorkerSandboxProviderOptionsV1;
+	private readonly options: WorkerSandboxProviderOptions;
 	private readonly declaredCapabilities: readonly FoundationProviderCapability[];
 	private readonly capabilityConfigurationValid: boolean;
 	private readonly maxRetainedRecords: number;
@@ -295,20 +295,20 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	private readonly completedOperationIds = new Set<string>();
 	private readonly consumedWorkerIds = new Set<string>();
 	private readonly operationPayloads = new Map<string, FoundationJsonValue>();
-	private readonly records = new Map<string, WorkerRecordV1>();
+	private readonly records = new Map<string, WorkerRecord>();
 	private readonly receipts = new Map<string, WorkerReceipt>();
 	private readonly credentialQueues = new Map<string, WorkerCredentialQueueV1>();
-	private readonly credentialTargets = new Map<string, WorkerCredentialQueueTargetV1>();
-	private readonly credentialTargetRegistry: ReadonlyMap<string, WorkerCredentialQueueTargetV1>;
-	private readonly factSubscribers = new Set<(fact: WorkerSandboxFactV1) => void>();
+	private readonly credentialTargets = new Map<string, WorkerCredentialQueueTarget>();
+	private readonly credentialTargetRegistry: ReadonlyMap<string, WorkerCredentialQueueTarget>;
+	private readonly factSubscribers = new Set<(fact: WorkerSandboxFact) => void>();
 	private durableFactOwner: string | undefined;
-	private durableFactSink: ((fact: WorkerSandboxFactV1) => void) | undefined;
+	private durableFactSink: ((fact: WorkerSandboxFact) => void) | undefined;
 	private credentialDetachOwner: string | undefined;
-	private credentialDetachSink: ((detach: WorkerCredentialDetachV1) => void) | undefined;
+	private credentialDetachSink: ((detach: WorkerCredentialDetach) => void) | undefined;
 	private disposed = false;
 	private disposeCompletion: Promise<void> | undefined;
 
-	constructor(options: WorkerSandboxProviderOptionsV1) {
+	constructor(options: WorkerSandboxProviderOptions) {
 		const profile = snapshotProfile(options.profile);
 		this.options = Object.freeze({ ...options, ...(profile === undefined ? { profile: undefined } : { profile }) });
 		this.providerId = options.providerId;
@@ -349,12 +349,12 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		this.operationPayloads.set(operationId, snapshotFoundationJson(payload));
 	}
 
-	getWorkerRecord(workerId: string): WorkerRecordV1 | undefined {
+	getWorkerRecord(workerId: string): WorkerRecord | undefined {
 		const record = this.records.get(workerId);
 		return record === undefined ? undefined : this.cloneRecord(record);
 	}
 
-	listWorkerRecords(): readonly WorkerRecordV1[] {
+	listWorkerRecords(): readonly WorkerRecord[] {
 		return [...this.records.values()].map((record) => this.cloneRecord(record));
 	}
 
@@ -367,13 +367,13 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return [...this.receipts.values()].map((receipt) => this.cloneReceipt(receipt));
 	}
 
-	subscribeFacts(subscriber: (fact: WorkerSandboxFactV1) => void): () => void {
+	subscribeFacts(subscriber: (fact: WorkerSandboxFact) => void): () => void {
 		this.factSubscribers.add(subscriber);
 		return () => this.factSubscribers.delete(subscriber);
 	}
 
 	/** Bind the single Host-owned durable writer. Its failures cross the operation boundary. */
-	bindDurableFactSink(ownerId: string, sink: (fact: WorkerSandboxFactV1) => void): () => void {
+	bindDurableFactSink(ownerId: string, sink: (fact: WorkerSandboxFact) => void): () => void {
 		if (this.disposed || ownerId.length === 0 || this.durableFactSink !== undefined) {
 			throw providerError("service_conflict", "Operation Worker durable fact owner is already bound");
 		}
@@ -391,7 +391,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	}
 
 	/** Bind the Host credential lifecycle owner for issuer-side detach revocation. */
-	bindCredentialDetachSink(ownerId: string, sink: (detach: WorkerCredentialDetachV1) => void): () => void {
+	bindCredentialDetachSink(ownerId: string, sink: (detach: WorkerCredentialDetach) => void): () => void {
 		if (this.disposed || ownerId.length === 0 || this.credentialDetachSink !== undefined) {
 			throw providerError("service_conflict", "Operation Worker credential lifecycle owner is already bound");
 		}
@@ -405,18 +405,18 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	}
 
 	/** Dynamic safe-target registry. Reading a Worker id creates only a bounded Host queue. */
-	getCredentialWorkerTargets(): ReadonlyMap<string, WorkerCredentialQueueTargetV1> {
+	getCredentialWorkerTargets(): ReadonlyMap<string, WorkerCredentialQueueTarget> {
 		return this.credentialTargetRegistry;
 	}
 
 	/** Validate recovery atomically before a ControlPlane writes convergence facts. */
-	validateWorkerFactsForRestore(recovery: WorkerSandboxRecoveryV1): ResultValue<void, FoundationError> {
+	validateWorkerFactsForRestore(recovery: WorkerSandboxRecovery): ResultValue<void, FoundationError> {
 		const staged = this.stageWorkerFacts(recovery);
 		return staged.ok ? Result.ok(undefined) : Result.err(staged.error);
 	}
 
 	/** Restore terminal safe summaries only; no Supervisor, process, or lease state is recreated. */
-	restoreWorkerFacts(recovery: WorkerSandboxRecoveryV1): ResultValue<void, FoundationError> {
+	restoreWorkerFacts(recovery: WorkerSandboxRecovery): ResultValue<void, FoundationError> {
 		const staged = this.stageWorkerFacts(recovery);
 		if (!staged.ok) return Result.err(staged.error);
 		const {
@@ -437,7 +437,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return Result.ok(undefined);
 	}
 
-	private stageWorkerFacts(recovery: WorkerSandboxRecoveryV1): ResultValue<StagedWorkerFactsV1, FoundationError> {
+	private stageWorkerFacts(recovery: WorkerSandboxRecovery): ResultValue<StagedWorkerFactsV1, FoundationError> {
 		if (this.disposed) {
 			return Result.err(providerError("worker_persistence_failed", "Disposed Operation Worker cannot restore durable facts"));
 		}
@@ -446,7 +446,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		const stagedCompletedOperationIds = new Set(this.completedOperationIds);
 		const stagedConsumedWorkerIds = new Set(this.consumedWorkerIds);
 		for (const recordValue of recovery.records ?? []) {
-			let record: WorkerRecordV1;
+			let record: WorkerRecord;
 			try {
 				record = this.cloneRecord(recordValue);
 			} catch {
@@ -465,7 +465,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 				}
 				if (record.revision < current.revision) continue;
 				if (record.revision === current.revision) {
-					if (serializeWorkerRecordV1(record) !== serializeWorkerRecordV1(current)) {
+					if (serializeWorkerRecord(record) !== serializeWorkerRecord(current)) {
 						return Result.err(providerError("worker_persistence_failed", "Historical Operation Worker record conflicts at the same revision"));
 					}
 					continue;
@@ -520,7 +520,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		});
 	}
 
-	async reclaimWorker(workerId: string): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
+	async reclaimWorker(workerId: string): Promise<ResultValue<WorkerRecord, FoundationError>> {
 		const active = [...this.operations.values()].find((operation) => operation.supervisor.snapshot.record?.workerId === workerId);
 		if (active !== undefined) {
 			const activeRecord = active.supervisor.snapshot.record;
@@ -554,7 +554,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 			status: "reclaim_unknown",
 			revision: reclaimingRecord.revision + 1,
 		});
-		const transitions: readonly WorkerTransitionReceiptV1[] = Object.freeze([
+		const transitions: readonly WorkerTransitionReceipt[] = Object.freeze([
 			Object.freeze({
 				schemaVersion: 1,
 				clientRequestId: `historical-reclaim:${workerId}:${reclaimingRecord.revision}`,
@@ -576,7 +576,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 				at: retained.endedAt,
 			}),
 		]);
-		const fact: WorkerSandboxFactV1 = {
+		const fact: WorkerSandboxFact = {
 			type: "record",
 			record: this.cloneRecord(unknownRecord),
 			transitions,
@@ -695,7 +695,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 			resolveSettled: resolveReservation,
 		};
 		this.reservations.set(requestSnapshot.value.operationId, reservation);
-		let supervisor: WorkerSupervisorV1 | undefined;
+		let supervisor: OperationWorkerSupervisor | undefined;
 		let cancellation: Promise<void> | undefined;
 		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 		let identityConsumed = false;
@@ -739,14 +739,14 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 				if (preflightOutcome.kind === "failed") {
 					return Result.err(providerError("worker_unavailable", "Operation Worker preflight failed"));
 				}
-				let facts: WorkerSandboxPreflightFactsV1;
+				let facts: WorkerSandboxPreflightFacts;
 				try {
 					const snapshot = snapshotFoundationJson(
 						preflightOutcome.facts as unknown as FoundationJsonValue,
 					);
 					if (
 						snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot) ||
-						!validateWorkerBindingV1(snapshot.binding) ||
+						!validateWorkerBinding(snapshot.binding) ||
 						typeof snapshot.runAccepted !== "boolean" ||
 						typeof snapshot.sessionOwned !== "boolean" ||
 						typeof snapshot.laneOwned !== "boolean" ||
@@ -757,7 +757,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 					) {
 						return Result.err(providerError("worker_binding_invalid", "Operation Worker preflight facts are invalid"));
 					}
-					facts = snapshot as unknown as WorkerSandboxPreflightFactsV1;
+					facts = snapshot as unknown as WorkerSandboxPreflightFacts;
 				} catch {
 					return Result.err(providerError("worker_binding_invalid", "Operation Worker preflight facts are invalid"));
 				}
@@ -781,11 +781,11 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 				this.consumedWorkerIds.add(facts.binding.workerId);
 				identityConsumed = true;
 				try {
-					supervisor = (this.options.createSupervisor ?? ((config) => new WorkerSupervisorV1(config)))(profile.supervisor);
+					supervisor = (this.options.createSupervisor ?? ((config) => new OperationWorkerSupervisor(config)))(profile.supervisor);
 				} catch {
 					return Result.err(providerError("worker_start_failed", "Operation Worker Supervisor construction failed"));
 				}
-				const normalizedBinding: WorkerBindingV1 = Object.freeze({
+				const normalizedBinding: WorkerBinding = Object.freeze({
 					...facts.binding,
 					capabilitySummary: Object.freeze([...profile.supervisor.capabilities]),
 				});
@@ -902,7 +902,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return cancelled;
 	}
 
-	async notifyRun(runId: string, reason: WorkerCancelReasonV1 | "terminal"): Promise<void> {
+	async notifyRun(runId: string, reason: WorkerCancelReason | "terminal"): Promise<void> {
 		for (const reservation of this.reservations.values()) {
 			if (reservation.runId === runId) this.invalidateReservation(reservation, reason);
 			else if (reservation.runId === undefined && !reservation.pendingRunInvalidations.has(runId)) {
@@ -978,7 +978,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return this.disposeCompletion;
 	}
 
-	private resolveCredentialTarget(workerId: string): WorkerCredentialQueueTargetV1 | undefined {
+	private resolveCredentialTarget(workerId: string): WorkerCredentialQueueTarget | undefined {
 		if (this.disposed || workerId.length === 0) return undefined;
 		const existing = this.credentialQueues.get(workerId);
 		if (existing !== undefined) return existing.target;
@@ -986,22 +986,22 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		const queue = {} as WorkerCredentialQueueV1;
 		const enqueueProjection = (
 			type: "project" | "renew",
-			leaseValue: SafeLeaseProjectionV1,
+			leaseValue: SafeLeaseProjection,
 		): { readonly ok: boolean } => {
-			if (!validateSafeLeaseProjectionV1(leaseValue)) return Object.freeze({ ok: false });
+			if (!validateOperationWorkerLeaseProjection(leaseValue)) return Object.freeze({ ok: false });
 			const lease = snapshotFoundationJson(
 				leaseValue as unknown as FoundationJsonValue,
-			) as unknown as SafeLeaseProjectionV1;
+			) as unknown as SafeLeaseProjection;
 			return Object.freeze({ ok: this.enqueueCredentialCommand(queue, Object.freeze({ type, lease })) });
 		};
-		const target: WorkerCredentialQueueTargetV1 = Object.freeze({
-			project: (lease: SafeLeaseProjectionV1) => enqueueProjection("project", lease),
-			renew: (lease: SafeLeaseProjectionV1) => enqueueProjection("renew", lease),
-			revoke: (leaseValue: SafeLeaseReferenceV1) => {
-				if (!validateSafeLeaseReferenceV1(leaseValue)) return Object.freeze({ ok: false });
+		const target: WorkerCredentialQueueTarget = Object.freeze({
+			project: (lease: SafeLeaseProjection) => enqueueProjection("project", lease),
+			renew: (lease: SafeLeaseProjection) => enqueueProjection("renew", lease),
+			revoke: (leaseValue: SafeLeaseReference) => {
+				if (!validateOperationWorkerLeaseReference(leaseValue)) return Object.freeze({ ok: false });
 				const lease = snapshotFoundationJson(
 					leaseValue as unknown as FoundationJsonValue,
-				) as unknown as SafeLeaseReferenceV1;
+				) as unknown as SafeLeaseReference;
 				return Object.freeze({
 					ok: this.enqueueCredentialCommand(queue, Object.freeze({ type: "revoke", lease })),
 				});
@@ -1030,14 +1030,14 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return true;
 	}
 
-	private startLiveCredentialDrain(queue: WorkerCredentialQueueV1, supervisor: WorkerSupervisorV1): void {
+	private startLiveCredentialDrain(queue: WorkerCredentialQueueV1, supervisor: OperationWorkerSupervisor): void {
 		if (queue.liveDrain !== undefined) return;
 		queue.liveDrain = this.convergeLiveCredentialDrain(queue, supervisor);
 	}
 
 	private async convergeLiveCredentialDrain(
 		queue: WorkerCredentialQueueV1,
-		supervisor: WorkerSupervisorV1,
+		supervisor: OperationWorkerSupervisor,
 	): Promise<void> {
 		try {
 			const drained = await this.drainWorkerCredentials(queue.workerId, supervisor);
@@ -1052,7 +1052,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 
 	private async drainWorkerCredentials(
 		workerId: string,
-		supervisor: WorkerSupervisorV1,
+		supervisor: OperationWorkerSupervisor,
 	): Promise<ResultValue<void, FoundationError>> {
 		const queue = this.credentialQueues.get(workerId);
 		if (queue === undefined) return Result.ok(undefined);
@@ -1086,7 +1086,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 
 	private failCredentialDrain(
 		workerId: string,
-		supervisor: WorkerSupervisorV1,
+		supervisor: OperationWorkerSupervisor,
 	): Promise<FoundationError | undefined> {
 		const queue = this.credentialQueues.get(workerId);
 		if (queue === undefined) return Promise.resolve(undefined);
@@ -1115,8 +1115,8 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	}
 
 	private async detachCredentialWorker(
-		supervisor: WorkerSupervisorV1,
-		reason: WorkerCredentialDetachReasonV1,
+		supervisor: OperationWorkerSupervisor,
+		reason: WorkerCredentialDetachReason,
 	): Promise<void> {
 		const record = supervisor.snapshot.record;
 		if (record === undefined) return;
@@ -1142,8 +1142,8 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 
 	private publishCredentialDetach(
 		queue: WorkerCredentialQueueV1,
-		supervisor: WorkerSupervisorV1,
-		reason: WorkerCredentialDetachReasonV1,
+		supervisor: OperationWorkerSupervisor,
+		reason: WorkerCredentialDetachReason,
 	): void {
 		if (queue.detachNotified) return;
 		queue.detachNotified = true;
@@ -1162,8 +1162,8 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	private validatePreflight(
 		request: SandboxOperationRequest,
 		correlation: ExecutionCorrelation | undefined,
-		profile: WorkerSandboxProfileV1,
-		facts: WorkerSandboxPreflightFactsV1,
+		profile: WorkerSandboxProfile,
+		facts: WorkerSandboxPreflightFacts,
 	): FoundationError | undefined {
 		if (!facts.runAccepted) return providerError("worker_unavailable", "Operation Worker requires an accepted Run");
 		if (!facts.sessionOwned || !facts.laneOwned || !correlationMatchesBinding(correlation, facts.binding, request, this.providerId)) {
@@ -1179,7 +1179,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 			facts.binding.providerId !== this.providerId ||
 			facts.binding.profileId !== profile.profileId ||
 			facts.binding.profileRevision !== profile.profileRevision ||
-			facts.binding.requestFingerprint !== createWorkerRequestFingerprintV1(request) ||
+			facts.binding.requestFingerprint !== createWorkerRequestFingerprint(request) ||
 			!sameStringSet(facts.binding.capabilitySummary, profile.supervisor.capabilities)
 		) {
 			return providerError("worker_binding_invalid", "Operation Worker profile or request identity is invalid");
@@ -1202,7 +1202,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	}
 
 	private async convergeInvalidation(
-		supervisor: WorkerSupervisorV1,
+		supervisor: OperationWorkerSupervisor,
 		reason: WorkerInvalidationReasonV1,
 		operationId: string,
 	): Promise<ResultValue<void, FoundationError>> {
@@ -1216,11 +1216,11 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return converged.ok ? Result.ok(undefined) : Result.err(converged.error);
 	}
 
-	private publishRecord(supervisor: WorkerSupervisorV1): FoundationError | undefined {
+	private publishRecord(supervisor: OperationWorkerSupervisor): FoundationError | undefined {
 		const record = supervisor.snapshot.record;
 		if (record === undefined) return undefined;
 		const safeRecord = this.cloneRecord(record);
-		const fact: WorkerSandboxFactV1 = {
+		const fact: WorkerSandboxFact = {
 			type: "record",
 			record: this.cloneRecord(safeRecord),
 			transitions: Object.freeze((supervisor.lifecycleState?.transitions ?? []).map((transition) => Object.freeze({ ...transition }))),
@@ -1239,10 +1239,10 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return undefined;
 	}
 
-	private publishOperationFence(supervisor: WorkerSupervisorV1, operationId: string): FoundationError | undefined {
+	private publishOperationFence(supervisor: OperationWorkerSupervisor, operationId: string): FoundationError | undefined {
 		const record = supervisor.snapshot.record;
 		if (record === undefined) return providerError("worker_persistence_failed", "Operation Worker fence has no durable identity");
-		const fact: WorkerSandboxFactV1 = Object.freeze({
+		const fact: WorkerSandboxFact = Object.freeze({
 			type: "operation",
 			workerId: record.workerId,
 			providerId: record.providerId,
@@ -1260,7 +1260,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 
 	private retainReceipt(workerId: string, terminalRecordRevision: number, receipt: WorkerReceipt): FoundationError | undefined {
 		const safeReceipt = this.cloneReceipt(receipt);
-		const fact: WorkerSandboxFactV1 = {
+		const fact: WorkerSandboxFact = {
 			type: "receipt",
 			workerId,
 			terminalRecordRevision,
@@ -1275,7 +1275,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return undefined;
 	}
 
-	private persistFact(fact: WorkerSandboxFactV1): FoundationError | undefined {
+	private persistFact(fact: WorkerSandboxFact): FoundationError | undefined {
 		if (this.durableFactSink === undefined) {
 			return providerError("worker_persistence_failed", "Operation Worker durable fact owner is unavailable");
 		}
@@ -1287,7 +1287,7 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		return undefined;
 	}
 
-	private publishObservationalFact(fact: WorkerSandboxFactV1): void {
+	private publishObservationalFact(fact: WorkerSandboxFact): void {
 		for (const subscriber of this.factSubscribers) {
 			try {
 				subscriber(fact);
@@ -1320,8 +1320,8 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 		this.completedOperationIds.add(operationId);
 	}
 
-	private cloneRecord(record: WorkerRecordV1): WorkerRecordV1 {
-		const parsed = parseWorkerRecordV1(serializeWorkerRecordV1(record));
+	private cloneRecord(record: WorkerRecord): WorkerRecord {
+		const parsed = parseWorkerRecord(serializeWorkerRecord(record));
 		if (!parsed.ok) throw parsed.error;
 		return parsed.value;
 	}
@@ -1331,4 +1331,4 @@ export class WorkerSandboxProviderV1 implements SandboxOperationProvider {
 	}
 }
 
-export const SandboxOperationWorkerProviderV1 = WorkerSandboxProviderV1;
+export const SandboxOperationWorkerProvider = WorkerSandboxProvider;

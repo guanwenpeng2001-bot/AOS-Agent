@@ -32,15 +32,15 @@ import {
 import { getModel } from "@aos-agent/ai/compat";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { PromptTaskSubagentCompositionInputV1 } from "../src/core/prompt-task-adapter.ts";
-import { ProductPromptIngressV1 } from "../src/core/product-prompt-ingress.ts";
+import type { PromptTaskSubagentCompositionInput } from "../src/core/prompt-task-adapter.ts";
+import { ProductPromptIngress } from "../src/core/product-prompt-ingress.ts";
 import {
-	TrustedSubagentCompositionV1,
-	type TrustedProductPromptCompositionPolicyV1,
+	TrustedSubagentComposition,
+	type TrustedProductPromptCompositionPolicy,
 } from "../src/core/subagent-composition.ts";
-import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
-import type { PlanSubagentSpawnInputV1, SubagentSpawnPlanV1 } from "../src/core/subagent-supervisor.ts";
-import type { ChildTaskSettlementPolicyV1 } from "../src/core/subagent-result.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
+import type { PlanSubagentSpawnInput, SubagentSpawnPlan } from "../src/core/subagent-supervisor.ts";
+import type { ChildTaskSettlementPolicy } from "../src/core/subagent-result.ts";
 
 const MODEL = getModel("openai", "gpt-4o-mini");
 const NOW = "2026-08-22T00:00:00.000Z";
@@ -67,7 +67,7 @@ function response(text: string): AssistantMessage {
 	};
 }
 
-function childTask(input: PromptTaskSubagentCompositionInputV1): TaskEnvelope {
+function childTask(input: PromptTaskSubagentCompositionInput): TaskEnvelope {
 	const token = sha256HexValue(input.runId).slice(0, 24);
 	const created = createTaskEnvelope({
 		schemaVersion: 1,
@@ -92,7 +92,7 @@ function childTask(input: PromptTaskSubagentCompositionInputV1): TaskEnvelope {
 }
 
 function childBinding(
-	input: PromptTaskSubagentCompositionInputV1,
+	input: PromptTaskSubagentCompositionInput,
 	task: TaskEnvelope,
 	suffix: string,
 ): AgentBinding {
@@ -113,13 +113,13 @@ function childBinding(
 }
 
 async function preparePlan(
-	input: PromptTaskSubagentCompositionInputV1,
-	composition: TrustedSubagentCompositionV1,
+	input: PromptTaskSubagentCompositionInput,
+	composition: TrustedSubagentComposition,
 	ledger: SessionLedger,
-	descriptor: SubagentProviderDescriptorV1,
+	descriptor: SubagentProviderDescriptor,
 	task: TaskEnvelope,
 	suffix: string,
-): Promise<SubagentSpawnPlanV1> {
+): Promise<SubagentSpawnPlan> {
 	const binding = childBinding(input, task, suffix);
 	const token = sha256HexValue(`${input.runId}:${suffix}`).slice(0, 24);
 	const spawnId = `spawn_product_composition_${token}`;
@@ -184,7 +184,7 @@ async function preparePlan(
 		parentAgentInstanceId: input.parentAgentInstance.agentInstanceId,
 		forkScope: "none",
 	};
-	const planInput: PlanSubagentSpawnInputV1 = {
+	const planInput: PlanSubagentSpawnInput = {
 		schemaVersion: 1,
 		request,
 		originParentAgentInstance: input.parentAgentInstance,
@@ -207,14 +207,14 @@ async function preparePlan(
 
 interface CompositionFixture {
 	readonly session: Session;
-	readonly ingress: ProductPromptIngressV1;
-	readonly composition: TrustedSubagentCompositionV1;
+	readonly ingress: ProductPromptIngress;
+	readonly composition: TrustedSubagentComposition;
 	close(): Promise<void>;
 }
 
 async function createFixture(options: {
 	readonly mode: "parallel" | "chain";
-	readonly join: ChildTaskSettlementPolicyV1;
+	readonly join: ChildTaskSettlementPolicy;
 	readonly failSecond?: boolean;
 }): Promise<CompositionFixture> {
 	if (MODEL === undefined) throw new Error("Test model is unavailable");
@@ -292,9 +292,9 @@ async function createFixture(options: {
 		),
 		parentAgentInstanceId,
 	});
-	let composition: TrustedSubagentCompositionV1 | undefined;
+	let composition: TrustedSubagentComposition | undefined;
 	const failingChildren = new Set<string>();
-	const policy: TrustedProductPromptCompositionPolicyV1 = {
+	const policy: TrustedProductPromptCompositionPolicy = {
 		schemaVersion: 1,
 		mode: options.mode,
 		join: options.join,
@@ -320,7 +320,7 @@ async function createFixture(options: {
 		},
 	};
 	const registry = new InMemoryRoleRegistry({ now: () => NOW });
-	composition = new TrustedSubagentCompositionV1({
+	composition = new TrustedSubagentComposition({
 		schemaVersion: 1,
 		enabled: true,
 		session,
@@ -360,7 +360,7 @@ async function createFixture(options: {
 		limits: { maxDepth: 2, maxConcurrent: 2, maxTurns: 2, queueCapacity: 2, maximumQueueWaitMs: 100 },
 		now: () => NOW,
 	});
-	const ingress = new ProductPromptIngressV1({
+	const ingress = new ProductPromptIngress({
 		session,
 		harness: created.harness,
 		models,

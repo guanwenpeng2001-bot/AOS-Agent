@@ -3,7 +3,7 @@
  *
  * Preflight is read-only and returns an activation token. Only activate may
  * create the fixed trusted child. Process details and private protocol data
- * never enter WorkerBindingV1, WorkerRecordV1, or Foundation errors.
+ * never enter WorkerBinding, WorkerRecord, or Foundation errors.
  */
 
 import {
@@ -21,28 +21,28 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
-	WorkerProtocolSessionV1,
-	parseWorkerFrameV1,
-	serializeWorkerFrameLineV1,
-	type WorkerCancelReasonV1,
-	type WorkerEventFrameV1,
-	type WorkerRequestFrameV1,
-	type SafeLeaseProjectionV1,
-	type SafeLeaseReferenceV1,
+	OperationWorkerProtocolSession,
+	parseOperationWorkerFrame,
+	serializeWorkerFrameLine,
+	type WorkerCancelReason,
+	type OperationWorkerEventFrame,
+	type OperationWorkerRequestFrame,
+	type SafeLeaseProjection,
+	type SafeLeaseReference,
 } from "./worker-protocol.ts";
 import {
 	WORKER_SCHEMA_VERSION,
-	applyWorkerHeartbeatV1,
-	applyWorkerTransitionV1,
-	createWorkerLifecycleV1,
-	isWorkerExecutionTerminalStatusV1,
-	isWorkerReclaimTerminalStatusV1,
-	validateWorkerBindingV1,
-	validateWorkerLifecycleStateV1,
-	type WorkerBindingV1,
-	type WorkerLifecycleStateV1,
+	applyWorkerHeartbeat,
+	applyWorkerTransition,
+	createWorkerLifecycle,
+	isWorkerExecutionTerminalStatus,
+	isWorkerReclaimTerminalStatus,
+	validateWorkerBinding,
+	validateWorkerLifecycleState,
+	type WorkerBinding,
+	type WorkerLifecycleState,
 	type WorkerLifecycleStatus,
-	type WorkerRecordV1,
+	type WorkerRecord,
 } from "./worker.ts";
 import {
 	killProcessTree,
@@ -75,7 +75,7 @@ type SupervisorErrorCode =
 	| "worker_start_failed"
 	| "worker_unavailable";
 
-export interface WorkerSupervisorConfigV1 {
+export interface WorkerSupervisorConfig {
 	/** Absolute trusted executable selected by Host composition. */
 	readonly executable: string;
 	/** Absolute fixed entrypoint selected by Host composition. */
@@ -93,19 +93,19 @@ export interface WorkerSupervisorConfigV1 {
 	readonly now?: () => Date;
 }
 
-export interface WorkerSupervisorPreflightInputV1 {
-	readonly binding: WorkerBindingV1;
+export interface WorkerSupervisorPreflightInput {
+	readonly binding: WorkerBinding;
 	readonly runAccepted: boolean;
 }
 
 /** Opaque, single-use activation seam returned only by successful preflight. */
-export interface WorkerActivationPlanV1 {
+export interface WorkerActivationPlan {
 	readonly schemaVersion: 1;
-	readonly binding: WorkerBindingV1;
+	readonly binding: WorkerBinding;
 }
 
-export interface WorkerSupervisorSnapshotV1 {
-	readonly record?: WorkerRecordV1;
+export interface WorkerSupervisorSnapshot {
+	readonly record?: WorkerRecord;
 	readonly hasLiveProcess: boolean;
 	readonly quarantined: boolean;
 }
@@ -170,7 +170,7 @@ function sameStringSequence(left: readonly string[], right: readonly string[]): 
 	return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
-function cloneBinding(binding: WorkerBindingV1): WorkerBindingV1 {
+function cloneBinding(binding: WorkerBinding): WorkerBinding {
 	return Object.freeze({
 		...binding,
 		capabilitySummary: Object.freeze([...binding.capabilitySummary]),
@@ -178,7 +178,7 @@ function cloneBinding(binding: WorkerBindingV1): WorkerBindingV1 {
 	});
 }
 
-function cloneLifecycleState(state: WorkerLifecycleStateV1): WorkerLifecycleStateV1 {
+function cloneLifecycleState(state: WorkerLifecycleState): WorkerLifecycleState {
 	return Object.freeze({
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		binding: cloneBinding(state.binding),
@@ -195,24 +195,24 @@ function wait(milliseconds: number): Promise<void> {
 	});
 }
 
-export class WorkerSupervisorV1 {
-	private readonly config: WorkerSupervisorConfigV1;
+export class OperationWorkerSupervisor {
+	private readonly config: WorkerSupervisorConfig;
 	private readonly environment: Readonly<Record<string, string>>;
 	private readonly now: () => Date;
-	private readonly protocol = new WorkerProtocolSessionV1();
-	private activationPlan?: WorkerActivationPlanV1;
+	private readonly protocol = new OperationWorkerProtocolSession();
+	private activationPlan?: WorkerActivationPlan;
 	private activationAttempted = false;
 	private child?: ChildProcessWithoutNullStreams;
-	private lifecycle?: WorkerLifecycleStateV1;
+	private lifecycle?: WorkerLifecycleState;
 	private stdoutBuffer = "";
 	private requestSequence = 0;
-	private readyWaiter?: Deferred<ResultValue<WorkerRecordV1, FoundationError>>;
+	private readyWaiter?: Deferred<ResultValue<WorkerRecord, FoundationError>>;
 	private receiptWaiter?: Deferred<ResultValue<WorkerReceipt, FoundationError>>;
 	private terminalWaiter?: Deferred<boolean>;
 	private exitWaiter?: Deferred<void>;
 	private watchdogTimer?: NodeJS.Timeout;
-	private pendingReadyFrame?: Extract<WorkerEventFrameV1, { type: "ready" }>;
-	private pendingReceiptFrame?: Extract<WorkerEventFrameV1, { type: "receipt" }>;
+	private pendingReadyFrame?: Extract<OperationWorkerEventFrame, { type: "ready" }>;
+	private pendingReceiptFrame?: Extract<OperationWorkerEventFrame, { type: "receipt" }>;
 	private frameCommit?: NodeJS.Immediate;
 	private processStopPromise?: Promise<void>;
 	private closing = false;
@@ -220,15 +220,15 @@ export class WorkerSupervisorV1 {
 	private reclaimFailure = false;
 	private recoveredWithoutProcess = false;
 	private quarantinedValue = false;
-	private reclaimPromise?: Promise<ResultValue<WorkerRecordV1, FoundationError>>;
+	private reclaimPromise?: Promise<ResultValue<WorkerRecord, FoundationError>>;
 
-	constructor(config: WorkerSupervisorConfigV1) {
+	constructor(config: WorkerSupervisorConfig) {
 		this.config = Object.freeze({ ...config, capabilities: Object.freeze([...config.capabilities]) });
 		this.environment = Object.freeze({ ...(config.environment ?? {}) });
 		this.now = config.now ?? (() => new Date());
 	}
 
-	get snapshot(): WorkerSupervisorSnapshotV1 {
+	get snapshot(): WorkerSupervisorSnapshot {
 		return Object.freeze({
 			...(this.lifecycle === undefined ? {} : { record: this.lifecycle.record }),
 			hasLiveProcess: this.child !== undefined && !this.exitSeen,
@@ -236,18 +236,18 @@ export class WorkerSupervisorV1 {
 		});
 	}
 
-	get lifecycleState(): WorkerLifecycleStateV1 | undefined {
+	get lifecycleState(): WorkerLifecycleState | undefined {
 		return this.lifecycle;
 	}
 
-	preflight(input: WorkerSupervisorPreflightInputV1): ResultValue<WorkerActivationPlanV1, FoundationError> {
+	preflight(input: WorkerSupervisorPreflightInput): ResultValue<WorkerActivationPlan, FoundationError> {
 		if (this.activationAttempted || this.activationPlan !== undefined || this.lifecycle !== undefined) {
 			return Result.err(stableError("worker_conflict", "Operation Worker activation cannot be reused"));
 		}
 		if (!input.runAccepted) {
 			return Result.err(stableError("worker_unavailable", "Operation Worker requires an accepted Run"));
 		}
-		if (!validateWorkerBindingV1(input.binding)) {
+		if (!validateWorkerBinding(input.binding)) {
 			return Result.err(stableError("worker_binding_invalid", "Operation Worker binding is invalid"));
 		}
 		if (
@@ -281,7 +281,7 @@ export class WorkerSupervisorV1 {
 		) {
 			return Result.err(stableError("worker_deadline_exceeded", "Operation Worker deadline has elapsed"));
 		}
-		const plan: WorkerActivationPlanV1 = Object.freeze({
+		const plan: WorkerActivationPlan = Object.freeze({
 			schemaVersion: WORKER_SCHEMA_VERSION,
 			binding: cloneBinding(input.binding),
 		});
@@ -289,13 +289,13 @@ export class WorkerSupervisorV1 {
 		return Result.ok(plan);
 	}
 
-	async activate(plan: WorkerActivationPlanV1): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
+	async activate(plan: WorkerActivationPlan): Promise<ResultValue<WorkerRecord, FoundationError>> {
 		if (this.activationAttempted || plan !== this.activationPlan) {
 			return Result.err(stableError("worker_conflict", "Operation Worker activation token is invalid"));
 		}
 		this.activationAttempted = true;
 		this.activationPlan = undefined;
-		const created = createWorkerLifecycleV1(plan.binding, this.timestamp());
+		const created = createWorkerLifecycle(plan.binding, this.timestamp());
 		if (!created.ok) return created;
 		this.lifecycle = created.value;
 		const starting = this.transition("starting");
@@ -326,7 +326,7 @@ export class WorkerSupervisorV1 {
 		}
 		trackDetachedChildPid(child.pid);
 
-		const initialize: WorkerRequestFrameV1 = {
+		const initialize: OperationWorkerRequestFrame = {
 			type: "initialize",
 			requestId: this.nextRequestId("initialize"),
 			binding: plan.binding,
@@ -384,7 +384,7 @@ export class WorkerSupervisorV1 {
 		}
 		this.receiptWaiter = deferred();
 		this.terminalWaiter = deferred();
-		const frame: WorkerRequestFrameV1 = {
+		const frame: OperationWorkerRequestFrame = {
 			type: "execute",
 			requestId: this.nextRequestId("execute"),
 			workerId: this.lifecycle.binding.workerId,
@@ -418,7 +418,7 @@ export class WorkerSupervisorV1 {
 	}
 
 	async cancel(
-		reason: WorkerCancelReasonV1 = "cancel",
+		reason: WorkerCancelReason = "cancel",
 		operationId?: string,
 	): Promise<ResultValue<void, FoundationError>> {
 		if (this.lifecycle === undefined) {
@@ -427,7 +427,7 @@ export class WorkerSupervisorV1 {
 		if (this.lifecycle.record.status === "lost") {
 			return Result.err(stableError("worker_lost", "Operation Worker lost a trusted terminal outcome"));
 		}
-		if (isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status)) return Result.ok(undefined);
+		if (isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) return Result.ok(undefined);
 		if (this.child === undefined) {
 			return Result.err(stableError("worker_not_found", "Operation Worker was not activated"));
 		}
@@ -472,19 +472,19 @@ export class WorkerSupervisorV1 {
 	}
 
 	/** Request safe-ref projection; a successful write is not delivery proof. */
-	projectCredential(lease: SafeLeaseProjectionV1): Promise<ResultValue<void, FoundationError>> {
+	projectCredential(lease: SafeLeaseProjection): Promise<ResultValue<void, FoundationError>> {
 		return this.sendCredentialProjection("credential.project", lease);
 	}
 
 	/** Request safe-ref renewal; a successful write is not delivery proof. */
-	renewCredential(lease: SafeLeaseProjectionV1): Promise<ResultValue<void, FoundationError>> {
+	renewCredential(lease: SafeLeaseProjection): Promise<ResultValue<void, FoundationError>> {
 		return this.sendCredentialProjection("credential.renew", lease);
 	}
 
 	/** Request safe-ref revocation; a successful write is not revocation proof. */
-	revokeCredential(leaseRef: SafeLeaseReferenceV1): Promise<ResultValue<void, FoundationError>> {
+	revokeCredential(leaseRef: SafeLeaseReference): Promise<ResultValue<void, FoundationError>> {
 		const workerId = this.lifecycle?.binding.workerId;
-		if (workerId === undefined || this.lifecycle === undefined || isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status)) {
+		if (workerId === undefined || this.lifecycle === undefined || isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) {
 			return Promise.resolve(Result.err(stableError("worker_lost", "Operation Worker is unavailable for credential revocation")));
 		}
 		return this.sendFrame({
@@ -496,7 +496,7 @@ export class WorkerSupervisorV1 {
 	}
 
 	/** Fail closed after Host credential delivery fails; accepts no credential data. */
-	async failCredentialDelivery(workerId: string): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
+	async failCredentialDelivery(workerId: string): Promise<ResultValue<WorkerRecord, FoundationError>> {
 		if (this.lifecycle === undefined) {
 			return Result.err(stableError("worker_not_found", "Operation Worker was not activated"));
 		}
@@ -505,9 +505,9 @@ export class WorkerSupervisorV1 {
 		}
 		const status = this.lifecycle.record.status;
 		if (
-			isWorkerExecutionTerminalStatusV1(status) ||
+			isWorkerExecutionTerminalStatus(status) ||
 			status === "reclaiming" ||
-			isWorkerReclaimTerminalStatusV1(status)
+			isWorkerReclaimTerminalStatus(status)
 		) {
 			return Result.ok(this.lifecycle.record);
 		}
@@ -523,33 +523,33 @@ export class WorkerSupervisorV1 {
 		return Result.ok(record);
 	}
 
-	async terminate(reason: WorkerCancelReasonV1 = "shutdown"): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
+	async terminate(reason: WorkerCancelReason = "shutdown"): Promise<ResultValue<WorkerRecord, FoundationError>> {
 		if (
 			this.lifecycle !== undefined &&
-			!isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status) &&
+			!isWorkerExecutionTerminalStatus(this.lifecycle.record.status) &&
 			this.lifecycle.record.status !== "reclaiming" &&
-			!isWorkerReclaimTerminalStatusV1(this.lifecycle.record.status)
+			!isWorkerReclaimTerminalStatus(this.lifecycle.record.status)
 		) {
 			await this.cancel(reason, this.lifecycle.record.activeOperationId);
 		}
 		return this.reclaim();
 	}
 
-	dispose(): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
+	dispose(): Promise<ResultValue<WorkerRecord, FoundationError>> {
 		return this.terminate("shutdown");
 	}
 
-	reclaim(): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
+	reclaim(): Promise<ResultValue<WorkerRecord, FoundationError>> {
 		this.reclaimPromise ??= this.performReclaim();
 		return this.reclaimPromise;
 	}
 
 	/** Restore safe facts only. No process, handle, lease, or protocol session is recreated. */
-	recover(state: WorkerLifecycleStateV1): ResultValue<WorkerRecordV1, FoundationError> {
+	recover(state: WorkerLifecycleState): ResultValue<WorkerRecord, FoundationError> {
 		if (
 			this.activationAttempted ||
 			this.lifecycle !== undefined ||
-			!validateWorkerLifecycleStateV1(state) ||
+			!validateWorkerLifecycleState(state) ||
 			state.binding.profileId !== this.config.profileId ||
 			state.binding.profileRevision !== this.config.profileRevision ||
 			!sameStringSequence(state.binding.capabilitySummary, this.config.capabilities)
@@ -572,14 +572,14 @@ export class WorkerSupervisorV1 {
 		return Result.ok(this.lifecycle.record);
 	}
 
-	private async performReclaim(): Promise<ResultValue<WorkerRecordV1, FoundationError>> {
+	private async performReclaim(): Promise<ResultValue<WorkerRecord, FoundationError>> {
 		if (this.lifecycle === undefined) {
 			return Result.err(stableError("worker_not_found", "Operation Worker was not activated"));
 		}
-		if (isWorkerReclaimTerminalStatusV1(this.lifecycle.record.status)) {
+		if (isWorkerReclaimTerminalStatus(this.lifecycle.record.status)) {
 			return Result.ok(this.lifecycle.record);
 		}
-		if (!isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status)) {
+		if (!isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) {
 			this.markLost("worker_lost");
 		}
 		if (this.lifecycle.record.status !== "reclaiming") {
@@ -689,7 +689,7 @@ export class WorkerSupervisorV1 {
 	};
 
 	private handleWorkerLine(line: string): void {
-		const parsed = parseWorkerFrameV1(line);
+		const parsed = parseOperationWorkerFrame(line);
 		if (!parsed.ok || !this.isWorkerEvent(parsed.value)) {
 			this.protocolFailure("worker_operation_invalid");
 			return;
@@ -698,7 +698,7 @@ export class WorkerSupervisorV1 {
 			parsed.value.type === "heartbeat" &&
 			this.lifecycle !== undefined &&
 			parsed.value.workerId === this.lifecycle.binding.workerId &&
-			(this.pendingReceiptFrame !== undefined || isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status))
+			(this.pendingReceiptFrame !== undefined || isWorkerExecutionTerminalStatus(this.lifecycle.record.status))
 		) {
 			return;
 		}
@@ -712,20 +712,20 @@ export class WorkerSupervisorV1 {
 		this.handleWorkerEvent(parsed.value);
 	}
 
-	private handleWorkerEvent(frame: WorkerEventFrameV1): void {
+	private handleWorkerEvent(frame: OperationWorkerEventFrame): void {
 		if (frame.type === "ready") {
 			this.pendingReadyFrame = frame;
 			this.scheduleFrameCommit();
 			return;
 		}
 		if (frame.type === "heartbeat") {
-			if (this.lifecycle === undefined || isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status)) return;
+			if (this.lifecycle === undefined || isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) return;
 			const heartbeatAt = [
 				frame.at,
 				this.lifecycle.transitions.at(-1)?.at ?? this.lifecycle.record.createdAt,
 				this.lifecycle.record.lastHeartbeatAt ?? this.lifecycle.record.createdAt,
 			].sort().at(-1)!;
-			const folded = applyWorkerHeartbeatV1(this.lifecycle, {
+			const folded = applyWorkerHeartbeat(this.lifecycle, {
 				schemaVersion: WORKER_SCHEMA_VERSION,
 				binding: this.lifecycle.binding,
 				sequence: frame.sequence,
@@ -821,7 +821,7 @@ export class WorkerSupervisorV1 {
 		this.terminalWaiter?.resolve(true);
 	}
 
-	private async sendFrame(frame: WorkerRequestFrameV1): Promise<ResultValue<void, FoundationError>> {
+	private async sendFrame(frame: OperationWorkerRequestFrame): Promise<ResultValue<void, FoundationError>> {
 		const child = this.child;
 		if (child === undefined || child.stdin.destroyed || !child.stdin.writable) {
 			return Result.err(stableError("worker_lost", "Operation Worker connection is unavailable"));
@@ -830,7 +830,7 @@ export class WorkerSupervisorV1 {
 		if (!accepted.ok) return Result.err(stableError(accepted.error.code as SupervisorErrorCode, accepted.error.message));
 		let line: string;
 		try {
-			line = serializeWorkerFrameLineV1(frame);
+			line = serializeWorkerFrameLine(frame);
 		} catch {
 			return Result.err(stableError("worker_operation_invalid", "Operation Worker request is invalid"));
 		}
@@ -861,10 +861,10 @@ export class WorkerSupervisorV1 {
 
 	private sendCredentialProjection(
 		type: "credential.project" | "credential.renew",
-		lease: SafeLeaseProjectionV1,
+		lease: SafeLeaseProjection,
 	): Promise<ResultValue<void, FoundationError>> {
 		const workerId = this.lifecycle?.binding.workerId;
-		if (workerId === undefined || this.lifecycle === undefined || isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status)) {
+		if (workerId === undefined || this.lifecycle === undefined || isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) {
 			return Promise.resolve(Result.err(stableError("worker_lost", "Operation Worker is unavailable for credential projection")));
 		}
 		return this.sendFrame({
@@ -882,11 +882,11 @@ export class WorkerSupervisorV1 {
 			readonly receiptId?: string;
 			readonly sideEffectState?: "none" | "unknown" | "side_effect_unknown";
 		} = {},
-	): ResultValue<WorkerRecordV1, FoundationError> {
+	): ResultValue<WorkerRecord, FoundationError> {
 		if (this.lifecycle === undefined) {
 			return Result.err(stableError("worker_persistence_failed", "Operation Worker lifecycle is unavailable"));
 		}
-		const applied = applyWorkerTransitionV1(this.lifecycle, {
+		const applied = applyWorkerTransition(this.lifecycle, {
 			schemaVersion: WORKER_SCHEMA_VERSION,
 			clientRequestId: this.nextRequestId(`lifecycle-${to}`),
 			expectedRevision: this.lifecycle.record.revision,
@@ -935,7 +935,7 @@ export class WorkerSupervisorV1 {
 
 	private armWatchdog(): void {
 		this.clearWatchdog();
-		if (this.lifecycle === undefined || isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status)) return;
+		if (this.lifecycle === undefined || isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) return;
 		const timeoutMs = Math.min(
 			this.config.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS,
 			this.remainingDeadlineMs(this.lifecycle.binding),
@@ -955,7 +955,7 @@ export class WorkerSupervisorV1 {
 		this.watchdogTimer = undefined;
 	}
 
-	private remainingDeadlineMs(binding: WorkerBindingV1): number {
+	private remainingDeadlineMs(binding: WorkerBinding): number {
 		return binding.deadlineAt === undefined
 			? Number.MAX_SAFE_INTEGER
 			: Math.max(1, binding.deadlineAt - this.now().getTime());
@@ -1042,10 +1042,10 @@ export class WorkerSupervisorV1 {
 	}
 
 	private hasTrustedExecutionTerminal(): boolean {
-		return this.lifecycle !== undefined && isWorkerExecutionTerminalStatusV1(this.lifecycle.record.status);
+		return this.lifecycle !== undefined && isWorkerExecutionTerminalStatus(this.lifecycle.record.status);
 	}
 
-	private isWorkerEvent(frame: WorkerRequestFrameV1 | WorkerEventFrameV1): frame is WorkerEventFrameV1 {
+	private isWorkerEvent(frame: OperationWorkerRequestFrame | OperationWorkerEventFrame): frame is OperationWorkerEventFrame {
 		return frame.type === "ready" ||
 			frame.type === "heartbeat" ||
 			frame.type === "operation.started" ||
@@ -1080,4 +1080,4 @@ export class WorkerSupervisorV1 {
 	}
 }
 
-export const WorkerSupervisor = WorkerSupervisorV1;
+export const WorkerSupervisor = OperationWorkerSupervisor;

@@ -29,20 +29,20 @@ import { describe, expect, it, vi } from "vitest";
 import { createRunLifecycleCoordinator, type RunHandle } from "../src/core/run-lifecycle.ts";
 import {
 	type SchedulerHostOptions,
-	type SchedulerHostRunAssociationV1,
+	type SchedulerHostRunAssociation,
 	SchedulerHost,
-	type SchedulerJoinPlanV1,
-	type SchedulerNodeRefV1,
-	type SchedulerQueueEntryV1,
+	type SchedulerJoinPlan,
+	type SchedulerNodeRef,
+	type SchedulerQueueEntry,
 } from "../src/core/scheduler.ts";
 import {
 	SchedulerDispatchController,
-	type SchedulerDispatchExecutorRequirementsV1,
+	type SchedulerDispatchExecutorRequirements,
 } from "../src/core/scheduler-dispatch.ts";
 import { SCHEDULER_IN_PROCESS_CAPABILITY_ID, SchedulerExecutorRegistry } from "../src/core/scheduler-executors.ts";
 import {
 	SchedulerFanInController,
-	type SchedulerFanInSettleRequestV1,
+	type SchedulerFanInSettleRequest,
 	schedulerFanInSnapshotsEqual,
 	schedulerNodeJoinId,
 } from "../src/core/scheduler-fan-in.ts";
@@ -381,7 +381,7 @@ interface FanInHarness {
 	association(
 		graph: TaskGraphRecord,
 		node: TaskGraphNodeView,
-	): ResultValue<SchedulerHostRunAssociationV1, FoundationError>;
+	): ResultValue<SchedulerHostRunAssociation, FoundationError>;
 	settleRun(runId: string, succeeded: boolean): Promise<ResultValue<void, FoundationError>>;
 }
 
@@ -498,7 +498,7 @@ async function executeDirectReceipt(
 	status: ReceiptStatus,
 ): Promise<AttemptReceipt> {
 	harness.provider.nextStatus = status;
-	const entry: SchedulerQueueEntryV1 = {
+	const entry: SchedulerQueueEntry = {
 		schemaVersion: 1,
 		queueEntryId: `queue-direct-${nodeId}`,
 		sessionId: harness.sessionId,
@@ -527,8 +527,8 @@ function settleRequest(
 	harness: FanInHarness,
 	nodeId: string,
 	receiptIds: readonly string[],
-	plan?: SchedulerJoinPlanV1,
-): SchedulerFanInSettleRequestV1 {
+	plan?: SchedulerJoinPlan,
+): SchedulerFanInSettleRequest {
 	return {
 		task: harness.currentTask,
 		nodeRef: { taskId: harness.currentTask.taskId, graphRevision: 1, nodeId },
@@ -547,7 +547,7 @@ describe("scheduler production fan-in", () => {
 			credentialTargetRefs: Object.freeze(["credential:line13"]),
 			sandboxTargetRefs: Object.freeze(["sandbox:line13"]),
 		});
-		let forwardedRequirements: SchedulerDispatchExecutorRequirementsV1 | undefined;
+		let forwardedRequirements: SchedulerDispatchExecutorRequirements | undefined;
 		const host = new SchedulerHost({
 			enabled: true,
 			sessionId: harness.sessionId,
@@ -665,7 +665,7 @@ describe("scheduler production fan-in", () => {
 			expect(settled.ok).toBe(true);
 		}
 		const predecessorNodeIds = ["good", "missing", "failed", "cancelled"];
-		const nodeRef: SchedulerNodeRefV1 = {
+		const nodeRef: SchedulerNodeRef = {
 			taskId: harness.currentTask.taskId,
 			graphRevision: 1,
 			nodeId: "joined",
@@ -731,7 +731,7 @@ describe("scheduler production fan-in", () => {
 			receiptIds.push(receipt.attemptReceiptId);
 		}
 		harness.provider.emitSuccessArtifact = true;
-		const requests: SchedulerFanInSettleRequestV1[] = [
+		const requests: SchedulerFanInSettleRequest[] = [
 			{
 				...settleRequest(harness, "gate-output", [receiptIds[0]!]),
 			},
@@ -1025,7 +1025,7 @@ describe("scheduler production fan-in", () => {
 					return Result.err(new FoundationError("scheduler_fanin_invalid", "not reached"));
 				},
 			},
-			resolveRunAssociation: async (): Promise<ResultValue<SchedulerHostRunAssociationV1, FoundationError>> =>
+			resolveRunAssociation: async (): Promise<ResultValue<SchedulerHostRunAssociation, FoundationError>> =>
 				Result.err(new FoundationError("scheduler_not_found", "not reached")),
 			settleRunAtHost: async () => Result.ok(undefined),
 		};

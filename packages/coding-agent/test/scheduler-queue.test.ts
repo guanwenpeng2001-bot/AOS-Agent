@@ -55,12 +55,12 @@ import {
 	SCHEDULER_HANDOFF_TRANSITIONS,
 	SCHEDULER_QUEUE_STATES,
 	SCHEDULER_QUEUE_TRANSITIONS,
-	type SchedulerClaimV1,
-	type SchedulerDispatchRecordV1,
-	type SchedulerMessageV1,
-	type SchedulerOwnershipTransferV1,
-	type SchedulerQueueEntryV1,
-	type SchedulerWakeV1,
+	type SchedulerClaim,
+	type SchedulerDispatchRecord,
+	type SchedulerMessage,
+	type SchedulerOwnershipTransfer,
+	type SchedulerQueueEntry,
+	type SchedulerWake,
 	schedulerErrorRetryable,
 	schedulerFencingTokensEqual,
 	schedulerQueueBusinessKey,
@@ -76,7 +76,7 @@ import {
 	SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE,
 	SCHEDULER_QUEUE_KEY_OBJECT_TYPE,
 	SCHEDULER_QUEUE_LEDGER_OBJECT_TYPES,
-	type SchedulerCancelAttemptV1,
+	type SchedulerCancelAttempt,
 	SchedulerQueueStore,
 } from "../src/core/scheduler-queue.ts";
 
@@ -85,7 +85,7 @@ const LATER = "2026-08-21T12:00:30.000Z";
 const EXPIRES = "2026-08-21T12:05:00.000Z";
 const DIGEST = "ab".repeat(32);
 
-function queued(overrides: Partial<SchedulerQueueEntryV1> = {}): SchedulerQueueEntryV1 {
+function queued(overrides: Partial<SchedulerQueueEntry> = {}): SchedulerQueueEntry {
 	return {
 		schemaVersion: 1,
 		queueEntryId: "queue_1",
@@ -101,7 +101,7 @@ function queued(overrides: Partial<SchedulerQueueEntryV1> = {}): SchedulerQueueE
 	};
 }
 
-function claim(overrides: Partial<SchedulerClaimV1> = {}): SchedulerClaimV1 {
+function claim(overrides: Partial<SchedulerClaim> = {}): SchedulerClaim {
 	return {
 		schemaVersion: 1,
 		claimId: "claim_1",
@@ -116,7 +116,7 @@ function claim(overrides: Partial<SchedulerClaimV1> = {}): SchedulerClaimV1 {
 	};
 }
 
-function dispatch(overrides: Partial<SchedulerDispatchRecordV1> = {}): SchedulerDispatchRecordV1 {
+function dispatch(overrides: Partial<SchedulerDispatchRecord> = {}): SchedulerDispatchRecord {
 	return {
 		schemaVersion: 1,
 		queueEntryId: "queue_1",
@@ -130,7 +130,7 @@ function dispatch(overrides: Partial<SchedulerDispatchRecordV1> = {}): Scheduler
 	};
 }
 
-function transfer(overrides: Partial<SchedulerOwnershipTransferV1> = {}): SchedulerOwnershipTransferV1 {
+function transfer(overrides: Partial<SchedulerOwnershipTransfer> = {}): SchedulerOwnershipTransfer {
 	return {
 		schemaVersion: 1,
 		transferId: "transfer_1",
@@ -146,7 +146,7 @@ function transfer(overrides: Partial<SchedulerOwnershipTransferV1> = {}): Schedu
 	};
 }
 
-function message(overrides: Partial<SchedulerMessageV1> = {}): SchedulerMessageV1 {
+function message(overrides: Partial<SchedulerMessage> = {}): SchedulerMessage {
 	return {
 		schemaVersion: 1,
 		messageId: "msg_1",
@@ -164,7 +164,7 @@ function message(overrides: Partial<SchedulerMessageV1> = {}): SchedulerMessageV
 	};
 }
 
-function wake(overrides: Partial<SchedulerWakeV1> = {}): SchedulerWakeV1 {
+function wake(overrides: Partial<SchedulerWake> = {}): SchedulerWake {
 	return {
 		schemaVersion: 1,
 		wakeId: "wake_1",
@@ -454,7 +454,7 @@ describe("scheduler claim fencing", () => {
 	it("fails closed when acquire is given an unparsed queue entry", () => {
 		expectCode(
 			applySchedulerClaimAcquire(
-				{ ...queued(), state: "claimed", claimId: "claim_1", prompt: "secret" } as SchedulerQueueEntryV1,
+				{ ...queued(), state: "claimed", claimId: "claim_1", prompt: "secret" } as SchedulerQueueEntry,
 				claim(),
 				NOW,
 			),
@@ -744,7 +744,7 @@ class FakeLedger implements DurableLedgerApi {
 }
 
 function createQueueHarness(
-	options: { now: () => string; ownerId?: string; cancelAttempt?: SchedulerCancelAttemptV1; maxAttempts?: number } = {
+	options: { now: () => string; ownerId?: string; cancelAttempt?: SchedulerCancelAttempt; maxAttempts?: number } = {
 		now: () => NOW,
 	},
 ): {

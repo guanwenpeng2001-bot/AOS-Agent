@@ -8,8 +8,8 @@ import {
 	fauxProvider,
 } from "@aos-agent/ai";
 import {
-	AgentHarnessChildAgentEntryRuntimeV1,
-	runChildAgentEntryV1,
+	AgentHarnessChildAgentEntryRuntime,
+	runChildAgentProcess,
 } from "../../src/child-agent-entry.ts";
 
 export const FAUX_CHILD_AGENT_SENTINEL = "AOS_CHILD_AGENT_FORK_OK";
@@ -18,7 +18,7 @@ export const FAUX_CHILD_PARENT_CONTEXT = "AOS_CHILD_AGENT_PARENT_CONTEXT";
 const faux = fauxProvider({ provider: "fake", models: [{ id: "model-1" }] });
 const models = createModels();
 models.setProvider(faux.provider);
-const runtime = new AgentHarnessChildAgentEntryRuntimeV1({
+const runtime = new AgentHarnessChildAgentEntryRuntime({
 	models,
 	streamFunction: (model, context) => {
 		const stream = createAssistantMessageEventStream();
@@ -58,6 +58,6 @@ if (!process.stderr.write("test-only child diagnostic\n".repeat(32_768))) {
 	await once(process.stderr, "drain");
 }
 
-await runChildAgentEntryV1({ runtime }).catch(() => {
+await runChildAgentProcess({ runtime }).catch(() => {
 	process.exitCode = 1;
 });

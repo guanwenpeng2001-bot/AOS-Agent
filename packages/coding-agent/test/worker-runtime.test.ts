@@ -3,19 +3,19 @@ import { validateWorkerReceiptForProvider } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
-	serializeWorkerFrameLineV1,
-	validateWorkerEventFrameV1,
-	type SafeLeaseProjectionV1,
-	type SafeLeaseReferenceV1,
-	type WorkerEventFrameV1,
-	type WorkerRequestFrameV1,
+	serializeWorkerFrameLine,
+	validateOperationWorkerEventFrame,
+	type SafeLeaseProjection,
+	type SafeLeaseReference,
+	type OperationWorkerEventFrame,
+	type OperationWorkerRequestFrame,
 } from "../src/core/worker-protocol.ts";
-import { WorkerRuntimeV1 } from "../src/core/worker-runtime.ts";
-import type { WorkerBindingV1 } from "../src/core/worker.ts";
-import { runWorkerEntryV1 } from "../src/worker-entry.ts";
+import { OperationWorkerRuntime } from "../src/core/worker-runtime.ts";
+import type { WorkerBinding } from "../src/core/worker.ts";
+import { runOperationWorkerProcess } from "../src/worker-entry.ts";
 import { FakeWorkerProviderV1 } from "./fixtures/fake-worker-provider.ts";
 
-const binding: WorkerBindingV1 = {
+const binding: WorkerBinding = {
 	schemaVersion: 1,
 	workerId: "worker-1",
 	providerId: "sandbox-worker",
@@ -47,15 +47,15 @@ const request = {
 	payload: { result: "ok" },
 };
 
-const initialize: WorkerRequestFrameV1 = { type: "initialize", requestId: "initialize-1", binding };
-const execute: WorkerRequestFrameV1 = {
+const initialize: OperationWorkerRequestFrame = { type: "initialize", requestId: "initialize-1", binding };
+const execute: OperationWorkerRequestFrame = {
 	type: "execute",
 	requestId: "execute-1",
 	workerId: binding.workerId,
 	operationId: request.operationId,
 	request,
 };
-const lease: SafeLeaseProjectionV1 = {
+const lease: SafeLeaseProjection = {
 	schemaVersion: 1,
 	leaseId: "lease-1",
 	grantId: "grant-1",
@@ -64,7 +64,7 @@ const lease: SafeLeaseProjectionV1 = {
 	expiresAt: "2026-08-21T00:01:00.000Z",
 	clientRequestId: "credential-1",
 };
-const leaseRef: SafeLeaseReferenceV1 = {
+const leaseRef: SafeLeaseReference = {
 	schemaVersion: 1,
 	leaseId: lease.leaseId,
 	grantId: lease.grantId,
@@ -74,13 +74,13 @@ const leaseRef: SafeLeaseReferenceV1 = {
 
 function harness(provider = new FakeWorkerProviderV1()): {
 	readonly provider: FakeWorkerProviderV1;
-	readonly runtime: WorkerRuntimeV1;
-	readonly frames: WorkerEventFrameV1[];
+	readonly runtime: OperationWorkerRuntime;
+	readonly frames: OperationWorkerEventFrame[];
 	readonly diagnostics: string[];
 } {
-	const frames: WorkerEventFrameV1[] = [];
+	const frames: OperationWorkerEventFrame[] = [];
 	const diagnostics: string[] = [];
-	const runtime = new WorkerRuntimeV1({
+	const runtime = new OperationWorkerRuntime({
 		provider,
 		emit: (frame) => {
 			frames.push(frame);
@@ -119,11 +119,11 @@ describe("trusted Operation Worker runtime", () => {
 		const provider = new FakeWorkerProviderV1();
 		const state = harness(provider);
 		const rawMarker = "raw-execute-before-initialize";
-		const earlyExecute: WorkerRequestFrameV1 = {
+		const earlyExecute: OperationWorkerRequestFrame = {
 			...execute,
 			request: { ...request, payload: { detail: rawMarker } },
 		};
-		await state.runtime.receiveLine(serializeWorkerFrameLineV1(earlyExecute));
+		await state.runtime.receiveLine(serializeWorkerFrameLine(earlyExecute));
 
 		expect(state.runtime.closed).toBe(true);
 		expect(state.frames).toEqual([]);
@@ -225,7 +225,7 @@ describe("trusted Operation Worker runtime", () => {
 
 		const receipt = state.provider.receipts[0]!;
 		expect(validateWorkerReceiptForProvider(receipt, { providerId: binding.providerId, providerClass: "operation_worker" }).ok).toBe(true);
-		const completed: WorkerEventFrameV1 = {
+		const completed: OperationWorkerEventFrame = {
 			type: "operation.completed",
 			requestId: execute.requestId,
 			workerId: binding.workerId,
@@ -238,13 +238,13 @@ describe("trusted Operation Worker runtime", () => {
 				artifacts: receipt.artifacts,
 			},
 		};
-		expect(validateWorkerEventFrameV1(completed)).toBe(true);
+		expect(validateOperationWorkerEventFrame(completed)).toBe(true);
 		expect(Buffer.byteLength(JSON.stringify(completed), "utf8") + 1).toBeGreaterThan(WORKER_PROTOCOL_MAX_FRAME_BYTES);
-		expect(() => serializeWorkerFrameLineV1(completed)).toThrow();
-		const receiptFrame: WorkerEventFrameV1 = { type: "receipt", requestId: execute.requestId, receipt };
-		expect(validateWorkerEventFrameV1(receiptFrame)).toBe(true);
+		expect(() => serializeWorkerFrameLine(completed)).toThrow();
+		const receiptFrame: OperationWorkerEventFrame = { type: "receipt", requestId: execute.requestId, receipt };
+		expect(validateOperationWorkerEventFrame(receiptFrame)).toBe(true);
 		expect(Buffer.byteLength(JSON.stringify(receiptFrame), "utf8") + 1).toBeGreaterThan(WORKER_PROTOCOL_MAX_FRAME_BYTES);
-		expect(() => serializeWorkerFrameLineV1(receiptFrame)).toThrow();
+		expect(() => serializeWorkerFrameLine(receiptFrame)).toThrow();
 		expect(state.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started"]);
 		expect(state.runtime.closed).toBe(true);
 		expect(state.diagnostics.join("")).toBe("[redacted worker diagnostic]\n");
@@ -350,7 +350,7 @@ describe("trusted Operation Worker runtime", () => {
 			stderrText += chunk;
 		});
 
-		const run = runWorkerEntryV1({
+		const run = runOperationWorkerProcess({
 			provider: new FakeWorkerProviderV1({ startBehavior: "throw" }),
 			input,
 			output,
@@ -358,7 +358,7 @@ describe("trusted Operation Worker runtime", () => {
 			now: () => "2026-08-21T00:00:01.000Z",
 			heartbeatIntervalMs: 0,
 		});
-		input.end(`${serializeWorkerFrameLineV1(initialize)}${serializeWorkerFrameLineV1(execute)}`);
+		input.end(`${serializeWorkerFrameLine(initialize)}${serializeWorkerFrameLine(execute)}`);
 		await run;
 
 		const frames = stdoutText.trim().split("\n").map((line) => JSON.parse(line) as unknown);

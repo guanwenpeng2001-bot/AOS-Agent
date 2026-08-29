@@ -17,7 +17,7 @@ import {
 	type TaskCredentialWorkerTarget,
 } from "../src/core/task-credential-service.ts";
 import type { TaskCredentialSession } from "../src/core/task-credential-store.ts";
-import type { SafeLeaseProjectionV1, SafeLeaseReferenceV1 } from "../src/core/worker-protocol.ts";
+import type { SafeLeaseProjection, SafeLeaseReference } from "../src/core/worker-protocol.ts";
 
 const NOW = "2026-08-21T00:00:00.000Z";
 const SECRET = "worker-secret-must-never-cross-boundary";
@@ -99,26 +99,26 @@ class MaterialTarget {
 }
 
 class WorkerTarget implements TaskCredentialWorkerTarget {
-	readonly projections: SafeLeaseProjectionV1[] = [];
-	readonly renewals: SafeLeaseProjectionV1[] = [];
-	readonly revocations: SafeLeaseReferenceV1[] = [];
+	readonly projections: SafeLeaseProjection[] = [];
+	readonly renewals: SafeLeaseProjection[] = [];
+	readonly revocations: SafeLeaseReference[] = [];
 	projectResult = true;
 	renewResult = true;
 	revokeResult = true;
 
-	project(lease: SafeLeaseProjectionV1): { readonly ok: boolean } {
+	project(lease: SafeLeaseProjection): { readonly ok: boolean } {
 		if (!this.projectResult) return { ok: false };
 		this.projections.push(lease);
 		return { ok: true };
 	}
 
-	renew(lease: SafeLeaseProjectionV1): { readonly ok: boolean } {
+	renew(lease: SafeLeaseProjection): { readonly ok: boolean } {
 		if (!this.renewResult) return { ok: false };
 		this.renewals.push(lease);
 		return { ok: true };
 	}
 
-	revoke(lease: SafeLeaseReferenceV1): { readonly ok: boolean } {
+	revoke(lease: SafeLeaseReference): { readonly ok: boolean } {
 		if (!this.revokeResult) return { ok: false };
 		this.revocations.push(lease);
 		return { ok: true };

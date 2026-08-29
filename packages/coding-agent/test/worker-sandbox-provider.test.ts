@@ -33,9 +33,9 @@ import {
 } from "../src/core/execution-policy.ts";
 import {
 	createBuiltinToolPolicy,
-	createSandboxHandleOperationProviderV1,
+	createSandboxHandleOperationProvider,
 } from "../src/core/sandbox-host.ts";
-import { resolveWorkerSandboxOperationV1, type SandboxHandle } from "../src/core/sandbox.ts";
+import { resolveWorkerSandboxOperation, type SandboxHandle } from "../src/core/sandbox.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import {
 	createHarnessCompatibilityWriter,
@@ -53,30 +53,30 @@ import {
 } from "../src/core/task-credential-provider.ts";
 import { TaskCredentialService } from "../src/core/task-credential-service.ts";
 import {
-	parseWorkerFrameV1,
-	serializeWorkerFrameLineV1,
-	type SafeLeaseProjectionV1,
-	type SafeLeaseReferenceV1,
-	type WorkerEventFrameV1,
-	type WorkerRequestFrameV1,
-	validateWorkerEventFrameV1,
+	parseOperationWorkerFrame,
+	serializeWorkerFrameLine,
+	type SafeLeaseProjection,
+	type SafeLeaseReference,
+	type OperationWorkerEventFrame,
+	type OperationWorkerRequestFrame,
+	validateOperationWorkerEventFrame,
 } from "../src/core/worker-protocol.ts";
 import {
-	WorkerSandboxProviderV1,
-	createWorkerRequestFingerprintV1,
-	type WorkerSandboxFactV1,
-	type WorkerCredentialDetachV1,
-	type WorkerSandboxProviderOptionsV1,
-	type WorkerSandboxPreflightFactsV1,
-	type WorkerSandboxProfileV1,
+	WorkerSandboxProvider,
+	createWorkerRequestFingerprint,
+	type WorkerSandboxFact,
+	type WorkerCredentialDetach,
+	type WorkerSandboxProviderOptions,
+	type WorkerSandboxPreflightFacts,
+	type WorkerSandboxProfile,
 } from "../src/core/worker-sandbox-provider.ts";
 import {
-	WorkerSupervisorV1,
-	type WorkerActivationPlanV1,
-	type WorkerSupervisorConfigV1,
+	OperationWorkerSupervisor,
+	type WorkerActivationPlan,
+	type WorkerSupervisorConfig,
 } from "../src/core/worker-supervisor.ts";
-import type { WorkerBindingV1, WorkerRecordV1 } from "../src/core/worker.ts";
-import { runWorkerEntryV1 } from "../src/worker-entry.ts";
+import type { WorkerBinding, WorkerRecord } from "../src/core/worker.ts";
+import { runOperationWorkerProcess } from "../src/worker-entry.ts";
 import {
 	createCodingAgentHarness,
 	createCodingAgentHarnessFromTrustedProvidersForTest,
@@ -195,7 +195,7 @@ function correlation(operationId = "operation-1"): ExecutionCorrelation {
 	};
 }
 
-function binding(request: SandboxOperationRequest, profileId: string): WorkerBindingV1 {
+function binding(request: SandboxOperationRequest, profileId: string): WorkerBinding {
 	return {
 		schemaVersion: 1,
 		workerId: `worker-${request.operationId}`,
@@ -211,11 +211,11 @@ function binding(request: SandboxOperationRequest, profileId: string): WorkerBin
 		capabilitySummary: ["filesystem.read", "process.spawn"],
 		...(request.deadlineAt === undefined ? { deadlineAt: Date.now() + 10_000 } : { deadlineAt: request.deadlineAt }),
 		credentialTargetRefs: [],
-		requestFingerprint: createWorkerRequestFingerprintV1(request),
+		requestFingerprint: createWorkerRequestFingerprint(request),
 	};
 }
 
-function facts(request: SandboxOperationRequest, profileId: string): WorkerSandboxPreflightFactsV1 {
+function facts(request: SandboxOperationRequest, profileId: string): WorkerSandboxPreflightFacts {
 	return {
 		binding: binding(request, profileId),
 		runAccepted: true,
@@ -233,18 +233,18 @@ function provider(
 	overrides: {
 		readonly resolvePreflight?: (
 				request: SandboxOperationRequest,
-				options: Parameters<WorkerSandboxProviderOptionsV1["resolvePreflight"]>[1],
-			) => WorkerSandboxPreflightFactsV1 | Promise<WorkerSandboxPreflightFactsV1>;
-		readonly onRecord?: (record: WorkerRecordV1) => void;
+				options: Parameters<WorkerSandboxProviderOptions["resolvePreflight"]>[1],
+			) => WorkerSandboxPreflightFacts | Promise<WorkerSandboxPreflightFacts>;
+		readonly onRecord?: (record: WorkerRecord) => void;
 		readonly onCreate?: () => void;
 		readonly requireRegisteredPayload?: boolean;
-		readonly createSupervisor?: (config: WorkerSupervisorConfigV1) => WorkerSupervisorV1;
+		readonly createSupervisor?: (config: WorkerSupervisorConfig) => OperationWorkerSupervisor;
 		readonly durableOwner?: string | false;
-		readonly durableSink?: (fact: WorkerSandboxFactV1) => void;
+		readonly durableSink?: (fact: WorkerSandboxFact) => void;
 		readonly maxRetainedRecords?: number;
 	} = {},
-): WorkerSandboxProviderV1 {
-	const current = new WorkerSandboxProviderV1({
+): WorkerSandboxProvider {
+	const current = new WorkerSandboxProvider({
 		providerId: "sandbox-worker",
 		...(profileId === undefined
 			? {}
@@ -270,7 +270,7 @@ function provider(
 		resolvePreflight: overrides.resolvePreflight ?? ((request) => facts(request, profileId ?? "disabled")),
 		createSupervisor: (config) => {
 			overrides.onCreate?.();
-			return overrides.createSupervisor?.(config) ?? new WorkerSupervisorV1(config);
+			return overrides.createSupervisor?.(config) ?? new OperationWorkerSupervisor(config);
 		},
 		...(overrides.requireRegisteredPayload === undefined ? {} : { requireRegisteredPayload: overrides.requireRegisteredPayload }),
 		...(overrides.onRecord === undefined ? {} : { onWorkerRecord: overrides.onRecord }),
@@ -282,10 +282,10 @@ function provider(
 	return current;
 }
 
-class ReplayableWorkerSandboxProvider extends WorkerSandboxProviderV1 {
-	private replaySink: ((fact: WorkerSandboxFactV1) => void) | undefined;
+class ReplayableWorkerSandboxProvider extends WorkerSandboxProvider {
+	private replaySink: ((fact: WorkerSandboxFact) => void) | undefined;
 
-	override bindDurableFactSink(ownerId: string, sink: (fact: WorkerSandboxFactV1) => void): () => void {
+	override bindDurableFactSink(ownerId: string, sink: (fact: WorkerSandboxFact) => void): () => void {
 		const release = super.bindDurableFactSink(ownerId, sink);
 		this.replaySink = sink;
 		return () => {
@@ -294,24 +294,24 @@ class ReplayableWorkerSandboxProvider extends WorkerSandboxProviderV1 {
 		};
 	}
 
-	replayFact(fact: WorkerSandboxFactV1): void {
+	replayFact(fact: WorkerSandboxFact): void {
 		if (this.replaySink === undefined) throw new Error("Replay sink is not bound");
 		this.replaySink(fact);
 	}
 }
 
-class ActivationBarrierWorkerSupervisor extends WorkerSupervisorV1 {
+class ActivationBarrierWorkerSupervisor extends OperationWorkerSupervisor {
 	private resolveActivationEntered: () => void = () => undefined;
 	readonly activationEntered = new Promise<void>((resolve) => { this.resolveActivationEntered = resolve; });
 
-	override activate(plan: WorkerActivationPlanV1) {
+	override activate(plan: WorkerActivationPlan) {
 		const activation = super.activate(plan);
 		this.resolveActivationEntered();
 		return activation;
 	}
 }
 
-class ExecuteGateWorkerSupervisor extends WorkerSupervisorV1 {
+class ExecuteGateWorkerSupervisor extends OperationWorkerSupervisor {
 	private resolveExecuteEntered: () => void = () => undefined;
 	private releaseExecuteGate: () => void = () => undefined;
 	readonly executeEntered = new Promise<void>((resolve) => { this.resolveExecuteEntered = resolve; });
@@ -330,7 +330,7 @@ class ExecuteGateWorkerSupervisor extends WorkerSupervisorV1 {
 
 function replayableProvider(
 	onCreate?: () => void,
-	resolvePreflight: WorkerSandboxProviderOptionsV1["resolvePreflight"] = (request) => facts(request, "success"),
+	resolvePreflight: WorkerSandboxProviderOptions["resolvePreflight"] = (request) => facts(request, "success"),
 ): ReplayableWorkerSandboxProvider {
 	return new ReplayableWorkerSandboxProvider({
 		providerId: "sandbox-worker",
@@ -354,14 +354,14 @@ function replayableProvider(
 		resolvePreflight,
 		createSupervisor: (config) => {
 			onCreate?.();
-			return new WorkerSupervisorV1(config);
+			return new OperationWorkerSupervisor(config);
 		},
 	});
 }
 
 function createWorkerControlPlane(
 	sessionManager: SessionManager,
-	workerSandboxProvider: WorkerSandboxProviderV1,
+	workerSandboxProvider: WorkerSandboxProvider,
 	options: {
 		readonly cacheLimit?: number;
 		readonly harness?: AgentHarness;
@@ -398,9 +398,9 @@ function createWorkerControlPlane(
 	});
 }
 
-function realWorkerProvider(root: string, policyBindingId: string, runId: string): WorkerSandboxProviderV1 {
+function realWorkerProvider(root: string, policyBindingId: string, runId: string): WorkerSandboxProvider {
 	const capabilities = ["filesystem.read", "filesystem.write", "process.spawn"];
-	const current = new WorkerSandboxProviderV1({
+	const current = new WorkerSandboxProvider({
 		providerId: "sandbox-worker",
 		profile: {
 			profileId: "real-worker-sandbox",
@@ -438,7 +438,7 @@ function realWorkerProvider(root: string, policyBindingId: string, runId: string
 				capabilitySummary: capabilities,
 				deadlineAt: request.deadlineAt ?? Date.now() + 30_000,
 				credentialTargetRefs: [],
-				requestFingerprint: createWorkerRequestFingerprintV1(request),
+				requestFingerprint: createWorkerRequestFingerprint(request),
 			},
 			runAccepted: true,
 			sessionOwned: true,
@@ -448,13 +448,13 @@ function realWorkerProvider(root: string, policyBindingId: string, runId: string
 			sandboxAuthorized: true,
 			credentialLeaseActive: true,
 		}),
-		createSupervisor: (config) => new WorkerSupervisorV1(config),
+		createSupervisor: (config) => new OperationWorkerSupervisor(config),
 	});
 	current.bindDurableFactSink("real-worker-session", () => undefined);
 	return current;
 }
 
-async function waitForRecord(records: readonly WorkerRecordV1[], status: WorkerRecordV1["status"]): Promise<void> {
+async function waitForRecord(records: readonly WorkerRecord[], status: WorkerRecord["status"]): Promise<void> {
 	const expires = Date.now() + WORKER_ASYNC_WAIT_TIMEOUT_MS;
 	while (Date.now() < expires) {
 		if (records.some((record) => record.status === status)) return;
@@ -473,9 +473,9 @@ async function waitForCondition(predicate: () => boolean, message: string): Prom
 }
 
 async function waitForWorkerFrame(
-	frames: readonly WorkerEventFrameV1[],
-	predicate: (frame: WorkerEventFrameV1) => boolean,
-): Promise<WorkerEventFrameV1> {
+	frames: readonly OperationWorkerEventFrame[],
+	predicate: (frame: OperationWorkerEventFrame) => boolean,
+): Promise<OperationWorkerEventFrame> {
 	const expires = Date.now() + WORKER_ASYNC_WAIT_TIMEOUT_MS;
 	while (Date.now() < expires) {
 		const frame = frames.find(predicate);
@@ -556,14 +556,14 @@ class WorkerCredentialMaterialTarget {
 }
 
 function createWorkerCredentialService(
-	current: WorkerSandboxProviderV1,
+	current: WorkerSandboxProvider,
 	workerId: string,
 ): {
 	readonly service: TaskCredentialService;
 	readonly session: SessionManager;
 	readonly target: WorkerCredentialMaterialTarget;
 	readonly clock: { nowMs: number };
-	readonly detaches: WorkerCredentialDetachV1[];
+	readonly detaches: WorkerCredentialDetach[];
 	readonly providerRevocation: { readonly leaseIds: string[]; onRevoke?: () => void };
 } {
 	const session = SessionManager.inMemory(process.cwd(), { id: "session-1" });
@@ -593,7 +593,7 @@ function createWorkerCredentialService(
 		policyMaxTtlMs: 300_000,
 		now: () => new Date(clock.nowMs).toISOString(),
 	});
-	const detaches: WorkerCredentialDetachV1[] = [];
+	const detaches: WorkerCredentialDetach[] = [];
 	current.bindCredentialDetachSink("session-1", (detach) => {
 		detaches.push(detach);
 		service.onWorkerDetach({
@@ -624,7 +624,7 @@ function createWorkerCredentialService(
 	return { service, session, target, clock, detaches, providerRevocation };
 }
 
-describe("WorkerSandboxProviderV1", () => {
+describe("WorkerSandboxProvider", () => {
 	it("attempts Host abort when Worker cancellation fails and preserves the first error", async () => {
 		const workerFailure = new Error("worker cancellation persistence failed");
 		let hostAbortCalls = 0;
@@ -655,9 +655,9 @@ describe("WorkerSandboxProviderV1", () => {
 	it("drains the TaskCredentialService safe projection queue after activation and before execute", async () => {
 		const workerId = "worker-credential-order";
 		const events: string[] = [];
-		const projected: SafeLeaseProjectionV1[] = [];
-		class CredentialOrderSupervisor extends WorkerSupervisorV1 {
-			override projectCredential(lease: SafeLeaseProjectionV1) {
+		const projected: SafeLeaseProjection[] = [];
+		class CredentialOrderSupervisor extends OperationWorkerSupervisor {
+			override projectCredential(lease: SafeLeaseProjection) {
 				events.push("project");
 				projected.push(lease);
 				return Promise.resolve(Result.ok(undefined));
@@ -747,10 +747,10 @@ describe("WorkerSandboxProviderV1", () => {
 
 	it("fails a credential drain closed through lost, provider revoke, and Worker quarantine", async () => {
 		const workerId = "worker-credential-failure";
-		let supervisor: WorkerSupervisorV1 | undefined;
+		let supervisor: OperationWorkerSupervisor | undefined;
 		let executeCalls = 0;
-		class CredentialFailureSupervisor extends WorkerSupervisorV1 {
-			override projectCredential(_lease: SafeLeaseProjectionV1) {
+		class CredentialFailureSupervisor extends OperationWorkerSupervisor {
+			override projectCredential(_lease: SafeLeaseProjection) {
 				return Promise.resolve(Result.err(new FoundationError(
 					"task_credential_target_unavailable",
 					"safe projection failed",
@@ -797,9 +797,9 @@ describe("WorkerSandboxProviderV1", () => {
 	it("keeps projection execution blocked and revokes when durable loss persistence fails", async () => {
 		const workerId = "worker-credential-loss-fault";
 		let executeCalls = 0;
-		const records: WorkerRecordV1[] = [];
-		class CredentialLossFaultSupervisor extends WorkerSupervisorV1 {
-			override projectCredential(_lease: SafeLeaseProjectionV1) {
+		const records: WorkerRecord[] = [];
+		class CredentialLossFaultSupervisor extends OperationWorkerSupervisor {
+			override projectCredential(_lease: SafeLeaseProjection) {
 				return Promise.resolve(Result.err(new FoundationError(
 					"task_credential_target_unavailable",
 					"safe projection failed",
@@ -850,13 +850,13 @@ describe("WorkerSandboxProviderV1", () => {
 		const renewEntered = new Promise<void>((resolve) => { enterRenew = resolve; });
 		const renewGate = new Promise<void>((resolve) => { releaseRenew = resolve; });
 		const executeGate = new Promise<void>((resolve) => { releaseExecute = resolve; });
-		class CredentialSerialSupervisor extends WorkerSupervisorV1 {
-			override projectCredential(_lease: SafeLeaseProjectionV1) {
+		class CredentialSerialSupervisor extends OperationWorkerSupervisor {
+			override projectCredential(_lease: SafeLeaseProjection) {
 				events.push("project");
 				return Promise.resolve(Result.ok(undefined));
 			}
 
-			override async renewCredential(_lease: SafeLeaseProjectionV1) {
+			override async renewCredential(_lease: SafeLeaseProjection) {
 				events.push("renew:start");
 				enterRenew();
 				await renewGate;
@@ -864,7 +864,7 @@ describe("WorkerSandboxProviderV1", () => {
 				return Result.ok(undefined);
 			}
 
-			override revokeCredential(_lease: SafeLeaseReferenceV1) {
+			override revokeCredential(_lease: SafeLeaseReference) {
 				events.push("revoke");
 				return Promise.resolve(Result.ok(undefined));
 			}
@@ -927,14 +927,14 @@ describe("WorkerSandboxProviderV1", () => {
 		const events: string[] = [];
 		let releaseExecute: () => void = () => undefined;
 		const executeGate = new Promise<void>((resolve) => { releaseExecute = resolve; });
-		class CredentialRenewFailureSupervisor extends WorkerSupervisorV1 {
+		class CredentialRenewFailureSupervisor extends OperationWorkerSupervisor {
 			override async execute(request: SandboxOperationRequest) {
 				events.push("execute");
 				await executeGate;
 				return super.execute(request);
 			}
 
-			override renewCredential(_lease: SafeLeaseProjectionV1) {
+			override renewCredential(_lease: SafeLeaseProjection) {
 				return Promise.resolve(Result.err(new FoundationError(
 					"task_credential_target_unavailable",
 					"safe renewal failed",
@@ -947,7 +947,7 @@ describe("WorkerSandboxProviderV1", () => {
 				return result;
 			}
 		}
-		const records: WorkerRecordV1[] = [];
+		const records: WorkerRecord[] = [];
 		const current = provider("success", {
 			onRecord: (record) => records.push(record),
 			resolvePreflight: (request) => ({
@@ -995,14 +995,14 @@ describe("WorkerSandboxProviderV1", () => {
 		let releaseRevoke: () => void = () => undefined;
 		const executeGate = new Promise<void>((resolve) => { releaseExecute = resolve; });
 		const revokeGate = new Promise<void>((resolve) => { releaseRevoke = resolve; });
-		class CredentialRevokeFailureSupervisor extends WorkerSupervisorV1 {
+		class CredentialRevokeFailureSupervisor extends OperationWorkerSupervisor {
 			override async execute(request: SandboxOperationRequest) {
 				events.push("execute");
 				await executeGate;
 				return super.execute(request);
 			}
 
-			override async revokeCredential(_lease: SafeLeaseReferenceV1) {
+			override async revokeCredential(_lease: SafeLeaseReference) {
 				events.push("worker-revoke");
 				await revokeGate;
 				return Result.err(new FoundationError(
@@ -1017,7 +1017,7 @@ describe("WorkerSandboxProviderV1", () => {
 				return result;
 			}
 		}
-		const records: WorkerRecordV1[] = [];
+		const records: WorkerRecord[] = [];
 		const current = provider("success", {
 			onRecord: (record) => records.push(record),
 			resolvePreflight: (request) => ({
@@ -1069,11 +1069,11 @@ describe("WorkerSandboxProviderV1", () => {
 	});
 
 	it("keeps credential delivery failure terminal-idempotent and bounds distinct Worker targets", async () => {
-		let supervisor: WorkerSupervisorV1 | undefined;
+		let supervisor: OperationWorkerSupervisor | undefined;
 		const current = provider("success", {
 			maxRetainedRecords: 2,
 			createSupervisor: (config) => {
-				supervisor = new WorkerSupervisorV1(config);
+				supervisor = new OperationWorkerSupervisor(config);
 				return supervisor;
 			},
 		});
@@ -1105,7 +1105,7 @@ describe("WorkerSandboxProviderV1", () => {
 		for (const scenario of scenarios) {
 			const operationId = `operation-credential-detach-${scenario.name}`;
 			const workerId = `worker-${operationId}`;
-			const records: WorkerRecordV1[] = [];
+			const records: WorkerRecord[] = [];
 			const current = provider(scenario.profileId, {
 				onRecord: (record) => records.push(record),
 				resolvePreflight: (request) => ({
@@ -1262,7 +1262,7 @@ describe("WorkerSandboxProviderV1", () => {
 			executeCalls += 1;
 			return { content: "sandbox result" };
 		});
-		const childProvider = createSandboxHandleOperationProviderV1({
+		const childProvider = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1287,7 +1287,7 @@ describe("WorkerSandboxProviderV1", () => {
 		});
 		const input = new PassThrough();
 		const output = new PassThrough();
-		const frames: WorkerEventFrameV1[] = [];
+		const frames: OperationWorkerEventFrame[] = [];
 		let outputBuffer = "";
 		output.setEncoding("utf8");
 		output.on("data", (chunk: string) => {
@@ -1295,28 +1295,28 @@ describe("WorkerSandboxProviderV1", () => {
 			for (;;) {
 				const newline = outputBuffer.indexOf("\n");
 				if (newline < 0) break;
-				const parsed = parseWorkerFrameV1(outputBuffer.slice(0, newline + 1));
+				const parsed = parseOperationWorkerFrame(outputBuffer.slice(0, newline + 1));
 				outputBuffer = outputBuffer.slice(newline + 1);
-				if (parsed.ok && validateWorkerEventFrameV1(parsed.value)) {
+				if (parsed.ok && validateOperationWorkerEventFrame(parsed.value)) {
 					frames.push(parsed.value);
 				}
 			}
 		});
-		const run = runWorkerEntryV1({ provider: childProvider, input, output, heartbeatIntervalMs: 0 });
+		const run = runOperationWorkerProcess({ provider: childProvider, input, output, heartbeatIntervalMs: 0 });
 		const request = {
 			...operation("child-operation"),
 			agentInstanceId: "upstream-agent-only",
 			bindingId: policy.binding.id,
 		};
-		const workerBinding: WorkerBindingV1 = {
+		const workerBinding: WorkerBinding = {
 			...binding(request, "success"),
 			sessionId: "worker-child-session",
 			runId: "run-child",
 			bindingId: policy.binding.id,
 			capabilitySummary: ["filesystem.read"],
 		};
-		const writeFrame = (frame: WorkerRequestFrameV1): void => {
-			input.write(serializeWorkerFrameLineV1(frame));
+		const writeFrame = (frame: OperationWorkerRequestFrame): void => {
+			input.write(serializeWorkerFrameLine(frame));
 		};
 		try {
 			writeFrame({ type: "initialize", requestId: "initialize-child", binding: workerBinding });
@@ -1369,7 +1369,7 @@ describe("WorkerSandboxProviderV1", () => {
 			executeCalls += 1;
 			return { content: "unexpected" };
 		});
-		const childProvider = createSandboxHandleOperationProviderV1({
+		const childProvider = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1414,7 +1414,7 @@ describe("WorkerSandboxProviderV1", () => {
 			executeCalls += 1;
 			return { content: "unexpected" };
 		}, { filesystem: false, process: true, network: false, credentialIsolation: true });
-		const liveCapabilityMissing = createSandboxHandleOperationProviderV1({
+		const liveCapabilityMissing = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy: liveCapabilityMissingPolicy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1427,7 +1427,7 @@ describe("WorkerSandboxProviderV1", () => {
 		})).toMatchObject({ ok: false, error: { code: "sandbox_capability_insufficient" } });
 		expect(executeCalls).toBe(0);
 
-		const declaredMissing = createSandboxHandleOperationProviderV1({
+		const declaredMissing = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1457,7 +1457,7 @@ describe("WorkerSandboxProviderV1", () => {
 			executed.push(request);
 			return { content: "authorized" };
 		});
-		const createChild = (currentPolicy: typeof policy) => createSandboxHandleOperationProviderV1({
+		const createChild = (currentPolicy: typeof policy) => createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy: currentPolicy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1531,7 +1531,7 @@ describe("WorkerSandboxProviderV1", () => {
 			path: ".",
 			pattern: "worker",
 		} as const;
-		expect(resolveWorkerSandboxOperationV1("binding-1", native)).toMatchObject(native);
+		expect(resolveWorkerSandboxOperation("binding-1", native)).toMatchObject(native);
 		const optionalFields: readonly Record<string, FoundationJsonValue>[] = [
 			{},
 			{ args: ["--name", "worker"] },
@@ -1540,10 +1540,10 @@ describe("WorkerSandboxProviderV1", () => {
 		];
 		for (const optional of optionalFields) {
 			const payload = { ...native, command: "find", cwd: ".", ...optional };
-			expect(resolveWorkerSandboxOperationV1("binding-1", payload)).toMatchObject(payload);
+			expect(resolveWorkerSandboxOperation("binding-1", payload)).toMatchObject(payload);
 		}
-		expect(resolveWorkerSandboxOperationV1("binding-1", { ...native, args: ["worker"] })).toBeUndefined();
-		expect(resolveWorkerSandboxOperationV1("binding-1", { ...native, timeoutMs: 500 })).toBeUndefined();
+		expect(resolveWorkerSandboxOperation("binding-1", { ...native, args: ["worker"] })).toBeUndefined();
+		expect(resolveWorkerSandboxOperation("binding-1", { ...native, timeoutMs: 500 })).toBeUndefined();
 	});
 
 	it("reserves child operation identity before asynchronous authorization", async () => {
@@ -1564,7 +1564,7 @@ describe("WorkerSandboxProviderV1", () => {
 				return basePolicy.authorizeFilesystem(input);
 			},
 		};
-		const childProvider = createSandboxHandleOperationProviderV1({
+		const childProvider = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1598,7 +1598,7 @@ describe("WorkerSandboxProviderV1", () => {
 					return basePolicy.authorizeFilesystem(input);
 				},
 			};
-			const childProvider = createSandboxHandleOperationProviderV1({
+			const childProvider = createSandboxHandleOperationProvider({
 				providerId: "sandbox-worker",
 				policy,
 				correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1641,7 +1641,7 @@ describe("WorkerSandboxProviderV1", () => {
 			}],
 			receiptId: (operationId: string) => `stable-${operationId}`,
 		};
-		const childProvider = createSandboxHandleOperationProviderV1(mutableOptions);
+		const childProvider = createSandboxHandleOperationProvider(mutableOptions);
 		mutableOptions.mapResult = () => [];
 		mutableOptions.receiptId = () => "mutated-receipt";
 		mutableCorrelation.sessionId = "mutated-session";
@@ -1670,7 +1670,7 @@ describe("WorkerSandboxProviderV1", () => {
 			Object.entries(noRunPolicyBase.binding).filter(([key]) => key !== "runId"),
 		) as typeof noRunPolicyBase.binding;
 		const noRunPolicy = { ...noRunPolicyBase, binding: noRunBinding };
-		const noRunProvider = createSandboxHandleOperationProviderV1({
+		const noRunProvider = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy: noRunPolicy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1700,7 +1700,7 @@ describe("WorkerSandboxProviderV1", () => {
 			executeCalls += 1;
 			return { content: "unexpected" };
 		});
-		const childProvider = createSandboxHandleOperationProviderV1({
+		const childProvider = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1713,7 +1713,7 @@ describe("WorkerSandboxProviderV1", () => {
 		expect(await childProvider.cancel(request.operationId)).toEqual({ ok: true, value: undefined });
 		await childProvider.dispose();
 		expect(executeCalls).toBe(0);
-		const noncanonicalProvider = createSandboxHandleOperationProviderV1({
+		const noncanonicalProvider = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1730,7 +1730,7 @@ describe("WorkerSandboxProviderV1", () => {
 		});
 		expect(executeCalls).toBe(0);
 
-		const epochProvider = createSandboxHandleOperationProviderV1({
+		const epochProvider = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1762,7 +1762,7 @@ describe("WorkerSandboxProviderV1", () => {
 				else signal?.addEventListener("abort", fail, { once: true });
 			});
 		});
-		const childProvider = createSandboxHandleOperationProviderV1({
+		const childProvider = createSandboxHandleOperationProvider({
 			providerId: "sandbox-worker",
 			policy,
 			correlation: { sessionId: "worker-child-session", laneId: "main" },
@@ -1785,7 +1785,7 @@ describe("WorkerSandboxProviderV1", () => {
 	});
 
 	it("converges cancellation without inventing a terminal receipt", async () => {
-		const records: WorkerRecordV1[] = [];
+		const records: WorkerRecord[] = [];
 		const current = provider("cancel_success", { onRecord: (record) => records.push(record) });
 		const request = operation("operation-cancel");
 		const started = executeOperation({ provider: current, request, correlation: correlation(request.operationId) });
@@ -1834,7 +1834,7 @@ describe("WorkerSandboxProviderV1", () => {
 
 	it("treats termination of an idle ready Worker conservatively and leaves no child alive", async () => {
 		const request = operation("operation-idle-terminate");
-		const current = new WorkerSupervisorV1({
+		const current = new OperationWorkerSupervisor({
 			executable: process.execPath,
 			entrypoint: CHILD_ENTRY,
 			profileId: "success",
@@ -1872,7 +1872,7 @@ describe("WorkerSandboxProviderV1", () => {
 		expect(current.lifecycleState?.transitions.map((transition) => transition.to)).toContain("lost");
 		expect(current.lifecycleState?.transitions.map((transition) => transition.to)).not.toContain("cancelled");
 
-		const failedStart = new WorkerSupervisorV1({
+		const failedStart = new OperationWorkerSupervisor({
 			executable: process.execPath,
 			entrypoint: CHILD_ENTRY,
 			profileId: "ready_timeout",
@@ -1907,7 +1907,7 @@ describe("WorkerSandboxProviderV1", () => {
 			expect(await executeOperation({ provider: current, request, correlation: correlation(request.operationId) })).toMatchObject({ ok: false, error: { code } });
 		}
 
-		const records: WorkerRecordV1[] = [];
+		const records: WorkerRecord[] = [];
 		const reclaimUnknown = provider("reclaim_unknown", { onRecord: (record) => records.push(record) });
 		const request = operation("operation-reclaim-unknown");
 		expect(await executeOperation({ provider: reclaimUnknown, request, correlation: correlation(request.operationId) })).toMatchObject({ ok: true });
@@ -1918,7 +1918,7 @@ describe("WorkerSandboxProviderV1", () => {
 		const mismatches: readonly {
 			readonly name: string;
 			readonly code: string;
-			readonly resolvePreflight?: (request: SandboxOperationRequest) => WorkerSandboxPreflightFactsV1;
+			readonly resolvePreflight?: (request: SandboxOperationRequest) => WorkerSandboxPreflightFacts;
 			readonly executionCorrelation?: (operationId: string) => ExecutionCorrelation;
 		}[] = [
 			{ name: "run-accepted", code: "worker_unavailable", resolvePreflight: (request) => ({ ...facts(request, "success"), runAccepted: false }) },
@@ -2086,14 +2086,14 @@ describe("WorkerSandboxProviderV1", () => {
 				profileRevision: 1,
 				capabilities: ["filesystem.read", "process.spawn"],
 			},
-		} as unknown as WorkerSandboxProfileV1;
-		const current = new WorkerSandboxProviderV1({
+		} as unknown as WorkerSandboxProfile;
+		const current = new WorkerSandboxProvider({
 			providerId: "sandbox-worker",
 			profile: untrustedProfile,
 			resolvePreflight: (request) => facts(request, "success"),
 			createSupervisor: (config) => {
 				created += 1;
-				return new WorkerSupervisorV1(config);
+				return new OperationWorkerSupervisor(config);
 			},
 		});
 		current.bindDurableFactSink("session-1", () => undefined);
@@ -2110,7 +2110,7 @@ describe("WorkerSandboxProviderV1", () => {
 			{ schemaVersion: 1 as const, id: "process.spawn", version: 1 },
 			{ schemaVersion: 1 as const, id: "filesystem.read", version: 1 },
 		];
-		const current = new WorkerSandboxProviderV1({
+		const current = new WorkerSandboxProvider({
 			providerId: "sandbox-worker",
 			profile: {
 				profileId: "success",
@@ -2145,7 +2145,7 @@ describe("WorkerSandboxProviderV1", () => {
 		let releasePreflight: () => void = () => undefined;
 		const preflightGate = new Promise<void>((resolve) => { releasePreflight = resolve; });
 		let created = 0;
-		const records: WorkerRecordV1[] = [];
+		const records: WorkerRecord[] = [];
 		const current = provider("success", {
 			onCreate: () => { created += 1; },
 			onRecord: (record) => records.push(record),
@@ -2259,7 +2259,7 @@ describe("WorkerSandboxProviderV1", () => {
 			sessionOwned: boolean;
 		};
 		const current = provider("success", {
-			resolvePreflight: () => mutableFacts as unknown as WorkerSandboxPreflightFactsV1,
+			resolvePreflight: () => mutableFacts as unknown as WorkerSandboxPreflightFacts,
 			createSupervisor: (config) => {
 				mutableFacts.binding.workerId = "worker-mutated-after-validation";
 				mutableFacts.binding.sessionId = "session-mutated-after-validation";
@@ -2269,7 +2269,7 @@ describe("WorkerSandboxProviderV1", () => {
 				mutableFacts.binding.credentialTargetRefs.push("secret-target");
 				mutableFacts.runAccepted = false;
 				mutableFacts.sessionOwned = false;
-				return new WorkerSupervisorV1(config);
+				return new OperationWorkerSupervisor(config);
 			},
 		});
 		expect(await current.start(request, { correlation: correlation(request.operationId) })).toMatchObject({
@@ -2289,7 +2289,7 @@ describe("WorkerSandboxProviderV1", () => {
 			resolvePreflight: (operationRequest) => ({
 				...facts(operationRequest, "success"),
 				runAccepted: "true",
-			}) as unknown as WorkerSandboxPreflightFactsV1,
+			}) as unknown as WorkerSandboxPreflightFacts,
 		});
 		const malformedRequest = operation("operation-malformed-preflight-boolean");
 		expect(await malformed.start(malformedRequest, { correlation: correlation(malformedRequest.operationId) })).toMatchObject({
@@ -2350,7 +2350,7 @@ describe("WorkerSandboxProviderV1", () => {
 	});
 
 	it("settles never-resolving preflight on cancel, deadline, and dispose without spawning", async () => {
-		const never = new Promise<WorkerSandboxPreflightFactsV1>(() => undefined);
+		const never = new Promise<WorkerSandboxPreflightFacts>(() => undefined);
 		let cancelCreated = 0;
 		const cancelled = provider("success", {
 			onCreate: () => { cancelCreated += 1; },
@@ -2446,7 +2446,7 @@ describe("WorkerSandboxProviderV1", () => {
 		let releasePreflight: () => void = () => undefined;
 		const preflightGate = new Promise<void>((resolve) => { releasePreflight = resolve; });
 		let created = 0;
-		const current = new WorkerSandboxProviderV1({
+		const current = new WorkerSandboxProvider({
 			providerId: "sandbox-worker",
 			profile: {
 				profileId: "success",
@@ -2470,7 +2470,7 @@ describe("WorkerSandboxProviderV1", () => {
 			},
 			createSupervisor: (config) => {
 				created += 1;
-				return new WorkerSupervisorV1(config);
+				return new OperationWorkerSupervisor(config);
 			},
 		});
 		current.bindDurableFactSink("session-1", () => undefined);
@@ -2490,7 +2490,7 @@ describe("WorkerSandboxProviderV1", () => {
 			error: { code: "worker_conflict" },
 		});
 
-		const payloadProvider = new WorkerSandboxProviderV1({
+		const payloadProvider = new WorkerSandboxProvider({
 			providerId: "sandbox-worker",
 			profile: {
 				profileId: "success",
@@ -2531,7 +2531,7 @@ describe("WorkerSandboxProviderV1", () => {
 	});
 
 	it("never evicts completed operation identities at small retention capacity", async () => {
-		const current = new WorkerSandboxProviderV1({
+		const current = new WorkerSandboxProvider({
 			providerId: "sandbox-worker",
 			profile: {
 				profileId: "success",
@@ -2580,7 +2580,7 @@ describe("WorkerSandboxProviderV1", () => {
 
 	it("persists an operation fence before execute and consumes a claimed-only crash prefix", async () => {
 		let executeCalls = 0;
-		class CountingSupervisor extends WorkerSupervisorV1 {
+		class CountingSupervisor extends OperationWorkerSupervisor {
 			override execute(request: SandboxOperationRequest) {
 				executeCalls += 1;
 				return super.execute(request);
@@ -2684,15 +2684,15 @@ describe("WorkerSandboxProviderV1", () => {
 	});
 
 	it("never executes after cancellation races with activation", async () => {
-		const records: WorkerRecordV1[] = [];
+		const records: WorkerRecord[] = [];
 		let enteredActivate: () => void = () => undefined;
 		const activateEntered = new Promise<void>((resolve) => { enteredActivate = resolve; });
 		let releaseActivate: () => void = () => undefined;
 		const activateRelease = new Promise<void>((resolve) => { releaseActivate = resolve; });
 		let executeCalls = 0;
-		let supervisor: WorkerSupervisorV1 | undefined;
-		class BarrierSupervisor extends WorkerSupervisorV1 {
-			override async activate(plan: WorkerActivationPlanV1) {
+		let supervisor: OperationWorkerSupervisor | undefined;
+		class BarrierSupervisor extends OperationWorkerSupervisor {
+			override async activate(plan: WorkerActivationPlan) {
 				const activation = super.activate(plan);
 				if (!this.snapshot.hasLiveProcess || this.snapshot.record?.status !== "starting") {
 					throw new Error("Expected live starting Worker at activation barrier");
@@ -2766,7 +2766,7 @@ describe("WorkerSandboxProviderV1", () => {
 			value: { status: "succeeded" },
 		});
 
-		const constructionFailure = new WorkerSandboxProviderV1({
+		const constructionFailure = new WorkerSandboxProvider({
 			providerId: "sandbox-worker",
 			profile: {
 				profileId: "success",
@@ -2794,7 +2794,7 @@ describe("WorkerSandboxProviderV1", () => {
 		});
 
 		let driftCreated = 0;
-		const drift = new WorkerSandboxProviderV1({
+		const drift = new WorkerSandboxProvider({
 			providerId: "sandbox-worker",
 			profile: {
 				profileId: "success",
@@ -2812,7 +2812,7 @@ describe("WorkerSandboxProviderV1", () => {
 			resolvePreflight: (request) => facts(request, "success"),
 			createSupervisor: (config) => {
 				driftCreated += 1;
-				return new WorkerSupervisorV1(config);
+				return new OperationWorkerSupervisor(config);
 			},
 		});
 		const driftRequest = operation("operation-capability-drift");
@@ -2842,8 +2842,8 @@ describe("WorkerSandboxProviderV1", () => {
 	});
 
 	it("retains bounded authoritative safe records, receipts, and complete transition facts", async () => {
-		const factsSeen: WorkerSandboxFactV1[] = [];
-		const current = new WorkerSandboxProviderV1({
+		const factsSeen: WorkerSandboxFact[] = [];
+		const current = new WorkerSandboxProvider({
 			providerId: "sandbox-worker",
 			profile: {
 				profileId: "success",
@@ -2864,7 +2864,7 @@ describe("WorkerSandboxProviderV1", () => {
 			},
 			maxRetainedRecords: 1,
 			resolvePreflight: (request) => facts(request, "success"),
-			createSupervisor: (config) => new WorkerSupervisorV1(config),
+			createSupervisor: (config) => new OperationWorkerSupervisor(config),
 		});
 		current.bindDurableFactSink("session-1", () => undefined);
 		const unsubscribe = current.subscribeFacts((fact) => factsSeen.push(fact));
@@ -2895,10 +2895,10 @@ describe("WorkerSandboxProviderV1", () => {
 	});
 
 	it("rejects reclaim while a live Worker operation is running", async () => {
-		let resolveRunning: (record: WorkerRecordV1) => void = () => undefined;
-		const running = new Promise<WorkerRecordV1>((resolve) => { resolveRunning = resolve; });
-		let supervisor: WorkerSupervisorV1 | undefined;
-		class RunningObservedSupervisor extends WorkerSupervisorV1 {
+		let resolveRunning: (record: WorkerRecord) => void = () => undefined;
+		const running = new Promise<WorkerRecord>((resolve) => { resolveRunning = resolve; });
+		let supervisor: OperationWorkerSupervisor | undefined;
+		class RunningObservedSupervisor extends OperationWorkerSupervisor {
 			override execute(request: SandboxOperationRequest) {
 				const execution = super.execute(request);
 				const observeRunning = (): void => {
@@ -2938,7 +2938,7 @@ describe("WorkerSandboxProviderV1", () => {
 	it("persists deterministic transition envelopes, deduplicates after cache eviction, and restores consumed identities", async () => {
 		const session = SessionManager.inMemory(process.cwd(), { id: "session-1" });
 		const current = replayableProvider();
-		const factsSeen: WorkerSandboxFactV1[] = [];
+		const factsSeen: WorkerSandboxFact[] = [];
 		current.subscribeFacts((fact) => factsSeen.push(fact));
 		const controlPlane = createWorkerControlPlane(session, current, { cacheLimit: 1 });
 		const request = operation("operation-durable-reload");
@@ -3222,7 +3222,7 @@ describe("WorkerSandboxProviderV1", () => {
 		await afterDisposedControlPlane.dispose();
 
 		const foreignSession = makePrefixSession();
-		const foreignProvider = new WorkerSandboxProviderV1({
+		const foreignProvider = new WorkerSandboxProvider({
 			providerId: "foreign-provider",
 			profile: {
 				profileId: "success",
@@ -3501,7 +3501,7 @@ describe("WorkerSandboxProviderV1", () => {
 	});
 
 	it("ignores a heartbeat emitted after the terminal receipt and reclaims normally", async () => {
-		const records: WorkerRecordV1[] = [];
+		const records: WorkerRecord[] = [];
 		const current = provider("late_heartbeat", { onRecord: (record) => records.push(record) });
 		const request = operation("operation-late-heartbeat");
 		const result = await executeOperation({

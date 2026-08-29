@@ -3,15 +3,15 @@ import { parseFoundationMutation } from "../../session/durable/codec.ts";
 import { canonicalFoundationJson, fingerprintFoundationValue, type Fingerprint } from "../identity.ts";
 
 /** Historical names stay private to the decoder that owns their persisted shape. */
-export type LegacyFoundationWrapperKindV1 = "foundation";
+export type LegacyFoundationWrapperKind = "foundation";
 
-export interface LegacyFoundationSchemaWrapperV1 {
-	readonly kind: LegacyFoundationWrapperKindV1;
+export interface LegacyFoundationSchemaWrapper {
+	readonly kind: LegacyFoundationWrapperKind;
 	readonly schemaVersion: 1;
 	readonly record: unknown;
 }
 
-export interface LegacyFoundationSchemaMigrationPlanV1 {
+export interface LegacyFoundationSchemaMigrationPlan {
 	readonly schemaVersion: 1;
 	readonly migrationId: string;
 	readonly sourceKind: "foundation.schema.wrapper";
@@ -38,7 +38,7 @@ function hasExactKeys(value: Record<string, unknown>, required: readonly string[
 	return required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => allowed.has(key));
 }
 
-function decodeWrapper(value: unknown): LegacyFoundationSchemaWrapperV1 {
+function decodeWrapper(value: unknown): LegacyFoundationSchemaWrapper {
 	if (!isRecord(value) || !hasExactKeys(value, ["kind", "schemaVersion", "record"])) {
 		throw new LegacyFoundationSchemaMigrationError("Historical Foundation wrapper has an invalid exact shape");
 	}
@@ -109,7 +109,7 @@ export function decodeLegacyFoundationSchemaWrapperV1(value: unknown): Foundatio
 }
 
 /** Build a clock-free plan whose identity is stable for one physical record. */
-export function planLegacyFoundationSchemaMigrationV1(value: unknown): LegacyFoundationSchemaMigrationPlanV1 {
+export function planLegacyFoundationSchemaMigrationV1(value: unknown): LegacyFoundationSchemaMigrationPlan {
 	const wrapper = decodeWrapper(value);
 	const result = decodeLegacyFoundationSchemaWrapperV1(wrapper);
 	const identity = {

@@ -2,9 +2,9 @@
  * Scheduler v1 fan-in and Host TaskResult settlement.
  *
  * AttemptReceipt and predecessor TaskResult facts are read only through
- * LayeredResultSettlementV1. The immutable join snapshot is stored on the
+ * LayeredResultSettlement. The immutable join snapshot is stored on the
  * same Session ledger before settlement, and TaskResult creation remains
- * sealed behind LayeredResultSettlementV1.settle. This module never writes a
+ * sealed behind LayeredResultSettlement.settle. This module never writes a
  * RunReceipt or a Host/Graph terminal fact.
  */
 import {
@@ -31,21 +31,21 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	parseSchedulerJoinPlan,
-	type SchedulerJoinPlanV1,
-	type SchedulerJoinPolicyV1,
-	type SchedulerNodeRefV1,
+	type SchedulerJoinPlan,
+	type SchedulerJoinPolicy,
+	type SchedulerNodeRef,
 } from "./scheduler.ts";
 
 export const SCHEDULER_JOIN_SNAPSHOT_OBJECT_TYPE = "scheduler.join_snapshot";
 export const SCHEDULER_FAN_IN_HOST_PROVIDER_ID = "aos.scheduler.host";
 
-export interface SchedulerFanInSnapshotV1 {
+export interface SchedulerFanInSnapshot {
 	readonly schemaVersion: 1;
 	readonly joinId: string;
 	readonly taskId: string;
 	readonly taskResultId: string;
 	readonly taskFingerprint: Fingerprint;
-	readonly policy: SchedulerJoinPolicyV1;
+	readonly policy: SchedulerJoinPolicy;
 	readonly predecessorNodeIds: readonly string[];
 	readonly predecessorTaskResultIds: readonly string[];
 	readonly missingPredecessorNodeIds: readonly string[];
@@ -62,11 +62,11 @@ export interface SchedulerFanInSnapshotV1 {
 	readonly createdAt: string;
 }
 
-export interface SchedulerFanInSettleRequestV1 {
+export interface SchedulerFanInSettleRequest {
 	readonly task: TaskEnvelope;
-	readonly nodeRef: SchedulerNodeRefV1;
+	readonly nodeRef: SchedulerNodeRef;
 	readonly currentAttemptReceiptIds: readonly string[];
-	readonly plan?: SchedulerJoinPlanV1;
+	readonly plan?: SchedulerJoinPlan;
 	readonly summary: string;
 	readonly artifacts?: readonly ArtifactRef[];
 	readonly diff?: ArtifactRef;
@@ -75,13 +75,13 @@ export interface SchedulerFanInSettleRequestV1 {
 	readonly validation?: ResultValidation;
 }
 
-export interface SchedulerFanInSettlementV1 {
-	readonly snapshot: SchedulerFanInSnapshotV1;
+export interface SchedulerFanInSettlement {
+	readonly snapshot: SchedulerFanInSnapshot;
 	readonly taskResult: TaskResult;
 	readonly snapshotReplayed: boolean;
 }
 
-export interface SchedulerFanInOptionsV1 {
+export interface SchedulerFanInOptions {
 	readonly session: Session;
 	readonly sessionId: string;
 	readonly ownerId: string;
@@ -91,7 +91,7 @@ export interface SchedulerFanInOptionsV1 {
 }
 
 interface CollectedFanInV1 {
-	readonly policy: SchedulerJoinPolicyV1;
+	readonly policy: SchedulerJoinPolicy;
 	readonly predecessorNodeIds: readonly string[];
 	readonly predecessorTaskResultIds: readonly string[];
 	readonly missingPredecessorNodeIds: readonly string[];
@@ -172,7 +172,7 @@ function copyProducer(value: ResultProvenance): ResultProvenance {
 	};
 }
 
-function copySnapshot(value: SchedulerFanInSnapshotV1): SchedulerFanInSnapshotV1 {
+function copySnapshot(value: SchedulerFanInSnapshot): SchedulerFanInSnapshot {
 	return {
 		schemaVersion: 1,
 		joinId: value.joinId,
@@ -197,15 +197,15 @@ function copySnapshot(value: SchedulerFanInSnapshotV1): SchedulerFanInSnapshotV1
 	};
 }
 
-export function schedulerNodeJoinId(nodeRef: SchedulerNodeRefV1): string {
+export function schedulerNodeJoinId(nodeRef: SchedulerNodeRef): string {
 	return `join_${fingerprintFoundationValue(nodeRef).value}`;
 }
 
-export function schedulerNodeTaskResultId(nodeRef: SchedulerNodeRefV1): string {
+export function schedulerNodeTaskResultId(nodeRef: SchedulerNodeRef): string {
 	return `task_result_${fingerprintFoundationValue(nodeRef).value}`;
 }
 
-function stableInput(snapshot: Omit<SchedulerFanInSnapshotV1, "inputDigest" | "createdAt" | "producer">): unknown {
+function stableInput(snapshot: Omit<SchedulerFanInSnapshot, "inputDigest" | "createdAt" | "producer">): unknown {
 	return {
 		...snapshot,
 		producerKind: "host",
@@ -220,7 +220,7 @@ export class SchedulerFanInController {
 	private readonly laneId: string;
 	private readonly nowFn: () => string;
 
-	constructor(options: SchedulerFanInOptionsV1) {
+	constructor(options: SchedulerFanInOptions) {
 		const laneId = options.laneId ?? "main";
 		if (
 			options.writer !== undefined &&
@@ -245,8 +245,8 @@ export class SchedulerFanInController {
 	}
 
 	async settle(
-		request: SchedulerFanInSettleRequestV1,
-	): Promise<ResultValue<SchedulerFanInSettlementV1, FoundationError>> {
+		request: SchedulerFanInSettleRequest,
+	): Promise<ResultValue<SchedulerFanInSettlement, FoundationError>> {
 		const checkedTask = validateTaskEnvelope(request.task);
 		if (!checkedTask.ok) return checkedTask;
 		if (request.nodeRef.taskId !== checkedTask.value.taskId || !uniqueNonEmpty(request.currentAttemptReceiptIds)) {
@@ -294,11 +294,11 @@ export class SchedulerFanInController {
 		};
 		const inputDigest = fingerprintFoundationValue(stableInput(base));
 		const existing = await this.ledger.get(SCHEDULER_JOIN_SNAPSHOT_OBJECT_TYPE, joinId);
-		let snapshot: SchedulerFanInSnapshotV1;
+		let snapshot: SchedulerFanInSnapshot;
 		let snapshotReplayed = false;
 		if (existing !== undefined) {
 			if (existing.kind !== "fact") return fail("scheduler_fanin_invalid");
-			const stored = existing.payload as unknown as SchedulerFanInSnapshotV1;
+			const stored = existing.payload as unknown as SchedulerFanInSnapshot;
 			if (
 				stored.schemaVersion !== 1 ||
 				stored.joinId !== joinId ||
@@ -355,10 +355,10 @@ export class SchedulerFanInController {
 		return Result.ok({ snapshot: copySnapshot(snapshot), taskResult: settled.value, snapshotReplayed });
 	}
 
-	async getSnapshot(joinId: string): Promise<SchedulerFanInSnapshotV1 | undefined> {
+	async getSnapshot(joinId: string): Promise<SchedulerFanInSnapshot | undefined> {
 		const stored = await this.ledger.get(SCHEDULER_JOIN_SNAPSHOT_OBJECT_TYPE, joinId);
 		if (stored === undefined || stored.kind !== "fact") return undefined;
-		return copySnapshot(stored.payload as unknown as SchedulerFanInSnapshotV1);
+		return copySnapshot(stored.payload as unknown as SchedulerFanInSnapshot);
 	}
 
 	async release(): Promise<void> {
@@ -367,7 +367,7 @@ export class SchedulerFanInController {
 	}
 
 	private async collect(
-		request: SchedulerFanInSettleRequestV1,
+		request: SchedulerFanInSettleRequest,
 	): Promise<ResultValue<CollectedFanInV1, FoundationError>> {
 		const policy = request.plan?.policy ?? "require_all";
 		const predecessorNodeIds = request.plan?.predecessorTaskIds ?? [];
@@ -377,7 +377,7 @@ export class SchedulerFanInController {
 		const selectedReceiptIds = [...request.currentAttemptReceiptIds];
 		const artifacts = new Map<string, ArtifactRef>();
 		for (const predecessorNodeId of predecessorNodeIds) {
-			const predecessorRef: SchedulerNodeRefV1 = {
+			const predecessorRef: SchedulerNodeRef = {
 				taskId: request.nodeRef.taskId,
 				graphRevision: request.nodeRef.graphRevision,
 				nodeId: predecessorNodeId,
@@ -429,6 +429,6 @@ export class SchedulerFanInController {
 	}
 }
 
-export function schedulerFanInSnapshotsEqual(left: SchedulerFanInSnapshotV1, right: SchedulerFanInSnapshotV1): boolean {
+export function schedulerFanInSnapshotsEqual(left: SchedulerFanInSnapshot, right: SchedulerFanInSnapshot): boolean {
 	return canonicalFoundationJson(left) === canonicalFoundationJson(right);
 }

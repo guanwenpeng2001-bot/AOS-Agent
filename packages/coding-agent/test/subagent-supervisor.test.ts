@@ -28,12 +28,12 @@ import {
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
 import {
 	SUBAGENT_SUPERVISOR_CONTROL_OBJECT_TYPE,
-	SubagentSupervisorV1,
-	type PlanSubagentSpawnInputV1,
-	type SubagentSpawnPlanV1,
+	SubagentSupervisor,
+	type PlanSubagentSpawnInput,
+	type SubagentSpawnPlan,
 } from "../src/core/subagent-supervisor.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -139,7 +139,7 @@ function childAgent(agentInstanceId: string, taskId: string, parent: AgentInstan
 	return result.value;
 }
 
-const descriptor: SubagentProviderDescriptorV1 = {
+const descriptor: SubagentProviderDescriptor = {
 	schemaVersion: 1,
 	providerKind: "in_process",
 	descriptor: { schemaVersion: 1, providerId: PROVIDER_ID, providerClass: "agent" },
@@ -158,7 +158,7 @@ interface Fixture {
 	readonly session: Session;
 	readonly ledger: SessionLedger;
 	readonly ledgerForLane: (laneId: string) => SessionLedger;
-	readonly supervisor: SubagentSupervisorV1;
+	readonly supervisor: SubagentSupervisor;
 	readonly roleRevision: RoleRevision;
 	readonly modelProfile: ModelProfile;
 	readonly misdirectChildWrites: () => void;
@@ -194,7 +194,7 @@ function fixture(
 		session,
 		ledger,
 		ledgerForLane,
-		supervisor: new SubagentSupervisorV1({
+		supervisor: new SubagentSupervisor({
 			schemaVersion: 1,
 			ledger,
 			ledgerForLane,
@@ -231,7 +231,7 @@ function fixture(
 
 async function planInput(
 	value: Fixture,
-	overrides: Partial<PlanSubagentSpawnInputV1> = {},
+	overrides: Partial<PlanSubagentSpawnInput> = {},
 	originAttemptOverrides: {
 		readonly objectId?: string;
 		readonly payloadAttemptId?: string;
@@ -246,7 +246,7 @@ async function planInput(
 		readonly emptyBindingEpochIds?: boolean;
 		readonly lineageParentLaneId?: string;
 	} = {},
-): Promise<PlanSubagentSpawnInputV1> {
+): Promise<PlanSubagentSpawnInput> {
 	const origin = overrides.originParentAgentInstance ?? rootAgent("parent-1", "task-parent", value.roleRevision);
 	const lineageParent = overrides.lineageParentAgentInstance ?? origin;
 	const childTask = overrides.request?.taskEnvelope ?? task(`task-child-${overrides.childAgentInstanceId ?? "1"}`);
@@ -383,7 +383,7 @@ async function planInput(
 	};
 }
 
-function spawnResult(plan: SubagentSpawnPlanV1): ChildSpawnResult {
+function spawnResult(plan: SubagentSpawnPlan): ChildSpawnResult {
 	const attempt = createAttempt({
 		attemptId: plan.initialBindingEpoch.attemptId,
 		dispatch: plan.dispatch,
@@ -419,7 +419,7 @@ function provider(overrides: Partial<ChildAgentProvider> = {}): ChildAgentProvid
 	};
 }
 
-async function makeRunning(value: Fixture, input: PlanSubagentSpawnInputV1): Promise<SubagentSpawnPlanV1> {
+async function makeRunning(value: Fixture, input: PlanSubagentSpawnInput): Promise<SubagentSpawnPlan> {
 	const planned = await value.supervisor.planSpawn(input);
 	if (!planned.ok) throw planned.error;
 	const childProvider = provider({
@@ -436,7 +436,7 @@ async function makeRunning(value: Fixture, input: PlanSubagentSpawnInputV1): Pro
 	return planned.value;
 }
 
-function receipt(plan: SubagentSpawnPlanV1, status: AttemptReceipt["status"] = "succeeded"): AttemptReceipt {
+function receipt(plan: SubagentSpawnPlan, status: AttemptReceipt["status"] = "succeeded"): AttemptReceipt {
 	return {
 		schemaVersion: 1,
 		attemptReceiptId: `receipt-${plan.initialBindingEpoch.attemptId}`,
@@ -462,7 +462,7 @@ function receipt(plan: SubagentSpawnPlanV1, status: AttemptReceipt["status"] = "
 
 async function persistReceipt(
 	value: Fixture,
-	plan: SubagentSpawnPlanV1,
+	plan: SubagentSpawnPlan,
 	status: AttemptReceipt["status"] = "succeeded",
 ): Promise<AttemptReceipt> {
 	const produced = receipt(plan, status);
@@ -504,7 +504,7 @@ async function persistReceipt(
 	return accepted.value.receipt;
 }
 
-describe("SubagentSupervisorV1", () => {
+describe("SubagentSupervisor", () => {
 	it("persists unique child lanes and exposes the exact provider plan keyed by spawnId", async () => {
 		const value = fixture();
 		const input = await planInput(value);
@@ -836,7 +836,7 @@ describe("SubagentSupervisorV1", () => {
 			ok: false,
 			error: { code: "subagent_resume_failed" },
 		});
-		const reloaded = new SubagentSupervisorV1({
+		const reloaded = new SubagentSupervisor({
 			schemaVersion: 1,
 			ledger: value.ledger,
 			ledgerForLane: value.ledgerForLane,
@@ -879,7 +879,7 @@ describe("SubagentSupervisorV1", () => {
 		const recovery = fixture({ maxTurns: 4 });
 		const recoveryInput = await planInput(recovery, { maxTurns: 2 });
 		const recoveryPlan = await makeRunning(recovery, recoveryInput);
-		const recoverySupervisor = new SubagentSupervisorV1({
+		const recoverySupervisor = new SubagentSupervisor({
 			schemaVersion: 1,
 			ledger: recovery.ledger,
 			ledgerForLane: recovery.ledgerForLane,
@@ -905,11 +905,11 @@ describe("SubagentSupervisorV1", () => {
 
 	it("marks malformed, missing, and unsafe receipts lost with no retry", async () => {
 		for (const [caseName, makeReceipt] of [
-			["malformed", (_plan: SubagentSpawnPlanV1): unknown => ({ schemaVersion: 1 })],
-			["missing", (plan: SubagentSpawnPlanV1): unknown => receipt(plan)],
+			["malformed", (_plan: SubagentSpawnPlan): unknown => ({ schemaVersion: 1 })],
+			["missing", (plan: SubagentSpawnPlan): unknown => receipt(plan)],
 			[
 				"unsafe",
-				(plan: SubagentSpawnPlanV1): unknown => ({ ...receipt(plan, "cancelled"), sideEffectState: "unknown" }),
+				(plan: SubagentSpawnPlan): unknown => ({ ...receipt(plan, "cancelled"), sideEffectState: "unknown" }),
 			],
 		] as const) {
 			const value = fixture();

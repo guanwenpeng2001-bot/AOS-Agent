@@ -20,13 +20,13 @@ import {
 import {
 	applySchedulerMessageAck,
 	parseSchedulerMessage,
-	type SchedulerMessageCorrelationV1,
-	type SchedulerMessageV1,
+	type SchedulerMessageCorrelation,
+	type SchedulerMessage,
 	serializeSchedulerMessage,
 } from "./scheduler.ts";
 import type { TaskGraphRecord, TaskGraphStore } from "./task-graph.ts";
 
-export const SCHEDULER_MESSAGE_OBJECT_TYPES_V1 = Object.freeze({
+export const SCHEDULER_MESSAGE_OBJECT_TYPES = Object.freeze({
 	posted: "scheduler.message_posted",
 	acked: "scheduler.message_acked",
 	timeout: "scheduler.message_timeout",
@@ -66,7 +66,7 @@ const FORBIDDEN_KEYS = new Set([
 	"url",
 ]);
 
-export interface SchedulerTaskResultReferenceV1 {
+export interface SchedulerTaskResultReference {
 	readonly schemaVersion: 1;
 	readonly type: "task_result";
 	readonly sessionId: string;
@@ -74,7 +74,7 @@ export interface SchedulerTaskResultReferenceV1 {
 	readonly revision: number;
 }
 
-export interface SchedulerRunReceiptReferenceV1 {
+export interface SchedulerRunReceiptReference {
 	readonly schemaVersion: 1;
 	readonly type: "run_receipt";
 	readonly sessionId: string;
@@ -83,9 +83,9 @@ export interface SchedulerRunReceiptReferenceV1 {
 	readonly revision: number;
 }
 
-export type SchedulerResultReferenceV1 = SchedulerTaskResultReferenceV1 | SchedulerRunReceiptReferenceV1;
+export type SchedulerResultReference = SchedulerTaskResultReference | SchedulerRunReceiptReference;
 
-export type SchedulerMessageMaterialV1 =
+export type SchedulerMessageMaterial =
 	| { readonly schemaVersion: 1; readonly kind: "fingerprint"; readonly fingerprint: Fingerprint }
 	| {
 			readonly schemaVersion: 1;
@@ -93,16 +93,16 @@ export type SchedulerMessageMaterialV1 =
 			readonly sessionId: string;
 			readonly artifact: ArtifactRef;
 	  }
-	| { readonly schemaVersion: 1; readonly kind: "task_result"; readonly reference: SchedulerTaskResultReferenceV1 }
-	| { readonly schemaVersion: 1; readonly kind: "run_receipt"; readonly reference: SchedulerRunReceiptReferenceV1 };
+	| { readonly schemaVersion: 1; readonly kind: "task_result"; readonly reference: SchedulerTaskResultReference }
+	| { readonly schemaVersion: 1; readonly kind: "run_receipt"; readonly reference: SchedulerRunReceiptReference };
 
-export interface SchedulerMessagePostFactV1 {
+export interface SchedulerMessagePostFact {
 	readonly schemaVersion: 1;
-	readonly message: SchedulerMessageV1;
-	readonly material?: SchedulerMessageMaterialV1;
+	readonly message: SchedulerMessage;
+	readonly material?: SchedulerMessageMaterial;
 }
 
-export interface SchedulerMessageTimeoutFactV1 {
+export interface SchedulerMessageTimeoutFact {
 	readonly schemaVersion: 1;
 	readonly messageId: string;
 	readonly threadId: string;
@@ -112,37 +112,37 @@ export interface SchedulerMessageTimeoutFactV1 {
 	readonly revision: number;
 }
 
-export interface SchedulerMessageThreadEntryV1 {
+export interface SchedulerMessageThreadEntry {
 	readonly schemaVersion: 1;
 	readonly messageId: string;
 	readonly state: "posted" | "acked" | "timed_out";
-	readonly message: SchedulerMessageV1;
-	readonly material?: SchedulerMessageMaterialV1;
-	readonly transmissions: readonly SchedulerMessageV1[];
-	readonly timeout?: SchedulerMessageTimeoutFactV1;
+	readonly message: SchedulerMessage;
+	readonly material?: SchedulerMessageMaterial;
+	readonly transmissions: readonly SchedulerMessage[];
+	readonly timeout?: SchedulerMessageTimeoutFact;
 }
 
-export interface SchedulerMessageThreadV1 {
+export interface SchedulerMessageThread {
 	readonly schemaVersion: 1;
 	readonly threadId: string;
-	readonly entries: readonly SchedulerMessageThreadEntryV1[];
+	readonly entries: readonly SchedulerMessageThreadEntry[];
 }
 
-export interface SchedulerMessageSessionEndpointV1 {
+export interface SchedulerMessageSessionEndpoint {
 	readonly session: Session;
 	readonly taskGraph: TaskGraphStore;
 }
 
-export interface SchedulerMessageOrchestratorOptionsV1 {
+export interface SchedulerMessageOrchestratorOptions {
 	readonly ownerId?: string;
 }
 
-export interface SchedulerMessagePostResultV1 {
-	readonly message: SchedulerMessageV1;
+export interface SchedulerMessagePostResult {
+	readonly message: SchedulerMessage;
 	readonly replayed: boolean;
 }
 
-export interface SchedulerTaskWaitFactV1 {
+export interface SchedulerTaskWaitFact {
 	readonly schemaVersion: 1;
 	readonly kind: "task";
 	readonly waitId: string;
@@ -158,7 +158,7 @@ export interface SchedulerTaskWaitFactV1 {
 	readonly observedAt: string;
 }
 
-export interface SchedulerAskWaitFactV1 {
+export interface SchedulerAskWaitFact {
 	readonly schemaVersion: 1;
 	readonly kind: "ask";
 	readonly waitId: string;
@@ -176,14 +176,14 @@ export interface SchedulerAskWaitFactV1 {
 	readonly responseMessageId?: string;
 }
 
-export type SchedulerWaitFactV1 = SchedulerTaskWaitFactV1 | SchedulerAskWaitFactV1;
+export type SchedulerWaitFact = SchedulerTaskWaitFact | SchedulerAskWaitFact;
 
-export interface SchedulerResultResolutionV1 {
-	readonly reference: SchedulerResultReferenceV1;
+export interface SchedulerResultResolution {
+	readonly reference: SchedulerResultReference;
 	readonly status: TaskResult["status"] | RunReceipt["terminalStatus"];
 }
 
-export interface SchedulerResultReclaimFactV1 {
+export interface SchedulerResultReclaimFact {
 	readonly schemaVersion: 1;
 	readonly readyMessageId: string;
 	readonly reclaimMessageId: string;
@@ -191,19 +191,19 @@ export interface SchedulerResultReclaimFactV1 {
 	readonly sourceSessionId: string;
 	readonly targetSessionId: string;
 	readonly taskId: string;
-	readonly reference: SchedulerResultReferenceV1;
+	readonly reference: SchedulerResultReference;
 	readonly clientRequestId: string;
 	readonly reclaimedAt: string;
 }
 
-export interface SchedulerAskResolutionV1 {
+export interface SchedulerAskResolution {
 	readonly askId: string;
 	readonly status: Ask["status"];
 	readonly evidence?: AcceptanceFact;
-	readonly message?: SchedulerMessageV1;
+	readonly message?: SchedulerMessage;
 }
 
-export interface SchedulerAskStateV1 {
+export interface SchedulerAskState {
 	readonly schemaVersion: 1;
 	readonly askId: string;
 	readonly targetSessionId: string;
@@ -220,10 +220,10 @@ interface EndpointState {
 }
 
 interface MessageState {
-	readonly transmissions: readonly SchedulerMessageV1[];
-	readonly material?: SchedulerMessageMaterialV1;
-	readonly current: SchedulerMessageV1;
-	readonly timeout?: SchedulerMessageTimeoutFactV1;
+	readonly transmissions: readonly SchedulerMessage[];
+	readonly material?: SchedulerMessageMaterial;
+	readonly current: SchedulerMessage;
+	readonly timeout?: SchedulerMessageTimeoutFact;
 }
 
 interface SchedulerFactCorrelation {
@@ -297,7 +297,7 @@ function assertNoForbiddenKeys(value: unknown): void {
 		}
 	}
 }
-function assertSafeMessageIdentifiers(message: SchedulerMessageV1): void {
+function assertSafeMessageIdentifiers(message: SchedulerMessage): void {
 	if (
 		!safeId(message.messageId) ||
 		!safeId(message.threadId) ||
@@ -337,7 +337,7 @@ function assertArtifactIdentity(value: ArtifactRef): void {
 	}
 }
 
-function parseTaskResultReference(value: unknown): SchedulerTaskResultReferenceV1 {
+function parseTaskResultReference(value: unknown): SchedulerTaskResultReference {
 	if (
 		!isRecord(value) ||
 		!hasOnlyKeys(value, ["schemaVersion", "type", "sessionId", "id", "revision"]) ||
@@ -353,7 +353,7 @@ function parseTaskResultReference(value: unknown): SchedulerTaskResultReferenceV
 	return { schemaVersion: 1, type: "task_result", sessionId: value.sessionId, id: value.id, revision: value.revision };
 }
 
-function parseRunReceiptReference(value: unknown): SchedulerRunReceiptReferenceV1 {
+function parseRunReceiptReference(value: unknown): SchedulerRunReceiptReference {
 	if (
 		!isRecord(value) ||
 		!hasOnlyKeys(value, ["schemaVersion", "type", "sessionId", "id", "runId", "revision"]) ||
@@ -377,7 +377,7 @@ function parseRunReceiptReference(value: unknown): SchedulerRunReceiptReferenceV
 	};
 }
 
-function parseMaterial(value: unknown): SchedulerMessageMaterialV1 {
+function parseMaterial(value: unknown): SchedulerMessageMaterial {
 	if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.kind !== "string") {
 		invalid("Scheduler message material is invalid");
 	}
@@ -408,17 +408,17 @@ function parseMaterial(value: unknown): SchedulerMessageMaterialV1 {
 	invalid("Scheduler message material kind is unsupported");
 }
 
-function materialDigest(material: SchedulerMessageMaterialV1): Fingerprint {
+function materialDigest(material: SchedulerMessageMaterial): Fingerprint {
 	return material.kind === "fingerprint" ? clone(material.fingerprint) : fingerprintFoundationValue(material);
 }
 
-function materialOwner(material: SchedulerMessageMaterialV1): string | undefined {
+function materialOwner(material: SchedulerMessageMaterial): string | undefined {
 	if (material.kind === "artifact") return material.sessionId;
 	if (material.kind === "task_result" || material.kind === "run_receipt") return material.reference.sessionId;
 	return undefined;
 }
 
-function validateMessageMaterial(message: SchedulerMessageV1, material: SchedulerMessageMaterialV1 | undefined): void {
+function validateMessageMaterial(message: SchedulerMessage, material: SchedulerMessageMaterial | undefined): void {
 	if ((message.payloadDigest === undefined) !== (material === undefined)) {
 		invalid("Scheduler message digest and material must be supplied together");
 	}
@@ -448,7 +448,7 @@ function validateMessageMaterial(message: SchedulerMessageV1, material: Schedule
 	}
 }
 
-function parsePostFact(value: unknown): SchedulerMessagePostFactV1 {
+function parsePostFact(value: unknown): SchedulerMessagePostFact {
 	if (!isRecord(value) || !hasOnlyKeys(value, ["schemaVersion", "message", "material"]) || value.schemaVersion !== 1) {
 		invalid("Durable scheduler post fact is malformed");
 	}
@@ -464,7 +464,7 @@ function parsePostFact(value: unknown): SchedulerMessagePostFactV1 {
 	};
 }
 
-function parseTimeoutFact(value: unknown): SchedulerMessageTimeoutFactV1 {
+function parseTimeoutFact(value: unknown): SchedulerMessageTimeoutFact {
 	if (
 		!isRecord(value) ||
 		!hasOnlyKeys(value, [
@@ -497,7 +497,7 @@ function parseTimeoutFact(value: unknown): SchedulerMessageTimeoutFactV1 {
 	};
 }
 
-function immutableMessageIdentity(left: SchedulerMessageV1, right: SchedulerMessageV1): boolean {
+function immutableMessageIdentity(left: SchedulerMessage, right: SchedulerMessage): boolean {
 	return (
 		left.messageId === right.messageId &&
 		left.type === right.type &&
@@ -510,7 +510,7 @@ function immutableMessageIdentity(left: SchedulerMessageV1, right: SchedulerMess
 	);
 }
 
-function correlationForMessage(message: SchedulerMessageV1): {
+function correlationForMessage(message: SchedulerMessage): {
 	readonly taskId?: string;
 	readonly goalId?: string;
 	readonly parentId: string;
@@ -534,7 +534,7 @@ function parseRequiredTimestamp(record: Record<string, unknown>, key: string): s
 	return value;
 }
 
-function safeAskState(ask: Ask): SchedulerAskStateV1 {
+function safeAskState(ask: Ask): SchedulerAskState {
 	return {
 		schemaVersion: 1,
 		askId: ask.askId,
@@ -549,8 +549,8 @@ export class SchedulerMessageOrchestrator {
 	private readonly initialized: Promise<ReadonlyMap<string, EndpointState>>;
 
 	constructor(
-		endpoints: readonly [SchedulerMessageSessionEndpointV1, SchedulerMessageSessionEndpointV1],
-		options: SchedulerMessageOrchestratorOptionsV1 = {},
+		endpoints: readonly [SchedulerMessageSessionEndpoint, SchedulerMessageSessionEndpoint],
+		options: SchedulerMessageOrchestratorOptions = {},
 	) {
 		if (endpoints[0].session === endpoints[1].session)
 			invalid("Cross-Session messaging requires two distinct Sessions");
@@ -572,7 +572,7 @@ export class SchedulerMessageOrchestrator {
 		await Promise.all(this.endpointStates.map((endpoint) => endpoint.writer.releaseLease()));
 	}
 
-	async post(input: unknown): Promise<SchedulerMessagePostResultV1> {
+	async post(input: unknown): Promise<SchedulerMessagePostResult> {
 		assertNoForbiddenKeys(input);
 		if (!isRecord(input) || !hasOnlyKeys(input, ["message", "material"]))
 			invalid("Scheduler post input is not exact");
@@ -583,7 +583,7 @@ export class SchedulerMessageOrchestrator {
 		});
 		if (fact.message.revision !== 0 || fact.message.ackedAt !== undefined)
 			invalid("A new scheduler message must start at revision zero");
-		const existing = await this.facts(SCHEDULER_MESSAGE_OBJECT_TYPES_V1.posted, fact.message.messageId);
+		const existing = await this.facts(SCHEDULER_MESSAGE_OBJECT_TYPES.posted, fact.message.messageId);
 		if (existing.length > 0) {
 			const state = await this.loadMessage(fact.message.messageId);
 			if (!same(state.transmissions[0], fact.message) || !same(state.material, fact.material)) {
@@ -591,7 +591,7 @@ export class SchedulerMessageOrchestrator {
 			}
 			await this.repairMirror(
 				fact.message,
-				SCHEDULER_MESSAGE_OBJECT_TYPES_V1.posted,
+				SCHEDULER_MESSAGE_OBJECT_TYPES.posted,
 				fact.message.messageId,
 				fact,
 				`scheduler-post:${fact.message.messageId}:0`,
@@ -601,7 +601,7 @@ export class SchedulerMessageOrchestrator {
 		}
 		const result = await this.persistMirrored(
 			fact.message,
-			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.posted,
+			SCHEDULER_MESSAGE_OBJECT_TYPES.posted,
 			fact.message.messageId,
 			fact,
 			`scheduler-post:${fact.message.messageId}:0`,
@@ -610,7 +610,7 @@ export class SchedulerMessageOrchestrator {
 		return { message: clone(fact.message), replayed: result };
 	}
 
-	async acknowledge(input: unknown): Promise<SchedulerMessagePostResultV1> {
+	async acknowledge(input: unknown): Promise<SchedulerMessagePostResult> {
 		if (!isRecord(input) || !hasOnlyKeys(input, ["sessionId", "messageId", "threadId", "at"])) {
 			invalid("Scheduler acknowledgment input is not exact");
 		}
@@ -624,14 +624,14 @@ export class SchedulerMessageOrchestrator {
 		}
 		if (state.timeout !== undefined) timeout("A timed-out scheduler message cannot be acknowledged");
 		if (state.current.ackedAt !== undefined) {
-			const fact: SchedulerMessagePostFactV1 = {
+			const fact: SchedulerMessagePostFact = {
 				schemaVersion: 1,
 				message: state.current,
 				...(state.material === undefined ? {} : { material: state.material }),
 			};
 			await this.repairMirror(
 				fact.message,
-				SCHEDULER_MESSAGE_OBJECT_TYPES_V1.acked,
+				SCHEDULER_MESSAGE_OBJECT_TYPES.acked,
 				messageId,
 				fact,
 				`scheduler-ack:${messageId}:${fact.message.revision}`,
@@ -641,14 +641,14 @@ export class SchedulerMessageOrchestrator {
 		}
 		const applied = applySchedulerMessageAck(state.current, at);
 		if (!applied.ok) throw applied.error;
-		const fact: SchedulerMessagePostFactV1 = {
+		const fact: SchedulerMessagePostFact = {
 			schemaVersion: 1,
 			message: applied.value,
 			...(state.material === undefined ? {} : { material: state.material }),
 		};
 		const replayed = await this.persistMirrored(
 			applied.value,
-			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.acked,
+			SCHEDULER_MESSAGE_OBJECT_TYPES.acked,
 			messageId,
 			fact,
 			`scheduler-ack:${messageId}:${applied.value.revision}`,
@@ -657,7 +657,7 @@ export class SchedulerMessageOrchestrator {
 		return { message: clone(applied.value), replayed };
 	}
 
-	async replayRequiredMessage(input: unknown): Promise<SchedulerMessagePostResultV1> {
+	async replayRequiredMessage(input: unknown): Promise<SchedulerMessagePostResult> {
 		if (!isRecord(input) || !hasOnlyKeys(input, ["sessionId", "messageId", "threadId", "at", "expiresAt"])) {
 			invalid("Scheduler replay input is not exact");
 		}
@@ -678,14 +678,14 @@ export class SchedulerMessageOrchestrator {
 			if (state.current.createdAt !== at || state.current.expiresAt !== expiresAt) {
 				timeout("A scheduler message may be replayed only once");
 			}
-			const fact: SchedulerMessagePostFactV1 = {
+			const fact: SchedulerMessagePostFact = {
 				schemaVersion: 1,
 				message: state.current,
 				...(state.material === undefined ? {} : { material: state.material }),
 			};
 			await this.repairMirror(
 				state.current,
-				SCHEDULER_MESSAGE_OBJECT_TYPES_V1.posted,
+				SCHEDULER_MESSAGE_OBJECT_TYPES.posted,
 				messageId,
 				fact,
 				`scheduler-post:${messageId}:${state.current.revision}`,
@@ -703,14 +703,14 @@ export class SchedulerMessageOrchestrator {
 			expiresAt,
 			revision: state.current.revision + 1,
 		});
-		const fact: SchedulerMessagePostFactV1 = {
+		const fact: SchedulerMessagePostFact = {
 			schemaVersion: 1,
 			message,
 			...(state.material === undefined ? {} : { material: state.material }),
 		};
 		const replayed = await this.persistMirrored(
 			message,
-			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.posted,
+			SCHEDULER_MESSAGE_OBJECT_TYPES.posted,
 			messageId,
 			fact,
 			`scheduler-post:${messageId}:${message.revision}`,
@@ -719,7 +719,7 @@ export class SchedulerMessageOrchestrator {
 		return { message, replayed };
 	}
 
-	async timeoutRequiredMessage(input: unknown): Promise<SchedulerMessageTimeoutFactV1> {
+	async timeoutRequiredMessage(input: unknown): Promise<SchedulerMessageTimeoutFact> {
 		if (!isRecord(input) || !hasOnlyKeys(input, ["sessionId", "messageId", "threadId", "at"])) {
 			invalid("Scheduler timeout input is not exact");
 		}
@@ -734,7 +734,7 @@ export class SchedulerMessageOrchestrator {
 		if (state.timeout !== undefined) {
 			await this.repairMirror(
 				state.current,
-				SCHEDULER_MESSAGE_OBJECT_TYPES_V1.timeout,
+				SCHEDULER_MESSAGE_OBJECT_TYPES.timeout,
 				messageId,
 				state.timeout,
 				`scheduler-timeout:${messageId}:${state.timeout.revision}`,
@@ -751,7 +751,7 @@ export class SchedulerMessageOrchestrator {
 		}
 		if (Date.parse(at) < Date.parse(state.current.expiresAt))
 			timeout("Scheduler message expiration has not been reached");
-		const fact: SchedulerMessageTimeoutFactV1 = {
+		const fact: SchedulerMessageTimeoutFact = {
 			schemaVersion: 1,
 			messageId,
 			threadId,
@@ -762,7 +762,7 @@ export class SchedulerMessageOrchestrator {
 		};
 		await this.persistMirrored(
 			state.current,
-			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.timeout,
+			SCHEDULER_MESSAGE_OBJECT_TYPES.timeout,
 			messageId,
 			fact,
 			`scheduler-timeout:${messageId}:${fact.revision}`,
@@ -771,14 +771,14 @@ export class SchedulerMessageOrchestrator {
 		return fact;
 	}
 
-	async rebuildThread(threadId: string): Promise<SchedulerMessageThreadV1> {
+	async rebuildThread(threadId: string): Promise<SchedulerMessageThread> {
 		if (!safeId(threadId)) invalid("Scheduler thread identifier is invalid");
 		const endpoints = await this.initialized;
 		const messageIds = new Set<string>();
 		for (const endpoint of endpoints.values()) {
 			const records = await endpoint.ledger.find({
 				kind: "fact",
-				objectType: SCHEDULER_MESSAGE_OBJECT_TYPES_V1.posted,
+				objectType: SCHEDULER_MESSAGE_OBJECT_TYPES.posted,
 				order: "oldestFirst",
 				includePruned: true,
 			});
@@ -788,7 +788,7 @@ export class SchedulerMessageOrchestrator {
 				if (fact.message.threadId === threadId) messageIds.add(fact.message.messageId);
 			}
 		}
-		const entries: SchedulerMessageThreadEntryV1[] = [];
+		const entries: SchedulerMessageThreadEntry[] = [];
 		for (const messageId of messageIds) {
 			const state = await this.loadMessage(messageId);
 			if (state.current.threadId !== threadId)
@@ -813,8 +813,8 @@ export class SchedulerMessageOrchestrator {
 
 	async submitCrossSessionTask(input: unknown): Promise<{
 		readonly graph: TaskGraphRecord;
-		readonly wait: SchedulerTaskWaitFactV1;
-		readonly message: SchedulerMessageV1;
+		readonly wait: SchedulerTaskWaitFact;
+		readonly message: SchedulerMessage;
 		readonly reused: boolean;
 	}> {
 		if (
@@ -854,7 +854,7 @@ export class SchedulerMessageOrchestrator {
 		const graphRevision = input.graphRevision;
 		const goalId = input.goalId === undefined ? undefined : parseRequiredString(input, "goalId");
 		const workflowId = input.workflowId === undefined ? undefined : parseRequiredString(input, "workflowId");
-		const correlation: SchedulerMessageCorrelationV1 = {
+		const correlation: SchedulerMessageCorrelation = {
 			taskId,
 			...(goalId === undefined ? {} : { goalId }),
 			...(workflowId === undefined ? {} : { workflowId }),
@@ -875,7 +875,7 @@ export class SchedulerMessageOrchestrator {
 			invalid("Cross-Session submit cannot reuse a Graph without the requested node");
 		}
 		if (graph.sessionId !== targetSessionId) invalid("Target Task Graph belongs to another Session");
-		const message: SchedulerMessageV1 = {
+		const message: SchedulerMessage = {
 			schemaVersion: 1,
 			messageId,
 			type: "note",
@@ -890,7 +890,7 @@ export class SchedulerMessageOrchestrator {
 		};
 		const posted = await this.post({ message });
 		const acknowledged = await this.acknowledge({ sessionId: targetSessionId, messageId, threadId, at: createdAt });
-		const wait: SchedulerTaskWaitFactV1 = {
+		const wait: SchedulerTaskWaitFact = {
 			schemaVersion: 1,
 			kind: "task",
 			waitId,
@@ -907,7 +907,7 @@ export class SchedulerMessageOrchestrator {
 		};
 		await this.persistImmutableFact(
 			source,
-			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.wait,
+			SCHEDULER_MESSAGE_OBJECT_TYPES.wait,
 			waitId,
 			wait,
 			`scheduler-task-wait:${waitId}:waiting`,
@@ -916,7 +916,7 @@ export class SchedulerMessageOrchestrator {
 		return { graph: clone(graph), wait, message: acknowledged.message, reused: reused || posted.replayed };
 	}
 
-	async waitForCrossSessionTask(input: unknown): Promise<SchedulerTaskWaitFactV1> {
+	async waitForCrossSessionTask(input: unknown): Promise<SchedulerTaskWaitFact> {
 		if (!isRecord(input) || !hasOnlyKeys(input, ["sourceSessionId", "waitId", "at"])) {
 			invalid("Cross-Session task wait input is not exact");
 		}
@@ -924,7 +924,7 @@ export class SchedulerMessageOrchestrator {
 		const waitId = parseRequiredString(input, "waitId");
 		const at = parseRequiredTimestamp(input, "at");
 		const source = await this.endpoint(sourceSessionId);
-		const stored = await source.ledger.getFact<SchedulerWaitFactV1>(SCHEDULER_MESSAGE_OBJECT_TYPES_V1.wait, waitId);
+		const stored = await source.ledger.getFact<SchedulerWaitFact>(SCHEDULER_MESSAGE_OBJECT_TYPES.wait, waitId);
 		if (stored === undefined || stored.payload.kind !== "task") notFound("Cross-Session task wait was not found");
 		const wait = stored.payload;
 		if (wait.sourceSessionId !== sourceSessionId || wait.waitId !== waitId)
@@ -943,8 +943,8 @@ export class SchedulerMessageOrchestrator {
 					? "timed_out"
 					: "waiting";
 		if (status === "waiting") return clone(wait);
-		const next: SchedulerTaskWaitFactV1 = { ...wait, status, observedAt: at };
-		await source.ledger.appendFact(SCHEDULER_MESSAGE_OBJECT_TYPES_V1.wait, waitId, next, {
+		const next: SchedulerTaskWaitFact = { ...wait, status, observedAt: at };
+		await source.ledger.appendFact(SCHEDULER_MESSAGE_OBJECT_TYPES.wait, waitId, next, {
 			clientRequestId: `scheduler-task-wait:${waitId}:${status}`,
 			expectedRevision: stored.record.revision,
 			correlation: { taskId: wait.taskId, parentId: wait.messageId },
@@ -952,7 +952,7 @@ export class SchedulerMessageOrchestrator {
 		return next;
 	}
 
-	async publishResultReady(input: unknown): Promise<SchedulerMessageV1> {
+	async publishResultReady(input: unknown): Promise<SchedulerMessage> {
 		if (
 			!isRecord(input) ||
 			!hasOnlyKeys(input, [
@@ -978,11 +978,11 @@ export class SchedulerMessageOrchestrator {
 		const reference = this.parseResultReference(input.reference);
 		if (reference.sessionId !== ownerSessionId) invalid("result.ready reference belongs to another Session");
 		await this.resolveResultReference(reference, taskId);
-		const material: SchedulerMessageMaterialV1 =
+		const material: SchedulerMessageMaterial =
 			reference.type === "task_result"
 				? { schemaVersion: 1, kind: "task_result", reference }
 				: { schemaVersion: 1, kind: "run_receipt", reference };
-		const message: SchedulerMessageV1 = {
+		const message: SchedulerMessage = {
 			schemaVersion: 1,
 			messageId,
 			type: "result.ready",
@@ -1001,7 +1001,7 @@ export class SchedulerMessageOrchestrator {
 
 	async reclaimResult(
 		input: unknown,
-	): Promise<SchedulerResultResolutionV1 & { readonly message: SchedulerMessageV1; readonly replayed: boolean }> {
+	): Promise<SchedulerResultResolution & { readonly message: SchedulerMessage; readonly replayed: boolean }> {
 		if (
 			!isRecord(input) ||
 			!hasOnlyKeys(input, [
@@ -1046,13 +1046,13 @@ export class SchedulerMessageOrchestrator {
 		}
 		const reference = clone(state.material.reference);
 		const resolved = await this.resolveResultReference(reference, taskId);
-		const material: SchedulerMessageMaterialV1 =
+		const material: SchedulerMessageMaterial =
 			reference.type === "task_result"
 				? { schemaVersion: 1, kind: "task_result", reference }
 				: { schemaVersion: 1, kind: "run_receipt", reference };
 		const source = await this.endpoint(sourceSessionId);
-		const existing = await source.ledger.getFact<SchedulerResultReclaimFactV1>(
-			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.reclaim,
+		const existing = await source.ledger.getFact<SchedulerResultReclaimFact>(
+			SCHEDULER_MESSAGE_OBJECT_TYPES.reclaim,
 			readyMessageId,
 		);
 		if (existing !== undefined) {
@@ -1087,7 +1087,7 @@ export class SchedulerMessageOrchestrator {
 			return { ...resolved, message: replay.message, replayed: true };
 		}
 		await this.acknowledge({ sessionId: sourceSessionId, messageId: readyMessageId, threadId, at });
-		const fact: SchedulerResultReclaimFactV1 = {
+		const fact: SchedulerResultReclaimFact = {
 			schemaVersion: 1,
 			readyMessageId,
 			reclaimMessageId,
@@ -1099,7 +1099,7 @@ export class SchedulerMessageOrchestrator {
 			clientRequestId,
 			reclaimedAt: at,
 		};
-		await source.ledger.appendFact(SCHEDULER_MESSAGE_OBJECT_TYPES_V1.reclaim, readyMessageId, fact, {
+		await source.ledger.appendFact(SCHEDULER_MESSAGE_OBJECT_TYPES.reclaim, readyMessageId, fact, {
 			clientRequestId: `scheduler-result-reclaim:${clientRequestId}`,
 			expectedRevision: 0,
 			correlation: {
@@ -1110,7 +1110,7 @@ export class SchedulerMessageOrchestrator {
 					: { runId: reference.runId, runReceiptId: reference.id }),
 			},
 		});
-		const message: SchedulerMessageV1 = {
+		const message: SchedulerMessage = {
 			schemaVersion: 1,
 			messageId: reclaimMessageId,
 			type: "result.reclaim",
@@ -1128,9 +1128,9 @@ export class SchedulerMessageOrchestrator {
 	}
 
 	async createCrossSessionAsk(input: unknown): Promise<{
-		readonly ask: SchedulerAskStateV1;
-		readonly wait: SchedulerAskWaitFactV1;
-		readonly message: SchedulerMessageV1;
+		readonly ask: SchedulerAskState;
+		readonly wait: SchedulerAskWaitFact;
+		readonly message: SchedulerMessage;
 	}> {
 		assertNoForbiddenKeys(input);
 		if (
@@ -1203,12 +1203,12 @@ export class SchedulerMessageOrchestrator {
 		if (ask.sessionId !== targetSessionId || ask.askId !== askId)
 			invalid("Created Ask identity does not match its target Session");
 		const questionDigest = fingerprintFoundationValue({ askId, question, options });
-		const material: SchedulerMessageMaterialV1 = {
+		const material: SchedulerMessageMaterial = {
 			schemaVersion: 1,
 			kind: "fingerprint",
 			fingerprint: questionDigest,
 		};
-		const message: SchedulerMessageV1 = {
+		const message: SchedulerMessage = {
 			schemaVersion: 1,
 			messageId,
 			type: "note",
@@ -1228,7 +1228,7 @@ export class SchedulerMessageOrchestrator {
 		};
 		await this.post({ message, material });
 		const acknowledged = await this.acknowledge({ sessionId: targetSessionId, messageId, threadId, at: createdAt });
-		const wait: SchedulerAskWaitFactV1 = {
+		const wait: SchedulerAskWaitFact = {
 			schemaVersion: 1,
 			kind: "ask",
 			waitId,
@@ -1245,7 +1245,7 @@ export class SchedulerMessageOrchestrator {
 		};
 		await this.persistImmutableFact(
 			source,
-			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.wait,
+			SCHEDULER_MESSAGE_OBJECT_TYPES.wait,
 			waitId,
 			wait,
 			`scheduler-ask-wait:${waitId}:waiting`,
@@ -1258,7 +1258,7 @@ export class SchedulerMessageOrchestrator {
 		return { ask: safeAskState(ask), wait, message: acknowledged.message };
 	}
 
-	async replyCrossSessionAsk(input: unknown): Promise<SchedulerAskStateV1> {
+	async replyCrossSessionAsk(input: unknown): Promise<SchedulerAskState> {
 		if (
 			!isRecord(input) ||
 			!hasOnlyKeys(input, ["targetSessionId", "askId", "optionIndex", "by", "replyId", "clientRequestId"])
@@ -1284,7 +1284,7 @@ export class SchedulerMessageOrchestrator {
 		return safeAskState(answered);
 	}
 
-	async resolveCrossSessionAsk(input: unknown): Promise<SchedulerAskResolutionV1> {
+	async resolveCrossSessionAsk(input: unknown): Promise<SchedulerAskResolution> {
 		if (
 			!isRecord(input) ||
 			!hasOnlyKeys(input, ["sourceSessionId", "waitId", "at", "clientRequestId", "messageId"])
@@ -1297,7 +1297,7 @@ export class SchedulerMessageOrchestrator {
 		const clientRequestId = parseRequiredString(input, "clientRequestId");
 		const responseMessageId = parseRequiredString(input, "messageId");
 		const source = await this.endpoint(sourceSessionId);
-		const stored = await source.ledger.getFact<SchedulerWaitFactV1>(SCHEDULER_MESSAGE_OBJECT_TYPES_V1.wait, waitId);
+		const stored = await source.ledger.getFact<SchedulerWaitFact>(SCHEDULER_MESSAGE_OBJECT_TYPES.wait, waitId);
 		if (stored === undefined || stored.payload.kind !== "ask") notFound("Cross-Session Ask wait was not found");
 		const wait = stored.payload;
 		if (wait.sourceSessionId !== sourceSessionId || wait.waitId !== waitId)
@@ -1315,7 +1315,7 @@ export class SchedulerMessageOrchestrator {
 				invalid("Settled Cross-Session Ask evidence is inconsistent");
 			}
 			const response = await this.loadMessage(responseMessageId);
-			const expectedMaterial: SchedulerMessageMaterialV1 = {
+			const expectedMaterial: SchedulerMessageMaterial = {
 				schemaVersion: 1,
 				kind: "fingerprint",
 				fingerprint: fingerprintFoundationValue(wait.evidence),
@@ -1373,18 +1373,18 @@ export class SchedulerMessageOrchestrator {
 		};
 		await this.persistImmutableFact(
 			source,
-			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.ask,
+			SCHEDULER_MESSAGE_OBJECT_TYPES.ask,
 			wait.askId,
 			evidence,
 			`scheduler-ask-evidence:${wait.askId}:${ask.revision}`,
 			{ parentId: wait.askId },
 		);
-		const material: SchedulerMessageMaterialV1 = {
+		const material: SchedulerMessageMaterial = {
 			schemaVersion: 1,
 			kind: "fingerprint",
 			fingerprint: fingerprintFoundationValue(evidence),
 		};
-		const message: SchedulerMessageV1 = {
+		const message: SchedulerMessage = {
 			schemaVersion: 1,
 			messageId: responseMessageId,
 			type: "note",
@@ -1398,14 +1398,14 @@ export class SchedulerMessageOrchestrator {
 			revision: 0,
 		};
 		const posted = await this.post({ message, material });
-		const next: SchedulerAskWaitFactV1 = {
+		const next: SchedulerAskWaitFact = {
 			...wait,
 			status: ask.status,
 			observedAt,
 			evidence,
 			responseMessageId,
 		};
-		await source.ledger.appendFact(SCHEDULER_MESSAGE_OBJECT_TYPES_V1.wait, waitId, next, {
+		await source.ledger.appendFact(SCHEDULER_MESSAGE_OBJECT_TYPES.wait, waitId, next, {
 			clientRequestId: `scheduler-ask-wait:${waitId}:${ask.status}`,
 			expectedRevision: stored.record.revision,
 			correlation: { parentId: wait.askId },
@@ -1456,7 +1456,7 @@ export class SchedulerMessageOrchestrator {
 	}
 
 	private async persistMirrored<TPayload>(
-		message: SchedulerMessageV1,
+		message: SchedulerMessage,
 		objectType: string,
 		objectId: string,
 		payload: TPayload,
@@ -1481,7 +1481,7 @@ export class SchedulerMessageOrchestrator {
 	}
 
 	private async repairMirror<TPayload>(
-		message: SchedulerMessageV1,
+		message: SchedulerMessage,
 		objectType: string,
 		objectId: string,
 		payload: TPayload,
@@ -1520,9 +1520,9 @@ export class SchedulerMessageOrchestrator {
 
 	private async loadMessage(messageId: string): Promise<MessageState> {
 		if (!safeId(messageId)) invalid("Scheduler message identifier is invalid");
-		const postedRecords = await this.facts(SCHEDULER_MESSAGE_OBJECT_TYPES_V1.posted, messageId);
+		const postedRecords = await this.facts(SCHEDULER_MESSAGE_OBJECT_TYPES.posted, messageId);
 		if (postedRecords.length === 0) notFound("Scheduler message was not found");
-		const byRevision = new Map<number, SchedulerMessagePostFactV1>();
+		const byRevision = new Map<number, SchedulerMessagePostFact>();
 		for (const record of postedRecords) {
 			const fact = parsePostFact(record.payload);
 			if (fact.message.messageId !== messageId)
@@ -1550,8 +1550,8 @@ export class SchedulerMessageOrchestrator {
 		}
 		let current = ordered.at(-1)!.message;
 		const material = ordered[0]!.material;
-		const ackRecords = await this.facts(SCHEDULER_MESSAGE_OBJECT_TYPES_V1.acked, messageId);
-		let ackFact: SchedulerMessagePostFactV1 | undefined;
+		const ackRecords = await this.facts(SCHEDULER_MESSAGE_OBJECT_TYPES.acked, messageId);
+		let ackFact: SchedulerMessagePostFact | undefined;
 		for (const record of ackRecords) {
 			const fact = parsePostFact(record.payload);
 			if (fact.message.messageId !== messageId || !same(fact.material, material))
@@ -1565,8 +1565,8 @@ export class SchedulerMessageOrchestrator {
 				invalid("Scheduler acknowledgment revision or correlation is invalid");
 			current = ackFact.message;
 		}
-		const timeoutRecords = await this.facts(SCHEDULER_MESSAGE_OBJECT_TYPES_V1.timeout, messageId);
-		let timeoutFact: SchedulerMessageTimeoutFactV1 | undefined;
+		const timeoutRecords = await this.facts(SCHEDULER_MESSAGE_OBJECT_TYPES.timeout, messageId);
+		let timeoutFact: SchedulerMessageTimeoutFact | undefined;
 		for (const record of timeoutRecords) {
 			const fact = parseTimeoutFact(record.payload);
 			if (timeoutFact !== undefined && !same(timeoutFact, fact))
@@ -1596,15 +1596,15 @@ export class SchedulerMessageOrchestrator {
 		};
 	}
 
-	private parseResultReference(value: unknown): SchedulerResultReferenceV1 {
+	private parseResultReference(value: unknown): SchedulerResultReference {
 		if (!isRecord(value)) invalid("Scheduler result reference is invalid");
 		return value.type === "task_result" ? parseTaskResultReference(value) : parseRunReceiptReference(value);
 	}
 
 	private async resolveResultReference(
-		reference: SchedulerResultReferenceV1,
+		reference: SchedulerResultReference,
 		taskId: string,
-	): Promise<SchedulerResultResolutionV1> {
+	): Promise<SchedulerResultResolution> {
 		const endpoint = await this.endpoint(reference.sessionId);
 		if (reference.type === "task_result") {
 			const stored = await endpoint.ledger.get("task_result", reference.id);

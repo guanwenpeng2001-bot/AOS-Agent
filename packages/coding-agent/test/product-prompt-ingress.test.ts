@@ -31,9 +31,9 @@ import {
 import { getModel } from "@aos-agent/ai/compat";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { deriveProductPromptModelProfileIdV1 } from "../src/core/product-prompt-binding-authority.ts";
-import { ProductPromptIngressV1 } from "../src/core/product-prompt-ingress.ts";
-import { TrustedSubagentCompositionV1 } from "../src/core/subagent-composition.ts";
+import { deriveProductPromptModelProfileId } from "../src/core/product-prompt-binding-authority.ts";
+import { ProductPromptIngress } from "../src/core/product-prompt-ingress.ts";
+import { TrustedSubagentComposition } from "../src/core/subagent-composition.ts";
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 
 const MODEL = getModel("openai", "gpt-4o-mini");
@@ -121,7 +121,7 @@ function response(text: string): AssistantMessage {
 	};
 }
 
-describe("ProductPromptIngressV1", () => {
+describe("ProductPromptIngress", () => {
 	it("executes explicit in_process Child Agents through the production ingress and exposes only a durable safe next-turn result", async () => {
 		if (MODEL === undefined) throw new Error("Test model is unavailable");
 		const runId = "product-run-native-child";
@@ -170,7 +170,7 @@ describe("ProductPromptIngressV1", () => {
 			modelProfileRef: {
 				schemaVersion: 1,
 				type: "model_profile",
-				id: deriveProductPromptModelProfileIdV1(MODEL, "off"),
+				id: deriveProductPromptModelProfileId(MODEL, "off"),
 				revision: 1,
 			},
 			capabilitySelector: { policy: "none" },
@@ -227,7 +227,7 @@ describe("ProductPromptIngressV1", () => {
 		let replaceLeaseBeforeChildPersistence = false;
 		let replacementFencingToken: string | undefined;
 		let selectedForkScope: "none" | "recent_n" = "none";
-		const composition = new TrustedSubagentCompositionV1({
+		const composition = new TrustedSubagentComposition({
 			schemaVersion: 1,
 			enabled: true,
 			session,
@@ -273,7 +273,7 @@ describe("ProductPromptIngressV1", () => {
 			limits: { maxDepth: 2, maxConcurrent: 1, maxTurns: 2, queueCapacity: 1, maximumQueueWaitMs: 100 },
 			now: () => "2026-08-20T00:00:00.000Z",
 		});
-		const ingress = new ProductPromptIngressV1({
+		const ingress = new ProductPromptIngress({
 			session,
 			harness: created.harness,
 			models,
@@ -391,7 +391,7 @@ describe("ProductPromptIngressV1", () => {
 			return stream;
 		};
 		const created = await AgentHarness.create({ session, models, model: MODEL, drive: "automatic", streamFunction });
-		const ingress = new ProductPromptIngressV1({
+		const ingress = new ProductPromptIngress({
 			session,
 			harness: created.harness,
 			models,
@@ -505,7 +505,7 @@ describe("ProductPromptIngressV1", () => {
 		let routeCatalog: readonly McpToolRoute[] = [
 			{ kind: "mcp", namespace: "docs", toolName: "list", providerId: "mcp-provider-docs", revision: 7 },
 		];
-		const ingress = new ProductPromptIngressV1({
+		const ingress = new ProductPromptIngress({
 			session,
 			harness: created.harness,
 			models,
@@ -604,7 +604,7 @@ describe("ProductPromptIngressV1", () => {
 		});
 		if (!("operationToolGateway" in created)) throw new Error("Expected Worker ToolGateway composition");
 		gateway = created.operationToolGateway;
-		const ingress = new ProductPromptIngressV1({
+		const ingress = new ProductPromptIngress({
 			session,
 			harness: created.harness,
 			models,

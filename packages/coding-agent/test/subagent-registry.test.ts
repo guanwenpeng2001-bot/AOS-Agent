@@ -9,8 +9,8 @@ import {
 	AGENT_RUNTIME_HOST_PROVIDER,
 	FORK_PROVIDER,
 	IN_PROCESS_PROVIDER,
-	type SubagentProviderDescriptorV1, type SubagentCapabilityRequirementsV1,
-	SubagentProviderRegistryV1,
+	type SubagentProviderDescriptor, type SubagentCapabilityRequirements,
+	SubagentProviderRegistry,
 } from "../src/core/subagent-registry.ts";
 
 type NativeExecutable = ChildAgentProvider & TaskExecutorProvider;
@@ -32,9 +32,9 @@ function nativeExecutable(providerId: string): NativeExecutable {
 	};
 }
 
-describe("SubagentProviderRegistryV1", () => {
+describe("SubagentProviderRegistry", () => {
 	it("binds only the exact trusted executable at the current descriptor revision", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 		registry.register(IN_PROCESS_PROVIDER);
 		const current = nativeExecutable(IN_PROCESS_PROVIDER.descriptor.providerId);
 		const spoof = nativeExecutable(IN_PROCESS_PROVIDER.descriptor.providerId);
@@ -65,7 +65,7 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("registers valid agent providers", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 		registry.register(IN_PROCESS_PROVIDER);
 		registry.register(FORK_PROVIDER);
 
@@ -79,7 +79,7 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("rejects non-agent providerClass and invalid shapes (NaN, negative maxDepth)", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 
 		const invalidProvider = {
 			...IN_PROCESS_PROVIDER,
@@ -135,7 +135,7 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("rejects extra keys", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 
 		const extraTopKey = {
 			...IN_PROCESS_PROVIDER,
@@ -172,9 +172,9 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("maintains immutability (rejects returned mutation)", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 
-		const provider: SubagentProviderDescriptorV1 = {
+		const provider: SubagentProviderDescriptor = {
 			...IN_PROCESS_PROVIDER,
 			descriptor: { schemaVersion: 1, providerId: "native.tamper", providerClass: "agent" },
 			capabilities: { ...IN_PROCESS_PROVIDER.capabilities },
@@ -188,8 +188,8 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("allows revision upgrade and retrieves exact revision without losing old", () => {
-		const registry = new SubagentProviderRegistryV1();
-		const providerV1: SubagentProviderDescriptorV1 = {
+		const registry = new SubagentProviderRegistry();
+		const providerV1: SubagentProviderDescriptor = {
 			schemaVersion: 1,
 			providerKind: "in_process",
 			descriptor: { schemaVersion: 1, providerId: "native.in_process", providerClass: "agent" },
@@ -235,33 +235,33 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("validates malformed requirements in resolve", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 		registry.register(IN_PROCESS_PROVIDER);
 
 		expect(() =>
 			registry.resolve("native.in_process", {
 				forkScope: "invalid_scope",
-			} as unknown as SubagentCapabilityRequirementsV1),
+			} as unknown as SubagentCapabilityRequirements),
 		).toThrowError(new FoundationError("subagent_spawn_invalid", "Invalid forkScope: invalid_scope"));
 
 		expect(() =>
 			registry.resolve("native.in_process", {
 				maxDepthRequired: NaN,
-			} as unknown as SubagentCapabilityRequirementsV1),
+			} as unknown as SubagentCapabilityRequirements),
 		).toThrowError(new FoundationError("subagent_spawn_invalid", "Invalid maxDepthRequired: NaN"));
 
 		expect(() =>
-			registry.resolve("native.in_process", { maxDepthRequired: -5 } as unknown as SubagentCapabilityRequirementsV1),
+			registry.resolve("native.in_process", { maxDepthRequired: -5 } as unknown as SubagentCapabilityRequirements),
 		).toThrowError(new FoundationError("subagent_spawn_invalid", "Invalid maxDepthRequired: -5"));
 
 		// Array
 		expect(() =>
-			registry.resolve("native.in_process", [] as unknown as SubagentCapabilityRequirementsV1),
+			registry.resolve("native.in_process", [] as unknown as SubagentCapabilityRequirements),
 		).toThrowError(new FoundationError("subagent_spawn_invalid", "Requirements must be an object."));
 
 		// Extra keys
 		expect(() =>
-			registry.resolve("native.in_process", { extra: true } as unknown as SubagentCapabilityRequirementsV1),
+			registry.resolve("native.in_process", { extra: true } as unknown as SubagentCapabilityRequirements),
 		).toThrowError(
 			new FoundationError("subagent_spawn_invalid", "Requirements must have exact shape with no extra keys."),
 		);
@@ -270,14 +270,14 @@ describe("SubagentProviderRegistryV1", () => {
 		expect(() =>
 			registry.resolve("native.in_process", {
 				providerKind: "invalid",
-			} as unknown as SubagentCapabilityRequirementsV1),
+			} as unknown as SubagentCapabilityRequirements),
 		).toThrowError(new FoundationError("subagent_spawn_invalid", "Invalid providerKind: invalid"));
 
 		// String boolean
 		expect(() =>
 			registry.resolve("native.in_process", {
 				resumeRequired: "true",
-			} as unknown as SubagentCapabilityRequirementsV1),
+			} as unknown as SubagentCapabilityRequirements),
 		).toThrowError(new FoundationError("subagent_spawn_invalid", "resumeRequired must be boolean."));
 
 		// Invalid revision
@@ -290,9 +290,9 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("allows revision upgrade but rejects stale or duplicate revisions", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 
-		const provider: SubagentProviderDescriptorV1 = {
+		const provider: SubagentProviderDescriptor = {
 			...IN_PROCESS_PROVIDER,
 			descriptor: { schemaVersion: 1, providerId: "native.updateable", providerClass: "agent" },
 			capabilities: { ...IN_PROCESS_PROVIDER.capabilities },
@@ -334,10 +334,10 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("rejects registering the same providerKind under a different providerId", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 		registry.register(IN_PROCESS_PROVIDER);
 
-		const kindDuplicate: SubagentProviderDescriptorV1 = {
+		const kindDuplicate: SubagentProviderDescriptor = {
 			...IN_PROCESS_PROVIDER,
 			descriptor: { schemaVersion: 1, providerId: "native.tamper.2", providerClass: "agent" },
 		};
@@ -351,10 +351,10 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("rejects changing the providerKind of an existing providerId", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 		registry.register(IN_PROCESS_PROVIDER);
 
-		const kindChange: SubagentProviderDescriptorV1 = {
+		const kindChange: SubagentProviderDescriptor = {
 			...IN_PROCESS_PROVIDER,
 			providerKind: "fork",
 			revision: 2,
@@ -369,14 +369,14 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("negotiates capabilities correctly and rejects historical external kinds", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 		registry.register(IN_PROCESS_PROVIDER);
 
 		for (const providerKind of ["acp", "sdk"] as const) {
 			expect(() =>
 				registry.resolve("native.in_process", {
 					providerKind,
-				} as unknown as SubagentCapabilityRequirementsV1),
+				} as unknown as SubagentCapabilityRequirements),
 			).toThrowError(new FoundationError("subagent_spawn_invalid", `Invalid providerKind: ${providerKind}`));
 		}
 
@@ -389,7 +389,7 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("fails closed on unavailability before capability checking (unavailable ordering)", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 		registry.register(AGENT_RUNTIME_HOST_PROVIDER);
 
 		// Should throw unavailable because implementedInThisLine is false, NOT unsupported because of maxDepth
@@ -402,7 +402,7 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("rejects historical external provider descriptors as current Native records", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 		for (const providerKind of ["acp", "sdk"] as const) {
 			const historical = {
 				...IN_PROCESS_PROVIDER,
@@ -412,7 +412,7 @@ describe("SubagentProviderRegistryV1", () => {
 					providerId: `connector.${providerKind}`,
 				},
 			};
-			expect(() => registry.register(historical as unknown as SubagentProviderDescriptorV1)).toThrowError(
+			expect(() => registry.register(historical as unknown as SubagentProviderDescriptor)).toThrowError(
 				new FoundationError(
 					"subagent_spawn_invalid",
 					"Registry entries must have exact descriptor shape with positive revision and maxDepth and providerClass 'agent'.",
@@ -422,7 +422,7 @@ describe("SubagentProviderRegistryV1", () => {
 	});
 
 	it("resolves successfully when capabilities match and provider is implemented", () => {
-		const registry = new SubagentProviderRegistryV1();
+		const registry = new SubagentProviderRegistry();
 		registry.register(IN_PROCESS_PROVIDER);
 
 		const resolved = registry.resolve("native.in_process", {

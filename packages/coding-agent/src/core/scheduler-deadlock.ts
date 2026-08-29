@@ -4,7 +4,7 @@
  * Collects wait-for edges from integrated Graph, Gate, Ask, handoff, and
  * queue claim state. Cycle detection is deterministic. A detected cycle
  * fails one sacrificial task by ascending queue-entry revision and appends
- * a durable SchedulerDeadlockFactV1 plus scheduler.deadlock_detected.
+ * a durable SchedulerDeadlockFact plus scheduler.deadlock_detected.
  * Scans and ticks are iteration- and deadline-bounded.
  */
 import {
@@ -26,9 +26,9 @@ import {
 	type SchedulerQueueEventPayload,
 } from "@aos-agent/agent-core";
 import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
-import { SCHEDULER_MESSAGE_OBJECT_TYPES_V1, type SchedulerAskWaitFactV1 } from "./scheduler-messages.ts";
+import { SCHEDULER_MESSAGE_OBJECT_TYPES, type SchedulerAskWaitFact } from "./scheduler-messages.ts";
 import type { SchedulerHandoffController } from "./scheduler-handoff.ts";
-import { SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE, type SchedulerQueueSnapshotV1 } from "./scheduler-queue.ts";
+import { SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE, type SchedulerQueueSnapshot } from "./scheduler-queue.ts";
 import {
 	applySchedulerDispatchTransition,
 	applySchedulerEngineTransition,
@@ -41,12 +41,12 @@ import {
 	SCHEDULER_QUEUE_MAX_DEPTH,
 	SCHEDULER_SESSION_MAX_ACTIVE_ATTEMPTS,
 	SCHEDULER_WAIT_EDGE_KINDS,
-	type SchedulerDeadlockFactV1,
-	type SchedulerDispatchRecordV1,
-	type SchedulerEnqueueResultV1,
-	type SchedulerErrorCodeV1,
-	type SchedulerQueueEntryV1,
-	type SchedulerWaitEdgeKindV1,
+	type SchedulerDeadlockFact,
+	type SchedulerDispatchRecord,
+	type SchedulerEnqueueResult,
+	type SchedulerErrorCode,
+	type SchedulerQueueEntry,
+	type SchedulerWaitEdgeKind,
 	schedulerQueueBusinessKey,
 	serializeSchedulerDeadlockFact,
 	serializeSchedulerDispatchRecord,
@@ -62,7 +62,7 @@ export const SCHEDULER_DEADLOCK_SCAN_HARD_CAP = 8_192;
 
 const WRITER_LEASE_REFRESH_MS = 1_000;
 
-const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
+const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCode, string>> = {
 	scheduler_queue_invalid: "Scheduler queue entry is invalid.",
 	scheduler_queue_conflict: "Scheduler queue business key already has a different payload.",
 	scheduler_claim_conflict: "Scheduler claim conflict: the task already has an active claim.",
@@ -87,36 +87,36 @@ const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
 	scheduler_persistence_failed: "Scheduler durable append failed; re-read current state.",
 };
 
-const RETRYABLE = new Set<SchedulerErrorCodeV1>([
+const RETRYABLE = new Set<SchedulerErrorCode>([
 	"scheduler_claim_conflict",
 	"scheduler_budget_exhausted_wait",
 	"scheduler_backpressure",
 ]);
 
-export type SchedulerBackpressureLimitV1 = "queue_depth" | "session_active" | "global_active";
+export type SchedulerBackpressureLimit = "queue_depth" | "session_active" | "global_active";
 
-export interface SchedulerWaitForEdgeV1 {
+export interface SchedulerWaitForEdge {
 	readonly fromTaskId: string;
 	readonly toTaskId: string;
-	readonly kind: SchedulerWaitEdgeKindV1;
+	readonly kind: SchedulerWaitEdgeKind;
 }
 
-export interface SchedulerBackpressureSignalV1 {
+export interface SchedulerBackpressureSignal {
 	readonly code: "scheduler_backpressure";
-	readonly limit: SchedulerBackpressureLimitV1;
+	readonly limit: SchedulerBackpressureLimit;
 	readonly sessionId?: string;
 	readonly retained: number;
 }
 
-export interface SchedulerRetainedWorkV1 {
+export interface SchedulerRetainedWork {
 	readonly queueEntryId: string;
 	readonly sessionId: string;
 	readonly taskId: string;
-	readonly reason: SchedulerBackpressureLimitV1;
-	readonly candidate: SchedulerQueueEntryV1;
+	readonly reason: SchedulerBackpressureLimit;
+	readonly candidate: SchedulerQueueEntry;
 }
 
-export interface SchedulerDeadlockTickErrorV1 {
+export interface SchedulerDeadlockTickError {
 	readonly taskId: string;
 	readonly code: string;
 }
@@ -128,32 +128,32 @@ export interface SchedulerDeadlockTickResult {
 	readonly scannedEdges: number;
 	readonly cycles: number;
 	readonly failedTaskIds: readonly string[];
-	readonly facts: readonly SchedulerDeadlockFactV1[];
-	readonly signals: readonly SchedulerBackpressureSignalV1[];
-	readonly retained: readonly SchedulerRetainedWorkV1[];
+	readonly facts: readonly SchedulerDeadlockFact[];
+	readonly signals: readonly SchedulerBackpressureSignal[];
+	readonly retained: readonly SchedulerRetainedWork[];
 	readonly readyOrder: readonly string[];
 	readonly timedOut: boolean;
-	readonly errors: readonly SchedulerDeadlockTickErrorV1[];
+	readonly errors: readonly SchedulerDeadlockTickError[];
 }
 
-export interface SchedulerDeadlockQueueV1 {
-	snapshot(): Promise<ResultValue<SchedulerQueueSnapshotV1, FoundationError>>;
+export interface SchedulerDeadlockQueue {
+	snapshot(): Promise<ResultValue<SchedulerQueueSnapshot, FoundationError>>;
 	enqueue(
 		candidate: unknown,
 		options?: { readonly maxAttempts?: number },
-	): Promise<ResultValue<SchedulerEnqueueResultV1, FoundationError>>;
+	): Promise<ResultValue<SchedulerEnqueueResult, FoundationError>>;
 }
 
-export interface SchedulerDeadlockControllerOptionsV1 {
+export interface SchedulerDeadlockControllerOptions {
 	/** Production control is inert unless explicitly enabled. */
 	readonly enabled?: boolean;
 	readonly sessionId: string;
 	readonly ownerId: string;
 	readonly ledger: DurableLedgerApi;
 	readonly graph: TaskGraphStore;
-	readonly queue: SchedulerDeadlockQueueV1;
+	readonly queue: SchedulerDeadlockQueue;
 	readonly extraGraphs?: readonly TaskGraphStore[];
-	readonly extraQueues?: readonly SchedulerDeadlockQueueV1[];
+	readonly extraQueues?: readonly SchedulerDeadlockQueue[];
 	readonly waitLedgers?: readonly DurableLedgerApi[];
 	readonly gates?: TaskGateStore;
 	readonly handoff?: SchedulerHandoffController;
@@ -170,11 +170,11 @@ export interface SchedulerDeadlockControllerOptionsV1 {
 	readonly agingMsPerPriorityUnit?: number;
 }
 
-function schedulerError(code: SchedulerErrorCodeV1): FoundationError {
+function schedulerError(code: SchedulerErrorCode): FoundationError {
 	return new FoundationError(code, ERROR_MESSAGES[code], { retryable: RETRYABLE.has(code) });
 }
 
-function fail<T>(code: SchedulerErrorCodeV1): ResultValue<T, FoundationError> {
+function fail<T>(code: SchedulerErrorCode): ResultValue<T, FoundationError> {
 	return Result.err(schedulerError(code));
 }
 
@@ -215,7 +215,7 @@ function omitUndefinedCorrelation(correlation: EventCorrelationRef): EventCorrel
 	return next;
 }
 
-function queueEventPayload(entry: SchedulerQueueEntryV1): SchedulerQueueEventPayload {
+function queueEventPayload(entry: SchedulerQueueEntry): SchedulerQueueEventPayload {
 	const payload: SchedulerQueueEventPayload = {
 		schemaVersion: 1,
 		queueEntryId: entry.queueEntryId,
@@ -234,7 +234,7 @@ function queueEventPayload(entry: SchedulerQueueEntryV1): SchedulerQueueEventPay
 	return payload;
 }
 
-function dispatchEventPayload(dispatch: SchedulerDispatchRecordV1): SchedulerDispatchEventPayload {
+function dispatchEventPayload(dispatch: SchedulerDispatchRecord): SchedulerDispatchEventPayload {
 	const payload: SchedulerDispatchEventPayload = {
 		schemaVersion: 1,
 		queueEntryId: dispatch.queueEntryId,
@@ -269,7 +269,7 @@ function claimReleasedPayload(
 	};
 }
 
-function deadlockEventPayload(fact: SchedulerDeadlockFactV1): SchedulerDeadlockEventPayload {
+function deadlockEventPayload(fact: SchedulerDeadlockFact): SchedulerDeadlockEventPayload {
 	return {
 		schemaVersion: 1,
 		detectionId: fact.detectionId,
@@ -279,12 +279,12 @@ function deadlockEventPayload(fact: SchedulerDeadlockFactV1): SchedulerDeadlockE
 	};
 }
 
-function uniqueKinds(kinds: readonly SchedulerWaitEdgeKindV1[]): readonly SchedulerWaitEdgeKindV1[] {
+function uniqueKinds(kinds: readonly SchedulerWaitEdgeKind[]): readonly SchedulerWaitEdgeKind[] {
 	const present = new Set(kinds);
 	return SCHEDULER_WAIT_EDGE_KINDS.filter((kind) => present.has(kind));
 }
 
-function isAskWaitFact(value: unknown): value is SchedulerAskWaitFactV1 {
+function isAskWaitFact(value: unknown): value is SchedulerAskWaitFact {
 	if (!isRecord(value) || value.schemaVersion !== 1 || value.kind !== "ask") return false;
 	if (
 		value.status !== "waiting" &&
@@ -303,8 +303,8 @@ function isAskWaitFact(value: unknown): value is SchedulerAskWaitFactV1 {
 	);
 }
 
-export function schedulerEffectivePriorityV1(
-	entry: SchedulerQueueEntryV1,
+export function schedulerEffectivePriority(
+	entry: SchedulerQueueEntry,
 	nowIso: string,
 	agingMsPerPriorityUnit: number = SCHEDULER_DEADLOCK_AGING_MS_PER_PRIORITY_UNIT,
 ): number {
@@ -313,15 +313,15 @@ export function schedulerEffectivePriorityV1(
 	return entry.priority + Math.floor(waitingMs / unit);
 }
 
-export function schedulerOrderQueuedWorkV1(
-	entries: readonly SchedulerQueueEntryV1[],
+export function schedulerOrderQueuedWork(
+	entries: readonly SchedulerQueueEntry[],
 	nowIso: string,
 	agingMsPerPriorityUnit: number = SCHEDULER_DEADLOCK_AGING_MS_PER_PRIORITY_UNIT,
-): readonly SchedulerQueueEntryV1[] {
+): readonly SchedulerQueueEntry[] {
 	return [...entries].sort((left, right) => {
 		const priorityDelta =
-			schedulerEffectivePriorityV1(right, nowIso, agingMsPerPriorityUnit) -
-			schedulerEffectivePriorityV1(left, nowIso, agingMsPerPriorityUnit);
+			schedulerEffectivePriority(right, nowIso, agingMsPerPriorityUnit) -
+			schedulerEffectivePriority(left, nowIso, agingMsPerPriorityUnit);
 		if (priorityDelta !== 0) return priorityDelta;
 		if (left.revision !== right.revision) return left.revision - right.revision;
 		if (left.enqueuedAt !== right.enqueuedAt) return left.enqueuedAt < right.enqueuedAt ? -1 : 1;
@@ -347,7 +347,7 @@ function emptyTick(enabled: boolean): SchedulerDeadlockTickResult {
 	};
 }
 
-function detectionIdFor(memberTaskIds: readonly string[], edgeKinds: readonly SchedulerWaitEdgeKindV1[]): string {
+function detectionIdFor(memberTaskIds: readonly string[], edgeKinds: readonly SchedulerWaitEdgeKind[]): string {
 	const digest = fingerprintFoundationValue({
 		memberTaskIds: [...memberTaskIds],
 		edgeKinds: [...edgeKinds],
@@ -357,12 +357,12 @@ function detectionIdFor(memberTaskIds: readonly string[], edgeKinds: readonly Sc
 
 interface CycleHitV1 {
 	readonly memberTaskIds: readonly string[];
-	readonly edgeKinds: readonly SchedulerWaitEdgeKindV1[];
-	readonly cycleEdges: readonly SchedulerWaitForEdgeV1[];
+	readonly edgeKinds: readonly SchedulerWaitEdgeKind[];
+	readonly cycleEdges: readonly SchedulerWaitForEdge[];
 }
 
-function findFirstCycle(edges: readonly SchedulerWaitForEdgeV1[]): CycleHitV1 | undefined {
-	const adjacency = new Map<string, SchedulerWaitForEdgeV1[]>();
+function findFirstCycle(edges: readonly SchedulerWaitForEdge[]): CycleHitV1 | undefined {
+	const adjacency = new Map<string, SchedulerWaitForEdge[]>();
 	for (const edge of edges) {
 		if (edge.fromTaskId === edge.toTaskId) continue;
 		const list = adjacency.get(edge.fromTaskId) ?? [];
@@ -378,7 +378,7 @@ function findFirstCycle(edges: readonly SchedulerWaitForEdgeV1[]): CycleHitV1 | 
 	const vertices = [...new Set(edges.flatMap((edge) => [edge.fromTaskId, edge.toTaskId]))].sort();
 	const visiting = new Set<string>();
 	const visited = new Set<string>();
-	const parent = new Map<string, SchedulerWaitForEdgeV1>();
+	const parent = new Map<string, SchedulerWaitForEdge>();
 	let found: CycleHitV1 | undefined;
 	const visit = (node: string): boolean => {
 		if (found !== undefined) return true;
@@ -386,7 +386,7 @@ function findFirstCycle(edges: readonly SchedulerWaitForEdgeV1[]): CycleHitV1 | 
 		for (const edge of adjacency.get(node) ?? []) {
 			if (visited.has(edge.toTaskId)) continue;
 			if (visiting.has(edge.toTaskId)) {
-				const cycleEdges: SchedulerWaitForEdgeV1[] = [edge];
+				const cycleEdges: SchedulerWaitForEdge[] = [edge];
 				let cursor = node;
 				while (cursor !== edge.toTaskId) {
 					const step = parent.get(cursor);
@@ -420,7 +420,7 @@ function findFirstCycle(edges: readonly SchedulerWaitForEdgeV1[]): CycleHitV1 | 
 	return found;
 }
 
-function isActiveQueueState(state: SchedulerQueueEntryV1["state"]): boolean {
+function isActiveQueueState(state: SchedulerQueueEntry["state"]): boolean {
 	return state === "claimed" || state === "dispatched";
 }
 
@@ -439,8 +439,8 @@ export class SchedulerDeadlockController {
 	private readonly ledger: DurableLedgerApi;
 	private readonly graph: TaskGraphStore;
 	private readonly extraGraphs: readonly TaskGraphStore[];
-	private readonly queue: SchedulerDeadlockQueueV1;
-	private readonly extraQueues: readonly SchedulerDeadlockQueueV1[];
+	private readonly queue: SchedulerDeadlockQueue;
+	private readonly extraQueues: readonly SchedulerDeadlockQueue[];
 	private readonly waitLedgers: readonly DurableLedgerApi[];
 	private readonly gates: TaskGateStore | undefined;
 	private readonly handoff: SchedulerHandoffController | undefined;
@@ -457,14 +457,14 @@ export class SchedulerDeadlockController {
 	private readonly tickTimeoutMs: number;
 	private readonly agingMsPerPriorityUnit: number;
 	private writerLease: LedgerWriterLease | undefined;
-	private facts = new Map<string, SchedulerDeadlockFactV1>();
+	private facts = new Map<string, SchedulerDeadlockFact>();
 	private factRevisions = new Map<string, number>();
 	private eventRevisions = new Map<string, number>();
-	private retained = new Map<string, SchedulerRetainedWorkV1>();
+	private retained = new Map<string, SchedulerRetainedWork>();
 	private inFlight: Promise<SchedulerDeadlockTickResult> | undefined;
 	private fenceTimedOut = false;
 
-	constructor(options: SchedulerDeadlockControllerOptionsV1) {
+	constructor(options: SchedulerDeadlockControllerOptions) {
 		this.clock = runtimeClockFor(options);
 		this.enabled = options.enabled ?? false;
 		this.sessionId = options.sessionId;
@@ -499,11 +499,11 @@ export class SchedulerDeadlockController {
 		);
 	}
 
-	retainedWork(): readonly SchedulerRetainedWorkV1[] {
+	retainedWork(): readonly SchedulerRetainedWork[] {
 		return [...this.retained.values()];
 	}
 
-	async reload(): Promise<ResultValue<readonly SchedulerDeadlockFactV1[], FoundationError>> {
+	async reload(): Promise<ResultValue<readonly SchedulerDeadlockFact[], FoundationError>> {
 		try {
 			const records = await this.ledger.findFoundationRecords({
 				objectType: SCHEDULER_DEADLOCK_OBJECT_TYPE,
@@ -582,7 +582,7 @@ export class SchedulerDeadlockController {
 		return [this.graph, ...this.extraGraphs];
 	}
 
-	private queues(): readonly SchedulerDeadlockQueueV1[] {
+	private queues(): readonly SchedulerDeadlockQueue[] {
 		return [this.queue, ...this.extraQueues];
 	}
 
@@ -617,7 +617,7 @@ export class SchedulerDeadlockController {
 		}
 		const deadlineAt = this.clock.monotonicNow() + this.tickTimeoutMs;
 		const budget = this.createBudget();
-		const errors: SchedulerDeadlockTickErrorV1[] = [];
+		const errors: SchedulerDeadlockTickError[] = [];
 		const loaded = await this.reload();
 		if (!loaded.ok) {
 			applySchedulerEngineTransition("scanning", "idle");
@@ -656,7 +656,7 @@ export class SchedulerDeadlockController {
 			if (!sacrificial.ok) {
 				errors.push({ taskId: "scheduler", code: sacrificial.error.code });
 			} else {
-				const fact: SchedulerDeadlockFactV1 = {
+				const fact: SchedulerDeadlockFact = {
 					schemaVersion: 1,
 					detectionId: detectionIdFor(cycle.memberTaskIds, cycle.edgeKinds),
 					memberTaskIds: cycle.memberTaskIds,
@@ -695,7 +695,7 @@ export class SchedulerDeadlockController {
 		const queued = snapshots.value.entries.filter(
 			(entry) => entry.state === "queued" && !retainedIds.has(entry.queueEntryId),
 		);
-		const readyOrder = schedulerOrderQueuedWorkV1(queued, this.nowIso(), this.agingMsPerPriorityUnit).map(
+		const readyOrder = schedulerOrderQueuedWork(queued, this.nowIso(), this.agingMsPerPriorityUnit).map(
 			(entry) => entry.queueEntryId,
 		);
 		return {
@@ -717,16 +717,16 @@ export class SchedulerDeadlockController {
 	private async snapshotAllQueues(): Promise<
 		ResultValue<
 			{
-				readonly entries: SchedulerQueueEntryV1[];
+				readonly entries: SchedulerQueueEntry[];
 				readonly claims: { claimId: string; ownerId: string; taskId: string; queueEntryId: string }[];
-				readonly dispatches: SchedulerDispatchRecordV1[];
+				readonly dispatches: SchedulerDispatchRecord[];
 			},
 			FoundationError
 		>
 	> {
-		const entries: SchedulerQueueEntryV1[] = [];
+		const entries: SchedulerQueueEntry[] = [];
 		const claims: { claimId: string; ownerId: string; taskId: string; queueEntryId: string }[] = [];
-		const dispatches: SchedulerDispatchRecordV1[] = [];
+		const dispatches: SchedulerDispatchRecord[] = [];
 		for (const store of this.queues()) {
 			const snapshot = await store.snapshot();
 			if (!snapshot.ok) return snapshot;
@@ -748,9 +748,9 @@ export class SchedulerDeadlockController {
 		failed: ReadonlySet<string>,
 		deadlineAt: number,
 		budget: ScanBudgetV1,
-	): Promise<ResultValue<readonly SchedulerWaitForEdgeV1[], FoundationError>> {
-		const edges: SchedulerWaitForEdgeV1[] = [];
-		const push = (edge: SchedulerWaitForEdgeV1): boolean => {
+	): Promise<ResultValue<readonly SchedulerWaitForEdge[], FoundationError>> {
+		const edges: SchedulerWaitForEdge[] = [];
+		const push = (edge: SchedulerWaitForEdge): boolean => {
 			if (failed.has(edge.fromTaskId) || failed.has(edge.toTaskId)) return !budget.timedOut;
 			if (this.expired(budget, deadlineAt) || budget.edges >= this.maxEdgesPerScan) {
 				budget.timedOut = budget.timedOut || budget.edges >= this.maxEdgesPerScan;
@@ -864,14 +864,14 @@ export class SchedulerDeadlockController {
 	private async collectAskWaits(
 		deadlineAt: number,
 		budget: ScanBudgetV1,
-	): Promise<ResultValue<readonly SchedulerAskWaitFactV1[], FoundationError>> {
-		const latest = new Map<string, { readonly revision: number; readonly payload: SchedulerAskWaitFactV1 }>();
+	): Promise<ResultValue<readonly SchedulerAskWaitFact[], FoundationError>> {
+		const latest = new Map<string, { readonly revision: number; readonly payload: SchedulerAskWaitFact }>();
 		for (const ledger of this.waitLedgers) {
 			if (this.expired(budget, deadlineAt)) break;
 			let records: FoundationRecord[];
 			try {
 				records = await ledger.findFoundationRecords({
-					objectType: SCHEDULER_MESSAGE_OBJECT_TYPES_V1.wait,
+					objectType: SCHEDULER_MESSAGE_OBJECT_TYPES.wait,
 					kind: "fact",
 					order: "oldestFirst",
 					includePruned: true,
@@ -981,24 +981,24 @@ export class SchedulerDeadlockController {
 	}
 
 	private async failQueueEntry(
-		entry: SchedulerQueueEntryV1,
-		dispatches: readonly SchedulerDispatchRecordV1[],
+		entry: SchedulerQueueEntry,
+		dispatches: readonly SchedulerDispatchRecord[],
 		claim: { claimId: string; ownerId: string; revision: number } | undefined,
 	): Promise<ResultValue<void, FoundationError>> {
 		if (entry.sessionId !== this.sessionId) return Result.ok(undefined);
-		const nextEntry: SchedulerQueueEntryV1 = {
+		const nextEntry: SchedulerQueueEntry = {
 			...serializeSchedulerQueueEntry(entry),
 			state: "cancelled",
 			revision: entry.revision + 1,
 		};
 		const applied = applySchedulerQueueTransition(entry, nextEntry);
 		if (!applied.ok) return applied;
-		const cancelledDispatches: SchedulerDispatchRecordV1[] = [];
+		const cancelledDispatches: SchedulerDispatchRecord[] = [];
 		for (const dispatch of dispatches) {
 			if (dispatch.status === "settled" || dispatch.status === "cancelled" || dispatch.status === "expired") {
 				continue;
 			}
-			const candidate: SchedulerDispatchRecordV1 = {
+			const candidate: SchedulerDispatchRecord = {
 				...serializeSchedulerDispatchRecord(dispatch),
 				status: "cancelled",
 				revision: dispatch.revision + 1,
@@ -1011,9 +1011,9 @@ export class SchedulerDeadlockController {
 	}
 
 	private async writeQueueCancel(
-		entry: SchedulerQueueEntryV1,
+		entry: SchedulerQueueEntry,
 		claim: { claimId: string; ownerId: string; revision: number } | undefined,
-		dispatches: readonly SchedulerDispatchRecordV1[],
+		dispatches: readonly SchedulerDispatchRecord[],
 	): Promise<ResultValue<void, FoundationError>> {
 		for (const dispatch of dispatches) {
 			const expected =
@@ -1124,8 +1124,8 @@ export class SchedulerDeadlockController {
 	}
 
 	private async persistDeadlockFact(
-		fact: SchedulerDeadlockFactV1,
-	): Promise<ResultValue<SchedulerDeadlockFactV1, FoundationError>> {
+		fact: SchedulerDeadlockFact,
+	): Promise<ResultValue<SchedulerDeadlockFact, FoundationError>> {
 		const serialized = serializeSchedulerDeadlockFact(fact);
 		const existing = this.facts.get(serialized.detectionId);
 		if (existing !== undefined) {
@@ -1175,15 +1175,15 @@ export class SchedulerDeadlockController {
 		failed: ReadonlySet<string>,
 		deadlineAt: number,
 		budget: ScanBudgetV1,
-	): Promise<ResultValue<{ signals: SchedulerBackpressureSignalV1[] }, FoundationError>> {
+	): Promise<ResultValue<{ signals: SchedulerBackpressureSignal[] }, FoundationError>> {
 		const snapshots = await this.snapshotAllQueues();
 		if (!snapshots.ok) return snapshots;
 		const live = snapshots.value.entries.filter((entry) => !isSchedulerQueueTerminal(entry.state));
 		const liveKeys = new Set(
 			live.map((entry) => schedulerQueueBusinessKey(entry.sessionId, entry.taskId, entry.nodeRef)),
 		);
-		const signals: SchedulerBackpressureSignalV1[] = [];
-		const emit = (limit: SchedulerBackpressureLimitV1, sessionId: string | undefined, retained: number): void => {
+		const signals: SchedulerBackpressureSignal[] = [];
+		const emit = (limit: SchedulerBackpressureLimit, sessionId: string | undefined, retained: number): void => {
 			const existing = signals.find(
 				(signal) => signal.limit === limit && signal.sessionId === sessionId,
 			);
@@ -1196,7 +1196,7 @@ export class SchedulerDeadlockController {
 			});
 		};
 		const admit = async (
-			candidate: SchedulerQueueEntryV1,
+			candidate: SchedulerQueueEntry,
 		): Promise<ResultValue<void, FoundationError>> => {
 			const key = schedulerQueueBusinessKey(candidate.sessionId, candidate.taskId, candidate.nodeRef);
 			if (liveKeys.has(key)) {
@@ -1225,7 +1225,7 @@ export class SchedulerDeadlockController {
 			this.retained.delete(candidate.queueEntryId);
 			return Result.ok(undefined);
 		};
-		const retryDepth = schedulerOrderQueuedWorkV1(
+		const retryDepth = schedulerOrderQueuedWork(
 			[...this.retained.values()]
 				.filter((item) => item.reason === "queue_depth")
 				.map((item) => item.candidate),
@@ -1252,7 +1252,7 @@ export class SchedulerDeadlockController {
 					graphRevision: graph.graphRevision,
 					nodeId: node.nodeId,
 				};
-				const candidate: SchedulerQueueEntryV1 = {
+				const candidate: SchedulerQueueEntry = {
 					schemaVersion: 1,
 					queueEntryId: `queue_${fingerprintFoundationValue(nodeRef).value}`,
 					sessionId: graph.sessionId,
@@ -1269,7 +1269,7 @@ export class SchedulerDeadlockController {
 			}
 		}
 		const active = live.filter((entry) => isActiveQueueState(entry.state));
-		const queued = schedulerOrderQueuedWorkV1(
+		const queued = schedulerOrderQueuedWork(
 			live.filter((entry) => entry.state === "queued"),
 			this.nowIso(),
 			this.agingMsPerPriorityUnit,
@@ -1292,7 +1292,7 @@ export class SchedulerDeadlockController {
 		return Result.ok({ signals });
 	}
 
-	private retain(candidate: SchedulerQueueEntryV1, reason: SchedulerBackpressureLimitV1): void {
+	private retain(candidate: SchedulerQueueEntry, reason: SchedulerBackpressureLimit): void {
 		this.retained.set(candidate.queueEntryId, {
 			queueEntryId: candidate.queueEntryId,
 			sessionId: candidate.sessionId,

@@ -1,8 +1,8 @@
 /**
  * In-process ChildAgentProvider and agent-class TaskExecutorProvider.
  *
- * Spawn and receipts go through LayeredResultSettlementV1. Identity and
- * lifecycle stay on SubagentSupervisorV1. Model and tool calls use the
+ * Spawn and receipts go through LayeredResultSettlement. Identity and
+ * lifecycle stay on SubagentSupervisor. Model and tool calls use the
  * injected gateways; quota reserve/settle is ownerKind agent_executor.
  */
 
@@ -51,17 +51,17 @@ import {
 	type TaskExecutorProvider,
 	type ToolGateway,
 } from "@aos-agent/agent-core";
-import type { ChildContextForkResultV1 } from "./subagent-context-fork.ts";
-import { cleanupChildMemoryScopeV1, createChildMemoryScopeV1 } from "./subagent-memory.ts";
+import type { ChildContextForkResult } from "./subagent-context-fork.ts";
+import { cleanupChildMemoryScope, createChildMemoryScope } from "./subagent-memory.ts";
 import {
-	projectProviderChildContextV1,
-	type LoadParentContextV1,
+	projectProviderChildContext,
+	type LoadParentContext,
 } from "./subagent-provider-context.ts";
 import { IN_PROCESS_PROVIDER } from "./subagent-registry.ts";
-import type { SubagentProviderSpawnPlanV1, SubagentSupervisorV1 } from "./subagent-supervisor.ts";
+import type { SubagentProviderSpawnPlan, SubagentSupervisor } from "./subagent-supervisor.ts";
 import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "./scheduler-executors.ts";
 
-export interface ChildAgentHarnessCreateInputV1 {
+export interface ChildAgentHarnessCreateInput {
 	readonly session: Session;
 	readonly laneId: string;
 	readonly correlation: ExecutionCorrelation;
@@ -78,18 +78,18 @@ export interface ChildAgentHarnessCreateInputV1 {
 	readonly snapshot?: ContextSnapshot;
 }
 
-export interface InProcessChildAgentProviderOptionsV1 {
+export interface InProcessChildAgentProviderOptions {
 	readonly schemaVersion: 1;
 	readonly providerId: string;
-	readonly supervisor: SubagentSupervisorV1;
+	readonly supervisor: SubagentSupervisor;
 	readonly quota: QuotaProvider;
 	readonly modelGateway: ScopedModelGateway;
 	readonly toolGateway: ToolGateway;
 	readonly session: Session;
 	readonly ledger: SessionLedger;
-	readonly createHarness: (input: ChildAgentHarnessCreateInputV1) => Promise<AgentHarness>;
+	readonly createHarness: (input: ChildAgentHarnessCreateInput) => Promise<AgentHarness>;
 	readonly now?: () => string;
-	readonly loadParentContext: LoadParentContextV1;
+	readonly loadParentContext: LoadParentContext;
 	readonly parentMemory: { readonly store: ScopedMemoryStore; readonly parentAgentInstanceId: string };
 	readonly resolveParentMemory?: (
 		parentAgentInstanceId: string,
@@ -107,7 +107,7 @@ export interface InProcessChildAgentProviderOptionsV1 {
 	readonly capabilities?: readonly FoundationProviderCapability[];
 }
 
-export interface ChildAgentBackgroundAttachV1 {
+export interface ChildAgentBackgroundAttach {
 	readonly observerId: string;
 	readonly cursor: ObserverCursor;
 }
@@ -132,7 +132,7 @@ interface InProcessChildHandleV1 {
 	running?: Promise<ResultValue<AttemptReceipt, FoundationError>>;
 	receipt?: AttemptReceipt;
 	suspendedReceipt?: AttemptReceipt;
-	contextFork?: ChildContextForkResultV1;
+	contextFork?: ChildContextForkResult;
 	turnCount: number;
 }
 
@@ -160,7 +160,7 @@ type ChildHarnessOutcomeV1 = {
 	readonly error?: { readonly code: string; readonly message: string };
 };
 
-export function childAgentQuotaAttributionV1(input: {
+export function childAgentQuotaAttribution(input: {
 	readonly taskId: string;
 	readonly attemptId: string;
 	readonly agentInstanceId: string;
@@ -194,7 +194,7 @@ export function childAgentQuotaAttributionV1(input: {
 	return checked;
 }
 
-export function buildAgentExecutorReceiptV1(input: {
+export function buildAgentExecutorReceipt(input: {
 	readonly attempt: Attempt;
 	readonly correlation: ExecutionCorrelation;
 	readonly status: AttemptReceipt["status"];
@@ -231,29 +231,29 @@ export function buildAgentExecutorReceiptV1(input: {
 	});
 }
 
-export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskExecutorProvider {
+export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExecutorProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerClass = "agent" as const;
 	readonly providerId: string;
-	private readonly supervisor: SubagentSupervisorV1;
+	private readonly supervisor: SubagentSupervisor;
 	private readonly quota: QuotaProvider;
 	private readonly modelGateway: ScopedModelGateway;
 	private readonly toolGateway: ToolGateway;
 	private readonly session: Session;
 	private readonly ledger: SessionLedger;
-	private readonly createHarness: (input: ChildAgentHarnessCreateInputV1) => Promise<AgentHarness>;
+	private readonly createHarness: (input: ChildAgentHarnessCreateInput) => Promise<AgentHarness>;
 	private readonly now: () => string;
-	private readonly loadParentContext: LoadParentContextV1;
-	private readonly parentMemory: InProcessChildAgentProviderOptionsV1["parentMemory"];
-	private readonly resolveParentMemory: NonNullable<InProcessChildAgentProviderOptionsV1["resolveParentMemory"]>;
-	private readonly resolveExecutionWorkspace: NonNullable<InProcessChildAgentProviderOptionsV1["resolveExecutionWorkspace"]>;
-	private readonly loadTurnBoundaryContext: NonNullable<InProcessChildAgentProviderOptionsV1["loadTurnBoundaryContext"]>;
+	private readonly loadParentContext: LoadParentContext;
+	private readonly parentMemory: InProcessChildAgentProviderOptions["parentMemory"];
+	private readonly resolveParentMemory: NonNullable<InProcessChildAgentProviderOptions["resolveParentMemory"]>;
+	private readonly resolveExecutionWorkspace: NonNullable<InProcessChildAgentProviderOptions["resolveExecutionWorkspace"]>;
+	private readonly loadTurnBoundaryContext: NonNullable<InProcessChildAgentProviderOptions["loadTurnBoundaryContext"]>;
 	private readonly declaredCapabilities: readonly FoundationProviderCapability[];
 	private readonly bySpawnId = new Map<string, InProcessChildHandleV1>();
 	private readonly byAttemptId = new Map<string, InProcessChildHandleV1>();
 	private disposed = false;
 
-	constructor(options: InProcessChildAgentProviderOptionsV1) {
+	constructor(options: InProcessChildAgentProviderOptions) {
 		if (
 			options.schemaVersion !== 1 ||
 			typeof options.providerId !== "string" ||
@@ -479,7 +479,7 @@ export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskEx
 		}
 	}
 
-	async markBackground(attemptId: string): Promise<ResultValue<ChildAgentBackgroundAttachV1, FoundationError>> {
+	async markBackground(attemptId: string): Promise<ResultValue<ChildAgentBackgroundAttach, FoundationError>> {
 		const handle = this.byAttemptId.get(attemptId);
 		if (handle === undefined) return Result.err(fail("subagent_not_found", "Child Agent attempt is not held by this provider"));
 		const background = await this.supervisor.markBackground(handle.spawn.agentInstance.agentInstanceId);
@@ -495,7 +495,7 @@ export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskEx
 	attachObserver(
 		attemptId: string,
 		cursor?: ObserverCursor,
-	): ResultValue<ChildAgentBackgroundAttachV1, FoundationError> {
+	): ResultValue<ChildAgentBackgroundAttach, FoundationError> {
 		const handle = this.byAttemptId.get(attemptId);
 		if (handle === undefined) return Result.err(fail("subagent_not_found", "Child Agent attempt is not held by this provider"));
 		const observer = handle.observer ?? new FoundationObserver();
@@ -536,7 +536,7 @@ export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskEx
 
 	private async createSpawnResult(
 		request: ChildSpawnRequest,
-		plan: SubagentProviderSpawnPlanV1,
+		plan: SubagentProviderSpawnPlan,
 		correlation: ExecutionCorrelation,
 	): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 		if (request.parentAgentInstanceId === undefined) {
@@ -647,7 +647,7 @@ export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskEx
 				return Result.err(fail("subagent_spawn_invalid", "Child Agent parent memory authority does not match the parent identity"));
 			}
 			if (handle.memory === undefined) {
-				handle.memory = createChildMemoryScopeV1(
+				handle.memory = createChildMemoryScope(
 					parentMemory.store,
 					handle.spawn.agentInstance.agentInstanceId,
 					parentMemory.parentAgentInstanceId,
@@ -859,7 +859,7 @@ export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskEx
 		return this.finishAttempt(handle, attempt, "succeeded", "none");
 	}
 
-	private async resumeContext(handle: InProcessChildHandleV1): Promise<ResultValue<ChildContextForkResultV1, FoundationError>> {
+	private async resumeContext(handle: InProcessChildHandleV1): Promise<ResultValue<ChildContextForkResult, FoundationError>> {
 		const base = await this.forkContext(handle);
 		if (!base.ok) return base;
 		try {
@@ -885,9 +885,9 @@ export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskEx
 		}
 	}
 
-	private async forkContext(handle: InProcessChildHandleV1): Promise<ResultValue<ChildContextForkResultV1, FoundationError>> {
+	private async forkContext(handle: InProcessChildHandleV1): Promise<ResultValue<ChildContextForkResult, FoundationError>> {
 		if (handle.contextFork !== undefined) return Result.ok(handle.contextFork);
-		const projected = await projectProviderChildContextV1({
+		const projected = await projectProviderChildContext({
 			schemaVersion: 1,
 			request: handle.request,
 			childBindingEpochId: handle.spawn.initialBindingEpoch.bindingEpochId,
@@ -898,7 +898,7 @@ export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskEx
 	}
 
 	private async reserveQuota(handle: InProcessChildHandleV1): Promise<ResultValue<QuotaReservation, FoundationError>> {
-		const attribution = childAgentQuotaAttributionV1({
+		const attribution = childAgentQuotaAttribution({
 			taskId: handle.spawn.attempt.taskId,
 			attemptId: handle.spawn.attempt.attemptId,
 			agentInstanceId: handle.spawn.agentInstance.agentInstanceId,
@@ -951,7 +951,7 @@ export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskEx
 		sideEffectState: AttemptReceipt["sideEffectState"],
 		error?: AttemptReceipt["error"],
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
-		const receipt = buildAgentExecutorReceiptV1({
+		const receipt = buildAgentExecutorReceipt({
 			attempt,
 			correlation: handle.correlation,
 			status,
@@ -990,7 +990,7 @@ export class InProcessChildAgentProviderV1 implements ChildAgentProvider, TaskEx
 
 	private async cleanupMemory(handle: InProcessChildHandleV1): Promise<ResultValue<void, FoundationError>> {
 		if (handle.memory === undefined) return Result.ok(undefined);
-		const cleaned = await cleanupChildMemoryScopeV1(handle.memory);
+		const cleaned = await cleanupChildMemoryScope(handle.memory);
 		if (!cleaned.ok) return cleaned;
 		handle.memory = undefined;
 		return Result.ok(undefined);

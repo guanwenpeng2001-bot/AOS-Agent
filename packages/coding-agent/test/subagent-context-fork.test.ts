@@ -14,13 +14,13 @@ import {
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import {
-	forkChildContextV1,
+	forkChildContext,
 	TASK_PACKAGE_CRITERION_MAX_CHARS,
 	TASK_PACKAGE_GOAL_MAX_CHARS,
 	TASK_PACKAGE_MAX_ARTIFACTS,
 	TASK_PACKAGE_MAX_CRITERIA,
-	validateChildContextForkPlanV1,
-	type ForkChildContextInputV1,
+	validateChildContextForkPlan,
+	type ForkChildContextInput,
 } from "../src/core/subagent-context-fork.ts";
 
 const ARTIFACT_DIGEST = `sha256:${"cd".repeat(32)}`;
@@ -201,7 +201,7 @@ function childTask(
 
 function forkTaskPackage(task: TaskEnvelope, childTokenBudget = 1_000_000) {
 	const projection = projectTaskEnvelope(task);
-	return forkChildContextV1(
+	return forkChildContext(
 		forkInput({
 			forkScope: "task_package",
 			taskPackageRef: "pkg-1",
@@ -216,7 +216,7 @@ function forkTaskPackage(task: TaskEnvelope, childTokenBudget = 1_000_000) {
 	);
 }
 
-function forkInput(overrides: Partial<ForkChildContextInputV1> = {}): ForkChildContextInputV1 {
+function forkInput(overrides: Partial<ForkChildContextInput> = {}): ForkChildContextInput {
 	const parent = overrides.parentSnapshot ?? parentSnapshot();
 	return {
 		schemaVersion: 1,
@@ -273,10 +273,10 @@ describe("child context fork", () => {
 	it("creates a none runtime projection without parent conversation or user-role downgrade", () => {
 		const parent = parentSnapshot();
 		const originalDigest = parent.digest;
-		const result = forkChildContextV1(forkInput({ parentSnapshot: parent, forkScope: "none" }));
+		const result = forkChildContext(forkInput({ parentSnapshot: parent, forkScope: "none" }));
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw result.error;
-		expect(validateChildContextForkPlanV1(result.value.plan)).toBe(true);
+		expect(validateChildContextForkPlan(result.value.plan)).toBe(true);
 		expect(result.value.record.forkMode).toBe("none");
 		expect(result.value.snapshot.entries()).toEqual([]);
 		expect(result.value.snapshot.messages()).toEqual([]);
@@ -302,7 +302,7 @@ describe("child context fork", () => {
 		const parent = parentSnapshot();
 		const before = parent.toJSON();
 		const parentIds = parent.entries().map((entry) => ({ id: entry.id, seq: entry.seq, parentId: entry.parentId }));
-		const result = forkChildContextV1(
+		const result = forkChildContext(
 			forkInput({
 				parentSnapshot: parent,
 				forkScope: "all",
@@ -333,7 +333,7 @@ describe("child context fork", () => {
 		const parent = mixedParentSnapshot();
 		const rawTail = parent.entries().slice(-2).map((entry) => entry.id);
 		expect(rawTail).toEqual(["turn-2-assistant", "sys-model"]);
-		const result = forkChildContextV1(forkInput({ parentSnapshot: parent, forkScope: "recent_n", recentN: 2 }));
+		const result = forkChildContext(forkInput({ parentSnapshot: parent, forkScope: "recent_n", recentN: 2 }));
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw result.error;
 		expect(result.value.record.forkMode).toBe("recent-N");
@@ -363,7 +363,7 @@ describe("child context fork", () => {
 	it("projects task_package into the runtime layer with bounded durable artifact refs", () => {
 		const task = childTask();
 		const projection = projectTaskEnvelope(task);
-		const result = forkChildContextV1(
+		const result = forkChildContext(
 			forkInput({
 				forkScope: "task_package",
 				taskPackageRef: "pkg-1",
@@ -394,7 +394,7 @@ describe("child context fork", () => {
 		const foreign = childTask("task-foreign");
 		const projection = projectTaskEnvelope(foreign);
 		expect(
-			forkChildContextV1(
+			forkChildContext(
 				forkInput({
 					forkScope: "task_package",
 					taskPackageRef: "pkg-1",
@@ -410,15 +410,15 @@ describe("child context fork", () => {
 	});
 
 	it("rejects missing recentN and missing taskPackageRef", () => {
-		expect(forkChildContextV1(forkInput({ forkScope: "recent_n" }))).toMatchObject({
+		expect(forkChildContext(forkInput({ forkScope: "recent_n" }))).toMatchObject({
 			ok: false,
 			error: { code: "subagent_context_fork_invalid" },
 		});
-		expect(forkChildContextV1(forkInput({ forkScope: "recent_n", recentN: 0 }))).toMatchObject({
+		expect(forkChildContext(forkInput({ forkScope: "recent_n", recentN: 0 }))).toMatchObject({
 			ok: false,
 			error: { code: "subagent_context_fork_invalid" },
 		});
-		expect(forkChildContextV1(forkInput({ forkScope: "task_package" }))).toMatchObject({
+		expect(forkChildContext(forkInput({ forkScope: "task_package" }))).toMatchObject({
 			ok: false,
 			error: { code: "subagent_context_fork_invalid" },
 		});
@@ -427,7 +427,7 @@ describe("child context fork", () => {
 	it("rejects a mismatched parent digest and a mismatched task package digest", () => {
 		const parent = parentSnapshot();
 		expect(
-			forkChildContextV1(
+			forkChildContext(
 				forkInput({
 					parentSnapshot: parent,
 					forkScope: "all",
@@ -438,7 +438,7 @@ describe("child context fork", () => {
 		const task = childTask();
 		const projection = projectTaskEnvelope(task);
 		expect(
-			forkChildContextV1(
+			forkChildContext(
 				forkInput({
 					forkScope: "task_package",
 					taskPackageRef: "pkg-1",
@@ -455,19 +455,19 @@ describe("child context fork", () => {
 
 	it("rejects an all fork that exceeds the child token budget", () => {
 		const parent = parentSnapshot(6);
-		const result = forkChildContextV1(forkInput({ parentSnapshot: parent, forkScope: "all", childTokenBudget: 1 }));
+		const result = forkChildContext(forkInput({ parentSnapshot: parent, forkScope: "all", childTokenBudget: 1 }));
 		expect(result).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
 	});
 
 	it("rejects oversized none and task_package runtime projections against childTokenBudget", () => {
 		const oversizedRole = childRole(`You are the child. ${"budget ".repeat(400)}`);
 		expect(
-			forkChildContextV1(forkInput({ forkScope: "none", childRoleRevision: oversizedRole, childTokenBudget: 8 })),
+			forkChildContext(forkInput({ forkScope: "none", childRoleRevision: oversizedRole, childTokenBudget: 8 })),
 		).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
 		const task = childTask("task-child", `complete the child task ${"goal ".repeat(400)}`);
 		const projection = projectTaskEnvelope(task);
 		expect(
-			forkChildContextV1(
+			forkChildContext(
 				forkInput({
 					forkScope: "task_package",
 					taskPackageRef: "pkg-1",
@@ -513,7 +513,7 @@ describe("child context fork", () => {
 
 	it("deep-clones safe tool result content and details on all, and rejects unsafe secrets", () => {
 		const safe = safeToolParentSnapshot();
-		const cloned = forkChildContextV1(forkInput({ parentSnapshot: safe, forkScope: "all" }));
+		const cloned = forkChildContext(forkInput({ parentSnapshot: safe, forkScope: "all" }));
 		expect(cloned.ok).toBe(true);
 		if (!cloned.ok) throw cloned.error;
 		const tool = cloned.value.snapshot.entries().find((entry) => entry.id === "turn-0-tool");
@@ -523,21 +523,21 @@ describe("child context fork", () => {
 			expect(tool.message.details).toEqual({ bytes: 9, truncated: false });
 		}
 		expect(tool).not.toBe(safe.entries().find((entry) => entry.id === "turn-0-tool"));
-		expect(forkChildContextV1(forkInput({ parentSnapshot: mixedParentSnapshot(), forkScope: "all" }))).toMatchObject({
+		expect(forkChildContext(forkInput({ parentSnapshot: mixedParentSnapshot(), forkScope: "all" }))).toMatchObject({
 			ok: false,
 			error: { code: "subagent_context_fork_invalid" },
 		});
 	});
 
 	it("returns a stable Result for malformed unknown input and never throws", () => {
-		expect(() => forkChildContextV1(null)).not.toThrow();
-		expect(forkChildContextV1(null)).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
-		expect(forkChildContextV1({ extra: true })).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
+		expect(() => forkChildContext(null)).not.toThrow();
+		expect(forkChildContext(null)).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
+		expect(forkChildContext({ extra: true })).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
 		expect(
-			forkChildContextV1(forkInput({ sourceContextDigest: { algorithm: "sha256", value: "abc", extra: true } as never })),
+			forkChildContext(forkInput({ sourceContextDigest: { algorithm: "sha256", value: "abc", extra: true } as never })),
 		).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
 		expect(
-			forkChildContextV1(
+			forkChildContext(
 				forkInput({
 					forkScope: "task_package",
 					taskPackageRef: "pkg-1",
@@ -548,13 +548,13 @@ describe("child context fork", () => {
 	});
 
 	it("validates the fork plan as an exact runtime shape", () => {
-		const result = forkChildContextV1(forkInput({ forkScope: "none" }));
+		const result = forkChildContext(forkInput({ forkScope: "none" }));
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw result.error;
-		expect(validateChildContextForkPlanV1(result.value.plan)).toBe(true);
-		expect(validateChildContextForkPlanV1({ ...result.value.plan, extra: true })).toBe(false);
-		expect(validateChildContextForkPlanV1({ ...result.value.plan, recentN: 2 })).toBe(false);
-		expect(validateChildContextForkPlanV1({ ...result.value.plan, taskPackageRef: "pkg-1" })).toBe(false);
+		expect(validateChildContextForkPlan(result.value.plan)).toBe(true);
+		expect(validateChildContextForkPlan({ ...result.value.plan, extra: true })).toBe(false);
+		expect(validateChildContextForkPlan({ ...result.value.plan, recentN: 2 })).toBe(false);
+		expect(validateChildContextForkPlan({ ...result.value.plan, taskPackageRef: "pkg-1" })).toBe(false);
 	});
 
 	it("charges canonical JSON structure including required and satisfiedBy under a tight budget", () => {
@@ -611,30 +611,30 @@ describe("child context fork", () => {
 			],
 			budget: { maxTokens: 100_000 },
 		});
-		const noneProbe = forkChildContextV1(forkInput({ parentSnapshot: parent, forkScope: "none", childTokenBudget: 50_000 }));
+		const noneProbe = forkChildContext(forkInput({ parentSnapshot: parent, forkScope: "none", childTokenBudget: 50_000 }));
 		expect(noneProbe.ok).toBe(true);
 		if (!noneProbe.ok) throw noneProbe.error;
 		const runtime =
 			(noneProbe.value.record.sources.find((source) => source.kind === "instruction")?.estimatedTokens ?? 0) +
 			(noneProbe.value.record.sources.find((source) => source.kind === "task")?.estimatedTokens ?? 0);
 		expect(
-			forkChildContextV1(forkInput({ parentSnapshot: parent, forkScope: "all", childTokenBudget: 400 })),
+			forkChildContext(forkInput({ parentSnapshot: parent, forkScope: "all", childTokenBudget: 400 })),
 		).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
 		expect(
-			forkChildContextV1(forkInput({ parentSnapshot: parent, forkScope: "recent_n", recentN: 1, childTokenBudget: 400 })),
+			forkChildContext(forkInput({ parentSnapshot: parent, forkScope: "recent_n", recentN: 1, childTokenBudget: 400 })),
 		).toMatchObject({ ok: false, error: { code: "subagent_context_fork_invalid" } });
 		const justEnough = runtime + 400 + 50 + 200;
 		expect(justEnough).toBeLessThan(8000);
-		const allOk = forkChildContextV1(forkInput({ parentSnapshot: parent, forkScope: "all", childTokenBudget: justEnough }));
+		const allOk = forkChildContext(forkInput({ parentSnapshot: parent, forkScope: "all", childTokenBudget: justEnough }));
 		expect(allOk.ok).toBe(true);
-		const recentOk = forkChildContextV1(forkInput({ parentSnapshot: parent, forkScope: "recent_n", recentN: 1, childTokenBudget: justEnough }));
+		const recentOk = forkChildContext(forkInput({ parentSnapshot: parent, forkScope: "recent_n", recentN: 1, childTokenBudget: justEnough }));
 		expect(recentOk.ok).toBe(true);
 	});
 
 	it("does not share parent context references with the child snapshot", () => {
 		const parent = parentSnapshot();
 		const before = parent.toJSON();
-		const result = forkChildContextV1(forkInput({ parentSnapshot: parent, forkScope: "all" }));
+		const result = forkChildContext(forkInput({ parentSnapshot: parent, forkScope: "all" }));
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw result.error;
 		expect(() => {

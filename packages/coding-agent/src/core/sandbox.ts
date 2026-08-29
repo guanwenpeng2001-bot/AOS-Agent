@@ -107,7 +107,7 @@ const WORKER_OPERATION_RESOURCES: readonly PolicyResource[] = [
 ];
 
 /** Convert provider-neutral ToolGateway JSON into the existing Sandbox handle contract. */
-export function resolveWorkerSandboxOperationV1(
+export function resolveWorkerSandboxOperation(
 	bindingId: string,
 	payload: FoundationJsonValue | undefined,
 	signal?: AbortSignal,

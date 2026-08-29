@@ -47,7 +47,7 @@ import {
 import { createSessionManagerStorage } from "../../src/core/session-manager-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { SchedulerSelectionReservationStore } from "../../src/core/scheduler-selection-reservations.ts";
-import type { TrustedSubagentCompositionOptionsV1 } from "../../src/core/subagent-composition.ts";
+import type { TrustedSubagentCompositionOptions } from "../../src/core/subagent-composition.ts";
 import { createTaskCredentialTestProvider } from "../../src/core/task-credential-provider.ts";
 import { TaskGraphStore } from "../../src/core/task-graph.ts";
 import { createExternalConnectorTestRuntime } from "../external-connector-test-supervision.ts";
@@ -174,7 +174,7 @@ function schedulerBinding(task: TaskEnvelope, sessionId: string): AgentBinding {
 	return resolved.value;
 }
 
-function createSubagents(context: AgentRuntimeCompositionContext): TrustedSubagentCompositionOptionsV1 {
+function createSubagents(context: AgentRuntimeCompositionContext): TrustedSubagentCompositionOptions {
 	const toolGateway = canonicalToolGateway;
 	if (toolGateway === undefined) throw new Error("main RPC Tool Gateway was not composed before Subagent");
 	const memoryLedger = new SessionT5Ledger(context.session, {

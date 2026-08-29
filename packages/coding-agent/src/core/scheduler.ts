@@ -10,7 +10,7 @@
  * Facts are typed durable `scheduler.*` catalog events on the existing
  * Session ledger. Claim fencing uses an opaque string token with the same
  * equality semantics as `LedgerWriterLeaseV1.fencingToken`, but
- * `SchedulerClaimV1` carries its own token and lease and is not that writer
+ * `SchedulerClaim` carries its own token and lease and is not that writer
  * lease. Session ledger append still uses the existing writer lease.
  *
  * Event producer for `scheduler.*` is the existing harness producer. Inbox
@@ -34,15 +34,15 @@ import {
 } from "@aos-agent/agent-core";
 import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
 import type {
-	SchedulerDispatchExecutorRequirementsV1,
-	SchedulerDispatchOutcomeV1,
-	SchedulerRunDispatchRequestV1,
+	SchedulerDispatchExecutorRequirements,
+	SchedulerDispatchOutcome,
+	SchedulerRunDispatchRequest,
 } from "./scheduler-dispatch.ts";
-import type { SchedulerFanInSettlementV1, SchedulerFanInSettleRequestV1 } from "./scheduler-fan-in.ts";
+import type { SchedulerFanInSettlement, SchedulerFanInSettleRequest } from "./scheduler-fan-in.ts";
 import type {
-	SchedulerClaimAcquireResultV1,
-	SchedulerQueueSnapshotV1,
-	SchedulerQueueTerminalRequestV1,
+	SchedulerClaimAcquireResult,
+	SchedulerQueueSnapshot,
+	SchedulerQueueTerminalRequest,
 } from "./scheduler-queue.ts";
 import type {
 	TaskGraphListFilter,
@@ -67,13 +67,13 @@ export const SCHEDULER_ID_MAX_LENGTH = 256;
 export const SCHEDULER_REASON_SUMMARY_MAX_LENGTH = 64;
 
 export const SCHEDULER_QUEUE_STATES = ["queued", "claimed", "dispatched", "settled", "cancelled", "expired"] as const;
-export type SchedulerQueueStateV1 = (typeof SCHEDULER_QUEUE_STATES)[number];
+export type SchedulerQueueState = (typeof SCHEDULER_QUEUE_STATES)[number];
 
 export const SCHEDULER_DISPATCH_STATUSES = ["prepared", "in_flight", "settled", "cancelled", "expired"] as const;
-export type SchedulerDispatchStatusV1 = (typeof SCHEDULER_DISPATCH_STATUSES)[number];
+export type SchedulerDispatchStatus = (typeof SCHEDULER_DISPATCH_STATUSES)[number];
 
 export const SCHEDULER_HANDOFF_STATES = ["offered", "accepted", "rejected", "timed_out", "cancelled"] as const;
-export type SchedulerHandoffStateV1 = (typeof SCHEDULER_HANDOFF_STATES)[number];
+export type SchedulerHandoffState = (typeof SCHEDULER_HANDOFF_STATES)[number];
 
 export const SCHEDULER_MESSAGE_TYPES = [
 	"handoff.offer",
@@ -83,22 +83,22 @@ export const SCHEDULER_MESSAGE_TYPES = [
 	"wake",
 	"note",
 ] as const;
-export type SchedulerMessageTypeV1 = (typeof SCHEDULER_MESSAGE_TYPES)[number];
+export type SchedulerMessageType = (typeof SCHEDULER_MESSAGE_TYPES)[number];
 
 export const SCHEDULER_MESSAGE_ACK = ["none", "required"] as const;
-export type SchedulerMessageAckV1 = (typeof SCHEDULER_MESSAGE_ACK)[number];
+export type SchedulerMessageAck = (typeof SCHEDULER_MESSAGE_ACK)[number];
 
 export const SCHEDULER_JOIN_POLICIES = ["require_all", "allow_partial"] as const;
-export type SchedulerJoinPolicyV1 = (typeof SCHEDULER_JOIN_POLICIES)[number];
+export type SchedulerJoinPolicy = (typeof SCHEDULER_JOIN_POLICIES)[number];
 
 export const SCHEDULER_WAIT_EDGE_KINDS = ["dependsOn", "gate", "ask", "handoff", "claim"] as const;
-export type SchedulerWaitEdgeKindV1 = (typeof SCHEDULER_WAIT_EDGE_KINDS)[number];
+export type SchedulerWaitEdgeKind = (typeof SCHEDULER_WAIT_EDGE_KINDS)[number];
 
 export const SCHEDULER_EXECUTOR_COST_CLASSES = ["local", "remote_paid"] as const;
-export type SchedulerExecutorCostClassV1 = (typeof SCHEDULER_EXECUTOR_COST_CLASSES)[number];
+export type SchedulerExecutorCostClass = (typeof SCHEDULER_EXECUTOR_COST_CLASSES)[number];
 
 export const SCHEDULER_PROVIDER_CLASSES = ["scheduler", "task_executor", "agent", "external_connector"] as const;
-export type SchedulerProviderClassV1 = (typeof SCHEDULER_PROVIDER_CLASSES)[number];
+export type SchedulerProviderClass = (typeof SCHEDULER_PROVIDER_CLASSES)[number];
 
 export const SCHEDULER_ENGINE_PHASES = [
 	"idle",
@@ -109,7 +109,7 @@ export const SCHEDULER_ENGINE_PHASES = [
 	"dispatching",
 	"settling",
 ] as const;
-export type SchedulerEnginePhaseV1 = (typeof SCHEDULER_ENGINE_PHASES)[number];
+export type SchedulerEnginePhase = (typeof SCHEDULER_ENGINE_PHASES)[number];
 
 export const SCHEDULER_DURABLE_EVENT_CATEGORIES = [
 	"scheduler.queue_transitioned",
@@ -126,7 +126,7 @@ export const SCHEDULER_DURABLE_EVENT_CATEGORIES = [
 	"scheduler.wake_fired",
 	"scheduler.deadlock_detected",
 ] as const;
-export type SchedulerDurableEventCategoryV1 = (typeof SCHEDULER_DURABLE_EVENT_CATEGORIES)[number];
+export type SchedulerDurableEventCategory = (typeof SCHEDULER_DURABLE_EVENT_CATEGORIES)[number];
 
 export const SCHEDULER_ERROR_CODES = [
 	"scheduler_queue_invalid",
@@ -152,9 +152,9 @@ export const SCHEDULER_ERROR_CODES = [
 	"scheduler_not_found",
 	"scheduler_persistence_failed",
 ] as const;
-export type SchedulerErrorCodeV1 = (typeof SCHEDULER_ERROR_CODES)[number];
+export type SchedulerErrorCode = (typeof SCHEDULER_ERROR_CODES)[number];
 
-const SCHEDULER_ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
+const SCHEDULER_ERROR_MESSAGES: Readonly<Record<SchedulerErrorCode, string>> = {
 	scheduler_queue_invalid: "Scheduler queue entry is invalid.",
 	scheduler_queue_conflict: "Scheduler queue business key already has a different payload.",
 	scheduler_claim_conflict: "Scheduler claim conflict: the task already has an active claim.",
@@ -179,13 +179,13 @@ const SCHEDULER_ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> =
 	scheduler_persistence_failed: "Scheduler durable append failed; re-read current state.",
 };
 
-const RETRYABLE_SCHEDULER_ERROR_CODES: ReadonlySet<SchedulerErrorCodeV1> = new Set([
+const RETRYABLE_SCHEDULER_ERROR_CODES: ReadonlySet<SchedulerErrorCode> = new Set([
 	"scheduler_claim_conflict",
 	"scheduler_budget_exhausted_wait",
 	"scheduler_backpressure",
 ]);
 
-export const SCHEDULER_QUEUE_TRANSITIONS: Readonly<Record<SchedulerQueueStateV1, readonly SchedulerQueueStateV1[]>> = {
+export const SCHEDULER_QUEUE_TRANSITIONS: Readonly<Record<SchedulerQueueState, readonly SchedulerQueueState[]>> = {
 	queued: ["claimed", "cancelled"],
 	claimed: ["dispatched", "expired", "cancelled"],
 	dispatched: ["settled", "expired", "cancelled"],
@@ -195,7 +195,7 @@ export const SCHEDULER_QUEUE_TRANSITIONS: Readonly<Record<SchedulerQueueStateV1,
 };
 
 export const SCHEDULER_DISPATCH_TRANSITIONS: Readonly<
-	Record<SchedulerDispatchStatusV1, readonly SchedulerDispatchStatusV1[]>
+	Record<SchedulerDispatchStatus, readonly SchedulerDispatchStatus[]>
 > = {
 	prepared: ["in_flight", "cancelled", "expired"],
 	in_flight: ["settled", "cancelled", "expired"],
@@ -205,7 +205,7 @@ export const SCHEDULER_DISPATCH_TRANSITIONS: Readonly<
 };
 
 export const SCHEDULER_HANDOFF_TRANSITIONS: Readonly<
-	Record<SchedulerHandoffStateV1, readonly SchedulerHandoffStateV1[]>
+	Record<SchedulerHandoffState, readonly SchedulerHandoffState[]>
 > = {
 	offered: ["accepted", "rejected", "timed_out", "cancelled"],
 	accepted: [],
@@ -214,7 +214,7 @@ export const SCHEDULER_HANDOFF_TRANSITIONS: Readonly<
 	cancelled: [],
 };
 
-export const SCHEDULER_ENGINE_TRANSITIONS: Readonly<Record<SchedulerEnginePhaseV1, readonly SchedulerEnginePhaseV1[]>> =
+export const SCHEDULER_ENGINE_TRANSITIONS: Readonly<Record<SchedulerEnginePhase, readonly SchedulerEnginePhase[]>> =
 	{
 		idle: ["scanning"],
 		scanning: ["enqueueing", "idle"],
@@ -225,21 +225,21 @@ export const SCHEDULER_ENGINE_TRANSITIONS: Readonly<Record<SchedulerEnginePhaseV
 		settling: ["idle", "scanning"],
 	};
 
-export interface SchedulerNodeRefV1 {
+export interface SchedulerNodeRef {
 	readonly taskId: string;
 	readonly graphRevision: number;
 	readonly nodeId: string;
 }
 
-export interface SchedulerQueueEntryV1 {
+export interface SchedulerQueueEntry {
 	readonly schemaVersion: 1;
 	readonly queueEntryId: string;
 	readonly sessionId: string;
 	readonly taskId: string;
-	readonly nodeRef?: SchedulerNodeRefV1;
+	readonly nodeRef?: SchedulerNodeRef;
 	readonly goalId?: string;
 	readonly workflowId?: string;
-	readonly state: SchedulerQueueStateV1;
+	readonly state: SchedulerQueueState;
 	readonly priority: number;
 	readonly attemptsUsed: number;
 	readonly notBefore?: string;
@@ -255,7 +255,7 @@ export interface SchedulerQueueEntryV1 {
  * The claim carries its own lease (`acquiredAt` / `expiresAt` as canonical
  * UTC ISO timestamps) and is not a writer-lease mutex.
  */
-export interface SchedulerClaimV1 {
+export interface SchedulerClaim {
 	readonly schemaVersion: 1;
 	readonly claimId: string;
 	readonly queueEntryId: string;
@@ -267,71 +267,71 @@ export interface SchedulerClaimV1 {
 	readonly revision: number;
 }
 
-export interface SchedulerDispatchRecordV1 {
+export interface SchedulerDispatchRecord {
 	readonly schemaVersion: 1;
 	readonly queueEntryId: string;
 	readonly claimId: string;
 	readonly dispatchId: string;
 	readonly attemptId?: string;
 	readonly providerId: string;
-	readonly providerClass: SchedulerProviderClassV1;
+	readonly providerClass: SchedulerProviderClass;
 	readonly reservationId?: string;
 	readonly deadlineAt?: string;
-	readonly status: SchedulerDispatchStatusV1;
+	readonly status: SchedulerDispatchStatus;
 	readonly revision: number;
 }
 
-export interface SchedulerExecutorAffinityV1 {
+export interface SchedulerExecutorAffinity {
 	readonly sessionId?: string;
 	readonly workspaceDigest?: Fingerprint;
 }
 
-export interface SchedulerExecutorEntryV1 {
+export interface SchedulerExecutorEntry {
 	readonly schemaVersion: 1;
 	readonly descriptor: ExecutionProviderDescriptor;
 	readonly capabilities: readonly FoundationProviderCapability[];
-	readonly costClass: SchedulerExecutorCostClassV1;
-	readonly affinity?: SchedulerExecutorAffinityV1;
+	readonly costClass: SchedulerExecutorCostClass;
+	readonly affinity?: SchedulerExecutorAffinity;
 	readonly registeredAt: string;
 }
 
-export interface SchedulerSelectionScoreV1 {
+export interface SchedulerSelectionScore {
 	readonly providerId: string;
 	readonly score: number;
 }
 
-export interface SchedulerSelectionFactV1 {
+export interface SchedulerSelectionFact {
 	readonly schemaVersion: 1;
 	readonly queueEntryId: string;
 	readonly taskId: string;
 	readonly chosenProviderId: string;
-	readonly scores: readonly SchedulerSelectionScoreV1[];
+	readonly scores: readonly SchedulerSelectionScore[];
 	readonly inputsDigest: Fingerprint;
 	readonly decidedAt: string;
 }
 
-export interface SchedulerJoinPlanV1 {
+export interface SchedulerJoinPlan {
 	readonly schemaVersion: 1;
 	readonly joinId: string;
 	readonly taskId: string;
-	readonly nodeRef?: SchedulerNodeRefV1;
-	readonly policy: SchedulerJoinPolicyV1;
+	readonly nodeRef?: SchedulerNodeRef;
+	readonly policy: SchedulerJoinPolicy;
 	readonly predecessorTaskIds: readonly string[];
 	readonly createdAt: string;
 }
 
-export interface SchedulerJoinSnapshotV1 {
+export interface SchedulerJoinSnapshot {
 	readonly schemaVersion: 1;
 	readonly joinId: string;
 	readonly sourceAttemptReceiptIds: readonly string[];
 	readonly sourceTaskResultIds: readonly string[];
-	readonly policy: SchedulerJoinPolicyV1;
+	readonly policy: SchedulerJoinPolicy;
 	readonly degradedCriterionIds: readonly string[];
 	readonly settledTaskResultId?: string;
 	readonly settledAt?: string;
 }
 
-export interface SchedulerMessageCorrelationV1 {
+export interface SchedulerMessageCorrelation {
 	readonly taskId?: string;
 	readonly goalId?: string;
 	readonly workflowId?: string;
@@ -339,15 +339,15 @@ export interface SchedulerMessageCorrelationV1 {
 	readonly askId?: string;
 }
 
-export interface SchedulerMessageV1 {
+export interface SchedulerMessage {
 	readonly schemaVersion: 1;
 	readonly messageId: string;
-	readonly type: SchedulerMessageTypeV1;
+	readonly type: SchedulerMessageType;
 	readonly threadId: string;
 	readonly fromSessionId: string;
 	readonly toSessionId: string;
-	readonly correlation: SchedulerMessageCorrelationV1;
-	readonly ack: SchedulerMessageAckV1;
+	readonly correlation: SchedulerMessageCorrelation;
+	readonly ack: SchedulerMessageAck;
 	readonly ackedAt?: string;
 	readonly expiresAt?: string;
 	readonly payloadDigest?: Fingerprint;
@@ -355,13 +355,13 @@ export interface SchedulerMessageV1 {
 	readonly revision: number;
 }
 
-export interface SchedulerOwnershipTransferV1 {
+export interface SchedulerOwnershipTransfer {
 	readonly schemaVersion: 1;
 	readonly transferId: string;
 	readonly taskId: string;
 	readonly fromOwnerId: string;
 	readonly toOwnerId: string;
-	readonly state: SchedulerHandoffStateV1;
+	readonly state: SchedulerHandoffState;
 	readonly reasonSummary?: string;
 	readonly fencingToken: string;
 	readonly deadlineAt: string;
@@ -370,7 +370,7 @@ export interface SchedulerOwnershipTransferV1 {
 	readonly revision: number;
 }
 
-export interface SchedulerWakeV1 {
+export interface SchedulerWake {
 	readonly schemaVersion: 1;
 	readonly wakeId: string;
 	readonly workflowId: string;
@@ -380,17 +380,17 @@ export interface SchedulerWakeV1 {
 	readonly revision: number;
 }
 
-export interface SchedulerDeadlockFactV1 {
+export interface SchedulerDeadlockFact {
 	readonly schemaVersion: 1;
 	readonly detectionId: string;
 	readonly memberTaskIds: readonly string[];
-	readonly edgeKinds: readonly SchedulerWaitEdgeKindV1[];
+	readonly edgeKinds: readonly SchedulerWaitEdgeKind[];
 	readonly failedTaskIds: readonly string[];
 	readonly detectedAt: string;
 }
 
-export interface SchedulerEnqueueResultV1 {
-	readonly entry: SchedulerQueueEntryV1;
+export interface SchedulerEnqueueResult {
+	readonly entry: SchedulerQueueEntry;
 	readonly idempotent: boolean;
 }
 
@@ -622,52 +622,52 @@ function copyIdentifiers(value: readonly string[]): readonly string[] {
 	return [...value];
 }
 
-function schedulerError(code: SchedulerErrorCodeV1): FoundationError {
+function schedulerError(code: SchedulerErrorCode): FoundationError {
 	return new FoundationError(code, SCHEDULER_ERROR_MESSAGES[code], {
 		retryable: RETRYABLE_SCHEDULER_ERROR_CODES.has(code),
 	});
 }
 
-function fail<T>(code: SchedulerErrorCodeV1): ResultValue<T, FoundationError> {
+function fail<T>(code: SchedulerErrorCode): ResultValue<T, FoundationError> {
 	return Result.err(schedulerError(code));
 }
 
-export function isSchedulerErrorCode(value: unknown): value is SchedulerErrorCodeV1 {
+export function isSchedulerErrorCode(value: unknown): value is SchedulerErrorCode {
 	return typeof value === "string" && (SCHEDULER_ERROR_CODES as readonly string[]).includes(value);
 }
 
-export function schedulerErrorRetryable(code: SchedulerErrorCodeV1): boolean {
+export function schedulerErrorRetryable(code: SchedulerErrorCode): boolean {
 	return RETRYABLE_SCHEDULER_ERROR_CODES.has(code);
 }
 
-export function isLegalSchedulerQueueTransition(from: SchedulerQueueStateV1, to: SchedulerQueueStateV1): boolean {
+export function isLegalSchedulerQueueTransition(from: SchedulerQueueState, to: SchedulerQueueState): boolean {
 	return SCHEDULER_QUEUE_TRANSITIONS[from].includes(to);
 }
 
 export function isLegalSchedulerDispatchTransition(
-	from: SchedulerDispatchStatusV1,
-	to: SchedulerDispatchStatusV1,
+	from: SchedulerDispatchStatus,
+	to: SchedulerDispatchStatus,
 ): boolean {
 	return SCHEDULER_DISPATCH_TRANSITIONS[from].includes(to);
 }
 
-export function isLegalSchedulerHandoffTransition(from: SchedulerHandoffStateV1, to: SchedulerHandoffStateV1): boolean {
+export function isLegalSchedulerHandoffTransition(from: SchedulerHandoffState, to: SchedulerHandoffState): boolean {
 	return SCHEDULER_HANDOFF_TRANSITIONS[from].includes(to);
 }
 
-export function isLegalSchedulerEngineTransition(from: SchedulerEnginePhaseV1, to: SchedulerEnginePhaseV1): boolean {
+export function isLegalSchedulerEngineTransition(from: SchedulerEnginePhase, to: SchedulerEnginePhase): boolean {
 	return SCHEDULER_ENGINE_TRANSITIONS[from].includes(to);
 }
 
-export function isSchedulerQueueTerminal(state: SchedulerQueueStateV1): boolean {
+export function isSchedulerQueueTerminal(state: SchedulerQueueState): boolean {
 	return state === "settled" || state === "cancelled";
 }
 
-export function isSchedulerDispatchTerminal(status: SchedulerDispatchStatusV1): boolean {
+export function isSchedulerDispatchTerminal(status: SchedulerDispatchStatus): boolean {
 	return status === "settled" || status === "cancelled" || status === "expired";
 }
 
-export function isSchedulerHandoffTerminal(state: SchedulerHandoffStateV1): boolean {
+export function isSchedulerHandoffTerminal(state: SchedulerHandoffState): boolean {
 	return state !== "offered";
 }
 
@@ -683,27 +683,27 @@ export function schedulerFencingTokensEqual(left: string, right: string): boolea
 	return left === right;
 }
 
-export function isSchedulerClaimActive(claim: SchedulerClaimV1, nowIso: string): boolean {
+export function isSchedulerClaimActive(claim: SchedulerClaim, nowIso: string): boolean {
 	return Date.parse(nowIso) < Date.parse(claim.expiresAt);
 }
 
-export function schedulerNodeRefKey(nodeRef: SchedulerNodeRefV1 | undefined): string {
+export function schedulerNodeRefKey(nodeRef: SchedulerNodeRef | undefined): string {
 	if (nodeRef === undefined) return "";
 	return `${nodeRef.taskId}:${nodeRef.graphRevision}:${nodeRef.nodeId}`;
 }
 
 /** Session-scoped business key. Cross-session identity requires `sessionId`. */
-export function schedulerQueueBusinessKey(sessionId: string, taskId: string, nodeRef?: SchedulerNodeRefV1): string {
+export function schedulerQueueBusinessKey(sessionId: string, taskId: string, nodeRef?: SchedulerNodeRef): string {
 	return `${sessionId}\0${taskId}\0${schedulerNodeRefKey(nodeRef)}`;
 }
 
-function queueIdentityKey(entry: SchedulerQueueEntryV1): string {
+function queueIdentityKey(entry: SchedulerQueueEntry): string {
 	const goal = entry.goalId ?? "";
 	const workflow = entry.workflowId ?? "";
 	return `${schedulerQueueBusinessKey(entry.sessionId, entry.taskId, entry.nodeRef)}\0${goal}\0${workflow}`;
 }
 
-function isNodeRef(value: unknown): value is SchedulerNodeRefV1 {
+function isNodeRef(value: unknown): value is SchedulerNodeRef {
 	return (
 		isRecord(value) &&
 		hasOnlyKeys(value, NODE_REF_KEYS) &&
@@ -714,11 +714,11 @@ function isNodeRef(value: unknown): value is SchedulerNodeRefV1 {
 	);
 }
 
-function copyNodeRef(value: SchedulerNodeRefV1): SchedulerNodeRefV1 {
+function copyNodeRef(value: SchedulerNodeRef): SchedulerNodeRef {
 	return { taskId: value.taskId, graphRevision: value.graphRevision, nodeId: value.nodeId };
 }
 
-export function isSchedulerQueueEntry(value: unknown): value is SchedulerQueueEntryV1 {
+export function isSchedulerQueueEntry(value: unknown): value is SchedulerQueueEntry {
 	if (!isRecord(value) || !hasOnlyKeys(value, QUEUE_ENTRY_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (
@@ -745,8 +745,8 @@ export function isSchedulerQueueEntry(value: unknown): value is SchedulerQueueEn
 	return true;
 }
 
-export function serializeSchedulerQueueEntry(value: SchedulerQueueEntryV1): SchedulerQueueEntryV1 {
-	const entry: SchedulerQueueEntryV1 = {
+export function serializeSchedulerQueueEntry(value: SchedulerQueueEntry): SchedulerQueueEntry {
+	const entry: SchedulerQueueEntry = {
 		schemaVersion: 1,
 		queueEntryId: value.queueEntryId,
 		sessionId: value.sessionId,
@@ -757,7 +757,7 @@ export function serializeSchedulerQueueEntry(value: SchedulerQueueEntryV1): Sche
 		enqueuedAt: value.enqueuedAt,
 		revision: value.revision,
 	};
-	if (value.nodeRef !== undefined) (entry as { nodeRef?: SchedulerNodeRefV1 }).nodeRef = copyNodeRef(value.nodeRef);
+	if (value.nodeRef !== undefined) (entry as { nodeRef?: SchedulerNodeRef }).nodeRef = copyNodeRef(value.nodeRef);
 	if (value.goalId !== undefined) (entry as { goalId?: string }).goalId = value.goalId;
 	if (value.workflowId !== undefined) (entry as { workflowId?: string }).workflowId = value.workflowId;
 	if (value.notBefore !== undefined) (entry as { notBefore?: string }).notBefore = value.notBefore;
@@ -766,12 +766,12 @@ export function serializeSchedulerQueueEntry(value: SchedulerQueueEntryV1): Sche
 	return entry;
 }
 
-export function parseSchedulerQueueEntry(value: unknown): ResultValue<SchedulerQueueEntryV1, FoundationError> {
+export function parseSchedulerQueueEntry(value: unknown): ResultValue<SchedulerQueueEntry, FoundationError> {
 	if (!isSchedulerQueueEntry(value)) return fail("scheduler_queue_invalid");
 	return Result.ok(serializeSchedulerQueueEntry(value));
 }
 
-export function isSchedulerClaim(value: unknown): value is SchedulerClaimV1 {
+export function isSchedulerClaim(value: unknown): value is SchedulerClaim {
 	if (!isRecord(value) || !hasOnlyKeys(value, CLAIM_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (
@@ -789,7 +789,7 @@ export function isSchedulerClaim(value: unknown): value is SchedulerClaimV1 {
 	return Date.parse(value.expiresAt) > Date.parse(value.acquiredAt);
 }
 
-export function serializeSchedulerClaim(value: SchedulerClaimV1): SchedulerClaimV1 {
+export function serializeSchedulerClaim(value: SchedulerClaim): SchedulerClaim {
 	return {
 		schemaVersion: 1,
 		claimId: value.claimId,
@@ -803,12 +803,12 @@ export function serializeSchedulerClaim(value: SchedulerClaimV1): SchedulerClaim
 	};
 }
 
-export function parseSchedulerClaim(value: unknown): ResultValue<SchedulerClaimV1, FoundationError> {
+export function parseSchedulerClaim(value: unknown): ResultValue<SchedulerClaim, FoundationError> {
 	if (!isSchedulerClaim(value)) return fail("scheduler_queue_invalid");
 	return Result.ok(serializeSchedulerClaim(value));
 }
 
-export function isSchedulerDispatchRecord(value: unknown): value is SchedulerDispatchRecordV1 {
+export function isSchedulerDispatchRecord(value: unknown): value is SchedulerDispatchRecord {
 	if (!isRecord(value) || !hasOnlyKeys(value, DISPATCH_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (
@@ -829,8 +829,8 @@ export function isSchedulerDispatchRecord(value: unknown): value is SchedulerDis
 	return true;
 }
 
-export function serializeSchedulerDispatchRecord(value: SchedulerDispatchRecordV1): SchedulerDispatchRecordV1 {
-	const record: SchedulerDispatchRecordV1 = {
+export function serializeSchedulerDispatchRecord(value: SchedulerDispatchRecord): SchedulerDispatchRecord {
+	const record: SchedulerDispatchRecord = {
 		schemaVersion: 1,
 		queueEntryId: value.queueEntryId,
 		claimId: value.claimId,
@@ -846,7 +846,7 @@ export function serializeSchedulerDispatchRecord(value: SchedulerDispatchRecordV
 	return record;
 }
 
-export function parseSchedulerDispatchRecord(value: unknown): ResultValue<SchedulerDispatchRecordV1, FoundationError> {
+export function parseSchedulerDispatchRecord(value: unknown): ResultValue<SchedulerDispatchRecord, FoundationError> {
 	if (!isSchedulerDispatchRecord(value)) return fail("scheduler_dispatch_invalid");
 	return Result.ok(serializeSchedulerDispatchRecord(value));
 }
@@ -879,14 +879,14 @@ function isDescriptor(value: unknown): value is ExecutionProviderDescriptor {
 	);
 }
 
-function isAffinity(value: unknown): value is SchedulerExecutorAffinityV1 {
+function isAffinity(value: unknown): value is SchedulerExecutorAffinity {
 	if (!isRecord(value) || !hasOnlyKeys(value, AFFINITY_KEYS)) return false;
 	if (value.sessionId !== undefined && !isSafeIdentifier(value.sessionId)) return false;
 	if (value.workspaceDigest !== undefined && !isFingerprint(value.workspaceDigest)) return false;
 	return true;
 }
 
-export function isSchedulerExecutorEntry(value: unknown): value is SchedulerExecutorEntryV1 {
+export function isSchedulerExecutorEntry(value: unknown): value is SchedulerExecutorEntry {
 	if (!isRecord(value) || !hasOnlyKeys(value, EXECUTOR_ENTRY_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (!isDescriptor(value.descriptor) || !isMember(value.costClass, SCHEDULER_EXECUTOR_COST_CLASSES)) return false;
@@ -897,8 +897,8 @@ export function isSchedulerExecutorEntry(value: unknown): value is SchedulerExec
 	return true;
 }
 
-export function serializeSchedulerExecutorEntry(value: SchedulerExecutorEntryV1): SchedulerExecutorEntryV1 {
-	const entry: SchedulerExecutorEntryV1 = {
+export function serializeSchedulerExecutorEntry(value: SchedulerExecutorEntry): SchedulerExecutorEntry {
+	const entry: SchedulerExecutorEntry = {
 		schemaVersion: 1,
 		descriptor: {
 			schemaVersion: 1,
@@ -910,7 +910,7 @@ export function serializeSchedulerExecutorEntry(value: SchedulerExecutorEntryV1)
 		registeredAt: value.registeredAt,
 	};
 	if (value.affinity !== undefined) {
-		const affinity: SchedulerExecutorAffinityV1 = {};
+		const affinity: SchedulerExecutorAffinity = {};
 		if (value.affinity.sessionId !== undefined)
 			(affinity as { sessionId?: string }).sessionId = value.affinity.sessionId;
 		if (value.affinity.workspaceDigest !== undefined) {
@@ -918,17 +918,17 @@ export function serializeSchedulerExecutorEntry(value: SchedulerExecutorEntryV1)
 				value.affinity.workspaceDigest,
 			);
 		}
-		(entry as { affinity?: SchedulerExecutorAffinityV1 }).affinity = affinity;
+		(entry as { affinity?: SchedulerExecutorAffinity }).affinity = affinity;
 	}
 	return entry;
 }
 
-export function parseSchedulerExecutorEntry(value: unknown): ResultValue<SchedulerExecutorEntryV1, FoundationError> {
+export function parseSchedulerExecutorEntry(value: unknown): ResultValue<SchedulerExecutorEntry, FoundationError> {
 	if (!isSchedulerExecutorEntry(value)) return fail("scheduler_no_executor");
 	return Result.ok(serializeSchedulerExecutorEntry(value));
 }
 
-function isSelectionScore(value: unknown): value is SchedulerSelectionScoreV1 {
+function isSelectionScore(value: unknown): value is SchedulerSelectionScore {
 	return (
 		isRecord(value) &&
 		hasOnlyKeys(value, SELECTION_SCORE_KEYS) &&
@@ -938,7 +938,7 @@ function isSelectionScore(value: unknown): value is SchedulerSelectionScoreV1 {
 	);
 }
 
-export function isSchedulerSelectionFact(value: unknown): value is SchedulerSelectionFactV1 {
+export function isSchedulerSelectionFact(value: unknown): value is SchedulerSelectionFact {
 	if (!isRecord(value) || !hasOnlyKeys(value, SELECTION_FACT_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (
@@ -954,7 +954,7 @@ export function isSchedulerSelectionFact(value: unknown): value is SchedulerSele
 	return value.scores.some((item) => item.providerId === value.chosenProviderId);
 }
 
-export function serializeSchedulerSelectionFact(value: SchedulerSelectionFactV1): SchedulerSelectionFactV1 {
+export function serializeSchedulerSelectionFact(value: SchedulerSelectionFact): SchedulerSelectionFact {
 	return {
 		schemaVersion: 1,
 		queueEntryId: value.queueEntryId,
@@ -966,12 +966,12 @@ export function serializeSchedulerSelectionFact(value: SchedulerSelectionFactV1)
 	};
 }
 
-export function parseSchedulerSelectionFact(value: unknown): ResultValue<SchedulerSelectionFactV1, FoundationError> {
+export function parseSchedulerSelectionFact(value: unknown): ResultValue<SchedulerSelectionFact, FoundationError> {
 	if (!isSchedulerSelectionFact(value)) return fail("scheduler_no_executor");
 	return Result.ok(serializeSchedulerSelectionFact(value));
 }
 
-export function isSchedulerJoinPlan(value: unknown): value is SchedulerJoinPlanV1 {
+export function isSchedulerJoinPlan(value: unknown): value is SchedulerJoinPlan {
 	if (!isRecord(value) || !hasOnlyKeys(value, JOIN_PLAN_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (
@@ -989,8 +989,8 @@ export function isSchedulerJoinPlan(value: unknown): value is SchedulerJoinPlanV
 	return value.predecessorTaskIds.length > 0;
 }
 
-export function serializeSchedulerJoinPlan(value: SchedulerJoinPlanV1): SchedulerJoinPlanV1 {
-	const plan: SchedulerJoinPlanV1 = {
+export function serializeSchedulerJoinPlan(value: SchedulerJoinPlan): SchedulerJoinPlan {
+	const plan: SchedulerJoinPlan = {
 		schemaVersion: 1,
 		joinId: value.joinId,
 		taskId: value.taskId,
@@ -998,16 +998,16 @@ export function serializeSchedulerJoinPlan(value: SchedulerJoinPlanV1): Schedule
 		predecessorTaskIds: copyIdentifiers(value.predecessorTaskIds),
 		createdAt: value.createdAt,
 	};
-	if (value.nodeRef !== undefined) (plan as { nodeRef?: SchedulerNodeRefV1 }).nodeRef = copyNodeRef(value.nodeRef);
+	if (value.nodeRef !== undefined) (plan as { nodeRef?: SchedulerNodeRef }).nodeRef = copyNodeRef(value.nodeRef);
 	return plan;
 }
 
-export function parseSchedulerJoinPlan(value: unknown): ResultValue<SchedulerJoinPlanV1, FoundationError> {
+export function parseSchedulerJoinPlan(value: unknown): ResultValue<SchedulerJoinPlan, FoundationError> {
 	if (!isSchedulerJoinPlan(value)) return fail("scheduler_fanin_invalid");
 	return Result.ok(serializeSchedulerJoinPlan(value));
 }
 
-export function isSchedulerJoinSnapshot(value: unknown): value is SchedulerJoinSnapshotV1 {
+export function isSchedulerJoinSnapshot(value: unknown): value is SchedulerJoinSnapshot {
 	if (!isRecord(value) || !hasOnlyKeys(value, JOIN_SNAPSHOT_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (!isSafeIdentifier(value.joinId) || !isMember(value.policy, SCHEDULER_JOIN_POLICIES)) return false;
@@ -1024,8 +1024,8 @@ export function isSchedulerJoinSnapshot(value: unknown): value is SchedulerJoinS
 	return true;
 }
 
-export function serializeSchedulerJoinSnapshot(value: SchedulerJoinSnapshotV1): SchedulerJoinSnapshotV1 {
-	const snapshot: SchedulerJoinSnapshotV1 = {
+export function serializeSchedulerJoinSnapshot(value: SchedulerJoinSnapshot): SchedulerJoinSnapshot {
+	const snapshot: SchedulerJoinSnapshot = {
 		schemaVersion: 1,
 		joinId: value.joinId,
 		sourceAttemptReceiptIds: copyIdentifiers(value.sourceAttemptReceiptIds),
@@ -1040,12 +1040,12 @@ export function serializeSchedulerJoinSnapshot(value: SchedulerJoinSnapshotV1): 
 	return snapshot;
 }
 
-export function parseSchedulerJoinSnapshot(value: unknown): ResultValue<SchedulerJoinSnapshotV1, FoundationError> {
+export function parseSchedulerJoinSnapshot(value: unknown): ResultValue<SchedulerJoinSnapshot, FoundationError> {
 	if (!isSchedulerJoinSnapshot(value)) return fail("scheduler_fanin_invalid");
 	return Result.ok(serializeSchedulerJoinSnapshot(value));
 }
 
-function isMessageCorrelation(value: unknown): value is SchedulerMessageCorrelationV1 {
+function isMessageCorrelation(value: unknown): value is SchedulerMessageCorrelation {
 	if (!isRecord(value) || !hasOnlyKeys(value, MESSAGE_CORRELATION_KEYS)) return false;
 	if (value.taskId !== undefined && !isSafeIdentifier(value.taskId)) return false;
 	if (value.goalId !== undefined && !isSafeIdentifier(value.goalId)) return false;
@@ -1055,8 +1055,8 @@ function isMessageCorrelation(value: unknown): value is SchedulerMessageCorrelat
 	return true;
 }
 
-function copyMessageCorrelation(value: SchedulerMessageCorrelationV1): SchedulerMessageCorrelationV1 {
-	const correlation: SchedulerMessageCorrelationV1 = {};
+function copyMessageCorrelation(value: SchedulerMessageCorrelation): SchedulerMessageCorrelation {
+	const correlation: SchedulerMessageCorrelation = {};
 	if (value.taskId !== undefined) (correlation as { taskId?: string }).taskId = value.taskId;
 	if (value.goalId !== undefined) (correlation as { goalId?: string }).goalId = value.goalId;
 	if (value.workflowId !== undefined) (correlation as { workflowId?: string }).workflowId = value.workflowId;
@@ -1065,7 +1065,7 @@ function copyMessageCorrelation(value: SchedulerMessageCorrelationV1): Scheduler
 	return correlation;
 }
 
-export function isSchedulerMessage(value: unknown): value is SchedulerMessageV1 {
+export function isSchedulerMessage(value: unknown): value is SchedulerMessage {
 	if (!isRecord(value) || !hasOnlyKeys(value, MESSAGE_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (
@@ -1090,8 +1090,8 @@ export function isSchedulerMessage(value: unknown): value is SchedulerMessageV1 
 	return true;
 }
 
-export function serializeSchedulerMessage(value: SchedulerMessageV1): SchedulerMessageV1 {
-	const message: SchedulerMessageV1 = {
+export function serializeSchedulerMessage(value: SchedulerMessage): SchedulerMessage {
+	const message: SchedulerMessage = {
 		schemaVersion: 1,
 		messageId: value.messageId,
 		type: value.type,
@@ -1111,12 +1111,12 @@ export function serializeSchedulerMessage(value: SchedulerMessageV1): SchedulerM
 	return message;
 }
 
-export function parseSchedulerMessage(value: unknown): ResultValue<SchedulerMessageV1, FoundationError> {
+export function parseSchedulerMessage(value: unknown): ResultValue<SchedulerMessage, FoundationError> {
 	if (!isSchedulerMessage(value)) return fail("scheduler_message_invalid");
 	return Result.ok(serializeSchedulerMessage(value));
 }
 
-export function isSchedulerOwnershipTransfer(value: unknown): value is SchedulerOwnershipTransferV1 {
+export function isSchedulerOwnershipTransfer(value: unknown): value is SchedulerOwnershipTransfer {
 	if (!isRecord(value) || !hasOnlyKeys(value, HANDOFF_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (
@@ -1149,8 +1149,8 @@ export function isSchedulerOwnershipTransfer(value: unknown): value is Scheduler
 	return true;
 }
 
-export function serializeSchedulerOwnershipTransfer(value: SchedulerOwnershipTransferV1): SchedulerOwnershipTransferV1 {
-	const transfer: SchedulerOwnershipTransferV1 = {
+export function serializeSchedulerOwnershipTransfer(value: SchedulerOwnershipTransfer): SchedulerOwnershipTransfer {
+	const transfer: SchedulerOwnershipTransfer = {
 		schemaVersion: 1,
 		transferId: value.transferId,
 		taskId: value.taskId,
@@ -1169,12 +1169,12 @@ export function serializeSchedulerOwnershipTransfer(value: SchedulerOwnershipTra
 
 export function parseSchedulerOwnershipTransfer(
 	value: unknown,
-): ResultValue<SchedulerOwnershipTransferV1, FoundationError> {
+): ResultValue<SchedulerOwnershipTransfer, FoundationError> {
 	if (!isSchedulerOwnershipTransfer(value)) return fail("scheduler_handoff_invalid");
 	return Result.ok(serializeSchedulerOwnershipTransfer(value));
 }
 
-export function isSchedulerWake(value: unknown): value is SchedulerWakeV1 {
+export function isSchedulerWake(value: unknown): value is SchedulerWake {
 	if (!isRecord(value) || !hasOnlyKeys(value, WAKE_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (
@@ -1190,8 +1190,8 @@ export function isSchedulerWake(value: unknown): value is SchedulerWakeV1 {
 	return true;
 }
 
-export function serializeSchedulerWake(value: SchedulerWakeV1): SchedulerWakeV1 {
-	const wake: SchedulerWakeV1 = {
+export function serializeSchedulerWake(value: SchedulerWake): SchedulerWake {
+	const wake: SchedulerWake = {
 		schemaVersion: 1,
 		wakeId: value.wakeId,
 		workflowId: value.workflowId,
@@ -1203,12 +1203,12 @@ export function serializeSchedulerWake(value: SchedulerWakeV1): SchedulerWakeV1 
 	return wake;
 }
 
-export function parseSchedulerWake(value: unknown): ResultValue<SchedulerWakeV1, FoundationError> {
+export function parseSchedulerWake(value: unknown): ResultValue<SchedulerWake, FoundationError> {
 	if (!isSchedulerWake(value)) return fail("scheduler_wake_invalid");
 	return Result.ok(serializeSchedulerWake(value));
 }
 
-export function isSchedulerDeadlockFact(value: unknown): value is SchedulerDeadlockFactV1 {
+export function isSchedulerDeadlockFact(value: unknown): value is SchedulerDeadlockFact {
 	if (!isRecord(value) || !hasOnlyKeys(value, DEADLOCK_KEYS)) return false;
 	if (value.schemaVersion !== SCHEDULER_SCHEMA_VERSION) return false;
 	if (!isSafeIdentifier(value.detectionId) || !isCanonicalTimestamp(value.detectedAt)) return false;
@@ -1226,7 +1226,7 @@ export function isSchedulerDeadlockFact(value: unknown): value is SchedulerDeadl
 	return true;
 }
 
-export function serializeSchedulerDeadlockFact(value: SchedulerDeadlockFactV1): SchedulerDeadlockFactV1 {
+export function serializeSchedulerDeadlockFact(value: SchedulerDeadlockFact): SchedulerDeadlockFact {
 	return {
 		schemaVersion: 1,
 		detectionId: value.detectionId,
@@ -1237,7 +1237,7 @@ export function serializeSchedulerDeadlockFact(value: SchedulerDeadlockFactV1): 
 	};
 }
 
-export function parseSchedulerDeadlockFact(value: unknown): ResultValue<SchedulerDeadlockFactV1, FoundationError> {
+export function parseSchedulerDeadlockFact(value: unknown): ResultValue<SchedulerDeadlockFact, FoundationError> {
 	if (!isSchedulerDeadlockFact(value)) return fail("scheduler_deadlock_detected");
 	return Result.ok(serializeSchedulerDeadlockFact(value));
 }
@@ -1246,12 +1246,12 @@ function sameOptional(left: string | undefined, right: string | undefined): bool
 	return left === right;
 }
 
-function sameNodeRef(left: SchedulerNodeRefV1 | undefined, right: SchedulerNodeRefV1 | undefined): boolean {
+function sameNodeRef(left: SchedulerNodeRef | undefined, right: SchedulerNodeRef | undefined): boolean {
 	if (left === undefined || right === undefined) return left === right;
 	return left.taskId === right.taskId && left.graphRevision === right.graphRevision && left.nodeId === right.nodeId;
 }
 
-function queueIdentityMatches(left: SchedulerQueueEntryV1, right: SchedulerQueueEntryV1): boolean {
+function queueIdentityMatches(left: SchedulerQueueEntry, right: SchedulerQueueEntry): boolean {
 	return (
 		left.sessionId === right.sessionId &&
 		left.taskId === right.taskId &&
@@ -1267,9 +1267,9 @@ function nextRevision(current: number, next: number): boolean {
 }
 
 export function enqueueSchedulerQueueEntry(
-	existing: SchedulerQueueEntryV1 | undefined,
+	existing: SchedulerQueueEntry | undefined,
 	candidate: unknown,
-): ResultValue<SchedulerEnqueueResultV1, FoundationError> {
+): ResultValue<SchedulerEnqueueResult, FoundationError> {
 	const parsed = parseSchedulerQueueEntry(candidate);
 	if (!parsed.ok) return parsed;
 	const next = parsed.value;
@@ -1300,9 +1300,9 @@ export function enqueueSchedulerQueueEntry(
 }
 
 export function applySchedulerQueueTransition(
-	current: SchedulerQueueEntryV1,
+	current: SchedulerQueueEntry,
 	next: unknown,
-): ResultValue<SchedulerQueueEntryV1, FoundationError> {
+): ResultValue<SchedulerQueueEntry, FoundationError> {
 	const currentParsed = parseSchedulerQueueEntry(current);
 	if (!currentParsed.ok) return currentParsed;
 	const parsed = parseSchedulerQueueEntry(next);
@@ -1340,9 +1340,9 @@ export function applySchedulerQueueTransition(
 }
 
 export function applySchedulerEngineTransition(
-	from: SchedulerEnginePhaseV1,
-	to: SchedulerEnginePhaseV1,
-): ResultValue<SchedulerEnginePhaseV1, FoundationError> {
+	from: SchedulerEnginePhase,
+	to: SchedulerEnginePhase,
+): ResultValue<SchedulerEnginePhase, FoundationError> {
 	if (!isMember(from, SCHEDULER_ENGINE_PHASES) || !isMember(to, SCHEDULER_ENGINE_PHASES)) {
 		return fail("scheduler_queue_invalid");
 	}
@@ -1351,10 +1351,10 @@ export function applySchedulerEngineTransition(
 }
 
 export function applySchedulerClaimAcquire(
-	entry: SchedulerQueueEntryV1,
+	entry: SchedulerQueueEntry,
 	claim: unknown,
 	nowIso: string,
-): ResultValue<{ entry: SchedulerQueueEntryV1; claim: SchedulerClaimV1 }, FoundationError> {
+): ResultValue<{ entry: SchedulerQueueEntry; claim: SchedulerClaim }, FoundationError> {
 	if (!isCanonicalTimestamp(nowIso)) return fail("scheduler_queue_invalid");
 	const parsedEntry = parseSchedulerQueueEntry(entry);
 	if (!parsedEntry.ok) return parsedEntry;
@@ -1373,7 +1373,7 @@ export function applySchedulerClaimAcquire(
 	if (ttlMs < SCHEDULER_CLAIM_MIN_LEASE_TTL_MS || ttlMs > SCHEDULER_CLAIM_MAX_LEASE_TTL_MS) {
 		return fail("scheduler_queue_invalid");
 	}
-	const nextEntry: SchedulerQueueEntryV1 = {
+	const nextEntry: SchedulerQueueEntry = {
 		...serializeSchedulerQueueEntry(current),
 		state: "claimed",
 		claimId: nextClaim.claimId,
@@ -1385,11 +1385,11 @@ export function applySchedulerClaimAcquire(
 }
 
 export function applySchedulerClaimRenew(
-	claim: SchedulerClaimV1,
+	claim: SchedulerClaim,
 	next: unknown,
 	expectedFencingToken: string,
 	nowIso: string,
-): ResultValue<SchedulerClaimV1, FoundationError> {
+): ResultValue<SchedulerClaim, FoundationError> {
 	if (!isCanonicalTimestamp(nowIso)) return fail("scheduler_queue_invalid");
 	const parsed = parseSchedulerClaim(next);
 	if (!parsed.ok) return parsed;
@@ -1417,9 +1417,9 @@ export function applySchedulerClaimRenew(
 }
 
 export function applySchedulerDispatchTransition(
-	current: SchedulerDispatchRecordV1,
+	current: SchedulerDispatchRecord,
 	next: unknown,
-): ResultValue<SchedulerDispatchRecordV1, FoundationError> {
+): ResultValue<SchedulerDispatchRecord, FoundationError> {
 	const currentParsed = parseSchedulerDispatchRecord(current);
 	if (!currentParsed.ok) return currentParsed;
 	const parsed = parseSchedulerDispatchRecord(next);
@@ -1445,10 +1445,10 @@ export function applySchedulerDispatchTransition(
 }
 
 export function applySchedulerHandoffTransition(
-	current: SchedulerOwnershipTransferV1,
+	current: SchedulerOwnershipTransfer,
 	next: unknown,
 	nowIso: string,
-): ResultValue<SchedulerOwnershipTransferV1, FoundationError> {
+): ResultValue<SchedulerOwnershipTransfer, FoundationError> {
 	if (!isCanonicalTimestamp(nowIso)) return fail("scheduler_handoff_invalid");
 	const currentParsed = parseSchedulerOwnershipTransfer(current);
 	if (!currentParsed.ok) return currentParsed;
@@ -1484,9 +1484,9 @@ export function applySchedulerHandoffTransition(
 }
 
 export function applySchedulerMessageAck(
-	current: SchedulerMessageV1,
+	current: SchedulerMessage,
 	ackedAt: string,
-): ResultValue<SchedulerMessageV1, FoundationError> {
+): ResultValue<SchedulerMessage, FoundationError> {
 	const parsed = parseSchedulerMessage(current);
 	if (!parsed.ok) return parsed;
 	const message = parsed.value;
@@ -1507,9 +1507,9 @@ export function applySchedulerMessageAck(
 }
 
 export function applySchedulerWakeFire(
-	current: SchedulerWakeV1,
+	current: SchedulerWake,
 	firedAt: string,
-): ResultValue<SchedulerWakeV1, FoundationError> {
+): ResultValue<SchedulerWake, FoundationError> {
 	const parsed = parseSchedulerWake(current);
 	if (!parsed.ok) return parsed;
 	const wake = parsed.value;
@@ -1520,10 +1520,10 @@ export function applySchedulerWakeFire(
 }
 
 export function assertSchedulerFencingToken(
-	claim: SchedulerClaimV1,
+	claim: SchedulerClaim,
 	fencingToken: string,
 	nowIso: string,
-): ResultValue<SchedulerClaimV1, FoundationError> {
+): ResultValue<SchedulerClaim, FoundationError> {
 	if (!isSchedulerClaim(claim)) return fail("scheduler_queue_invalid");
 	if (!isCanonicalTimestamp(nowIso)) return fail("scheduler_queue_invalid");
 	if (!schedulerFencingTokensEqual(claim.fencingToken, fencingToken)) return fail("scheduler_lease_lost");
@@ -1541,61 +1541,61 @@ export const SCHEDULER_HOST_MAX_POLL_INTERVAL_MS = 60_000;
 export const SCHEDULER_HOST_DEFAULT_MAX_GRAPHS_PER_TICK = 50;
 export const SCHEDULER_HOST_DEFAULT_MAX_NODES_PER_TICK = 64;
 
-export interface SchedulerHostGraphV1 {
+export interface SchedulerHostGraph {
 	list(filter?: TaskGraphListFilter): TaskGraphListResult;
 	attach(input: TaskGraphNodeAttachRequest): TaskGraphMutationResult;
 	settle(input: TaskGraphNodeSettleRequest): TaskGraphMutationResult;
 }
 
-export interface SchedulerHostQueueV1 {
+export interface SchedulerHostQueue {
 	recoverExpired(): Promise<ResultValue<readonly unknown[], FoundationError>>;
-	snapshot(): Promise<ResultValue<SchedulerQueueSnapshotV1, FoundationError>>;
+	snapshot(): Promise<ResultValue<SchedulerQueueSnapshot, FoundationError>>;
 	enqueue(
 		candidate: unknown,
 		options?: { readonly maxAttempts?: number },
-	): Promise<ResultValue<SchedulerEnqueueResultV1, FoundationError>>;
+	): Promise<ResultValue<SchedulerEnqueueResult, FoundationError>>;
 	claim(request: {
 		readonly queueEntryId: string;
 		readonly ownerId: string;
 		readonly ttlMs?: number;
-	}): Promise<ResultValue<SchedulerClaimAcquireResultV1, FoundationError>>;
+	}): Promise<ResultValue<SchedulerClaimAcquireResult, FoundationError>>;
 	renew(request: {
 		readonly claimId: string;
 		readonly fencingToken: string;
 		readonly ttlMs?: number;
-	}): Promise<ResultValue<SchedulerClaimV1, FoundationError>>;
-	markTerminal(request: SchedulerQueueTerminalRequestV1): Promise<ResultValue<unknown, FoundationError>>;
+	}): Promise<ResultValue<SchedulerClaim, FoundationError>>;
+	markTerminal(request: SchedulerQueueTerminalRequest): Promise<ResultValue<unknown, FoundationError>>;
 }
 
-export interface SchedulerHostDispatchV1 {
+export interface SchedulerHostDispatch {
 	dispatchRunClaimed(
-		request: SchedulerRunDispatchRequestV1,
-	): Promise<ResultValue<SchedulerDispatchOutcomeV1, FoundationError>>;
+		request: SchedulerRunDispatchRequest,
+	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>>;
 }
 
-export interface SchedulerHostFanInV1 {
-	settle(request: SchedulerFanInSettleRequestV1): Promise<ResultValue<SchedulerFanInSettlementV1, FoundationError>>;
+export interface SchedulerHostFanIn {
+	settle(request: SchedulerFanInSettleRequest): Promise<ResultValue<SchedulerFanInSettlement, FoundationError>>;
 }
 
-export interface SchedulerHostRunAssociationV1 {
+export interface SchedulerHostRunAssociation {
 	readonly runId: string;
 	readonly task: TaskEnvelope;
 	readonly binding: AgentBinding;
 	/** Exact trusted executor constraints forwarded unchanged to the durable selection boundary. */
-	readonly executorRequirements?: SchedulerDispatchExecutorRequirementsV1;
-	readonly joinPolicy?: SchedulerJoinPolicyV1;
+	readonly executorRequirements?: SchedulerDispatchExecutorRequirements;
+	readonly joinPolicy?: SchedulerJoinPolicy;
 }
 
-export interface SchedulerHostSettlementEvidenceV1 {
+export interface SchedulerHostSettlementEvidence {
 	readonly summary: string;
-	readonly artifacts?: SchedulerFanInSettleRequestV1["artifacts"];
-	readonly diff?: SchedulerFanInSettleRequestV1["diff"];
-	readonly tests: SchedulerFanInSettleRequestV1["tests"];
-	readonly evidence: SchedulerFanInSettleRequestV1["evidence"];
-	readonly validation?: SchedulerFanInSettleRequestV1["validation"];
+	readonly artifacts?: SchedulerFanInSettleRequest["artifacts"];
+	readonly diff?: SchedulerFanInSettleRequest["diff"];
+	readonly tests: SchedulerFanInSettleRequest["tests"];
+	readonly evidence: SchedulerFanInSettleRequest["evidence"];
+	readonly validation?: SchedulerFanInSettleRequest["validation"];
 }
 
-export interface SchedulerHostRunTerminalInputV1 {
+export interface SchedulerHostRunTerminalInput {
 	readonly runId: string;
 	readonly taskId: string;
 	readonly nodeId: string;
@@ -1603,7 +1603,7 @@ export interface SchedulerHostRunTerminalInputV1 {
 	readonly rejectionCode?: string;
 }
 
-export interface SchedulerHostEventSourceV1 {
+export interface SchedulerHostEventSource {
 	subscribe(wake: () => void): () => void;
 }
 
@@ -1612,23 +1612,23 @@ export interface SchedulerHostOptions {
 	readonly enabled?: boolean;
 	readonly sessionId: string;
 	readonly ownerId: string;
-	readonly graph: SchedulerHostGraphV1;
-	readonly queue: SchedulerHostQueueV1;
-	readonly dispatch: SchedulerHostDispatchV1;
-	readonly fanIn: SchedulerHostFanInV1;
+	readonly graph: SchedulerHostGraph;
+	readonly queue: SchedulerHostQueue;
+	readonly dispatch: SchedulerHostDispatch;
+	readonly fanIn: SchedulerHostFanIn;
 	readonly resolveRunAssociation: (
 		graph: TaskGraphRecord,
 		node: TaskGraphNodeView,
-		entry: SchedulerQueueEntryV1,
-	) => Promise<ResultValue<SchedulerHostRunAssociationV1, FoundationError>>;
+		entry: SchedulerQueueEntry,
+	) => Promise<ResultValue<SchedulerHostRunAssociation, FoundationError>>;
 	readonly settlementEvidence?: (
 		graph: TaskGraphRecord,
 		node: TaskGraphNodeView,
-		outcome: SchedulerDispatchOutcomeV1,
-	) => Promise<ResultValue<SchedulerHostSettlementEvidenceV1, FoundationError>>;
+		outcome: SchedulerDispatchOutcome,
+	) => Promise<ResultValue<SchedulerHostSettlementEvidence, FoundationError>>;
 	/** Host-owned terminal gate. Scheduler never writes RunReceipt/Run state. */
-	readonly settleRunAtHost: (input: SchedulerHostRunTerminalInputV1) => Promise<ResultValue<void, FoundationError>>;
-	readonly eventSource?: SchedulerHostEventSourceV1;
+	readonly settleRunAtHost: (input: SchedulerHostRunTerminalInput) => Promise<ResultValue<void, FoundationError>>;
+	readonly eventSource?: SchedulerHostEventSource;
 	readonly pollIntervalMs?: number;
 	readonly maxGraphsPerTick?: number;
 	readonly maxNodesPerTick?: number;
@@ -1637,7 +1637,7 @@ export interface SchedulerHostOptions {
 	readonly now?: () => string;
 }
 
-export interface SchedulerHostTickErrorV1 {
+export interface SchedulerHostTickError {
 	readonly taskId: string;
 	readonly nodeId: string;
 	readonly code: string;
@@ -1652,14 +1652,14 @@ export interface SchedulerHostTickResult {
 	readonly dispatched: number;
 	readonly settled: number;
 	readonly rejected: number;
-	readonly errors: readonly SchedulerHostTickErrorV1[];
+	readonly errors: readonly SchedulerHostTickError[];
 }
 
 interface SchedulerHostWorkItemV1 {
 	readonly graph: TaskGraphRecord;
 	readonly node: TaskGraphNodeView;
-	readonly entry: SchedulerQueueEntryV1;
-	readonly claim?: SchedulerClaimV1;
+	readonly entry: SchedulerQueueEntry;
+	readonly claim?: SchedulerClaim;
 	readonly attach: boolean;
 }
 
@@ -1668,7 +1668,7 @@ interface SchedulerHostWorkOutcomeV1 {
 	readonly dispatched: boolean;
 	readonly settled: boolean;
 	readonly rejected: boolean;
-	readonly error?: SchedulerHostTickErrorV1;
+	readonly error?: SchedulerHostTickError;
 }
 
 interface SchedulerHostClaimRenewalV1 {
@@ -1676,11 +1676,11 @@ interface SchedulerHostClaimRenewalV1 {
 	stop(): Promise<void>;
 }
 
-function schedulerHostQueueEntryId(nodeRef: SchedulerNodeRefV1): string {
+function schedulerHostQueueEntryId(nodeRef: SchedulerNodeRef): string {
 	return `queue_${fingerprintFoundationValue(nodeRef).value}`;
 }
 
-function schedulerHostJoinId(nodeRef: SchedulerNodeRefV1): string {
+function schedulerHostJoinId(nodeRef: SchedulerNodeRef): string {
 	return `join_${fingerprintFoundationValue(nodeRef).value}`;
 }
 
@@ -1714,14 +1714,14 @@ export class SchedulerHost {
 	private readonly enabled: boolean;
 	private readonly sessionId: string;
 	private readonly ownerId: string;
-	private readonly graph: SchedulerHostGraphV1;
-	private readonly queue: SchedulerHostQueueV1;
-	private readonly dispatch: SchedulerHostDispatchV1;
-	private readonly fanIn: SchedulerHostFanInV1;
+	private readonly graph: SchedulerHostGraph;
+	private readonly queue: SchedulerHostQueue;
+	private readonly dispatch: SchedulerHostDispatch;
+	private readonly fanIn: SchedulerHostFanIn;
 	private readonly resolveRunAssociation: SchedulerHostOptions["resolveRunAssociation"];
 	private readonly settlementEvidence: SchedulerHostOptions["settlementEvidence"];
 	private readonly settleRunAtHost: SchedulerHostOptions["settleRunAtHost"];
-	private readonly eventSource: SchedulerHostEventSourceV1 | undefined;
+	private readonly eventSource: SchedulerHostEventSource | undefined;
 	private readonly pollIntervalMs: number;
 	private readonly maxGraphsPerTick: number;
 	private readonly maxNodesPerTick: number;
@@ -1822,7 +1822,7 @@ export class SchedulerHost {
 	}
 
 	private async tickOnce(): Promise<SchedulerHostTickResult> {
-		const errors: SchedulerHostTickErrorV1[] = [];
+		const errors: SchedulerHostTickError[] = [];
 		const recovered = await this.queue.recoverExpired();
 		if (!recovered.ok) {
 			return {
@@ -1847,14 +1847,14 @@ export class SchedulerHost {
 			for (const node of graph.nodes) {
 				if (scannedNodes >= this.maxNodesPerTick) break;
 				scannedNodes++;
-				const nodeRef: SchedulerNodeRefV1 = {
+				const nodeRef: SchedulerNodeRef = {
 					taskId: graph.taskId,
 					graphRevision: graph.graphRevision,
 					nodeId: node.nodeId,
 				};
 				const queueEntryId = schedulerHostQueueEntryId(nodeRef);
 				if (node.status === "pending" && node.availability === "ready") {
-					const candidate: SchedulerQueueEntryV1 = {
+					const candidate: SchedulerQueueEntry = {
 						schemaVersion: 1,
 						queueEntryId,
 						sessionId: this.sessionId,
@@ -1961,7 +1961,7 @@ export class SchedulerHost {
 
 	private async process(
 		item: SchedulerHostWorkItemV1,
-		association: SchedulerHostRunAssociationV1,
+		association: SchedulerHostRunAssociation,
 	): Promise<SchedulerHostWorkOutcomeV1> {
 		let claim = item.claim;
 		if (claim === undefined) {
@@ -2004,9 +2004,9 @@ export class SchedulerHost {
 			if (!dispatched.ok) return this.workError(item, dispatched.error, true, false);
 			const renewalFailure = renewal.failure();
 			if (renewalFailure !== undefined) return this.workError(item, renewalFailure, true, true);
-			const evidence: ResultValue<SchedulerHostSettlementEvidenceV1, FoundationError> =
+			const evidence: ResultValue<SchedulerHostSettlementEvidence, FoundationError> =
 				this.settlementEvidence === undefined
-					? Result.ok<SchedulerHostSettlementEvidenceV1>({
+					? Result.ok<SchedulerHostSettlementEvidence>({
 							summary: `Scheduler settled node ${item.node.nodeId}.`,
 							tests: [],
 							evidence: [],
@@ -2024,7 +2024,7 @@ export class SchedulerHost {
 					schedulerError("scheduler_fanin_invalid"),
 				);
 			}
-			const plan: SchedulerJoinPlanV1 | undefined =
+			const plan: SchedulerJoinPlan | undefined =
 				item.node.dependsOn.length === 0
 					? undefined
 					: {
@@ -2083,7 +2083,7 @@ export class SchedulerHost {
 		}
 	}
 
-	private startClaimRenewal(claim: SchedulerClaimV1): SchedulerHostClaimRenewalV1 {
+	private startClaimRenewal(claim: SchedulerClaim): SchedulerHostClaimRenewalV1 {
 		const ttlMs = this.claimTtlMs ?? SCHEDULER_CLAIM_MAX_LEASE_TTL_MS;
 		const intervalMs = Math.max(SCHEDULER_CLAIM_MIN_LEASE_TTL_MS, Math.floor(ttlMs / 2));
 		let timer: RuntimeTimerHandle | undefined;
@@ -2121,9 +2121,9 @@ export class SchedulerHost {
 
 	private async rejectAfterDispatch(
 		item: SchedulerHostWorkItemV1,
-		claim: SchedulerClaimV1,
-		dispatched: SchedulerDispatchOutcomeV1,
-		association: SchedulerHostRunAssociationV1,
+		claim: SchedulerClaim,
+		dispatched: SchedulerDispatchOutcome,
+		association: SchedulerHostRunAssociation,
 		error: FoundationError,
 	): Promise<SchedulerHostWorkOutcomeV1> {
 		const hostSettled = await this.settleRunAtHost({

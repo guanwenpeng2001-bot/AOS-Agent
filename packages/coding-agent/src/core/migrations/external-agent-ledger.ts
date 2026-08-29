@@ -1,6 +1,6 @@
 /** Private decoder vocabulary for historical Adapter-era Session entries. */
 
-export interface LegacyExternalExecutionRefV1 {
+export interface LegacyExternalExecutionRef {
 	readonly namespace: string;
 	readonly externalSessionId: string;
 	readonly externalRunId?: string;
@@ -30,7 +30,7 @@ function isIdentifier(value: unknown): value is string {
 	);
 }
 
-export function isLegacyExternalExecutionRefV1(value: unknown): value is LegacyExternalExecutionRefV1 {
+export function isLegacyExternalExecutionRef(value: unknown): value is LegacyExternalExecutionRef {
 	return (
 		isRecord(value) &&
 		hasOnlyKeys(value, EXECUTION_REF_KEYS) &&

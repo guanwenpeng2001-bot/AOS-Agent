@@ -39,7 +39,7 @@ import {
 	type TaskEnvelopePublicProjection,
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
-import { CHILD_CONTEXT_FORK_SCOPES, type ChildContextForkScopeV1 } from "./subagent.ts";
+import { CHILD_CONTEXT_FORK_SCOPES, type ChildContextForkScope } from "./subagent.ts";
 
 export const CHILD_CONTEXT_FORK_SCHEMA_VERSION = 1 as const;
 export const TASK_PACKAGE_GOAL_MAX_CHARS = 4096;
@@ -47,10 +47,10 @@ export const TASK_PACKAGE_CRITERION_MAX_CHARS = 512;
 export const TASK_PACKAGE_MAX_CRITERIA = 32;
 export const TASK_PACKAGE_MAX_ARTIFACTS = 32;
 
-export interface ChildContextForkPlanV1 {
+export interface ChildContextForkPlan {
 	readonly schemaVersion: 1;
 	readonly spawnId: string;
-	readonly forkScope: ChildContextForkScopeV1;
+	readonly forkScope: ChildContextForkScope;
 	readonly recentN?: number;
 	readonly taskPackageRef?: string;
 	readonly sourceContextDigest?: Fingerprint;
@@ -58,13 +58,13 @@ export interface ChildContextForkPlanV1 {
 	readonly tokenBudget: number;
 }
 
-export interface PersistedTaskPackageProofV1 {
+export interface PersistedTaskPackageProof {
 	readonly ref: string;
 	readonly digest: Fingerprint;
 	readonly projection: TaskEnvelopePublicProjection;
 }
 
-export interface ChildRuntimeCriterionV1 {
+export interface ChildRuntimeCriterion {
 	readonly criterionId: string;
 	readonly description: string;
 	readonly required: boolean;
@@ -72,21 +72,21 @@ export interface ChildRuntimeCriterionV1 {
 }
 
 /** Runtime-only system/task inputs. Never persisted on ContextSnapshotV1. */
-export interface ChildRuntimeLayerV1 {
+export interface ChildRuntimeLayer {
 	readonly schemaVersion: 1;
 	readonly kind: "system_task";
 	readonly persona: string;
 	readonly customInstructions: string;
 	readonly goal: string;
-	readonly acceptanceCriteria: readonly ChildRuntimeCriterionV1[];
+	readonly acceptanceCriteria: readonly ChildRuntimeCriterion[];
 	readonly inputs: readonly TaskArtifactProjection[];
 	readonly expectedOutputs: readonly TaskArtifactProjection[];
 }
 
-export interface ForkChildContextInputV1 {
+export interface ForkChildContextInput {
 	readonly schemaVersion: 1;
 	readonly spawnId: string;
-	readonly forkScope: ChildContextForkScopeV1;
+	readonly forkScope: ChildContextForkScope;
 	readonly parentSnapshot: ContextSnapshot | ContextSnapshotRecord;
 	readonly childRoleRevision: RoleRevision;
 	readonly childTaskEnvelope: TaskEnvelope;
@@ -96,14 +96,14 @@ export interface ForkChildContextInputV1 {
 	readonly recentN?: number;
 	readonly taskPackageRef?: string;
 	readonly sourceContextDigest?: Fingerprint;
-	readonly persistedTaskPackage?: PersistedTaskPackageProofV1;
+	readonly persistedTaskPackage?: PersistedTaskPackageProof;
 }
 
-export interface ChildContextForkResultV1 {
-	readonly plan: ChildContextForkPlanV1;
+export interface ChildContextForkResult {
+	readonly plan: ChildContextForkPlan;
 	readonly snapshot: ContextSnapshot;
 	readonly record: ContextSnapshotRecord;
-	readonly runtimeProjection: ChildRuntimeLayerV1;
+	readonly runtimeProjection: ChildRuntimeLayer;
 }
 
 const INPUT_KEYS = new Set([
@@ -172,7 +172,7 @@ function fingerprintMatchesDigest(fingerprint: Fingerprint, digest: string): boo
 	return digest === fingerprint.value || digest === `sha256:${fingerprint.value}` || fingerprint.value === digest.replace(/^sha256:/, "");
 }
 
-function toContextForkMode(scope: ChildContextForkScopeV1): ContextForkMode {
+function toContextForkMode(scope: ChildContextForkScope): ContextForkMode {
 	if (scope === "recent_n") return "recent-N";
 	if (scope === "task_package") return "task-package";
 	return scope;
@@ -196,7 +196,7 @@ function estimateTextTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
-function runtimeLayerTokenParts(layer: ChildRuntimeLayerV1): { readonly instruction: number; readonly task: number; readonly total: number } {
+function runtimeLayerTokenParts(layer: ChildRuntimeLayer): { readonly instruction: number; readonly task: number; readonly total: number } {
 	const instruction = estimateTextTokens(
 		canonicalFoundationJson({
 			schemaVersion: layer.schemaVersion,
@@ -216,7 +216,7 @@ function runtimeLayerTokenParts(layer: ChildRuntimeLayerV1): { readonly instruct
 	return { instruction, task, total: instruction + task };
 }
 
-function inheritedSystemInstructionTokens(snapshot: ContextSnapshot, scope: ChildContextForkScopeV1): number {
+function inheritedSystemInstructionTokens(snapshot: ContextSnapshot, scope: ChildContextForkScope): number {
 	if (scope !== "all" && scope !== "recent_n") return 0;
 	return cloneParentSources(snapshot, scope)
 		.filter((source) => source.kind === "system" || source.kind === "instruction")
@@ -286,14 +286,14 @@ function taskSource(projection: TaskEnvelopePublicProjection, estimatedTokens: n
 	};
 }
 
-function cloneParentSources(snapshot: ContextSnapshot, scope: ChildContextForkScopeV1): ContextSnapshotSource[] {
+function cloneParentSources(snapshot: ContextSnapshot, scope: ChildContextForkScope): ContextSnapshotSource[] {
 	const sources = snapshot.sources().map((source) => cloneValue(source));
 	if (scope === "all") return sources;
 	if (scope === "recent_n") return sources.filter((source) => source.kind === "system" || source.kind === "instruction");
 	return [];
 }
 
-function boundTaskPackageLayer(layer: ChildRuntimeLayerV1): ResultValue<ChildRuntimeLayerV1, FoundationError> {
+function boundTaskPackageLayer(layer: ChildRuntimeLayer): ResultValue<ChildRuntimeLayer, FoundationError> {
 	if (layer.goal.length > TASK_PACKAGE_GOAL_MAX_CHARS) {
 		return forkError("task_package goal exceeds the deterministic bound");
 	}
@@ -309,7 +309,7 @@ function boundTaskPackageLayer(layer: ChildRuntimeLayerV1): ResultValue<ChildRun
 	return Result.ok(layer);
 }
 
-function buildRuntimeLayer(role: RoleRevision, task: TaskEnvelope, projection: TaskEnvelopePublicProjection): ChildRuntimeLayerV1 {
+function buildRuntimeLayer(role: RoleRevision, task: TaskEnvelope, projection: TaskEnvelopePublicProjection): ChildRuntimeLayer {
 	return cloneDeepFrozen({
 		schemaVersion: 1 as const,
 		kind: "system_task" as const,
@@ -353,7 +353,7 @@ function chainIsValid(entries: readonly Entry[]): boolean {
 	return true;
 }
 
-function resolveParentSnapshot(input: ForkChildContextInputV1): ResultValue<ContextSnapshot, FoundationError> {
+function resolveParentSnapshot(input: ForkChildContextInput): ResultValue<ContextSnapshot, FoundationError> {
 	if (isLiveSnapshot(input.parentSnapshot)) {
 		const record = input.parentSnapshot.toJSON();
 		try {
@@ -372,15 +372,15 @@ function resolveParentSnapshot(input: ForkChildContextInputV1): ResultValue<Cont
 }
 
 function resolveTaskPackage(
-	input: ForkChildContextInputV1,
+	input: ForkChildContextInput,
 	task: TaskEnvelope,
 	currentProjection: TaskEnvelopePublicProjection,
-): ResultValue<PersistedTaskPackageProofV1, FoundationError> {
+): ResultValue<PersistedTaskPackageProof, FoundationError> {
 	if (input.taskPackageRef === undefined || input.taskPackageRef.length === 0) {
 		return forkError("task_package fork requires taskPackageRef");
 	}
 	if (input.persistedTaskPackage !== undefined) {
-		const proof = validateExactShape<PersistedTaskPackageProofV1>(
+		const proof = validateExactShape<PersistedTaskPackageProof>(
 			PersistedTaskPackageProofV1Schema,
 			input.persistedTaskPackage,
 			"task_package_proof",
@@ -414,10 +414,10 @@ function resolveTaskPackage(
 }
 
 function buildPlan(
-	input: ForkChildContextInputV1,
+	input: ForkChildContextInput,
 	snapshot: ContextSnapshot,
 	sourceContextDigest: Fingerprint | undefined,
-): ChildContextForkPlanV1 {
+): ChildContextForkPlan {
 	return cloneDeepFrozen({
 		schemaVersion: CHILD_CONTEXT_FORK_SCHEMA_VERSION,
 		spawnId: input.spawnId,
@@ -436,11 +436,11 @@ function buildPlan(
 	});
 }
 
-function validateInputShape(value: unknown): value is ForkChildContextInputV1 {
+function validateInputShape(value: unknown): value is ForkChildContextInput {
 	if (!isRecord(value) || Object.keys(value).some((key) => !INPUT_KEYS.has(key))) return false;
 	if (value.schemaVersion !== CHILD_CONTEXT_FORK_SCHEMA_VERSION) return false;
 	if (!isSafeIdentifier(value.spawnId) || !isSafeIdentifier(value.childBindingEpochId)) return false;
-	if (!CHILD_CONTEXT_FORK_SCOPES.includes(value.forkScope as ChildContextForkScopeV1)) return false;
+	if (!CHILD_CONTEXT_FORK_SCOPES.includes(value.forkScope as ChildContextForkScope)) return false;
 	if (typeof value.childTokenBudget !== "number" || !Number.isFinite(value.childTokenBudget) || value.childTokenBudget < 0) {
 		return false;
 	}
@@ -451,7 +451,7 @@ function validateInputShape(value: unknown): value is ForkChildContextInputV1 {
 	return true;
 }
 
-function parentConversationEntries(parent: ContextSnapshot, scope: ChildContextForkScopeV1, recentN: number | undefined): ResultValue<Entry[], FoundationError> {
+function parentConversationEntries(parent: ContextSnapshot, scope: ChildContextForkScope, recentN: number | undefined): ResultValue<Entry[], FoundationError> {
 	const entries = parent.entries();
 	if (scope === "none" || scope === "task_package") return Result.ok([]);
 	if (scope === "all") {
@@ -474,7 +474,7 @@ function parentConversationEntries(parent: ContextSnapshot, scope: ChildContextF
 	return Result.ok(relinked);
 }
 
-function forkChildContextUnchecked(input: ForkChildContextInputV1): ResultValue<ChildContextForkResultV1, FoundationError> {
+function forkChildContextUnchecked(input: ForkChildContextInput): ResultValue<ChildContextForkResult, FoundationError> {
 	const role = validateRoleRevision(input.childRoleRevision);
 	if (!role.ok) return forkError("Child RoleRevision is invalid");
 	const task = validateTaskEnvelope(input.childTaskEnvelope);
@@ -604,7 +604,7 @@ function forkChildContextUnchecked(input: ForkChildContextInputV1): ResultValue<
  * Project parent Context through one of the four sealed forkScope modes.
  * The returned snapshot is a new immutable object; parent entries are cloned.
  */
-export function forkChildContextV1(inputValue: unknown): ResultValue<ChildContextForkResultV1, FoundationError> {
+export function forkChildContext(inputValue: unknown): ResultValue<ChildContextForkResult, FoundationError> {
 	try {
 		if (!validateInputShape(inputValue)) {
 			return forkError("Child Context fork input is invalid");
@@ -615,9 +615,9 @@ export function forkChildContextV1(inputValue: unknown): ResultValue<ChildContex
 	}
 }
 
-export function validateChildContextForkPlanV1(value: unknown): value is ChildContextForkPlanV1 {
+export function validateChildContextForkPlan(value: unknown): value is ChildContextForkPlan {
 	try {
-		const checked = validateExactShape<ChildContextForkPlanV1>(ChildContextForkPlanV1Schema, value, "child_context_fork_plan");
+		const checked = validateExactShape<ChildContextForkPlan>(ChildContextForkPlanV1Schema, value, "child_context_fork_plan");
 		if (!checked.ok || !isSafeIdentifier(checked.value.spawnId) || !Number.isFinite(checked.value.tokenBudget)) return false;
 		if (checked.value.forkScope === "recent_n") {
 			if (checked.value.recentN === undefined || !Number.isInteger(checked.value.recentN) || checked.value.recentN < 1) return false;

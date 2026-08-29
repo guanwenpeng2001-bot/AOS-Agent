@@ -8,10 +8,10 @@ import {
 } from "../src/core/execution-policy.ts";
 import {
 	decodeLegacyAutomationRunLedgerEntryV1,
-	migrateLegacyAutomationRunLedgerV1,
+	migrateLegacyAutomationRunLedger,
 	planLegacyAutomationRunLedgerMigrationV1,
-	reconcileLegacyAutomationRunLedgerV1,
-	type LegacyAutomationRunLedgerSourceEntryV1,
+	reconcileLegacyAutomationRunLedger,
+	type LegacyAutomationRunLedgerSourceEntry,
 } from "../src/core/migrations/automation-run-ledger.ts";
 import { PrivateMigrationError } from "../src/core/migrations/session-entry.ts";
 import type { CanonicalAutomationRunProjection } from "../src/core/automation-run-projection.ts";
@@ -218,7 +218,7 @@ function fullTerminal() {
 	};
 }
 
-function source(sequence: number, entryId: string, data: unknown): LegacyAutomationRunLedgerSourceEntryV1 {
+function source(sequence: number, entryId: string, data: unknown): LegacyAutomationRunLedgerSourceEntry {
 	return { sequence, entryId, data };
 }
 
@@ -266,7 +266,7 @@ describe("private automation.run ledger migration", () => {
 			source(2, "started", started()),
 			source(4, "terminal-replay", terminal()),
 		];
-		const result = migrateLegacyAutomationRunLedgerV1(SESSION_ID, entries);
+		const result = migrateLegacyAutomationRunLedger(SESSION_ID, entries);
 		const reversedPlan = planLegacyAutomationRunLedgerMigrationV1(SESSION_ID, [...entries].reverse());
 		const plan = planLegacyAutomationRunLedgerMigrationV1(SESSION_ID, entries);
 
@@ -285,7 +285,7 @@ describe("private automation.run ledger migration", () => {
 	});
 
 	it("treats equivalent accepted and started duplicates as no-ops", () => {
-		const result = migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
+		const result = migrateLegacyAutomationRunLedger(SESSION_ID, [
 			source(1, "accepted-a", accepted()),
 			source(2, "accepted-b", accepted()),
 			source(3, "started-a", started()),
@@ -306,7 +306,7 @@ describe("private automation.run ledger migration", () => {
 			}),
 		]);
 		expect(() =>
-			migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
+			migrateLegacyAutomationRunLedger(SESSION_ID, [
 				source(1, "accepted-a", accepted()),
 				source(2, "accepted-b", accepted(conflictingAssociation)),
 			]),
@@ -315,7 +315,7 @@ describe("private automation.run ledger migration", () => {
 
 	it("fails closed on conflicting terminal facts", () => {
 		expect(() =>
-			migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
+			migrateLegacyAutomationRunLedger(SESSION_ID, [
 				source(1, "accepted", accepted()),
 				source(2, "started", started()),
 				source(3, "completed", terminal("completed")),
@@ -327,7 +327,7 @@ describe("private automation.run ledger migration", () => {
 	it("decodes the complete T0 record, receipt, error, and nested metadata contracts", () => {
 		expect(decodeLegacyAutomationRunLedgerEntryV1(fullAccepted())).toEqual(fullAccepted());
 		expect(decodeLegacyAutomationRunLedgerEntryV1(fullTerminal())).toEqual(fullTerminal());
-		const result = migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
+		const result = migrateLegacyAutomationRunLedger(SESSION_ID, [
 			source(1, "accepted", fullAccepted()),
 			source(2, "started", started()),
 			source(3, "terminal", fullTerminal()),
@@ -425,20 +425,20 @@ describe("private automation.run ledger migration", () => {
 
 	it("rejects terminal before started while retaining orphan handling", () => {
 		expect(() =>
-			migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
+			migrateLegacyAutomationRunLedger(SESSION_ID, [
 				source(1, "accepted", accepted()),
 				source(2, "terminal", terminal()),
 			]),
 		).toThrow("precedes started");
-		expect(() => migrateLegacyAutomationRunLedgerV1(SESSION_ID, [source(1, "terminal", terminal())])).toThrow("orphaned");
+		expect(() => migrateLegacyAutomationRunLedger(SESSION_ID, [source(1, "terminal", terminal())])).toThrow("orphaned");
 	});
 
 	it("fails closed on orphan facts, duplicate order, and non-exact historical shapes", () => {
 		expect(() =>
-			migrateLegacyAutomationRunLedgerV1(SESSION_ID, [source(1, "started", started())]),
+			migrateLegacyAutomationRunLedger(SESSION_ID, [source(1, "started", started())]),
 		).toThrow("orphaned");
 		expect(() =>
-			migrateLegacyAutomationRunLedgerV1(SESSION_ID, [
+			migrateLegacyAutomationRunLedger(SESSION_ID, [
 				source(1, "accepted", accepted()),
 				source(1, "started", started()),
 			]),
@@ -456,7 +456,7 @@ describe("private automation.run ledger migration", () => {
 
 	it("records equivalent legacy terminal data as migration evidence", () => {
 		const canonical = canonicalProjection();
-		const result = reconcileLegacyAutomationRunLedgerV1(
+		const result = reconcileLegacyAutomationRunLedger(
 			SESSION_ID,
 			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal())],
 			[canonical],
@@ -469,7 +469,7 @@ describe("private automation.run ledger migration", () => {
 		const canonical = canonicalProjection("failed", {
 			terminalError: { code: "model_error", message: "failed", retryable: false },
 		});
-		const result = reconcileLegacyAutomationRunLedgerV1(
+		const result = reconcileLegacyAutomationRunLedger(
 			SESSION_ID,
 			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal("failed"))],
 			[canonical],
@@ -479,7 +479,7 @@ describe("private automation.run ledger migration", () => {
 	});
 
 	it("fails closed when legacy usage conflicts with canonical usage", () => {
-		expect(() => reconcileLegacyAutomationRunLedgerV1(
+		expect(() => reconcileLegacyAutomationRunLedger(
 			SESSION_ID,
 			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal())],
 			[canonicalProjection("completed", { usage: { input: 1, output: 2, total: 4 } })],
@@ -487,7 +487,7 @@ describe("private automation.run ledger migration", () => {
 	});
 
 	it("fails closed when legacy terminal error conflicts with the canonical error", () => {
-		expect(() => reconcileLegacyAutomationRunLedgerV1(
+		expect(() => reconcileLegacyAutomationRunLedger(
 			SESSION_ID,
 			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal("failed"))],
 			[canonicalProjection("failed", {
@@ -497,7 +497,7 @@ describe("private automation.run ledger migration", () => {
 	});
 
 	it("migrates complete legacy evidence only when the canonical receipt is missing", () => {
-		const result = reconcileLegacyAutomationRunLedgerV1(
+		const result = reconcileLegacyAutomationRunLedger(
 			SESSION_ID,
 			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal())],
 			[],
@@ -528,7 +528,7 @@ describe("private automation.run ledger migration", () => {
 	});
 
 	it("preserves legacy usage and error in the complete migrated current record", () => {
-		const result = reconcileLegacyAutomationRunLedgerV1(
+		const result = reconcileLegacyAutomationRunLedger(
 			SESSION_ID,
 			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal("failed"))],
 			[],
@@ -546,7 +546,7 @@ describe("private automation.run ledger migration", () => {
 	});
 
 	it("does not invent a terminal Run from incomplete legacy evidence", () => {
-		const result = reconcileLegacyAutomationRunLedgerV1(
+		const result = reconcileLegacyAutomationRunLedger(
 			SESSION_ID,
 			[source(1, "accepted", accepted()), source(2, "started", started())],
 			[],
@@ -556,7 +556,7 @@ describe("private automation.run ledger migration", () => {
 	});
 
 	it("fails closed when complete legacy evidence conflicts with canonical terminal truth", () => {
-		expect(() => reconcileLegacyAutomationRunLedgerV1(
+		expect(() => reconcileLegacyAutomationRunLedger(
 			SESSION_ID,
 			[source(1, "accepted", accepted()), source(2, "started", started()), source(3, "terminal", terminal())],
 			[canonicalProjection("failed")],

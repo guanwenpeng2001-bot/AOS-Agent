@@ -36,7 +36,7 @@ const DEPENDENCY_FACT_TYPES = {
 	adapter: "external_agent_binding",
 } as const satisfies Record<PromptTaskDependencyName, string>;
 
-export interface ProductPromptDependencySnapshotContextV1 {
+export interface ProductPromptDependencySnapshotContext {
 	readonly runId: string;
 	readonly goalId: string;
 	readonly taskId: string;
@@ -44,17 +44,17 @@ export interface ProductPromptDependencySnapshotContextV1 {
 	readonly thinkingLevel: ThinkingLevel;
 }
 
-export interface ProductPromptBindingRevisionAuthorityOptionsV1 {
+export interface ProductPromptBindingRevisionAuthorityOptions {
 	readonly session: Session;
 	readonly roleId: string;
 	readonly providerId: string;
 	readonly dependencySnapshot: (
 		name: PromptTaskDependencyName,
-		context: ProductPromptDependencySnapshotContextV1,
+		context: ProductPromptDependencySnapshotContext,
 	) => FoundationJsonValue;
 }
 
-export interface ProductPromptBindingRevisionFactsV1 {
+export interface ProductPromptBindingRevisionFacts {
 	readonly roleRevision: RoleRevision;
 	readonly modelProfile: ModelProfile;
 	readonly dependencies: PromptTaskCompositionDependencies;
@@ -80,7 +80,7 @@ function modelRouteIdentity(model: Model<Api>, thinkingLevel: ThinkingLevel): Fo
 	};
 }
 
-export function deriveProductPromptModelProfileIdV1(
+export function deriveProductPromptModelProfileId(
 	model: Model<Api>,
 	thinkingLevel: ThinkingLevel,
 ): string {
@@ -94,10 +94,10 @@ export function deriveProductPromptModelProfileIdV1(
  * independent ingress instances resolve the same Role, ModelProfile,
  * Capability, and Policy revisions instead of minting per-Run wrappers.
  */
-export class ProductPromptBindingRevisionAuthorityV1 {
-	private readonly options: ProductPromptBindingRevisionAuthorityOptionsV1;
+export class ProductPromptBindingRevisionAuthority {
+	private readonly options: ProductPromptBindingRevisionAuthorityOptions;
 
-	constructor(options: ProductPromptBindingRevisionAuthorityOptionsV1) {
+	constructor(options: ProductPromptBindingRevisionAuthorityOptions) {
 		this.options = options;
 	}
 
@@ -114,7 +114,7 @@ export class ProductPromptBindingRevisionAuthorityV1 {
 		model: Model<Api>,
 		thinkingLevel: ThinkingLevel,
 	): Promise<ModelProfile> {
-		const modelProfileId = deriveProductPromptModelProfileIdV1(model, thinkingLevel);
+		const modelProfileId = deriveProductPromptModelProfileId(model, thinkingLevel);
 		const existing = await this.existingPayload("model_profile_revision", modelProfileId);
 		if (existing !== undefined) {
 			const checked = validateSecretFreeModelProfile(existing);
@@ -198,7 +198,7 @@ export class ProductPromptBindingRevisionAuthorityV1 {
 
 	private async resolveDependency(
 		name: PromptTaskDependencyName,
-		context: ProductPromptDependencySnapshotContextV1,
+		context: ProductPromptDependencySnapshotContext,
 	): Promise<PromptTaskDependencyResolution> {
 		const snapshot = immutableJson(structuredClone(this.options.dependencySnapshot(name, context)));
 		const type = DEPENDENCY_FACT_TYPES[name];
@@ -228,7 +228,7 @@ export class ProductPromptBindingRevisionAuthorityV1 {
 		};
 	}
 
-	async resolve(context: ProductPromptDependencySnapshotContextV1): Promise<ProductPromptBindingRevisionFactsV1> {
+	async resolve(context: ProductPromptDependencySnapshotContext): Promise<ProductPromptBindingRevisionFacts> {
 		const modelProfile = await this.resolveModelProfile(context.model, context.thinkingLevel);
 		const roleRevision = await this.resolveRoleRevision(modelProfile);
 		const dependencies = Object.fromEntries(PROMPT_TASK_DEPENDENCY_NAMES.map((name) => [name, {

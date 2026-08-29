@@ -15,12 +15,12 @@ import {
 	validateFingerprint,
 	validateQuotaReservation,
 } from "@aos-agent/agent-core";
-import type { SchedulerProviderClassV1, SchedulerSelectionScoreV1 } from "./scheduler.ts";
+import type { SchedulerProviderClass, SchedulerSelectionScore } from "./scheduler.ts";
 
 const SCHEDULER_SELECTION_RESERVATIONS_OBJECT_TYPE = "scheduler_selection_reservations";
 const SCHEDULER_SELECTION_RESERVATIONS_OBJECT_ID = "session";
 
-export type SchedulerSelectionRejectionStageV1 =
+export type SchedulerSelectionRejectionStage =
 	| "resume_replay"
 	| "model_access"
 	| "binding_tools"
@@ -28,9 +28,9 @@ export type SchedulerSelectionRejectionStageV1 =
 	| "credential_sandbox"
 	| "capacity_quota";
 
-export type SchedulerSelectionReservationStatusV1 = "reserved" | "settling" | "settled" | "reconcile_required";
+export type SchedulerSelectionReservationStatus = "reserved" | "settling" | "settled" | "reconcile_required";
 
-export type SchedulerSelectionSettlementReasonV1 =
+export type SchedulerSelectionSettlementReason =
 	| "succeeded"
 	| "failed"
 	| "rejected"
@@ -40,7 +40,7 @@ export type SchedulerSelectionSettlementReasonV1 =
 	| "persistence_failure"
 	| "restart_reconciled";
 
-export interface SchedulerSelectionDecisionInputsV1 {
+export interface SchedulerSelectionDecisionInputs {
 	readonly requireResume: boolean;
 	readonly modelAccess: "none" | "agent_owned" | "aos_gateway";
 	readonly bindingRequirementDigest: Fingerprint;
@@ -52,23 +52,23 @@ export interface SchedulerSelectionDecisionInputsV1 {
 	readonly sandboxTargetRefs: readonly string[];
 }
 
-export interface SchedulerSelectionCandidateDecisionV1 {
+export interface SchedulerSelectionCandidateDecision {
 	readonly providerId: string;
 	readonly capabilityRevision: number;
 	readonly capabilityDigest: Fingerprint;
 	readonly configRevision: Fingerprint;
 	readonly accepted: boolean;
-	readonly rejectionStage?: SchedulerSelectionRejectionStageV1;
+	readonly rejectionStage?: SchedulerSelectionRejectionStage;
 	readonly score?: number;
 }
 
-export interface SchedulerDurableSelectionFactV1 {
+export interface SchedulerDurableSelectionFact {
 	readonly schemaVersion: 1;
 	readonly queueEntryId: string;
 	readonly taskId: string;
 	readonly requestDigest: Fingerprint;
 	readonly chosenProviderId: string;
-	readonly chosenProviderClass: SchedulerProviderClassV1;
+	readonly chosenProviderClass: SchedulerProviderClass;
 	readonly attemptId: string;
 	readonly bindingId: string;
 	readonly bindingEpochId: string;
@@ -76,25 +76,25 @@ export interface SchedulerDurableSelectionFactV1 {
 	readonly capabilityRevision: number;
 	readonly capabilityDigest: Fingerprint;
 	readonly configRevision: Fingerprint;
-	readonly decisionInputs: SchedulerSelectionDecisionInputsV1;
-	readonly candidateDecisions: readonly SchedulerSelectionCandidateDecisionV1[];
-	readonly scores: readonly SchedulerSelectionScoreV1[];
+	readonly decisionInputs: SchedulerSelectionDecisionInputs;
+	readonly candidateDecisions: readonly SchedulerSelectionCandidateDecision[];
+	readonly scores: readonly SchedulerSelectionScore[];
 	readonly reservationId: string;
 	readonly quotaReservation?: QuotaReservation;
 	readonly decidedAt: string;
 	readonly digest: Fingerprint;
 }
 
-export interface SchedulerSelectionReservationRecordV1 {
+export interface SchedulerSelectionReservationRecord {
 	readonly schemaVersion: 1;
-	readonly fact: SchedulerDurableSelectionFactV1;
-	readonly status: SchedulerSelectionReservationStatusV1;
-	readonly settlementReason?: SchedulerSelectionSettlementReasonV1;
+	readonly fact: SchedulerDurableSelectionFact;
+	readonly status: SchedulerSelectionReservationStatus;
+	readonly settlementReason?: SchedulerSelectionSettlementReason;
 	readonly usage?: BudgetUsage;
 	readonly updatedAt: string;
 }
 
-export interface SchedulerSelectionReservationStoreOptionsV1 {
+export interface SchedulerSelectionReservationStoreOptions {
 	readonly ownerId?: string;
 	readonly writer?: SessionLedgerWriter;
 	readonly laneId?: string;
@@ -103,14 +103,14 @@ export interface SchedulerSelectionReservationStoreOptionsV1 {
 	readonly maxBacklog?: number;
 }
 
-export interface SchedulerSelectionBeginSettlementV1 {
-	readonly record: SchedulerSelectionReservationRecordV1;
+export interface SchedulerSelectionBeginSettlement {
+	readonly record: SchedulerSelectionReservationRecord;
 	readonly shouldSettleQuota: boolean;
 }
 
 interface SchedulerSelectionReservationAggregateV1 {
 	readonly schemaVersion: 1;
-	readonly records: readonly SchedulerSelectionReservationRecordV1[];
+	readonly records: readonly SchedulerSelectionReservationRecord[];
 }
 
 interface LoadedAggregateV1 {
@@ -163,7 +163,7 @@ function hasExactKeys(
 }
 
 const SAFE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
-const REJECTION_STAGES: readonly SchedulerSelectionRejectionStageV1[] = [
+const REJECTION_STAGES: readonly SchedulerSelectionRejectionStage[] = [
 	"resume_replay",
 	"model_access",
 	"binding_tools",
@@ -171,7 +171,7 @@ const REJECTION_STAGES: readonly SchedulerSelectionRejectionStageV1[] = [
 	"credential_sandbox",
 	"capacity_quota",
 ];
-const SETTLEMENT_REASONS: readonly SchedulerSelectionSettlementReasonV1[] = [
+const SETTLEMENT_REASONS: readonly SchedulerSelectionSettlementReason[] = [
 	"succeeded",
 	"failed",
 	"rejected",
@@ -182,7 +182,7 @@ const SETTLEMENT_REASONS: readonly SchedulerSelectionSettlementReasonV1[] = [
 	"restart_reconciled",
 ];
 
-function validateDecisionInputs(value: unknown): value is SchedulerSelectionDecisionInputsV1 {
+function validateDecisionInputs(value: unknown): value is SchedulerSelectionDecisionInputs {
 	if (
 		!isRecord(value) ||
 		!hasExactKeys(
@@ -216,7 +216,7 @@ function validateDecisionInputs(value: unknown): value is SchedulerSelectionDeci
 	);
 }
 
-function validateCandidateDecision(value: unknown): value is SchedulerSelectionCandidateDecisionV1 {
+function validateCandidateDecision(value: unknown): value is SchedulerSelectionCandidateDecision {
 	if (
 		!isRecord(value) ||
 		!hasExactKeys(
@@ -243,7 +243,7 @@ function validateCandidateDecision(value: unknown): value is SchedulerSelectionC
 		: value.rejectionStage !== undefined;
 }
 
-function validateScore(value: unknown): value is SchedulerSelectionScoreV1 {
+function validateScore(value: unknown): value is SchedulerSelectionScore {
 	return (
 		isRecord(value) &&
 		hasExactKeys(value, ["providerId", "score"]) &&
@@ -268,12 +268,12 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
 	return value;
 }
 
-function factBase(fact: SchedulerDurableSelectionFactV1): Omit<SchedulerDurableSelectionFactV1, "digest"> {
+function factBase(fact: SchedulerDurableSelectionFact): Omit<SchedulerDurableSelectionFact, "digest"> {
 	const { digest: _digest, ...base } = fact;
 	return base;
 }
 
-function validateDurableFact(value: unknown): ResultValue<SchedulerDurableSelectionFactV1, FoundationError> {
+function validateDurableFact(value: unknown): ResultValue<SchedulerDurableSelectionFact, FoundationError> {
 	if (!isRecord(value)) return Result.err(invalidShape("Scheduler durable selection fact must be an object."));
 	if (
 		!hasExactKeys(
@@ -303,7 +303,7 @@ function validateDurableFact(value: unknown): ResultValue<SchedulerDurableSelect
 	) {
 		return Result.err(invalidShape("Scheduler durable selection fact contains unsupported fields."));
 	}
-	const candidate = value as unknown as SchedulerDurableSelectionFactV1;
+	const candidate = value as unknown as SchedulerDurableSelectionFact;
 	if (
 		candidate.schemaVersion !== 1 ||
 		!isNonEmptyString(candidate.queueEntryId) ||
@@ -374,12 +374,12 @@ function validateDurableFact(value: unknown): ResultValue<SchedulerDurableSelect
 
 function validateReservationRecord(
 	value: unknown,
-): ResultValue<SchedulerSelectionReservationRecordV1, FoundationError> {
+): ResultValue<SchedulerSelectionReservationRecord, FoundationError> {
 	if (!isRecord(value)) return Result.err(invalidShape("Scheduler selection reservation must be an object."));
 	if (!hasExactKeys(value, ["schemaVersion", "fact", "status", "updatedAt"], ["settlementReason", "usage"])) {
 		return Result.err(invalidShape("Scheduler selection reservation contains unsupported fields."));
 	}
-	const candidate = value as unknown as SchedulerSelectionReservationRecordV1;
+	const candidate = value as unknown as SchedulerSelectionReservationRecord;
 	if (
 		candidate.schemaVersion !== 1 ||
 		!["reserved", "settling", "settled", "reconcile_required"].includes(candidate.status) ||
@@ -417,7 +417,7 @@ function validateAggregate(value: unknown): ResultValue<SchedulerSelectionReserv
 	) {
 		return Result.err(invalidShape("Scheduler selection reservation aggregate has an invalid shape."));
 	}
-	const records: SchedulerSelectionReservationRecordV1[] = [];
+	const records: SchedulerSelectionReservationRecord[] = [];
 	const queueEntryIds = new Set<string>();
 	for (const valueRecord of value.records) {
 		const record = validateReservationRecord(valueRecord);
@@ -438,7 +438,7 @@ function validateAggregate(value: unknown): ResultValue<SchedulerSelectionReserv
 
 function replaceRecord(
 	aggregate: SchedulerSelectionReservationAggregateV1,
-	record: SchedulerSelectionReservationRecordV1,
+	record: SchedulerSelectionReservationRecord,
 ): SchedulerSelectionReservationAggregateV1 {
 	const records = aggregate.records
 		.filter((item) => item.fact.queueEntryId !== record.fact.queueEntryId)
@@ -459,7 +459,7 @@ export class SchedulerSelectionReservationStore {
 	private readonly maxBacklog: number;
 	private mutationTail: Promise<void> = Promise.resolve();
 
-	constructor(session: Session, options: SchedulerSelectionReservationStoreOptionsV1 = {}) {
+	constructor(session: Session, options: SchedulerSelectionReservationStoreOptions = {}) {
 		if (options.writer !== undefined && options.writer.session !== session) {
 			throw new TypeError("Scheduler selection writer must belong to the canonical Session");
 		}
@@ -479,7 +479,7 @@ export class SchedulerSelectionReservationStore {
 		}
 	}
 
-	async list(): Promise<ResultValue<readonly SchedulerSelectionReservationRecordV1[], FoundationError>> {
+	async list(): Promise<ResultValue<readonly SchedulerSelectionReservationRecord[], FoundationError>> {
 		try {
 			const loaded = await this.load();
 			if (!loaded.ok) return loaded;
@@ -491,7 +491,7 @@ export class SchedulerSelectionReservationStore {
 
 	async get(
 		queueEntryId: string,
-	): Promise<ResultValue<SchedulerSelectionReservationRecordV1 | undefined, FoundationError>> {
+	): Promise<ResultValue<SchedulerSelectionReservationRecord | undefined, FoundationError>> {
 		const listed = await this.list();
 		if (!listed.ok) return listed;
 		return Result.ok(listed.value.find((record) => record.fact.queueEntryId === queueEntryId));
@@ -510,9 +510,9 @@ export class SchedulerSelectionReservationStore {
 	}
 
 	async reserve(
-		fact: SchedulerDurableSelectionFactV1,
+		fact: SchedulerDurableSelectionFact,
 		maxConcurrency: number,
-	): Promise<ResultValue<SchedulerSelectionReservationRecordV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerSelectionReservationRecord, FoundationError>> {
 		return this.mutate(async () => {
 			const checkedFact = validateDurableFact(fact);
 			if (!checkedFact.ok) return checkedFact;
@@ -582,10 +582,10 @@ export class SchedulerSelectionReservationStore {
 
 	async beginSettlement(
 		queueEntryId: string,
-		reason: SchedulerSelectionSettlementReasonV1,
+		reason: SchedulerSelectionSettlementReason,
 		usage: BudgetUsage = {},
-	): Promise<ResultValue<SchedulerSelectionBeginSettlementV1, FoundationError>> {
-		return this.mutate<SchedulerSelectionBeginSettlementV1>(async () => {
+	): Promise<ResultValue<SchedulerSelectionBeginSettlement, FoundationError>> {
+		return this.mutate<SchedulerSelectionBeginSettlement>(async () => {
 			const checkedUsage = validateBudgetUsage(usage);
 			if (!checkedUsage.ok) return checkedUsage;
 			const loaded = await this.load();
@@ -620,8 +620,8 @@ export class SchedulerSelectionReservationStore {
 
 	async resumeSettlement(
 		queueEntryId: string,
-	): Promise<ResultValue<SchedulerSelectionBeginSettlementV1, FoundationError>> {
-		return this.mutate<SchedulerSelectionBeginSettlementV1>(async () => {
+	): Promise<ResultValue<SchedulerSelectionBeginSettlement, FoundationError>> {
+		return this.mutate<SchedulerSelectionBeginSettlement>(async () => {
 			const loaded = await this.load();
 			if (!loaded.ok) return loaded;
 			const existing = loaded.value.aggregate.records.find(
@@ -656,7 +656,7 @@ export class SchedulerSelectionReservationStore {
 	async finishSettlement(
 		queueEntryId: string,
 		settled: boolean,
-	): Promise<ResultValue<SchedulerSelectionReservationRecordV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerSelectionReservationRecord, FoundationError>> {
 		return this.mutate(async () => {
 			const loaded = await this.load();
 			if (!loaded.ok) return loaded;
@@ -789,9 +789,9 @@ export class SchedulerSelectionReservationStore {
 	}
 }
 
-export function createSchedulerDurableSelectionFactV1(
-	input: Omit<SchedulerDurableSelectionFactV1, "digest">,
-): ResultValue<SchedulerDurableSelectionFactV1, FoundationError> {
+export function createSchedulerDurableSelectionFact(
+	input: Omit<SchedulerDurableSelectionFact, "digest">,
+): ResultValue<SchedulerDurableSelectionFact, FoundationError> {
 	const fact = deepFreeze({ ...input, digest: fingerprintFoundationValue(input) });
 	return validateDurableFact(fact);
 }

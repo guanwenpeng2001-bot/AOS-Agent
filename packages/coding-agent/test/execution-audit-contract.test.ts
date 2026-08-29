@@ -6,8 +6,8 @@ import {
 	AUDIT_EVENT_TYPES as SRC_AUDIT_EVENT_TYPES,
 	AUDIT_SOURCE_CUSTOM_TYPES as SRC_AUDIT_SOURCE_CUSTOM_TYPES,
 	TASK_CREDENTIAL_AUDIT_FORBIDDEN_KEYS,
-	projectSubagentAuditSourceV1,
-	replaySubagentAuditSourceV1,
+	projectSubagentAuditSource,
+	replaySubagentAuditSource,
 	hasForbiddenSchedulerAuditValue,
 	type AuditEvent,
 	type AuditSession,
@@ -50,26 +50,26 @@ describe("execution audit T0 contract", () => {
 			correlation: { attemptId: "attempt-audit", spawnId: "spawn-audit" },
 		};
 		const safe = { ...base, digest: fingerprintFoundationValue(base) };
-		expect(projectSubagentAuditSourceV1(safe)).toEqual(safe);
-		expect(replaySubagentAuditSourceV1(safe)).toEqual(safe);
-		expect(projectSubagentAuditSourceV1({ ...safe, prompt: "raw child prompt" })).toBeUndefined();
-		expect(projectSubagentAuditSourceV1({ ...safe, safeSummary: "mutated" })).toBeUndefined();
+		expect(projectSubagentAuditSource(safe)).toEqual(safe);
+		expect(replaySubagentAuditSource(safe)).toEqual(safe);
+		expect(projectSubagentAuditSource({ ...safe, prompt: "raw child prompt" })).toBeUndefined();
+		expect(projectSubagentAuditSource({ ...safe, safeSummary: "mutated" })).toBeUndefined();
 		const { digest: _digest, ...safeBase } = safe;
 		const forgedStatusBase = { ...safeBase, status: "forged_status" };
 		const forgedProviderBase = { ...safeBase, providerKind: "forged_provider" };
 		expect(
-			projectSubagentAuditSourceV1({
+			projectSubagentAuditSource({
 				...forgedStatusBase,
 				digest: fingerprintFoundationValue(forgedStatusBase),
 			}),
 		).toBeUndefined();
 		expect(
-			projectSubagentAuditSourceV1({
+			projectSubagentAuditSource({
 				...forgedProviderBase,
 				digest: fingerprintFoundationValue(forgedProviderBase),
 			}),
 		).toBeUndefined();
-		expect(Object.keys(replaySubagentAuditSourceV1(safe) ?? {})).not.toEqual(
+		expect(Object.keys(replaySubagentAuditSource(safe) ?? {})).not.toEqual(
 			expect.arrayContaining([
 				"pid",
 				"executable",

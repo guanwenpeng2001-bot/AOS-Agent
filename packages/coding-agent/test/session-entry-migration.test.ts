@@ -9,11 +9,11 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
 	PrivateMigrationError,
-	createPrivateMigrationPlanV1,
+	createPrivateMigrationPlan,
 	decodeLegacyUnavailableProviderDescriptorV1,
-	migrateLegacySessionEntriesV1,
+	migrateLegacySessionEntries,
 	planLegacySessionEntryMigrationV1,
-	runPrivateMigrationV1,
+	runPrivateMigration,
 } from "../src/core/migrations/session-entry.ts";
 
 function unavailableDescriptor(providerKind: "acp" | "sdk") {
@@ -151,8 +151,8 @@ describe("private historical Session entry migration", () => {
 			},
 		];
 
-		const first = migrateLegacySessionEntriesV1(source);
-		const replay = migrateLegacySessionEntriesV1(source);
+		const first = migrateLegacySessionEntries(source);
+		const replay = migrateLegacySessionEntries(source);
 		const header = first.entries[0];
 		const message = first.entries[1];
 		const compaction = first.entries[2];
@@ -172,7 +172,7 @@ describe("private historical Session entry migration", () => {
 	});
 
 	it("preserves v2 ids while applying only the v2 to v3 role migration", () => {
-		const migrated = migrateLegacySessionEntriesV1([
+		const migrated = migrateLegacySessionEntries([
 			{ type: "session", version: 2, id: "session-2", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/workspace" },
 			{
 				type: "message",
@@ -200,7 +200,7 @@ describe("private historical Session entry migration", () => {
 				data: { schemaVersion: 1, kind: "lane", lane: "main", leafId: null },
 			},
 		];
-		const migrated = migrateLegacySessionEntriesV1(source);
+		const migrated = migrateLegacySessionEntries(source);
 		expect(migrated.compatibilityViews).toEqual([
 			{
 				entryId: "lane-entry",
@@ -210,7 +210,7 @@ describe("private historical Session entry migration", () => {
 		]);
 		expect(migrated.entries).toEqual(source);
 		expect(() =>
-			migrateLegacySessionEntriesV1([
+			migrateLegacySessionEntries([
 				source[0],
 				{
 					...source[1],
@@ -272,7 +272,7 @@ describe("private historical Session entry migration", () => {
 				data: { nested: { remains: ["opaque", 1, true] } },
 			},
 		];
-		const migrated = migrateLegacySessionEntriesV1([header, ...wrappers]);
+		const migrated = migrateLegacySessionEntries([header, ...wrappers]);
 		expect(migrated.compatibilityViews.map((view) => view.kind)).toEqual(["entry", "record", "name", "durable"]);
 		expect(migrated.entries.at(-1)).toEqual(wrappers.at(-1));
 
@@ -320,7 +320,7 @@ describe("private historical Session entry migration", () => {
 			},
 		];
 		for (const invalid of invalidWrappers) {
-			expect(() => migrateLegacySessionEntriesV1([header, invalid])).toThrow(PrivateMigrationError);
+			expect(() => migrateLegacySessionEntries([header, invalid])).toThrow(PrivateMigrationError);
 		}
 	});
 
@@ -336,7 +336,7 @@ describe("private historical Session entry migration", () => {
 			customType: "__aos.foundation.durable.v1",
 			data,
 		};
-		const migrated = migrateLegacySessionEntriesV1([header, entry]);
+		const migrated = migrateLegacySessionEntries([header, entry]);
 		expect(migrated.compatibilityViews).toEqual([{ entryId: entry.id, kind: "durable", value: data }]);
 		expect(record.correlation).toMatchObject({
 			operationId: "operation-1",
@@ -350,7 +350,7 @@ describe("private historical Session entry migration", () => {
 			["toolCallId", false],
 		] as const) {
 			expect(() =>
-				migrateLegacySessionEntriesV1([
+				migrateLegacySessionEntries([
 					header,
 					{
 						...entry,
@@ -360,7 +360,7 @@ describe("private historical Session entry migration", () => {
 			).toThrow(PrivateMigrationError);
 		}
 		expect(() =>
-			migrateLegacySessionEntriesV1([
+			migrateLegacySessionEntries([
 				header,
 				{
 					...entry,
@@ -382,7 +382,7 @@ describe("private historical Session entry migration", () => {
 				customType: "__aos.foundation.durable.v1",
 				data: { schemaVersion: 1, kind: "durable", record },
 			};
-			expect(migrateLegacySessionEntriesV1([header, entry]).compatibilityViews).toEqual([
+			expect(migrateLegacySessionEntries([header, entry]).compatibilityViews).toEqual([
 				{ entryId: entry.id, kind: "durable", value: entry.data },
 			]);
 		}
@@ -398,7 +398,7 @@ describe("private historical Session entry migration", () => {
 			{ schemaVersion: 1 },
 		]) {
 			expect(() =>
-				migrateLegacySessionEntriesV1([
+				migrateLegacySessionEntries([
 					header,
 					{
 						type: "custom",
@@ -446,7 +446,7 @@ describe("private historical Session entry migration", () => {
 			],
 		];
 		for (const invalid of invalidSessions) {
-			expect(() => migrateLegacySessionEntriesV1(invalid)).toThrow(PrivateMigrationError);
+			expect(() => migrateLegacySessionEntries(invalid)).toThrow(PrivateMigrationError);
 		}
 	});
 
@@ -499,7 +499,7 @@ describe("private migration runner", () => {
 	it("writes one deterministic marker and no-ops an exact replay", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "migration-session", createdAt: 1 }));
 		const ledger = new SessionLedger(session, { ownerId: "migration-writer" });
-		const plan = createPrivateMigrationPlanV1({
+		const plan = createPrivateMigrationPlan({
 			migrationName: "fixture-v1",
 			sourceIdentity: { id: "fixture-1" },
 			sourceKind: "fixture",
@@ -510,8 +510,8 @@ describe("private migration runner", () => {
 		});
 		const revision = vi.spyOn(ledger, "revision");
 
-		const applied = await runPrivateMigrationV1(ledger, plan);
-		const replayed = await runPrivateMigrationV1(ledger, plan);
+		const applied = await runPrivateMigration(ledger, plan);
+		const replayed = await runPrivateMigration(ledger, plan);
 		const records = await ledger.find({ objectType: "migration.applied", objectId: plan.migrationId });
 
 		expect(applied.status).toBe("applied");
@@ -537,7 +537,7 @@ describe("private migration runner", () => {
 	it("fails closed when the same migration identity has different content", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "migration-conflict", createdAt: 1 }));
 		const ledger = new SessionLedger(session, { ownerId: "migration-writer" });
-		const first = createPrivateMigrationPlanV1({
+		const first = createPrivateMigrationPlan({
 			migrationName: "fixture-v1",
 			sourceIdentity: { id: "fixture-1" },
 			sourceKind: "fixture",
@@ -546,7 +546,7 @@ describe("private migration runner", () => {
 			source: { schemaVersion: 1, value: "before" },
 			result: { schemaVersion: 2, value: "after" },
 		});
-		const changed = createPrivateMigrationPlanV1({
+		const changed = createPrivateMigrationPlan({
 			migrationName: "fixture-v1",
 			sourceIdentity: { id: "fixture-1" },
 			sourceKind: "fixture",
@@ -556,8 +556,8 @@ describe("private migration runner", () => {
 			result: { schemaVersion: 2, value: "different" },
 		});
 
-		await runPrivateMigrationV1(ledger, first);
-		await expect(runPrivateMigrationV1(ledger, changed)).rejects.toThrow("marker conflicts");
+		await runPrivateMigration(ledger, first);
+		await expect(runPrivateMigration(ledger, changed)).rejects.toThrow("marker conflicts");
 		expect(await ledger.find({ objectType: "migration.applied", objectId: first.migrationId })).toHaveLength(1);
 		await ledger.release();
 	});
@@ -565,7 +565,7 @@ describe("private migration runner", () => {
 	it("uses the observed absence revision and classifies an interleaved marker race as conflict", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "migration-race", createdAt: 1 }));
 		const ledger = new InterleavedConflictLedger(session, { ownerId: "migration-writer" });
-		const plan = createPrivateMigrationPlanV1({
+		const plan = createPrivateMigrationPlan({
 			migrationName: "fixture-v1",
 			sourceIdentity: { id: "fixture-1" },
 			sourceKind: "fixture",
@@ -575,7 +575,7 @@ describe("private migration runner", () => {
 			result: { schemaVersion: 2, value: "after" },
 		});
 
-		await expect(runPrivateMigrationV1(ledger, plan)).rejects.toThrow("marker conflicts");
+		await expect(runPrivateMigration(ledger, plan)).rejects.toThrow("marker conflicts");
 		expect(await ledger.find({ objectType: "migration.applied", objectId: plan.migrationId })).toHaveLength(1);
 		await ledger.release();
 	});
@@ -583,7 +583,7 @@ describe("private migration runner", () => {
 	it("rejects every forged plan field before any ledger read or write", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "migration-forged", createdAt: 1 }));
 		const ledger = new SessionLedger(session, { ownerId: "migration-writer" });
-		const plan = createPrivateMigrationPlanV1({
+		const plan = createPrivateMigrationPlan({
 			migrationName: "fixture-v1",
 			sourceIdentity: { id: "fixture-1" },
 			sourceKind: "fixture",
@@ -610,7 +610,7 @@ describe("private migration runner", () => {
 		];
 		for (const candidate of forged) {
 			await expect(
-				runPrivateMigrationV1(ledger, candidate as unknown as typeof plan),
+				runPrivateMigration(ledger, candidate as unknown as typeof plan),
 			).rejects.toThrow(PrivateMigrationError);
 		}
 		expect(reads).not.toHaveBeenCalled();

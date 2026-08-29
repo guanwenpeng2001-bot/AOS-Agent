@@ -23,10 +23,10 @@ import {
 	type TaskArtifactProjection,
 } from "@aos-agent/agent-core";
 import {
-	validateChildContextForkPlanV1,
-	type ChildContextForkPlanV1,
-	type ChildRuntimeCriterionV1,
-	type ChildRuntimeLayerV1,
+	validateChildContextForkPlan,
+	type ChildContextForkPlan,
+	type ChildRuntimeCriterion,
+	type ChildRuntimeLayer,
 } from "./subagent-context-fork.ts";
 
 export const CHILD_AGENT_PROTOCOL_SCHEMA_VERSION = 1 as const;
@@ -38,14 +38,14 @@ export const CHILD_AGENT_PROTOCOL_FEATURES = Object.freeze([
 	"receipt",
 	"close",
 ] as const);
-export type ChildAgentProtocolFeatureV1 = (typeof CHILD_AGENT_PROTOCOL_FEATURES)[number];
+export type ChildAgentProtocolFeature = (typeof CHILD_AGENT_PROTOCOL_FEATURES)[number];
 
 export const CHILD_AGENT_PROTOCOL_MAX_FRAME_BYTES = 64 * 1024;
 export const CHILD_AGENT_PROTOCOL_MAX_TURN_TEXT_BYTES = 16 * 1024;
 export const CHILD_AGENT_PROTOCOL_MAX_OUTPUT_TEXT_BYTES = 16 * 1024;
 
 export const CHILD_AGENT_REQUEST_FRAME_TYPES = Object.freeze(["initialize", "turn", "cancel", "close"] as const);
-export type ChildAgentRequestFrameTypeV1 = (typeof CHILD_AGENT_REQUEST_FRAME_TYPES)[number];
+export type ChildAgentRequestFrameType = (typeof CHILD_AGENT_REQUEST_FRAME_TYPES)[number];
 
 export const CHILD_AGENT_EVENT_FRAME_TYPES = Object.freeze([
 	"ready",
@@ -55,11 +55,11 @@ export const CHILD_AGENT_EVENT_FRAME_TYPES = Object.freeze([
 	"error",
 	"closed",
 ] as const);
-export type ChildAgentEventFrameTypeV1 = (typeof CHILD_AGENT_EVENT_FRAME_TYPES)[number];
+export type ChildAgentEventFrameType = (typeof CHILD_AGENT_EVENT_FRAME_TYPES)[number];
 
-export type ChildAgentCancelReasonV1 = "cancel" | "deadline" | "shutdown";
+export type ChildAgentCancelReason = "cancel" | "deadline" | "shutdown";
 
-export interface ChildAgentProjectionRefV1 {
+export interface ChildAgentProjectionRef {
 	readonly schemaVersion: 1;
 	readonly spawnId: string;
 	readonly parentBindingId: string;
@@ -67,7 +67,7 @@ export interface ChildAgentProjectionRefV1 {
 	readonly digest: Fingerprint;
 }
 
-export interface ChildAgentTranscriptRefV1 {
+export interface ChildAgentTranscriptRef {
 	readonly schemaVersion: 1;
 	readonly sessionId: string;
 	readonly laneId: string;
@@ -76,22 +76,22 @@ export interface ChildAgentTranscriptRefV1 {
 	readonly leafId?: string;
 }
 
-export interface ChildAgentContextProjectionV1 {
+export interface ChildAgentContextProjection {
 	readonly schemaVersion: 1;
-	readonly plan: ChildContextForkPlanV1;
-	readonly runtime: ChildRuntimeLayerV1;
+	readonly plan: ChildContextForkPlan;
+	readonly runtime: ChildRuntimeLayer;
 	readonly messages: readonly AgentMessage[];
 }
 
-export interface ChildAgentInitializeRequestV1 {
+export interface ChildAgentInitializeRequest {
 	readonly type: "initialize";
 	readonly requestId: string;
 	readonly spawnId: string;
 	readonly protocolVersion: 1;
-	readonly features: readonly ChildAgentProtocolFeatureV1[];
-	readonly projection: ChildAgentProjectionRefV1;
+	readonly features: readonly ChildAgentProtocolFeature[];
+	readonly projection: ChildAgentProjectionRef;
 	readonly forkSnapshotRef: RevisionReference;
-	readonly contextProjection: ChildAgentContextProjectionV1;
+	readonly contextProjection: ChildAgentContextProjection;
 	readonly model: { readonly provider: string; readonly model: string };
 	readonly correlation: ExecutionCorrelation;
 	readonly providerId: string;
@@ -101,10 +101,10 @@ export interface ChildAgentInitializeRequestV1 {
 	readonly bindingId: string;
 	readonly bindingEpochId: string;
 	readonly agentInstanceId: string;
-	readonly transcriptRef?: ChildAgentTranscriptRefV1;
+	readonly transcriptRef?: ChildAgentTranscriptRef;
 }
 
-export interface ChildAgentTurnRequestV1 {
+export interface ChildAgentTurnRequest {
 	readonly type: "turn";
 	readonly requestId: string;
 	readonly spawnId: string;
@@ -113,37 +113,37 @@ export interface ChildAgentTurnRequestV1 {
 	readonly deadlineAt?: string;
 }
 
-export interface ChildAgentCancelRequestV1 {
+export interface ChildAgentCancelRequest {
 	readonly type: "cancel";
 	readonly requestId: string;
 	readonly spawnId: string;
 	readonly attemptId: string;
-	readonly reason: ChildAgentCancelReasonV1;
+	readonly reason: ChildAgentCancelReason;
 }
 
-export interface ChildAgentCloseRequestV1 {
+export interface ChildAgentCloseRequest {
 	readonly type: "close";
 	readonly requestId: string;
 	readonly spawnId: string;
 }
 
-export type ChildAgentRequestFrameV1 =
-	| ChildAgentInitializeRequestV1
-	| ChildAgentTurnRequestV1
-	| ChildAgentCancelRequestV1
-	| ChildAgentCloseRequestV1;
+export type ChildAgentRequestFrame =
+	| ChildAgentInitializeRequest
+	| ChildAgentTurnRequest
+	| ChildAgentCancelRequest
+	| ChildAgentCloseRequest;
 
-export interface ChildAgentReadyEventV1 {
+export interface ChildAgentReadyEvent {
 	readonly type: "ready";
 	readonly requestId: string;
 	readonly spawnId: string;
 	readonly protocolVersion: 1;
-	readonly features: readonly ChildAgentProtocolFeatureV1[];
+	readonly features: readonly ChildAgentProtocolFeature[];
 	readonly providerId: string;
 	readonly agentInstanceId: string;
 }
 
-export interface ChildAgentTurnStartedEventV1 {
+export interface ChildAgentTurnStartedEvent {
 	readonly type: "turn.started";
 	readonly requestId: string;
 	readonly spawnId: string;
@@ -151,7 +151,7 @@ export interface ChildAgentTurnStartedEventV1 {
 	readonly at: string;
 }
 
-export interface ChildAgentTurnCompletedEventV1 {
+export interface ChildAgentTurnCompletedEvent {
 	readonly type: "turn.completed";
 	readonly requestId: string;
 	readonly spawnId: string;
@@ -162,36 +162,36 @@ export interface ChildAgentTurnCompletedEventV1 {
 	readonly output?: string;
 }
 
-export interface ChildAgentReceiptEventV1 {
+export interface ChildAgentReceiptEvent {
 	readonly type: "receipt";
 	readonly requestId: string;
 	readonly receipt: AttemptReceipt;
 }
 
-export interface ChildAgentErrorEventV1 {
+export interface ChildAgentErrorEvent {
 	readonly type: "error";
 	readonly requestId?: string;
 	readonly spawnId: string;
 	readonly code: string;
 }
 
-export interface ChildAgentClosedEventV1 {
+export interface ChildAgentClosedEvent {
 	readonly type: "closed";
 	readonly requestId: string;
 	readonly spawnId: string;
 }
 
-export type ChildAgentEventFrameV1 =
-	| ChildAgentReadyEventV1
-	| ChildAgentTurnStartedEventV1
-	| ChildAgentTurnCompletedEventV1
-	| ChildAgentReceiptEventV1
-	| ChildAgentErrorEventV1
-	| ChildAgentClosedEventV1;
+export type ChildAgentEventFrame =
+	| ChildAgentReadyEvent
+	| ChildAgentTurnStartedEvent
+	| ChildAgentTurnCompletedEvent
+	| ChildAgentReceiptEvent
+	| ChildAgentErrorEvent
+	| ChildAgentClosedEvent;
 
-export type ChildAgentProtocolFrameV1 = ChildAgentRequestFrameV1 | ChildAgentEventFrameV1;
+export type ChildAgentProtocolFrame = ChildAgentRequestFrame | ChildAgentEventFrame;
 
-export const CHILD_AGENT_REQUEST_FRAME_KEYS_V1: Readonly<Record<ChildAgentRequestFrameTypeV1, readonly string[]>> =
+export const CHILD_AGENT_REQUEST_FRAME_KEYS: Readonly<Record<ChildAgentRequestFrameType, readonly string[]>> =
 	Object.freeze({
 		initialize: Object.freeze([
 			"type",
@@ -218,7 +218,7 @@ export const CHILD_AGENT_REQUEST_FRAME_KEYS_V1: Readonly<Record<ChildAgentReques
 		close: Object.freeze(["type", "requestId", "spawnId"]),
 	});
 
-export const CHILD_AGENT_EVENT_FRAME_KEYS_V1: Readonly<Record<ChildAgentEventFrameTypeV1, readonly string[]>> =
+export const CHILD_AGENT_EVENT_FRAME_KEYS: Readonly<Record<ChildAgentEventFrameType, readonly string[]>> =
 	Object.freeze({
 		ready: Object.freeze([
 			"type",
@@ -236,7 +236,7 @@ export const CHILD_AGENT_EVENT_FRAME_KEYS_V1: Readonly<Record<ChildAgentEventFra
 		closed: Object.freeze(["type", "requestId", "spawnId"]),
 	});
 
-export type ChildAgentProtocolPhaseV1 =
+export type ChildAgentProtocolPhase =
 	| "new"
 	| "initializing"
 	| "ready"
@@ -246,9 +246,9 @@ export type ChildAgentProtocolPhaseV1 =
 	| "terminal"
 	| "lost";
 
-export interface ChildAgentProtocolStateV1 {
+export interface ChildAgentProtocolState {
 	readonly schemaVersion: 1;
-	readonly phase: ChildAgentProtocolPhaseV1;
+	readonly phase: ChildAgentProtocolPhase;
 	readonly spawnId?: string;
 	readonly attemptId?: string;
 	readonly providerId?: string;
@@ -327,7 +327,7 @@ function invalid(message: string): FoundationError {
 	return new FoundationError("subagent_spawn_invalid", message);
 }
 
-export function childAgentProtocolFeaturesMatchV1(value: unknown): value is readonly ChildAgentProtocolFeatureV1[] {
+export function childAgentProtocolFeaturesMatch(value: unknown): value is readonly ChildAgentProtocolFeature[] {
 	if (!Array.isArray(value) || value.length !== CHILD_AGENT_PROTOCOL_FEATURES.length) return false;
 	return CHILD_AGENT_PROTOCOL_FEATURES.every((feature, index) => value[index] === feature);
 }
@@ -342,7 +342,7 @@ function validateFingerprint(value: unknown): value is Fingerprint {
 	);
 }
 
-function validateProjectionRef(value: unknown): value is ChildAgentProjectionRefV1 {
+function validateProjectionRef(value: unknown): value is ChildAgentProjectionRef {
 	return (
 		isRecord(value) &&
 		hasExactKeys(value, ["schemaVersion", "spawnId", "parentBindingId", "childBindingId", "digest"]) &&
@@ -369,7 +369,7 @@ function validateForkSnapshotRef(value: unknown): value is RevisionReference {
 	);
 }
 
-function validateRuntimeCriterion(value: unknown): value is ChildRuntimeCriterionV1 {
+function validateRuntimeCriterion(value: unknown): value is ChildRuntimeCriterion {
 	return (
 		isRecord(value) &&
 		hasExactKeys(value, ["criterionId", "description", "required", "satisfiedBy"]) &&
@@ -390,12 +390,12 @@ function validateArtifactProjectionArray(value: unknown): value is readonly Task
 	}
 }
 
-function validateContextProjection(value: unknown): value is ChildAgentContextProjectionV1 {
+function validateContextProjection(value: unknown): value is ChildAgentContextProjection {
 	if (
 		!isRecord(value) ||
 		!hasExactKeys(value, ["schemaVersion", "plan", "runtime", "messages"]) ||
 		value.schemaVersion !== 1 ||
-		!validateChildContextForkPlanV1(value.plan) ||
+		!validateChildContextForkPlan(value.plan) ||
 		!isRecord(value.runtime) ||
 		!Array.isArray(value.messages) ||
 		!value.messages.every((message) => {
@@ -424,7 +424,7 @@ function validateContextProjection(value: unknown): value is ChildAgentContextPr
 	return true;
 }
 
-function validateTranscriptRef(value: unknown): value is ChildAgentTranscriptRefV1 {
+function validateTranscriptRef(value: unknown): value is ChildAgentTranscriptRef {
 	return (
 		isRecord(value) &&
 		hasExactKeys(value, ["schemaVersion", "sessionId", "laneId", "spawnId", "attemptId"], ["leafId"]) &&
@@ -437,7 +437,7 @@ function validateTranscriptRef(value: unknown): value is ChildAgentTranscriptRef
 	);
 }
 
-function validateModelSelection(value: unknown): value is ChildAgentInitializeRequestV1["model"] {
+function validateModelSelection(value: unknown): value is ChildAgentInitializeRequest["model"] {
 	return (
 		isRecord(value) &&
 		hasExactKeys(value, ["provider", "model"]) &&
@@ -450,7 +450,7 @@ function validateModelSelection(value: unknown): value is ChildAgentInitializeRe
 	);
 }
 
-function validateTurnInput(value: unknown): value is ChildAgentTurnRequestV1["input"] {
+function validateTurnInput(value: unknown): value is ChildAgentTurnRequest["input"] {
 	return (
 		isRecord(value) &&
 		hasExactKeys(value, ["kind", "text"]) &&
@@ -460,7 +460,7 @@ function validateTurnInput(value: unknown): value is ChildAgentTurnRequestV1["in
 	);
 }
 
-export function validateChildAgentRequestFrameV1(value: unknown): ProtocolResult<ChildAgentRequestFrameV1> {
+export function validateChildAgentRequestFrame(value: unknown): ProtocolResult<ChildAgentRequestFrame> {
 	if (!isRecord(value) || typeof value.type !== "string") return Result.err(lost("Child Agent request frame is invalid"));
 	if (value.type === "initialize") {
 		if (
@@ -490,7 +490,7 @@ export function validateChildAgentRequestFrameV1(value: unknown): ProtocolResult
 			!isSafeIdentifier(value.requestId) ||
 			!isSafeIdentifier(value.spawnId) ||
 			value.protocolVersion !== CHILD_AGENT_PROTOCOL_VERSION ||
-			!childAgentProtocolFeaturesMatchV1(value.features) ||
+			!childAgentProtocolFeaturesMatch(value.features) ||
 			!validateProjectionRef(value.projection) ||
 			value.projection.spawnId !== value.spawnId ||
 			!validateForkSnapshotRef(value.forkSnapshotRef) ||
@@ -522,7 +522,7 @@ export function validateChildAgentRequestFrameV1(value: unknown): ProtocolResult
 		) {
 			return Result.err(lost("Child Agent initialize correlation does not match its identities"));
 		}
-		return Result.ok(value as unknown as ChildAgentInitializeRequestV1);
+		return Result.ok(value as unknown as ChildAgentInitializeRequest);
 	}
 	if (value.type === "turn") {
 		if (
@@ -535,7 +535,7 @@ export function validateChildAgentRequestFrameV1(value: unknown): ProtocolResult
 		) {
 			return Result.err(lost("Child Agent turn frame is invalid"));
 		}
-		return Result.ok(value as unknown as ChildAgentTurnRequestV1);
+		return Result.ok(value as unknown as ChildAgentTurnRequest);
 	}
 	if (value.type === "cancel") {
 		if (
@@ -548,7 +548,7 @@ export function validateChildAgentRequestFrameV1(value: unknown): ProtocolResult
 		) {
 			return Result.err(lost("Child Agent cancel frame is invalid"));
 		}
-		return Result.ok(value as unknown as ChildAgentCancelRequestV1);
+		return Result.ok(value as unknown as ChildAgentCancelRequest);
 	}
 	if (value.type === "close") {
 		if (
@@ -558,12 +558,12 @@ export function validateChildAgentRequestFrameV1(value: unknown): ProtocolResult
 		) {
 			return Result.err(lost("Child Agent close frame is invalid"));
 		}
-		return Result.ok(value as unknown as ChildAgentCloseRequestV1);
+		return Result.ok(value as unknown as ChildAgentCloseRequest);
 	}
 	return Result.err(lost("Child Agent request frame type is unknown"));
 }
 
-export function validateChildAgentEventFrameV1(value: unknown): ProtocolResult<ChildAgentEventFrameV1> {
+export function validateChildAgentEventFrame(value: unknown): ProtocolResult<ChildAgentEventFrame> {
 	if (!isRecord(value) || typeof value.type !== "string") return Result.err(lost("Child Agent event frame is invalid"));
 	if (value.type === "ready") {
 		if (
@@ -579,13 +579,13 @@ export function validateChildAgentEventFrameV1(value: unknown): ProtocolResult<C
 			!isSafeIdentifier(value.requestId) ||
 			!isSafeIdentifier(value.spawnId) ||
 			value.protocolVersion !== CHILD_AGENT_PROTOCOL_VERSION ||
-			!childAgentProtocolFeaturesMatchV1(value.features) ||
+			!childAgentProtocolFeaturesMatch(value.features) ||
 			!isSafeIdentifier(value.providerId) ||
 			!isSafeIdentifier(value.agentInstanceId)
 		) {
 			return Result.err(lost("Child Agent ready frame is invalid"));
 		}
-		return Result.ok(value as unknown as ChildAgentReadyEventV1);
+		return Result.ok(value as unknown as ChildAgentReadyEvent);
 	}
 	if (value.type === "turn.started") {
 		if (
@@ -597,7 +597,7 @@ export function validateChildAgentEventFrameV1(value: unknown): ProtocolResult<C
 		) {
 			return Result.err(lost("Child Agent turn.started frame is invalid"));
 		}
-		return Result.ok(value as unknown as ChildAgentTurnStartedEventV1);
+		return Result.ok(value as unknown as ChildAgentTurnStartedEvent);
 	}
 	if (value.type === "turn.completed") {
 		const usage = validateBudgetUsage(value.usage);
@@ -610,7 +610,7 @@ export function validateChildAgentEventFrameV1(value: unknown): ProtocolResult<C
 			!STOP_REASONS.has(value.stopReason) ||
 			!isCanonicalTimestamp(value.at) ||
 			!usage.ok ||
-			!childAgentUsageIsPresentV1(usage.value) ||
+			!childAgentUsageIsPresent(usage.value) ||
 			(value.output !== undefined && (typeof value.output !== "string" || utf8ByteLength(value.output) > CHILD_AGENT_PROTOCOL_MAX_OUTPUT_TEXT_BYTES))
 		) {
 			return Result.err(lost("Child Agent turn.completed frame is invalid"));
@@ -620,7 +620,7 @@ export function validateChildAgentEventFrameV1(value: unknown): ProtocolResult<C
 			requestId: value.requestId as string,
 			spawnId: value.spawnId as string,
 			attemptId: value.attemptId as string,
-			stopReason: value.stopReason as ChildAgentTurnCompletedEventV1["stopReason"],
+			stopReason: value.stopReason as ChildAgentTurnCompletedEvent["stopReason"],
 			usage: usage.value,
 			at: value.at as string,
 			...(value.output === undefined ? {} : { output: value.output as string }),
@@ -644,7 +644,7 @@ export function validateChildAgentEventFrameV1(value: unknown): ProtocolResult<C
 		) {
 			return Result.err(lost("Child Agent error frame is invalid"));
 		}
-		return Result.ok(value as unknown as ChildAgentErrorEventV1);
+		return Result.ok(value as unknown as ChildAgentErrorEvent);
 	}
 	if (value.type === "closed") {
 		if (
@@ -654,24 +654,24 @@ export function validateChildAgentEventFrameV1(value: unknown): ProtocolResult<C
 		) {
 			return Result.err(lost("Child Agent closed frame is invalid"));
 		}
-		return Result.ok(value as unknown as ChildAgentClosedEventV1);
+		return Result.ok(value as unknown as ChildAgentClosedEvent);
 	}
 	return Result.err(lost("Child Agent event frame type is unknown"));
 }
 
-export function validateChildAgentProtocolFrameV1(value: unknown): ProtocolResult<ChildAgentProtocolFrameV1> {
+export function validateChildAgentProtocolFrame(value: unknown): ProtocolResult<ChildAgentProtocolFrame> {
 	if (!isRecord(value) || typeof value.type !== "string") return Result.err(lost("Child Agent protocol frame is invalid"));
 	if ((CHILD_AGENT_REQUEST_FRAME_TYPES as readonly string[]).includes(value.type)) {
-		return validateChildAgentRequestFrameV1(value);
+		return validateChildAgentRequestFrame(value);
 	}
 	if ((CHILD_AGENT_EVENT_FRAME_TYPES as readonly string[]).includes(value.type)) {
-		return validateChildAgentEventFrameV1(value);
+		return validateChildAgentEventFrame(value);
 	}
 	return Result.err(lost("Child Agent protocol frame type is unknown"));
 }
 
-export function serializeChildAgentFrameV1(value: unknown): string {
-	const checked = validateChildAgentProtocolFrameV1(value);
+export function serializeChildAgentFrame(value: unknown): string {
+	const checked = validateChildAgentProtocolFrame(value);
 	if (!checked.ok) throw checked.error;
 	let encoded: string;
 	try {
@@ -685,8 +685,8 @@ export function serializeChildAgentFrameV1(value: unknown): string {
 	return encoded;
 }
 
-export function serializeChildAgentFrameLineV1(value: unknown): string {
-	return `${serializeChildAgentFrameV1(value)}\n`;
+export function serializeChildAgentFrameLine(value: unknown): string {
+	return `${serializeChildAgentFrame(value)}\n`;
 }
 
 function stripSingleLineEnding(value: string): string | undefined {
@@ -696,21 +696,21 @@ function stripSingleLineEnding(value: string): string | undefined {
 	return value;
 }
 
-export function parseChildAgentFrameV1(text: string): ProtocolResult<ChildAgentProtocolFrameV1> {
+export function parseChildAgentFrame(text: string): ProtocolResult<ChildAgentProtocolFrame> {
 	if (typeof text !== "string" || utf8ByteLength(text) > CHILD_AGENT_PROTOCOL_MAX_FRAME_BYTES) {
 		return Result.err(lost("Child Agent protocol frame is malformed"));
 	}
 	const line = stripSingleLineEnding(text);
 	if (line === undefined || line.length === 0) return Result.err(lost("Child Agent protocol frame is malformed"));
 	try {
-		return validateChildAgentProtocolFrameV1(JSON.parse(line) as unknown);
+		return validateChildAgentProtocolFrame(JSON.parse(line) as unknown);
 	} catch (error) {
 		if (error instanceof FoundationError) return Result.err(error);
 		return Result.err(lost("Child Agent protocol frame is malformed"));
 	}
 }
 
-export function createChildAgentProtocolStateV1(): ChildAgentProtocolStateV1 {
+export function createChildAgentProtocolState(): ChildAgentProtocolState {
 	return Object.freeze({
 		schemaVersion: CHILD_AGENT_PROTOCOL_SCHEMA_VERSION,
 		phase: "new",
@@ -720,15 +720,15 @@ export function createChildAgentProtocolStateV1(): ChildAgentProtocolStateV1 {
 	});
 }
 
-function freezeState(value: ChildAgentProtocolStateV1): ChildAgentProtocolStateV1 {
+function freezeState(value: ChildAgentProtocolState): ChildAgentProtocolState {
 	return Object.freeze({ ...value });
 }
 
-export function applyChildAgentRequestFrameV1(
-	state: ChildAgentProtocolStateV1,
+export function applyChildAgentRequestFrame(
+	state: ChildAgentProtocolState,
 	value: unknown,
-): ProtocolResult<{ readonly state: ChildAgentProtocolStateV1; readonly frame: ChildAgentRequestFrameV1 }> {
-	const checked = validateChildAgentRequestFrameV1(value);
+): ProtocolResult<{ readonly state: ChildAgentProtocolState; readonly frame: ChildAgentRequestFrame }> {
+	const checked = validateChildAgentRequestFrame(value);
 	if (!checked.ok) return checked;
 	const frame = checked.value;
 	if (state.disconnected || state.phase === "lost") return Result.err(lost("Child Agent protocol is already lost"));
@@ -783,11 +783,11 @@ export function applyChildAgentRequestFrameV1(
 	});
 }
 
-export function applyChildAgentEventFrameV1(
-	state: ChildAgentProtocolStateV1,
+export function applyChildAgentEventFrame(
+	state: ChildAgentProtocolState,
 	value: unknown,
-): ProtocolResult<{ readonly state: ChildAgentProtocolStateV1; readonly frame: ChildAgentEventFrameV1 }> {
-	const checked = validateChildAgentEventFrameV1(value);
+): ProtocolResult<{ readonly state: ChildAgentProtocolState; readonly frame: ChildAgentEventFrame }> {
+	const checked = validateChildAgentEventFrame(value);
 	if (!checked.ok) return checked;
 	const frame = checked.value;
 	if (state.disconnected || state.phase === "lost") return Result.err(lost("Child Agent protocol is already lost"));
@@ -853,44 +853,44 @@ export function applyChildAgentEventFrameV1(
 	return Result.ok({ frame, state: freezeState({ ...state, phase: "terminal" }) });
 }
 
-export function disconnectChildAgentProtocolV1(state: ChildAgentProtocolStateV1): ChildAgentProtocolStateV1 {
+export function disconnectChildAgentProtocol(state: ChildAgentProtocolState): ChildAgentProtocolState {
 	return freezeState({ ...state, phase: "lost", disconnected: true });
 }
 
-export class ChildAgentProtocolSessionV1 {
-	private currentState: ChildAgentProtocolStateV1;
+export class ChildAgentProtocolSession {
+	private currentState: ChildAgentProtocolState;
 
 	constructor() {
-		this.currentState = createChildAgentProtocolStateV1();
+		this.currentState = createChildAgentProtocolState();
 	}
 
-	get state(): ChildAgentProtocolStateV1 {
+	get state(): ChildAgentProtocolState {
 		return this.currentState;
 	}
 
 	receiveHostFrame(
 		value: unknown,
-	): ProtocolResult<{ readonly state: ChildAgentProtocolStateV1; readonly frame: ChildAgentRequestFrameV1 }> {
-		const result = applyChildAgentRequestFrameV1(this.currentState, value);
+	): ProtocolResult<{ readonly state: ChildAgentProtocolState; readonly frame: ChildAgentRequestFrame }> {
+		const result = applyChildAgentRequestFrame(this.currentState, value);
 		if (result.ok) this.currentState = result.value.state;
 		return result;
 	}
 
 	receiveChildFrame(
 		value: unknown,
-	): ProtocolResult<{ readonly state: ChildAgentProtocolStateV1; readonly frame: ChildAgentEventFrameV1 }> {
-		const result = applyChildAgentEventFrameV1(this.currentState, value);
+	): ProtocolResult<{ readonly state: ChildAgentProtocolState; readonly frame: ChildAgentEventFrame }> {
+		const result = applyChildAgentEventFrame(this.currentState, value);
 		if (result.ok) this.currentState = result.value.state;
 		return result;
 	}
 
-	markLost(): ChildAgentProtocolStateV1 {
-		this.currentState = disconnectChildAgentProtocolV1(this.currentState);
+	markLost(): ChildAgentProtocolState {
+		this.currentState = disconnectChildAgentProtocol(this.currentState);
 		return this.currentState;
 	}
 }
 
-export function childAgentUsageIsPresentV1(usage: BudgetUsage): boolean {
+export function childAgentUsageIsPresent(usage: BudgetUsage): boolean {
 	return (usage.tokens ?? 0) > 0 || (usage.modelCalls ?? 0) > 0 || (usage.toolCalls ?? 0) > 0;
 }
 

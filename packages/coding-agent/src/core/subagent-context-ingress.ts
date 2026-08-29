@@ -13,14 +13,14 @@ import {
 	validateTaskResult,
 } from "@aos-agent/agent-core";
 import type {
-	ChildMailboxMessageV1,
-	ConsumeChildMailboxInputV1,
-	SubagentMailboxV1,
+	ChildMailboxMessage,
+	ConsumeChildMailboxInput,
+	SubagentMailbox,
 } from "./subagent-mailbox.ts";
 import {
-	projectSafeChildResultV1,
-	type SafeChildResultProjectionV1,
-	validateSafeChildResultProjectionV1,
+	projectSafeChildResult,
+	type SafeChildResultProjection,
+	validateSafeChildResultProjection,
 } from "./subagent-result.ts";
 
 export const SUBAGENT_CONTEXT_MESSAGE_MAX_BYTES = 8_192;
@@ -58,7 +58,7 @@ const SAFE_MAILBOX_KEYS = new Set([
 	"producedAt",
 ]);
 
-export interface SafeChildMailboxContextV1 {
+export interface SafeChildMailboxContext {
 	readonly schemaVersion: 1;
 	readonly source: "subagent_mailbox";
 	readonly messageId: string;
@@ -70,11 +70,11 @@ export interface SafeChildMailboxContextV1 {
 	readonly producedAt: string;
 }
 
-export type SafeSubagentNextTurnContextV1 = SafeChildMailboxContextV1 | SafeChildResultProjectionV1;
+export type SafeSubagentNextTurnContext = SafeChildMailboxContext | SafeChildResultProjection;
 
-export interface SubagentContextIngressOptionsV1 {
+export interface SubagentContextIngressOptions {
 	readonly schemaVersion: 1;
-	readonly mailbox: Pick<SubagentMailboxV1, "consume">;
+	readonly mailbox: Pick<SubagentMailbox, "consume">;
 	readonly ledger: SessionLedger;
 	readonly artifactStore: ArtifactStoreProvider;
 	readonly sessionId: string;
@@ -115,7 +115,7 @@ function fingerprintMatches(left: Fingerprint, right: Fingerprint): boolean {
 	return left.algorithm === right.algorithm && left.value === right.value;
 }
 
-function validateMessageEnvelope(message: unknown): message is ChildMailboxMessageV1 {
+function validateMessageEnvelope(message: unknown): message is ChildMailboxMessage {
 	if (!isRecord(message) || !exactKeys(message, MESSAGE_KEYS)) return false;
 	return message.schemaVersion === 1 &&
 		typeof message.messageId === "string" && IDENTIFIER_PATTERN.test(message.messageId) &&
@@ -130,9 +130,9 @@ function validateMessageEnvelope(message: unknown): message is ChildMailboxMessa
 		typeof message.ack.byAttemptId === "string" && IDENTIFIER_PATTERN.test(message.ack.byAttemptId);
 }
 
-export function sanitizeChildMailboxContextV1(
+export function sanitizeChildMailboxContext(
 	messageValue: unknown,
-): ResultValue<SafeChildMailboxContextV1, FoundationError> {
+): ResultValue<SafeChildMailboxContext, FoundationError> {
 	if (!validateMessageEnvelope(messageValue) || messageValue.kind === "result_ref") {
 		return untrusted("Child mailbox Context input has an invalid exact shape");
 	}
@@ -189,9 +189,9 @@ export function sanitizeChildMailboxContextV1(
 }
 
 async function resolveResultReference(
-	options: SubagentContextIngressOptionsV1,
-	message: ChildMailboxMessageV1,
-): Promise<ResultValue<SafeChildResultProjectionV1, FoundationError>> {
+	options: SubagentContextIngressOptions,
+	message: ChildMailboxMessage,
+): Promise<ResultValue<SafeChildResultProjection, FoundationError>> {
 	const body = message.body;
 	if (
 		!isRecord(body) ||
@@ -228,7 +228,7 @@ async function resolveResultReference(
 		if (!receipt.ok || receipt.value.agentInstanceId === undefined) {
 			return untrusted("Child result_ref does not resolve to an agent AttemptReceipt");
 		}
-		return projectSafeChildResultV1(
+		return projectSafeChildResult(
 			{
 				artifactStore: options.artifactStore,
 				ledger: options.ledger,
@@ -265,7 +265,7 @@ async function resolveResultReference(
 	) {
 		return untrusted("Child TaskResult source identity is inconsistent");
 	}
-	return projectSafeChildResultV1(
+	return projectSafeChildResult(
 		{
 			artifactStore: options.artifactStore,
 			ledger: options.ledger,
@@ -284,10 +284,10 @@ async function resolveResultReference(
 	);
 }
 
-export class SubagentContextIngressV1 {
-	private readonly options: SubagentContextIngressOptionsV1;
+export class SubagentContextIngress {
+	private readonly options: SubagentContextIngressOptions;
 
-	constructor(options: SubagentContextIngressOptionsV1) {
+	constructor(options: SubagentContextIngressOptions) {
 		if (
 			options.schemaVersion !== 1 ||
 			!IDENTIFIER_PATTERN.test(options.sessionId) ||
@@ -300,14 +300,14 @@ export class SubagentContextIngressV1 {
 	}
 
 	async consumeNextTurn(
-		input: ConsumeChildMailboxInputV1,
-	): Promise<ResultValue<readonly SafeSubagentNextTurnContextV1[], FoundationError>> {
+		input: ConsumeChildMailboxInput,
+	): Promise<ResultValue<readonly SafeSubagentNextTurnContext[], FoundationError>> {
 		if (input.limit > SUBAGENT_CONTEXT_CONSUME_MAX_ITEMS) {
 			return untrusted("Subagent Context consume exceeds its item-count cap");
 		}
 		const consumed = await this.options.mailbox.consume(input);
 		if (!consumed.ok) return consumed;
-		const projected: SafeSubagentNextTurnContextV1[] = [];
+		const projected: SafeSubagentNextTurnContext[] = [];
 		for (const message of consumed.value) {
 			if (
 				!validateMessageEnvelope(message) ||
@@ -323,7 +323,7 @@ export class SubagentContextIngressV1 {
 				projected.push(result.value);
 				continue;
 			}
-			const sanitized = sanitizeChildMailboxContextV1(message);
+			const sanitized = sanitizeChildMailboxContext(message);
 			if (!sanitized.ok) return sanitized;
 			projected.push(sanitized.value);
 		}
@@ -331,9 +331,9 @@ export class SubagentContextIngressV1 {
 	}
 }
 
-export function validateSafeChildMailboxContextV1(
+export function validateSafeChildMailboxContext(
 	value: unknown,
-): ResultValue<SafeChildMailboxContextV1, FoundationError> {
+): ResultValue<SafeChildMailboxContext, FoundationError> {
 	if (
 		!isRecord(value) ||
 		!exactKeys(value, SAFE_MAILBOX_KEYS) ||
@@ -356,7 +356,7 @@ export function validateSafeChildMailboxContextV1(
 	) {
 		return untrusted("Safe child mailbox Context projection has an invalid exact shape");
 	}
-	const detached = cloneDeepFrozen(value) as unknown as SafeChildMailboxContextV1;
+	const detached = cloneDeepFrozen(value) as unknown as SafeChildMailboxContext;
 	const { digest, ...base } = detached;
 	if (!fingerprintMatches(digest, fingerprintFoundationValue(base))) {
 		return untrusted("Safe child mailbox Context projection digest does not match its content");
@@ -364,15 +364,15 @@ export function validateSafeChildMailboxContextV1(
 	return Result.ok(detached);
 }
 
-export function renderSubagentNextTurnContextV1(entries: readonly SafeSubagentNextTurnContextV1[]): string {
+export function renderSubagentNextTurnContext(entries: readonly SafeSubagentNextTurnContext[]): string {
 	if (entries.length === 0) return "";
 	if (entries.length > SUBAGENT_CONTEXT_CONSUME_MAX_ITEMS) {
 		throw new FoundationError("subagent_result_untrusted", "Subagent Context render exceeds its item-count cap");
 	}
 	for (const entry of entries) {
 		const checked = "source" in entry
-			? validateSafeChildMailboxContextV1(entry)
-			: validateSafeChildResultProjectionV1(entry);
+			? validateSafeChildMailboxContext(entry)
+			: validateSafeChildResultProjection(entry);
 		if (!checked.ok) throw checked.error;
 	}
 	return `<subagent-context trust="untrusted_child_output">\n${canonicalFoundationJson(entries)}\n</subagent-context>`;

@@ -78,10 +78,10 @@ import {
 } from "./task-credential-lease.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import {
-	validateSafeLeaseProjectionV1,
-	validateSafeLeaseReferenceV1,
-	type SafeLeaseProjectionV1,
-	type SafeLeaseReferenceV1,
+	validateOperationWorkerLeaseProjection,
+	validateOperationWorkerLeaseReference,
+	type SafeLeaseProjection,
+	type SafeLeaseReference,
 } from "./worker-protocol.ts";
 import {
 	TaskCredentialStore,
@@ -172,9 +172,9 @@ export interface TaskCredentialWorkerTargetResult {
  * provider receipts, or credential material.
  */
 export interface TaskCredentialWorkerTarget {
-	project(lease: SafeLeaseProjectionV1): TaskCredentialWorkerTargetResult;
-	renew(lease: SafeLeaseProjectionV1): TaskCredentialWorkerTargetResult;
-	revoke(lease: SafeLeaseReferenceV1): TaskCredentialWorkerTargetResult;
+	project(lease: SafeLeaseProjection): TaskCredentialWorkerTargetResult;
+	renew(lease: SafeLeaseProjection): TaskCredentialWorkerTargetResult;
+	revoke(lease: SafeLeaseReference): TaskCredentialWorkerTargetResult;
 }
 
 /**
@@ -361,7 +361,7 @@ export type TaskCredentialServiceMutationResult =
 
 /** Exact safe reference used by the External Connector Host boundary. */
 export interface TaskCredentialDeliveredLeaseReference {
-	readonly projection: SafeLeaseProjectionV1;
+	readonly projection: SafeLeaseProjection;
 	readonly targetId: string;
 }
 
@@ -371,12 +371,12 @@ export type TaskCredentialDeliveredLeaseLookupResult =
 			readonly ok: true;
 			readonly grant: TaskCredentialGrant;
 			readonly delivery: TaskCredentialDeliveryReceipt;
-			readonly projection: SafeLeaseProjectionV1;
+			readonly projection: SafeLeaseProjection;
 	  }
 	| { readonly ok: false; readonly code: TaskCredentialErrorCode };
 
 export interface TaskCredentialDeliveredLeaseReleaseInput {
-	readonly reference: SafeLeaseReferenceV1;
+	readonly reference: SafeLeaseReference;
 	readonly targetId: string;
 	readonly reasonCode: TaskCredentialLifecycleReasonCode;
 }
@@ -706,7 +706,7 @@ export class TaskCredentialService {
 		if (
 			!isRecord(input) ||
 			!hasOnlyKeys(input, new Set(["projection", "targetId"])) ||
-			!validateSafeLeaseProjectionV1(input.projection) ||
+			!validateOperationWorkerLeaseProjection(input.projection) ||
 			!isTaskCredentialIdentifier(input.targetId)
 		) {
 			return { ok: false, code: "task_credential_invalid" };
@@ -771,7 +771,7 @@ export class TaskCredentialService {
 		if (
 			!isRecord(input) ||
 			!hasOnlyKeys(input, new Set(["reference", "targetId", "reasonCode"])) ||
-			!validateSafeLeaseReferenceV1(input.reference) ||
+			!validateOperationWorkerLeaseReference(input.reference) ||
 			!isTaskCredentialIdentifier(input.targetId) ||
 			!TASK_CREDENTIAL_LIFECYCLE_REASON_CODES.has(input.reasonCode)
 		) {

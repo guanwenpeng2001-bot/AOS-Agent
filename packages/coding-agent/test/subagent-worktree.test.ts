@@ -9,12 +9,12 @@ import {
 	type Result as ResultValue,
 } from "@aos-agent/agent-core";
 import {
-	applyChildWorktreeV1,
-	cleanupChildWorktreeV1,
-	createChildWorktreeV1,
-	type ChildWorktreeHostV1,
-	type ChildWorktreeIdentityV1,
-	type OwnedWorktreeStateV1,
+	applyChildWorktree,
+	cleanupChildWorktree,
+	createChildWorktree,
+	type ChildWorktreeHost,
+	type ChildWorktreeIdentity,
+	type OwnedWorktreeState,
 	type WorktreeAdapter,
 } from "../src/core/subagent-worktree.ts";
 
@@ -24,7 +24,7 @@ const CREATED_DIGEST = `sha256:${"c".repeat(64)}`;
 const EDITED_DIGEST = `sha256:${"d".repeat(64)}`;
 
 class FauxOwnedWorktreeAdapter implements WorktreeAdapter {
-	state: OwnedWorktreeStateV1 = {
+	state: OwnedWorktreeState = {
 		schemaVersion: 1,
 		childAgentInstanceId: "child-agent",
 		attemptId: "attempt-1",
@@ -42,7 +42,7 @@ class FauxOwnedWorktreeAdapter implements WorktreeAdapter {
 	quarantineCount = 0;
 	lastApplyCurrentDigest: string | undefined;
 
-	async createWorktree(identity: ChildWorktreeIdentityV1, baseRef: string): Promise<ResultValue<void, FoundationError>> {
+	async createWorktree(identity: ChildWorktreeIdentity, baseRef: string): Promise<ResultValue<void, FoundationError>> {
 		this.createCount += 1;
 		this.state = {
 			...identity,
@@ -57,7 +57,7 @@ class FauxOwnedWorktreeAdapter implements WorktreeAdapter {
 		return Result.ok(undefined);
 	}
 
-	async resolveOwnedWorktree(): Promise<ResultValue<OwnedWorktreeStateV1, FoundationError>> {
+	async resolveOwnedWorktree(): Promise<ResultValue<OwnedWorktreeState, FoundationError>> {
 		this.resolveCount += 1;
 		if (this.throwAfterDelete && this.deleteCount > 0) throw new Error("post-delete resolve threw");
 		if (this.resolveBehavior === "throw") throw new Error("resolve threw");
@@ -66,21 +66,21 @@ class FauxOwnedWorktreeAdapter implements WorktreeAdapter {
 	}
 
 	async applyWorktree(
-		_identity: ChildWorktreeIdentityV1,
-		expected: Extract<OwnedWorktreeStateV1, { readonly state: "present" }>,
+		_identity: ChildWorktreeIdentity,
+		expected: Extract<OwnedWorktreeState, { readonly state: "present" }>,
 	): Promise<ResultValue<{ readonly status: "applied" | "conflict" | "unknown" }, FoundationError>> {
 		this.applyCount += 1;
 		this.lastApplyCurrentDigest = expected.currentDigest;
 		return Result.ok({ status: this.applyStatus });
 	}
 
-	async deleteWorktree(identity: ChildWorktreeIdentityV1): Promise<ResultValue<void, FoundationError>> {
+	async deleteWorktree(identity: ChildWorktreeIdentity): Promise<ResultValue<void, FoundationError>> {
 		this.deleteCount += 1;
 		this.state = { ...identity, state: "missing" };
 		return Result.ok(undefined);
 	}
 
-	async quarantineWorktree(identity: ChildWorktreeIdentityV1): Promise<ResultValue<void, FoundationError>> {
+	async quarantineWorktree(identity: ChildWorktreeIdentity): Promise<ResultValue<void, FoundationError>> {
 		this.quarantineCount += 1;
 		if (this.quarantineFails) return Result.err(new FoundationError("subagent_close_unknown", "quarantine failed"));
 		this.state = { ...identity, state: "quarantined" };
@@ -102,17 +102,17 @@ function fixture(id: string, adapter = new FauxOwnedWorktreeAdapter(), now: () =
 	const session = new Session(new InMemorySessionStorage({ id, createdAt: 1 }));
 	const laneId = "child-worktree-lane";
 	const ledger = new SessionLedger(session, { ownerId: `${id}-writer`, laneId });
-	const host: ChildWorktreeHostV1 = { adapter, ledger, sessionId: id, laneId, now };
+	const host: ChildWorktreeHost = { adapter, ledger, sessionId: id, laneId, now };
 	return { session, ledger, adapter, host };
 }
 
 describe("Subagent owned worktree lifecycle", () => {
 	it("keeps one exact object identity across revisions and permits child currentDigest changes", async () => {
 		const { session, adapter, host } = fixture("worktree-current-change");
-		const created = await createChildWorktreeV1(host, "child-agent", "attempt-1", "refs/heads/main");
+		const created = await createChildWorktree(host, "child-agent", "attempt-1", "refs/heads/main");
 		if (!created.ok) throw created.error;
 		adapter.setCurrentDigest(EDITED_DIGEST);
-		const applied = await applyChildWorktreeV1(host, created.value);
+		const applied = await applyChildWorktree(host, created.value);
 		expect(applied).toMatchObject({ ok: true, value: { apply: { status: "applied" } } });
 		expect(adapter.lastApplyCurrentDigest).toBe(EDITED_DIGEST);
 		const records = (await session.findFoundationRecords({ kind: "fact", objectType: "subagent.worktree_recorded", order: "oldestFirst" })).filter((record) => record.kind === "fact");
@@ -123,10 +123,10 @@ describe("Subagent owned worktree lifecycle", () => {
 
 	it("fails an apply conflict closed and records the durable conflict fact", async () => {
 		const { adapter, host, session } = fixture("worktree-conflict");
-		const created = await createChildWorktreeV1(host, "child-agent", "attempt-1", "main");
+		const created = await createChildWorktree(host, "child-agent", "attempt-1", "main");
 		if (!created.ok) throw created.error;
 		adapter.applyStatus = "conflict";
-		const applied = await applyChildWorktreeV1(host, created.value);
+		const applied = await applyChildWorktree(host, created.value);
 		expect(applied).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
 		expect(await session.getFoundationObject("subagent.worktree_recorded", fingerprintFoundationValue({ schemaVersion: 1, childAgentInstanceId: "child-agent", attemptId: "attempt-1" }).value)).toMatchObject({
 			kind: "fact",
@@ -138,27 +138,27 @@ describe("Subagent owned worktree lifecycle", () => {
 
 	it("verifies ownership before cleanup and supports a proved idempotent cleanup", async () => {
 		const { adapter, host } = fixture("worktree-cleanup");
-		const created = await createChildWorktreeV1(host, "child-agent", "attempt-1", "main");
+		const created = await createChildWorktree(host, "child-agent", "attempt-1", "main");
 		if (!created.ok) throw created.error;
 		adapter.setCurrentDigest(EDITED_DIGEST);
-		const cleaned = await cleanupChildWorktreeV1(host, created.value);
+		const cleaned = await cleanupChildWorktree(host, created.value);
 		expect(cleaned).toMatchObject({ ok: true, value: { cleanedUp: true } });
 		if (!cleaned.ok) return;
 		const resolveCount = adapter.resolveCount;
-		expect(await cleanupChildWorktreeV1(host, cleaned.value)).toEqual(cleaned);
+		expect(await cleanupChildWorktree(host, cleaned.value)).toEqual(cleaned);
 		expect(adapter.resolveCount).toBe(resolveCount + 1);
 		expect(adapter.deleteCount).toBe(1);
 	});
 
 	it("rejects record tamper and quarantines changed base ownership proof", async () => {
 		const { adapter, host } = fixture("worktree-tamper");
-		const created = await createChildWorktreeV1(host, "child-agent", "attempt-1", "main");
+		const created = await createChildWorktree(host, "child-agent", "attempt-1", "main");
 		if (!created.ok) throw created.error;
-		const tampered = await applyChildWorktreeV1(host, { ...created.value, baseRef: "other" });
+		const tampered = await applyChildWorktree(host, { ...created.value, baseRef: "other" });
 		expect(tampered).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
 		expect(adapter.applyCount).toBe(0);
 		adapter.setBaseDigest(`sha256:${"e".repeat(64)}`);
-		const changedBase = await applyChildWorktreeV1(host, created.value);
+		const changedBase = await applyChildWorktree(host, created.value);
 		expect(changedBase).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
 		expect(adapter.quarantineCount).toBe(1);
 	});
@@ -178,8 +178,8 @@ describe("Subagent owned worktree lifecycle", () => {
 		}, { clientRequestId: "corrupt-metadata", expectedRevision: 0, correlation: { attemptId: identity.attemptId, agentInstanceId: identity.childAgentInstanceId } });
 		await wrongLane.release();
 		const adapter = new FauxOwnedWorktreeAdapter();
-		const host: ChildWorktreeHostV1 = { adapter, ledger: new SessionLedger(session, { ownerId: "expected-lane-writer", laneId: "expected-lane" }), sessionId: id, laneId: "expected-lane" };
-		expect(await createChildWorktreeV1(host, identity.childAgentInstanceId, identity.attemptId, "main")).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
+		const host: ChildWorktreeHost = { adapter, ledger: new SessionLedger(session, { ownerId: "expected-lane-writer", laneId: "expected-lane" }), sessionId: id, laneId: "expected-lane" };
+		expect(await createChildWorktree(host, identity.childAgentInstanceId, identity.attemptId, "main")).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
 		expect(adapter.createCount).toBe(0);
 	});
 
@@ -188,7 +188,7 @@ describe("Subagent owned worktree lifecycle", () => {
 			const adapter = new FauxOwnedWorktreeAdapter();
 			adapter.createBehavior = behavior;
 			const { host, session } = fixture(`worktree-partial-${behavior}`, adapter);
-			expect(await createChildWorktreeV1(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false });
+			expect(await createChildWorktree(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false });
 			expect(adapter.quarantineCount).toBe(1);
 			expect(adapter.state.state).toBe("quarantined");
 			expect(await session.findFoundationRecords({ kind: "fact", objectType: "subagent_worktree_quarantine" })).toHaveLength(1);
@@ -197,7 +197,7 @@ describe("Subagent owned worktree lifecycle", () => {
 		adapter.createBehavior = "throw";
 		adapter.quarantineFails = true;
 		const { host } = fixture("worktree-quarantine-failure", adapter);
-		expect(await createChildWorktreeV1(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false, error: { code: "subagent_close_unknown" } });
+		expect(await createChildWorktree(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false, error: { code: "subagent_close_unknown" } });
 	});
 
 	it("replays repeated quarantine with the original canonical timestamp", async () => {
@@ -205,10 +205,10 @@ describe("Subagent owned worktree lifecycle", () => {
 		const adapter = new FauxOwnedWorktreeAdapter();
 		adapter.resolveBehavior = "error";
 		const { host, session } = fixture("worktree-quarantine-replay", adapter, () => clock);
-		expect(await createChildWorktreeV1(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false });
+		expect(await createChildWorktree(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false });
 		const first = (await session.findFoundationRecords({ kind: "fact", objectType: "subagent_worktree_quarantine" })).filter((record) => record.kind === "fact");
 		clock += 60_000;
-		expect(await createChildWorktreeV1(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false });
+		expect(await createChildWorktree(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false });
 		const replayed = (await session.findFoundationRecords({ kind: "fact", objectType: "subagent_worktree_quarantine" })).filter((record) => record.kind === "fact");
 		expect(replayed).toHaveLength(1);
 		expect(replayed[0]?.payload).toEqual(first[0]?.payload);
@@ -218,10 +218,10 @@ describe("Subagent owned worktree lifecycle", () => {
 	it("quarantines when ownership cannot be resolved after delete", async () => {
 		const adapter = new FauxOwnedWorktreeAdapter();
 		const { host, session } = fixture("worktree-post-delete-resolve-throw", adapter);
-		const created = await createChildWorktreeV1(host, "child-agent", "attempt-1", "main");
+		const created = await createChildWorktree(host, "child-agent", "attempt-1", "main");
 		if (!created.ok) throw created.error;
 		adapter.throwAfterDelete = true;
-		const cleaned = await cleanupChildWorktreeV1(host, created.value);
+		const cleaned = await cleanupChildWorktree(host, created.value);
 		expect(cleaned).toMatchObject({ ok: false, error: { code: "subagent_close_unknown" } });
 		expect(adapter.deleteCount).toBe(1);
 		expect(adapter.quarantineCount).toBe(1);
@@ -234,13 +234,13 @@ describe("Subagent owned worktree lifecycle", () => {
 		const blocker = new SessionLedger(session, { ownerId: "blocking-writer", laneId: "child-worktree-lane" });
 		await blocker.appendFact("blocker", "lease", { schemaVersion: 1 }, { clientRequestId: "hold-lease", expectedRevision: 0, correlation: {} });
 		const adapter = new FauxOwnedWorktreeAdapter();
-		const host: ChildWorktreeHostV1 = {
+		const host: ChildWorktreeHost = {
 			adapter,
 			ledger: new SessionLedger(session, { ownerId: "worktree-writer", laneId: "child-worktree-lane" }),
 			sessionId: id,
 			laneId: "child-worktree-lane",
 		};
-		const created = await createChildWorktreeV1(host, "child-agent", "attempt-1", "main");
+		const created = await createChildWorktree(host, "child-agent", "attempt-1", "main");
 		expect(created).toMatchObject({ ok: false });
 		expect(adapter.quarantineCount).toBe(1);
 		expect(adapter.state.state).toBe("quarantined");

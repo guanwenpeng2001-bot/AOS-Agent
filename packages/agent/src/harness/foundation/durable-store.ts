@@ -6,7 +6,7 @@ import type { FoundationJsonValue } from "./event-catalog.ts";
 import { canonicalFoundationJson } from "./identity.ts";
 
 /** Shared options for the small Session-backed Foundation stores. */
-export interface FoundationDurableStoreOptionsV1 extends SessionLedgerWriterOptions {
+export interface FoundationDurableStoreOptions extends SessionLedgerWriterOptions {
 	readonly writer?: SessionLedgerWriter;
 }
 
@@ -79,18 +79,18 @@ export function expectedRevision(value: number): void {
 		throw new FoundationError("foundation_schema_invalid_shape", "Invalid expectedRevision");
 }
 
-export interface FoundationMutationOptionsV1 {
+export interface FoundationMutationOptions {
 	readonly clientRequestId: string;
 	readonly expectedRevision: number;
 }
 
-export interface DurableCommandResultV1<TValue> {
+export interface DurableCommandResult<TValue> {
 	readonly command: string;
 	readonly payload: string;
 	readonly result: TValue;
 }
 
-export interface DurableCommandIntentV1 {
+export interface DurableCommandIntent {
 	readonly command: string;
 	readonly payload: string;
 }
@@ -101,7 +101,7 @@ export interface DurableCommandIntentV1 {
  */
 export function createStoreWriter(
 	session: Session,
-	options: FoundationDurableStoreOptionsV1 = {},
+	options: FoundationDurableStoreOptions = {},
 ): SessionLedgerWriter {
 	if (options.writer !== undefined) {
 		if (options.writer.session !== session)
@@ -139,7 +139,7 @@ export async function readCommand<TValue>(
 	command: string,
 	payload: string,
 ): Promise<TValue | undefined> {
-	const found = await readFact<DurableCommandResultV1<TValue>>(writer, objectType, requestId);
+	const found = await readFact<DurableCommandResult<TValue>>(writer, objectType, requestId);
 	if (found === undefined) return undefined;
 	const value = found.value;
 	if (value.command !== command || value.payload !== payload)
@@ -159,7 +159,7 @@ export async function writeCommand<TValue>(
 	payload: string,
 	result: TValue,
 ): Promise<void> {
-	const value: DurableCommandResultV1<TValue> = {
+	const value: DurableCommandResult<TValue> = {
 		command,
 		payload,
 		result: cloneStoreValue(result),
@@ -195,7 +195,7 @@ export async function writeCommandIntent(
 		objectId,
 		clientRequestId: requestId,
 		expectedRevision: expectedObjectRevision,
-		payload: jsonValue({ command, payload } satisfies DurableCommandIntentV1, "command intent"),
+		payload: jsonValue({ command, payload } satisfies DurableCommandIntent, "command intent"),
 		correlation: { sessionId: metadata.id, laneId: writer.lane, revision: 0 },
 	});
 	if (result.record.kind !== "intent")

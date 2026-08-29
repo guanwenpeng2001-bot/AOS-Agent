@@ -11,7 +11,7 @@ import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { SafeSubagentLifecycleProjectionV1 } from "../src/core/subagent-composition.ts";
+import type { SafeSubagentLifecycleProjection } from "../src/core/subagent-composition.ts";
 import { RpcHostController, type RpcSubagentRegistry } from "../src/modes/rpc/rpc-host.ts";
 
 vi.mock("@aos-agent/ai/compat", () => ({
@@ -58,7 +58,7 @@ function resources(): ResourceLoader {
 	};
 }
 
-function safe(sessionId: string, runId = "run-1", status: SafeSubagentLifecycleProjectionV1["status"] = "running"): SafeSubagentLifecycleProjectionV1 {
+function safe(sessionId: string, runId = "run-1", status: SafeSubagentLifecycleProjection["status"] = "running"): SafeSubagentLifecycleProjection {
 	const base = {
 		schemaVersion: 1 as const,
 		source: "subagent.lifecycle" as const,
@@ -76,12 +76,12 @@ function safe(sessionId: string, runId = "run-1", status: SafeSubagentLifecycleP
 }
 
 function forgedSafe(
-	value: SafeSubagentLifecycleProjectionV1,
+	value: SafeSubagentLifecycleProjection,
 	override: { readonly status?: string; readonly providerKind?: string },
-): SafeSubagentLifecycleProjectionV1 {
+): SafeSubagentLifecycleProjection {
 	const { digest: _digest, ...base } = value;
 	const forged = { ...base, ...override };
-	return { ...forged, digest: fingerprintFoundationValue(forged) } as unknown as SafeSubagentLifecycleProjectionV1;
+	return { ...forged, digest: fingerprintFoundationValue(forged) } as unknown as SafeSubagentLifecycleProjection;
 }
 
 const cleanupTasks: Array<() => Promise<void>> = [];
@@ -154,7 +154,7 @@ describe("RPC Subagent surface", () => {
 
 	it("fails closed when a registry tries to return forbidden or digest-invalid fields", async () => {
 		const value = await harness((sessionId) => ({
-			get: async () => Result.ok({ ...safe(sessionId), prompt: "raw child prompt" } as unknown as SafeSubagentLifecycleProjectionV1),
+			get: async () => Result.ok({ ...safe(sessionId), prompt: "raw child prompt" } as unknown as SafeSubagentLifecycleProjection),
 			list: async () => Result.ok([]),
 			cancel: async () => Result.err(new FoundationError("subagent_cancel_failed", "faux")),
 		}));

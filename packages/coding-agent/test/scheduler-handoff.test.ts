@@ -24,12 +24,12 @@ import {
 	SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE,
 	SchedulerQueueStore,
 } from "../src/core/scheduler-queue.ts";
-import type { SchedulerOwnershipTransferV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
+import type { SchedulerOwnershipTransfer, SchedulerQueueEntry } from "../src/core/scheduler.ts";
 
 const NOW = "2026-08-21T12:00:00.000Z";
 const DEADLINE = "2026-08-21T12:05:00.000Z";
 
-function queued(overrides: Partial<SchedulerQueueEntryV1> = {}): SchedulerQueueEntryV1 {
+function queued(overrides: Partial<SchedulerQueueEntry> = {}): SchedulerQueueEntry {
 	return {
 		schemaVersion: 1,
 		queueEntryId: "queue_1",
@@ -45,7 +45,7 @@ function queued(overrides: Partial<SchedulerQueueEntryV1> = {}): SchedulerQueueE
 	};
 }
 
-function transfer(overrides: Partial<SchedulerOwnershipTransferV1> = {}): SchedulerOwnershipTransferV1 {
+function transfer(overrides: Partial<SchedulerOwnershipTransfer> = {}): SchedulerOwnershipTransfer {
 	return {
 		schemaVersion: 1,
 		transferId: "transfer_1",
@@ -147,7 +147,7 @@ function createHarness(options: { now?: () => string } = {}): {
 	return { session, ledger, queue };
 }
 
-async function claimSource(queue: SchedulerQueueStore, entry: SchedulerQueueEntryV1 = queued()): Promise<void> {
+async function claimSource(queue: SchedulerQueueStore, entry: SchedulerQueueEntry = queued()): Promise<void> {
 	expect((await queue.enqueue(entry)).ok).toBe(true);
 	expect(
 		(

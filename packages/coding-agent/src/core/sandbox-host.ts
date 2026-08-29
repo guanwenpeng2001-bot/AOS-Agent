@@ -35,15 +35,15 @@ import {
 	createExplicitProcessEnvironment,
 } from "./policy-process.ts";
 import {
-	resolveWorkerSandboxOperationV1,
+	resolveWorkerSandboxOperation,
 	type SandboxHandle,
 	type SandboxOperationRequest,
 	type SandboxOperationResult,
 } from "./sandbox.ts";
-import type { SafeLeaseProjectionV1, SafeLeaseReferenceV1 } from "./worker-protocol.ts";
-import type { WorkerRuntimeSandboxOperationProviderV1 } from "./worker-runtime.ts";
+import type { SafeLeaseProjection, SafeLeaseReference } from "./worker-protocol.ts";
+import type { WorkerRuntimeSandboxOperationProvider } from "./worker-runtime.ts";
 
-export interface SandboxHandleOperationProviderOptionsV1 {
+export interface SandboxHandleOperationProviderOptions {
 	readonly providerId: string;
 	/** Trusted child-side Policy Binding and its already-prepared sandbox handle. */
 	readonly policy: BuiltinToolPolicy;
@@ -55,9 +55,9 @@ export interface SandboxHandleOperationProviderOptionsV1 {
 		operation: SandboxOperationRequest,
 	) => readonly ArtifactRef[] | Promise<readonly ArtifactRef[]>;
 	readonly credentialTarget?: {
-		readonly project?: (lease: SafeLeaseProjectionV1) => Promise<ResultValue<void, FoundationErrorValue>>;
-		readonly renew?: (lease: SafeLeaseProjectionV1) => Promise<ResultValue<void, FoundationErrorValue>>;
-		readonly revoke?: (lease: SafeLeaseReferenceV1) => Promise<ResultValue<void, FoundationErrorValue>>;
+		readonly project?: (lease: SafeLeaseProjection) => Promise<ResultValue<void, FoundationErrorValue>>;
+		readonly renew?: (lease: SafeLeaseProjection) => Promise<ResultValue<void, FoundationErrorValue>>;
+		readonly revoke?: (lease: SafeLeaseReference) => Promise<ResultValue<void, FoundationErrorValue>>;
 	};
 	readonly now?: () => string;
 	readonly receiptId?: (operationId: string) => string;
@@ -91,9 +91,9 @@ function snapshotSandboxJson<T>(value: T): T {
  * Child-side provider that authorizes each request against a prepared Sandbox
  * handle. It never executes on the Host when the handle is absent or invalid.
  */
-export function createSandboxHandleOperationProviderV1(
-	options: SandboxHandleOperationProviderOptionsV1,
-): WorkerRuntimeSandboxOperationProviderV1 {
+export function createSandboxHandleOperationProvider(
+	options: SandboxHandleOperationProviderOptions,
+): WorkerRuntimeSandboxOperationProvider {
 	const active = new Map<string, AbortController>();
 	const reserved = new Map<string, AbortController>();
 	const completed = new Set<string>();
@@ -191,7 +191,7 @@ export function createSandboxHandleOperationProviderV1(
 			if (signal?.aborted) abort();
 			reserved.set(request.value.operationId, controller);
 			try {
-			const operation = resolveWorkerSandboxOperationV1(
+			const operation = resolveWorkerSandboxOperation(
 				request.value.bindingId,
 				request.value.payload,
 			);
@@ -413,13 +413,13 @@ export function createSandboxHandleOperationProviderV1(
 		},
 		...(projectCredential === undefined
 			? {}
-			: { projectCredential: (lease: SafeLeaseProjectionV1) => projectCredential(lease) }),
+			: { projectCredential: (lease: SafeLeaseProjection) => projectCredential(lease) }),
 		...(renewCredential === undefined
 			? {}
-			: { renewCredential: (lease: SafeLeaseProjectionV1) => renewCredential(lease) }),
+			: { renewCredential: (lease: SafeLeaseProjection) => renewCredential(lease) }),
 		...(revokeCredential === undefined
 			? {}
-			: { revokeCredential: (lease: SafeLeaseReferenceV1) => revokeCredential(lease) }),
+			: { revokeCredential: (lease: SafeLeaseReference) => revokeCredential(lease) }),
 	};
 }
 

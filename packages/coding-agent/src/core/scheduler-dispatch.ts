@@ -1,12 +1,12 @@
 /**
  * Scheduler v1 dispatch controller (T4).
  *
- * After a durable claim this module assembles DispatchV1, the immutable
- * AgentBindingV1 / initial BindingEpochV1, and a complete ExecutionCorrelationV1,
+ * After a durable claim this module assembles Dispatch, the immutable
+ * AgentBinding / initial BindingEpoch, and a complete ExecutionCorrelation,
  * selects the exact registry provider/fact, and consumes
- * LayeredResultSettlementV1.startDispatch/executeDispatch/resumeDispatch/cancelAttempt
+ * LayeredResultSettlement.startDispatch/executeDispatch/resumeDispatch/cancelAttempt
  * as the only execution and persistence boundary. Queue
- * SchedulerDispatchRecordV1 prepared -> in_flight is persisted through
+ * SchedulerDispatchRecord prepared -> in_flight is persisted through
  * SchedulerQueueStore.markDispatched in beforeRunAttempt, before provider
  * side effects. Crash recovery reloads in_flight and supplies the durable
  * Attempt on the settlement resume surface; a provider that cannot resume
@@ -63,27 +63,27 @@ import {
 	parseSchedulerDispatchRecord,
 	parseSchedulerQueueEntry,
 	SCHEDULER_ERROR_CODES,
-	type SchedulerClaimV1,
-	type SchedulerDispatchRecordV1,
-	type SchedulerErrorCodeV1,
-	type SchedulerExecutorEntryV1,
-	type SchedulerProviderClassV1,
-	type SchedulerQueueEntryV1,
-	type SchedulerSelectionFactV1,
+	type SchedulerClaim,
+	type SchedulerDispatchRecord,
+	type SchedulerErrorCode,
+	type SchedulerExecutorEntry,
+	type SchedulerProviderClass,
+	type SchedulerQueueEntry,
+	type SchedulerSelectionFact,
 } from "./scheduler.ts";
 import {
-	createSchedulerExecutorRuntimeSnapshotV1,
+	createSchedulerExecutorRuntimeSnapshot,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SCHEDULER_IN_PROCESS_PROVIDER_ID,
 	type SchedulerExecutorRegistry,
-	type SchedulerExecutorRuntimeSnapshotV1,
-	type SchedulerHostAttemptRunnerV1,
+	type SchedulerExecutorRuntimeSnapshot,
+	type SchedulerHostAttemptRunner,
 	SchedulerInProcessTaskExecutorProvider,
 } from "./scheduler-executors.ts";
-import type { SchedulerCancelAttemptV1, SchedulerQueueStore } from "./scheduler-queue.ts";
-import type { SchedulerSelectionSettlementReasonV1 } from "./scheduler-selection-reservations.ts";
+import type { SchedulerCancelAttempt, SchedulerQueueStore } from "./scheduler-queue.ts";
+import type { SchedulerSelectionSettlementReason } from "./scheduler-selection-reservations.ts";
 
-const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
+const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCode, string>> = {
 	scheduler_queue_invalid: "Scheduler queue entry is invalid.",
 	scheduler_queue_conflict: "Scheduler queue business key already has a different payload.",
 	scheduler_claim_conflict: "Scheduler claim conflict: the task already has an active claim.",
@@ -108,13 +108,13 @@ const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
 	scheduler_persistence_failed: "Scheduler durable append failed; re-read current state.",
 };
 
-const RETRYABLE = new Set<SchedulerErrorCodeV1>([
+const RETRYABLE = new Set<SchedulerErrorCode>([
 	"scheduler_claim_conflict",
 	"scheduler_budget_exhausted_wait",
 	"scheduler_backpressure",
 ]);
 
-export interface SchedulerDispatchControllerOptionsV1 {
+export interface SchedulerDispatchControllerOptions {
 	readonly session: Session;
 	readonly queue: SchedulerQueueStore;
 	readonly registry: SchedulerExecutorRegistry;
@@ -132,21 +132,21 @@ export interface SchedulerDispatchControllerOptionsV1 {
 	readonly requiredCapabilities?: readonly FoundationProviderCapability[];
 	readonly workspaceDigest?: Fingerprint;
 	/** Explicit trusted Native Subagent bridge. Omission keeps agent providers unavailable. */
-	readonly nativeAgentBridge?: SchedulerNativeAgentBridgeV1;
+	readonly nativeAgentBridge?: SchedulerNativeAgentBridge;
 }
 
-export interface SchedulerDispatchRequestV1 {
+export interface SchedulerDispatchRequest {
 	readonly queueEntryId: string;
 	readonly fencingToken: string;
 	readonly binding: AgentBinding;
 	readonly requiredCapabilities?: readonly FoundationProviderCapability[];
 	readonly workspaceDigest?: Fingerprint;
 	/** Explicit exact requirements activate durable selection; omission preserves the legacy path. */
-	readonly executorRequirements?: SchedulerDispatchExecutorRequirementsV1;
+	readonly executorRequirements?: SchedulerDispatchExecutorRequirements;
 	readonly signal?: AbortSignal;
 }
 
-export interface SchedulerDispatchExecutorRequirementsV1 {
+export interface SchedulerDispatchExecutorRequirements {
 	readonly requireResume: boolean;
 	readonly modelAccess: ConnectorCapabilitySnapshot["modelAccess"];
 	readonly reviewRevision?: Fingerprint;
@@ -158,23 +158,23 @@ export interface SchedulerDispatchExecutorRequirementsV1 {
  * T5/T9 composition input: attach one claimed Scheduler dispatch to a durable
  * Run in the same Session before provider execution starts.
  */
-export interface SchedulerRunDispatchRequestV1 extends SchedulerDispatchRequestV1 {
+export interface SchedulerRunDispatchRequest extends SchedulerDispatchRequest {
 	readonly runId: RunId;
 }
 
-export interface SchedulerDispatchAssemblyInputV1 {
-	readonly entry: SchedulerQueueEntryV1;
-	readonly claim: SchedulerClaimV1;
+export interface SchedulerDispatchAssemblyInput {
+	readonly entry: SchedulerQueueEntry;
+	readonly claim: SchedulerClaim;
 	readonly binding: AgentBinding;
 	readonly providerId: string;
-	readonly providerClass: SchedulerProviderClassV1;
+	readonly providerClass: SchedulerProviderClass;
 	readonly sessionId: string;
 	readonly laneId: string;
 	readonly now: string;
-	readonly nativeAgent?: SchedulerNativeAgentResolutionV1;
+	readonly nativeAgent?: SchedulerNativeAgentResolution;
 }
 
-export interface SchedulerDispatchAssemblyV1 {
+export interface SchedulerDispatchAssembly {
 	readonly dispatch: Dispatch;
 	readonly initialBindingEpoch: BindingEpoch;
 	readonly correlation: ExecutionCorrelation;
@@ -185,11 +185,11 @@ export interface SchedulerDispatchAssemblyV1 {
 	readonly agentInstanceId?: string;
 }
 
-export interface SchedulerNativeAgentResolveInputV1 {
+export interface SchedulerNativeAgentResolveInput {
 	readonly schemaVersion: 1;
 	readonly provider: TaskExecutorProvider;
-	readonly entry: SchedulerQueueEntryV1;
-	readonly claim: SchedulerClaimV1;
+	readonly entry: SchedulerQueueEntry;
+	readonly claim: SchedulerClaim;
 	readonly binding: AgentBinding;
 	readonly sessionId: string;
 	readonly dispatchId: string;
@@ -203,7 +203,7 @@ export interface SchedulerNativeAgentResolveInputV1 {
 	readonly signal?: AbortSignal;
 }
 
-export interface SchedulerNativeAgentResolutionV1 {
+export interface SchedulerNativeAgentResolution {
 	readonly schemaVersion: 1;
 	readonly providerId: string;
 	readonly dispatch: Dispatch;
@@ -212,36 +212,36 @@ export interface SchedulerNativeAgentResolutionV1 {
 	readonly correlation: ExecutionCorrelation;
 }
 
-export interface SchedulerNativeAgentRevalidateInputV1 {
+export interface SchedulerNativeAgentRevalidateInput {
 	readonly schemaVersion: 1;
 	readonly provider: TaskExecutorProvider;
 	readonly binding: AgentBinding;
-	readonly resolution: SchedulerNativeAgentResolutionV1;
+	readonly resolution: SchedulerNativeAgentResolution;
 	readonly signal?: AbortSignal;
 }
 
 /** Trusted product bridge from Scheduler selection to the Native Subagent owner. */
-export interface SchedulerNativeAgentBridgeV1 {
+export interface SchedulerNativeAgentBridge {
 	resolve(
-		input: SchedulerNativeAgentResolveInputV1,
-	): Promise<ResultValue<SchedulerNativeAgentResolutionV1, FoundationError>>;
-	revalidate(input: SchedulerNativeAgentRevalidateInputV1): Promise<ResultValue<void, FoundationError>>;
+		input: SchedulerNativeAgentResolveInput,
+	): Promise<ResultValue<SchedulerNativeAgentResolution, FoundationError>>;
+	revalidate(input: SchedulerNativeAgentRevalidateInput): Promise<ResultValue<void, FoundationError>>;
 }
 
-export interface SchedulerDispatchOutcomeV1 {
-	readonly entry: SchedulerQueueEntryV1;
-	readonly claim: SchedulerClaimV1;
-	readonly dispatchRecord: SchedulerDispatchRecordV1;
+export interface SchedulerDispatchOutcome {
+	readonly entry: SchedulerQueueEntry;
+	readonly claim: SchedulerClaim;
+	readonly dispatchRecord: SchedulerDispatchRecord;
 	readonly dispatch: Dispatch;
 	readonly attempt: Attempt;
 	readonly receipt: AttemptReceipt;
-	readonly selection: SchedulerSelectionFactV1;
+	readonly selection: SchedulerSelectionFact;
 	readonly providerId: string;
-	readonly providerClass: SchedulerProviderClassV1;
+	readonly providerClass: SchedulerProviderClass;
 }
 
-export interface SchedulerInProcessHostBindingOptionsV1 {
-	readonly hostAttemptRunner: SchedulerHostAttemptRunnerV1;
+export interface SchedulerInProcessHostBindingOptions {
+	readonly hostAttemptRunner: SchedulerHostAttemptRunner;
 	/** Register an inert durable candidate when no exact runtime snapshot exists. */
 	readonly allowFailClosedRegistration?: boolean;
 	readonly quota?: QuotaProvider;
@@ -251,7 +251,7 @@ export interface SchedulerInProcessHostBindingOptionsV1 {
 	readonly workspaceDigest?: Fingerprint;
 	readonly latencyMs?: number;
 	readonly trusted?: boolean;
-	readonly runtimeSnapshot?: SchedulerExecutorRuntimeSnapshotV1;
+	readonly runtimeSnapshot?: SchedulerExecutorRuntimeSnapshot;
 }
 
 interface SchedulerProviderResumeSurfaceV1 extends TaskExecutorProvider {
@@ -266,16 +266,16 @@ interface SchedulerProviderResumeSurfaceV1 extends TaskExecutorProvider {
 }
 
 interface SchedulerPreparedDispatchV1 {
-	readonly entry: SchedulerQueueEntryV1;
-	readonly claim: SchedulerClaimV1;
+	readonly entry: SchedulerQueueEntry;
+	readonly claim: SchedulerClaim;
 	readonly selection: {
-		readonly fact: SchedulerSelectionFactV1;
+		readonly fact: SchedulerSelectionFact;
 		readonly provider: TaskExecutorProvider;
-		readonly providerClass: SchedulerProviderClassV1;
+		readonly providerClass: SchedulerProviderClass;
 		readonly providerId: string;
 	};
-	readonly assembly: SchedulerDispatchAssemblyV1;
-	readonly dispatchRecord: SchedulerDispatchRecordV1 | undefined;
+	readonly assembly: SchedulerDispatchAssembly;
+	readonly dispatchRecord: SchedulerDispatchRecord | undefined;
 }
 
 interface SchedulerDurableAttemptV1 {
@@ -305,15 +305,15 @@ interface SchedulerRunDispatchCancellationV1 {
 
 type SchedulerRunLedgerStateV1 = "live" | "terminal";
 
-function schedulerError(code: SchedulerErrorCodeV1): FoundationError {
+function schedulerError(code: SchedulerErrorCode): FoundationError {
 	return new FoundationError(code, ERROR_MESSAGES[code], { retryable: RETRYABLE.has(code) });
 }
 
-function fail<T>(code: SchedulerErrorCodeV1): ResultValue<T, FoundationError> {
+function fail<T>(code: SchedulerErrorCode): ResultValue<T, FoundationError> {
 	return Result.err(schedulerError(code));
 }
 
-function isSchedulerErrorCode(value: string): value is SchedulerErrorCodeV1 {
+function isSchedulerErrorCode(value: string): value is SchedulerErrorCode {
 	return (SCHEDULER_ERROR_CODES as readonly string[]).includes(value);
 }
 
@@ -323,12 +323,12 @@ function inProcessCapability(): FoundationProviderCapability {
 
 function failClosedInProcessRuntimeSnapshot(
 	nowIso: string,
-): ResultValue<SchedulerExecutorRuntimeSnapshotV1, FoundationError> {
+): ResultValue<SchedulerExecutorRuntimeSnapshot, FoundationError> {
 	const observedAt = Date.parse(nowIso);
 	if (!Number.isFinite(observedAt)) {
 		return Result.err(new FoundationError("foundation_schema_invalid_shape", "Scheduler clock is invalid."));
 	}
-	return createSchedulerExecutorRuntimeSnapshotV1({
+	return createSchedulerExecutorRuntimeSnapshot({
 		schemaVersion: 1,
 		capabilitySnapshot: createConnectorCapabilitySnapshot({
 			schemaVersion: 1,
@@ -354,12 +354,12 @@ function failClosedInProcessRuntimeSnapshot(
 }
 
 /** True when the selected provider exposes the settlement resume surface. */
-export function schedulerProviderResumeSupportedV1(provider: TaskExecutorProvider): boolean {
+export function schedulerProviderResumeSupported(provider: TaskExecutorProvider): boolean {
 	const surface: SchedulerProviderResumeSurfaceV1 = provider;
 	return typeof surface.resumeAttempt === "function" || typeof surface.resume === "function";
 }
 
-export function schedulerDispatchIdentityV1(
+export function schedulerDispatchIdentity(
 	queueEntryId: string,
 	claimId: string,
 ): {
@@ -389,9 +389,9 @@ export function schedulerDispatchIdentityV1(
  * complete ExecutionCorrelationV1. deadlineAt is copied from the queue entry
  * onto DispatchV1. Non-agent epochs never carry an AgentInstance.
  */
-export function assembleSchedulerDispatchV1(
-	input: SchedulerDispatchAssemblyInputV1,
-): ResultValue<SchedulerDispatchAssemblyV1, FoundationError> {
+export function assembleSchedulerDispatch(
+	input: SchedulerDispatchAssemblyInput,
+): ResultValue<SchedulerDispatchAssembly, FoundationError> {
 	const parsedEntry = parseSchedulerQueueEntry(input.entry);
 	if (!parsedEntry.ok) return parsedEntry;
 	const parsedClaim = parseSchedulerClaim(input.claim);
@@ -420,7 +420,7 @@ export function assembleSchedulerDispatchV1(
 	}
 	if (entry.state !== "claimed" && entry.state !== "dispatched") return fail("scheduler_queue_invalid");
 	if (entry.claimId !== claim.claimId) return fail("scheduler_claim_conflict");
-	const ids = schedulerDispatchIdentityV1(entry.queueEntryId, claim.claimId);
+	const ids = schedulerDispatchIdentity(entry.queueEntryId, claim.claimId);
 	const dispatchCandidate: Dispatch = {
 		schemaVersion: 1,
 		dispatchId: ids.dispatchId,
@@ -647,7 +647,7 @@ function schedulerSelectionFailureReasonV1(
 	signal: AbortSignal | undefined,
 	deadlineAt: string | undefined,
 	nowIso: string,
-): SchedulerSelectionSettlementReasonV1 {
+): SchedulerSelectionSettlementReason {
 	const details = error.details;
 	if (
 		details !== null &&
@@ -685,7 +685,7 @@ function schedulerSelectionFailureReasonV1(
 	return "failed";
 }
 
-function schedulerSelectionOutcomeReasonV1(receipt: AttemptReceipt): SchedulerSelectionSettlementReasonV1 | undefined {
+function schedulerSelectionOutcomeReasonV1(receipt: AttemptReceipt): SchedulerSelectionSettlementReason | undefined {
 	if (receipt.status === "suspended") return undefined;
 	if (receipt.status === "succeeded") return "succeeded";
 	if (receipt.status === "cancelled") return "cancelled";
@@ -693,10 +693,10 @@ function schedulerSelectionOutcomeReasonV1(receipt: AttemptReceipt): SchedulerSe
 }
 
 /** Bind the in-process TaskExecutor seam. Without a trusted runner, execution remains fail-closed. */
-export async function bindSchedulerInProcessTaskExecutorV1(
+export async function bindSchedulerInProcessTaskExecutor(
 	registry: SchedulerExecutorRegistry,
-	options: SchedulerInProcessHostBindingOptionsV1,
-): Promise<ResultValue<SchedulerExecutorEntryV1, FoundationError>> {
+	options: SchedulerInProcessHostBindingOptions,
+): Promise<ResultValue<SchedulerExecutorEntry, FoundationError>> {
 	const nowIso = (options.now ?? (() => new Date().toISOString()))();
 	const durableSelection = registry.durableSelectionsEnabled();
 	let runtimeSnapshot = options.runtimeSnapshot;
@@ -757,14 +757,14 @@ export class SchedulerDispatchController {
 	private readonly nowFn: () => string;
 	private readonly requiredCapabilities: readonly FoundationProviderCapability[];
 	private readonly workspaceDigest: Fingerprint | undefined;
-	private readonly nativeAgentBridge: SchedulerNativeAgentBridgeV1 | undefined;
+	private readonly nativeAgentBridge: SchedulerNativeAgentBridge | undefined;
 	private readonly runsRequiringCancellation = new Set<RunId>();
 	private readonly runDispatches = new Map<RunId, Set<SchedulerRunDispatchCancellationV1>>();
 	private readonly queueRunDispatches = new Map<string, Set<SchedulerRunDispatchCancellationV1>>();
 	private readonly attemptRunDispatches = new Map<string, SchedulerRunDispatchCancellationV1>();
 	private runLifecycleDisposed = false;
 
-	constructor(options: SchedulerDispatchControllerOptionsV1) {
+	constructor(options: SchedulerDispatchControllerOptions) {
 		this.clock = runtimeClockFor(options);
 		this.session = options.session;
 		this.queue = options.queue;
@@ -802,7 +802,7 @@ export class SchedulerDispatchController {
 	}
 
 	/** Queue recoverExpired / handoff / deadlock cancel hook. Goes through settlement.cancelAttempt only. */
-	queueCancelAttempt(): SchedulerCancelAttemptV1 {
+	queueCancelAttempt(): SchedulerCancelAttempt {
 		return (attemptId) => this.cancelAttempt(attemptId);
 	}
 
@@ -814,8 +814,8 @@ export class SchedulerDispatchController {
 	}
 
 	async dispatchClaimed(
-		request: SchedulerDispatchRequestV1,
-	): Promise<ResultValue<SchedulerDispatchOutcomeV1, FoundationError>> {
+		request: SchedulerDispatchRequest,
+	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
 		return this.dispatchClaimedInternal(request);
 	}
 
@@ -825,8 +825,8 @@ export class SchedulerDispatchController {
 	 * the controller's Session and is installed before provider execution.
 	 */
 	async dispatchRunClaimed(
-		request: SchedulerRunDispatchRequestV1,
-	): Promise<ResultValue<SchedulerDispatchOutcomeV1, FoundationError>> {
+		request: SchedulerRunDispatchRequest,
+	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
 		if (this.runLifecycleDisposed || this.runLifecycleSession === undefined) {
 			return fail("scheduler_dispatch_invalid");
 		}
@@ -850,7 +850,7 @@ export class SchedulerDispatchController {
 		} else if (this.runsRequiringCancellation.has(request.runId)) {
 			this.observeRunCancellation(request.runId);
 		}
-		const dispatchRequest: SchedulerDispatchRequestV1 = {
+		const dispatchRequest: SchedulerDispatchRequest = {
 			queueEntryId: request.queueEntryId,
 			fencingToken: request.fencingToken,
 			binding: request.binding,
@@ -859,7 +859,7 @@ export class SchedulerDispatchController {
 			...(request.executorRequirements === undefined ? {} : { executorRequirements: request.executorRequirements }),
 			signal: schedulerRunDispatchSignalV1(request.signal, association.controller.signal),
 		};
-		let result: ResultValue<SchedulerDispatchOutcomeV1, FoundationError> | undefined;
+		let result: ResultValue<SchedulerDispatchOutcome, FoundationError> | undefined;
 		try {
 			result = await this.dispatchClaimedInternal(dispatchRequest, association);
 			return result;
@@ -869,12 +869,12 @@ export class SchedulerDispatchController {
 	}
 
 	private async dispatchClaimedInternal(
-		request: SchedulerDispatchRequestV1,
+		request: SchedulerDispatchRequest,
 		runAssociation?: SchedulerRunDispatchCancellationV1,
-	): Promise<ResultValue<SchedulerDispatchOutcomeV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
 		const prepared = await this.prepareClaimed(request);
 		if (!prepared.ok) return prepared;
-		let result: ResultValue<SchedulerDispatchOutcomeV1, FoundationError>;
+		let result: ResultValue<SchedulerDispatchOutcome, FoundationError>;
 		try {
 			const dispatchRecord = prepared.value.dispatchRecord;
 			if (dispatchRecord?.status === "in_flight") {
@@ -1058,7 +1058,7 @@ export class SchedulerDispatchController {
 	}
 
 	private async prepareClaimed(
-		request: SchedulerDispatchRequestV1,
+		request: SchedulerDispatchRequest,
 	): Promise<ResultValue<SchedulerPreparedDispatchV1, FoundationError>> {
 		const entryResult = await this.queue.getEntry(request.queueEntryId);
 		if (!entryResult.ok) return entryResult;
@@ -1071,7 +1071,7 @@ export class SchedulerDispatchController {
 		const nowIso = this.nowIso();
 		const fenced = assertSchedulerFencingToken(claimResult.value, request.fencingToken, nowIso);
 		if (!fenced.ok) return fenced;
-		const identity = schedulerDispatchIdentityV1(entry.queueEntryId, fenced.value.claimId);
+		const identity = schedulerDispatchIdentity(entry.queueEntryId, fenced.value.claimId);
 		const selected = await this.registry.select({
 			queueEntry: entry,
 			requiredCapabilities: request.requiredCapabilities ?? this.requiredCapabilities,
@@ -1142,7 +1142,7 @@ export class SchedulerDispatchController {
 		) {
 			return rejectSelected(fail("scheduler_dispatch_invalid"));
 		}
-		let nativeAgent: SchedulerNativeAgentResolutionV1 | undefined;
+		let nativeAgent: SchedulerNativeAgentResolution | undefined;
 		if (providerClass === "agent") {
 			if (this.nativeAgentBridge === undefined) {
 				return rejectSelected(
@@ -1175,7 +1175,7 @@ export class SchedulerDispatchController {
 			if (!resolved.ok) return rejectSelected(resolved);
 			nativeAgent = resolved.value;
 		}
-		const assembly = assembleSchedulerDispatchV1({
+		const assembly = assembleSchedulerDispatch({
 			entry,
 			claim: fenced.value,
 			binding: request.binding,
@@ -1202,10 +1202,10 @@ export class SchedulerDispatchController {
 	}
 
 	private async executePrepared(
-		request: SchedulerDispatchRequestV1,
+		request: SchedulerDispatchRequest,
 		prepared: SchedulerPreparedDispatchV1,
 		runAssociation?: SchedulerRunDispatchCancellationV1,
-	): Promise<ResultValue<SchedulerDispatchOutcomeV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
 		const scheduled = schedulerExecutionSignal(
 			prepared.assembly.dispatch.deadlineAt,
 			this.nowIso(),
@@ -1288,10 +1288,10 @@ export class SchedulerDispatchController {
 	}
 
 	private async resumePrepared(
-		request: SchedulerDispatchRequestV1,
+		request: SchedulerDispatchRequest,
 		prepared: SchedulerPreparedDispatchV1,
 		runAssociation?: SchedulerRunDispatchCancellationV1,
-	): Promise<ResultValue<SchedulerDispatchOutcomeV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
 		if (prepared.dispatchRecord === undefined || prepared.dispatchRecord.status !== "in_flight") {
 			return fail("scheduler_dispatch_invalid");
 		}
@@ -1353,7 +1353,7 @@ export class SchedulerDispatchController {
 			}
 			return this.completeOutcome(prepared, resumed.value.attempt, resumed.value.receipt);
 		}
-		if (!schedulerProviderResumeSupportedV1(prepared.selection.provider)) {
+		if (!schedulerProviderResumeSupported(prepared.selection.provider)) {
 			return fail("scheduler_attempt_recovery_failed");
 		}
 		return fail("scheduler_attempt_recovery_failed");
@@ -1483,7 +1483,7 @@ export class SchedulerDispatchController {
 		prepared: SchedulerPreparedDispatchV1,
 		attempt: Attempt,
 		receipt: AttemptReceipt,
-	): Promise<ResultValue<SchedulerDispatchOutcomeV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
 		const snapshot = await this.queue.snapshot();
 		if (!snapshot.ok) return snapshot;
 		const entry = snapshot.value.entries.find((item) => item.queueEntryId === prepared.claim.queueEntryId);
@@ -1512,10 +1512,10 @@ export class SchedulerDispatchController {
 
 	private async liveDispatch(
 		queueEntryId: string,
-	): Promise<ResultValue<SchedulerDispatchRecordV1 | undefined, FoundationError>> {
+	): Promise<ResultValue<SchedulerDispatchRecord | undefined, FoundationError>> {
 		const snapshot = await this.queue.snapshot();
 		if (!snapshot.ok) return snapshot;
-		const live: SchedulerDispatchRecordV1[] = [];
+		const live: SchedulerDispatchRecord[] = [];
 		for (const dispatch of snapshot.value.dispatches) {
 			if (dispatch.queueEntryId !== queueEntryId) continue;
 			const parsed = parseSchedulerDispatchRecord(dispatch);
@@ -1664,7 +1664,7 @@ export class SchedulerDispatchController {
 		) {
 			return fail("scheduler_executor_unavailable");
 		}
-		const identity = schedulerDispatchIdentityV1(queueEntry.queueEntryId, claim.claimId);
+		const identity = schedulerDispatchIdentity(queueEntry.queueEntryId, claim.claimId);
 		const correlation = createExecutionCorrelation(
 			this.sessionId,
 			queueDispatch.providerClass === "agent" ? identity.laneId : this.laneId,
@@ -1707,6 +1707,6 @@ export class SchedulerDispatchController {
 	}
 }
 
-export function isSchedulerDispatchErrorCode(value: unknown): value is SchedulerErrorCodeV1 {
+export function isSchedulerDispatchErrorCode(value: unknown): value is SchedulerErrorCode {
 	return typeof value === "string" && isSchedulerErrorCode(value);
 }

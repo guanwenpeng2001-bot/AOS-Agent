@@ -41,13 +41,13 @@ import { googleProvider } from "@aos-agent/ai/providers/google";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-	createTrustedSubagentCompositionV1,
-	TrustedSubagentCompositionV1,
-	type TrustedSubagentCompositionOptionsV1,
+	createTrustedSubagentComposition,
+	TrustedSubagentComposition,
+	type TrustedSubagentCompositionOptions,
 } from "../src/core/subagent-composition.ts";
 import {
-	createTrustedMcpInheritanceApprovalAuthorityV1,
-	type TrustedMcpInheritanceApprovalAuthorityV1,
+	createTrustedMcpInheritanceApprovalAuthority,
+	type TrustedMcpInheritanceApprovalAuthority,
 } from "../src/core/subagent-binding.ts";
 import {
 	resolveExecutionPolicy,
@@ -60,12 +60,12 @@ import {
 	type PolicyLedgerSessionEntry,
 } from "../src/core/execution-policy-ledger.ts";
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
-import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
-import type { PlanSubagentSpawnInputV1 } from "../src/core/subagent-supervisor.ts";
-import type { SchedulerNativeAgentResolveInputV1 } from "../src/core/scheduler-dispatch.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
+import type { PlanSubagentSpawnInput } from "../src/core/subagent-supervisor.ts";
+import type { SchedulerNativeAgentResolveInput } from "../src/core/scheduler-dispatch.ts";
 import type {
-	ChildWorktreeIdentityV1,
-	OwnedWorktreeStateV1,
+	ChildWorktreeIdentity,
+	OwnedWorktreeState,
 	WorktreeAdapter,
 } from "../src/core/subagent-worktree.ts";
 
@@ -108,7 +108,7 @@ function mcpInheritanceAuthority(pending: PolicyApprovalRequest[]) {
 	});
 	if (!resolved.ok) throw resolved.error;
 	const ledger = createExecutionPolicyLedger(new MemoryPolicySession());
-	const authority = createTrustedMcpInheritanceApprovalAuthorityV1({
+	const authority = createTrustedMcpInheritanceApprovalAuthority({
 		schemaVersion: 1,
 		profile: resolved.profile,
 		binding: resolved.binding,
@@ -254,7 +254,7 @@ function rootAgent(roleRevision: RoleRevision): AgentInstance {
 	return created.value;
 }
 
-const descriptor: SubagentProviderDescriptorV1 = {
+const descriptor: SubagentProviderDescriptor = {
 	schemaVersion: 1,
 	providerKind: "in_process",
 	descriptor: { schemaVersion: 1, providerId: "native.in_process", providerClass: "agent" },
@@ -279,14 +279,14 @@ class ReceiptHidingLedger extends SessionLedger {
 class FakeHostWorktreeAdapter implements WorktreeAdapter {
 	readonly calls: string[] = [];
 	readonly workspaces = new Map<string, string>();
-	private readonly states = new Map<string, OwnedWorktreeStateV1>();
+	private readonly states = new Map<string, OwnedWorktreeState>();
 	applyStatus: "applied" | "conflict" | "unknown" = "applied";
 
-	private key(identity: ChildWorktreeIdentityV1): string {
+	private key(identity: ChildWorktreeIdentity): string {
 		return `${identity.childAgentInstanceId}:${identity.attemptId}`;
 	}
 
-	async createWorktree(identity: ChildWorktreeIdentityV1, baseRef: string) {
+	async createWorktree(identity: ChildWorktreeIdentity, baseRef: string) {
 		const key = this.key(identity);
 		this.calls.push(`create:${key}`);
 		this.workspaces.set(key, `C:\\ephemeral\\${key}`);
@@ -303,7 +303,7 @@ class FakeHostWorktreeAdapter implements WorktreeAdapter {
 		return Result.ok(undefined);
 	}
 
-	async resolveOwnedWorktree(identity: ChildWorktreeIdentityV1) {
+	async resolveOwnedWorktree(identity: ChildWorktreeIdentity) {
 		return Result.ok(this.states.get(this.key(identity)) ?? {
 			schemaVersion: 1 as const,
 			childAgentInstanceId: identity.childAgentInstanceId,
@@ -312,19 +312,19 @@ class FakeHostWorktreeAdapter implements WorktreeAdapter {
 		});
 	}
 
-	async resolveExecutionWorkspace(identity: ChildWorktreeIdentityV1) {
+	async resolveExecutionWorkspace(identity: ChildWorktreeIdentity) {
 		const workspace = this.workspaces.get(this.key(identity));
 		return workspace === undefined
 			? Result.err(new FoundationError("subagent_worktree_conflict", "missing execution workspace"))
 			: Result.ok(workspace);
 	}
 
-	async applyWorktree(identity: ChildWorktreeIdentityV1) {
+	async applyWorktree(identity: ChildWorktreeIdentity) {
 		this.calls.push(`apply:${this.key(identity)}:${this.applyStatus}`);
 		return Result.ok({ status: this.applyStatus });
 	}
 
-	async deleteWorktree(identity: ChildWorktreeIdentityV1) {
+	async deleteWorktree(identity: ChildWorktreeIdentity) {
 		const key = this.key(identity);
 		this.calls.push(`delete:${key}`);
 		this.states.set(key, {
@@ -336,7 +336,7 @@ class FakeHostWorktreeAdapter implements WorktreeAdapter {
 		return Result.ok(undefined);
 	}
 
-	async quarantineWorktree(identity: ChildWorktreeIdentityV1) {
+	async quarantineWorktree(identity: ChildWorktreeIdentity) {
 		const key = this.key(identity);
 		this.calls.push(`quarantine:${key}`);
 		this.states.set(key, {
@@ -354,10 +354,10 @@ async function planInput(
 	roleRevision: RoleRevision,
 	modelProfile: ModelProfile,
 	suffix = "",
-	providerDescriptor: SubagentProviderDescriptorV1 = descriptor,
+	providerDescriptor: SubagentProviderDescriptor = descriptor,
 	forkScope: "none" | "task_package" = "none",
 	maxTurns?: number,
-): Promise<PlanSubagentSpawnInputV1> {
+): Promise<PlanSubagentSpawnInput> {
 	const id = (value: string): string => suffix.length === 0 ? value : `${value}-${suffix}`;
 	const parent = rootAgent(roleRevision);
 	const childTask = task("child-task");
@@ -459,8 +459,8 @@ async function correctionHarness(options: {
 	readonly failedChildren?: readonly string[];
 	readonly suspendThenResume?: boolean;
 	readonly planMaxTurns?: number;
-	readonly productPrompt?: TrustedSubagentCompositionOptionsV1["productPrompt"];
-	readonly mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthorityV1;
+	readonly productPrompt?: TrustedSubagentCompositionOptions["productPrompt"];
+	readonly mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthority;
 } = {}) {
 	const session = new Session(new InMemorySessionStorage({ id: "session-composition", createdAt: 1 }));
 	const ledgers = new Map<string, SessionLedger>();
@@ -518,7 +518,7 @@ async function correctionHarness(options: {
 	} as unknown as ArtifactStoreProvider;
 	const harnessWorkspaces: Array<string | undefined> = [];
 	let resumeCalls = 0;
-	const compositionOptions: TrustedSubagentCompositionOptionsV1 = {
+	const compositionOptions: TrustedSubagentCompositionOptions = {
 		schemaVersion: 1,
 		enabled: true,
 		session,
@@ -599,7 +599,7 @@ async function correctionHarness(options: {
 	};
 	let productionHarness: AgentHarness | undefined;
 	let productionEnv: NodeExecutionEnv | undefined;
-	let composition: TrustedSubagentCompositionV1;
+	let composition: TrustedSubagentComposition;
 	if (options.productionPath === true) {
 		const models = createModels();
 		models.setProvider(googleProvider());
@@ -615,7 +615,7 @@ async function correctionHarness(options: {
 		productionHarness = created.harness;
 		composition = created.subagentComposition;
 	} else {
-		composition = new TrustedSubagentCompositionV1(compositionOptions);
+		composition = new TrustedSubagentComposition(compositionOptions);
 	}
 	const inProcessDescriptor = composition.providerDescriptors().find((candidate) => candidate.providerKind === "in_process");
 	if (inProcessDescriptor === undefined) throw new Error("Expected in-process provider descriptor");
@@ -1053,7 +1053,7 @@ describe("trusted Subagent product composition", () => {
 				"scheduler",
 				descriptor,
 			);
-			const resolveInput: SchedulerNativeAgentResolveInputV1 = {
+			const resolveInput: SchedulerNativeAgentResolveInput = {
 				schemaVersion: 1,
 				provider,
 				entry: {
@@ -1094,7 +1094,7 @@ describe("trusted Subagent product composition", () => {
 			let plannerCalls = 0;
 			const planner = {
 				schemaVersion: 1 as const,
-				plan: async (input: SchedulerNativeAgentResolveInputV1, current: SubagentProviderDescriptorV1) => {
+				plan: async (input: SchedulerNativeAgentResolveInput, current: SubagentProviderDescriptor) => {
 					plannerCalls += 1;
 					return Result.ok({
 						...sourcePlan,
@@ -1195,7 +1195,7 @@ describe("trusted Subagent product composition", () => {
 	});
 
 	it("is default-off and constructs only the fixed in-process/fork registry after explicit Host opt-in", async () => {
-		expect(createTrustedSubagentCompositionV1(undefined)).toBeUndefined();
+		expect(createTrustedSubagentComposition(undefined)).toBeUndefined();
 		const session = new Session(new InMemorySessionStorage({ id: "session-composition", createdAt: 1 }));
 		const ledgers = new Map<string, SessionLedger>();
 		const ledgerForLane = (laneId: string): SessionLedger => {
@@ -1248,7 +1248,7 @@ describe("trusted Subagent product composition", () => {
 			delete: async () => Result.ok(undefined),
 			dispose: async () => {},
 		} as unknown as ArtifactStoreProvider;
-		const composition = new TrustedSubagentCompositionV1({
+		const composition = new TrustedSubagentComposition({
 			schemaVersion: 1,
 			enabled: true,
 			session,

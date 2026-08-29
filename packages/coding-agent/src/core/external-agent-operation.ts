@@ -45,8 +45,8 @@ import {
 	type TaskCredentialDeliveryReceipt,
 } from "./task-credential-lease.ts";
 import {
-	validateSafeLeaseProjectionV1,
-	type SafeLeaseProjectionV1,
+	validateOperationWorkerLeaseProjection,
+	type SafeLeaseProjection,
 } from "./worker-protocol.ts";
 
 export const EXTERNAL_CONNECTOR_OPERATION_OBJECT_TYPE = "external_connector_operation" as const;
@@ -93,7 +93,7 @@ export interface ExternalConnectorCredentialRequirement {
  */
 export interface ExternalConnectorCredentialLease {
 	readonly schemaVersion: 1;
-	readonly projection: SafeLeaseProjectionV1;
+	readonly projection: SafeLeaseProjection;
 	readonly leaseDigest: Fingerprint;
 	readonly targetId: string;
 	readonly targetKind: string;
@@ -282,7 +282,7 @@ export function isExternalConnectorCredentialLease(value: unknown): value is Ext
 		!operationRecord(value) ||
 		!operationExactKeys(value, EXTERNAL_CONNECTOR_CREDENTIAL_LEASE_KEYS) ||
 		value.schemaVersion !== 1 ||
-		!validateSafeLeaseProjectionV1(value.projection) ||
+		!validateOperationWorkerLeaseProjection(value.projection) ||
 		!operationFingerprint(value.leaseDigest) ||
 		!isExternalConnectorMappingIdentifier(value.targetId) ||
 		!isExternalConnectorMappingIdentifier(value.targetKind) ||

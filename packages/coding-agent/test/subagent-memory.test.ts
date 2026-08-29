@@ -9,8 +9,8 @@ import {
 	createScopedMemoryStore,
 } from "@aos-agent/agent-core";
 import {
-	cleanupChildMemoryScopeV1,
-	createChildMemoryScopeV1,
+	cleanupChildMemoryScope,
+	createChildMemoryScope,
 } from "../src/core/subagent-memory.ts";
 
 function memoryFixture(id: string) {
@@ -41,7 +41,7 @@ describe("Subagent child memory scope", () => {
 			source: "parent source",
 			principal: "system",
 		});
-		const child = createChildMemoryScopeV1(parent, "child-agent", "parent-agent");
+		const child = createChildMemoryScope(parent, "child-agent", "parent-agent");
 		expect(child.parentId).toBe(parent.scopeId);
 		const childEntry = await child.put({
 			id: "child-entry",
@@ -56,7 +56,7 @@ describe("Subagent child memory scope", () => {
 		expect(await parent.get(childEntry.id, "system")).toBeUndefined();
 		expect((await child.get(childEntry.id, "system"))?.content).toBe("child content");
 
-		const cleaned = await cleanupChildMemoryScopeV1(child);
+		const cleaned = await cleanupChildMemoryScope(child);
 		expect(cleaned).toEqual({ ok: true, value: 1 });
 		expect(await child.list({}, "system")).toEqual([]);
 		expect((await parent.get(parentEntry.id, "system"))?.content).toBe("parent content");
@@ -65,8 +65,8 @@ describe("Subagent child memory scope", () => {
 
 	it("rejects parent owner mismatch and scope collisions", () => {
 		const { parent } = memoryFixture("subagent-memory-collision");
-		expect(() => createChildMemoryScopeV1(parent, "child-agent", "wrong-parent")).toThrow(MemoryError);
-		expect(() => createChildMemoryScopeV1(parent, "child-agent", "parent-agent", { scopeId: "other-scope" })).toThrow(MemoryError);
+		expect(() => createChildMemoryScope(parent, "child-agent", "wrong-parent")).toThrow(MemoryError);
+		expect(() => createChildMemoryScope(parent, "child-agent", "parent-agent", { scopeId: "other-scope" })).toThrow(MemoryError);
 	});
 
 	it("fails closed when post-delete verification still sees an entry", async () => {
@@ -91,7 +91,7 @@ describe("Subagent child memory scope", () => {
 			principal: "system",
 		});
 
-		const cleaned = await cleanupChildMemoryScopeV1(child);
+		const cleaned = await cleanupChildMemoryScope(child);
 		expect(cleaned).toMatchObject({ ok: false, error: { code: "subagent_close_unknown" } });
 		expect(await child.list({}, "system")).toHaveLength(1);
 		await ledger.writer.releaseLease();

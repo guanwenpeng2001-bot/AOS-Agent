@@ -30,10 +30,10 @@ import {
 import { SchedulerDeadlockController } from "../src/core/scheduler-deadlock.ts";
 import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
-	createSchedulerExecutorRuntimeSnapshotV1,
+	createSchedulerExecutorRuntimeSnapshot,
 	SchedulerExecutorRegistry,
 	SchedulerInProcessTaskExecutorProvider,
-	schedulerBindingRequirementDigestV1,
+	schedulerBindingRequirementDigest,
 } from "../src/core/scheduler-executors.ts";
 import { SchedulerFanInController } from "../src/core/scheduler-fan-in.ts";
 import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
@@ -42,7 +42,7 @@ import { SchedulerWorkflowController } from "../src/core/scheduler-workflow.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
 import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import type { RunHandle } from "../src/core/run-lifecycle.ts";
-import { SchedulerHost, type SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
+import { SchedulerHost, type SchedulerQueueEntry } from "../src/core/scheduler.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { TaskGraphStore } from "../src/core/task-graph.ts";
@@ -129,10 +129,10 @@ function bindingFor(currentTask: TaskEnvelope): AgentBinding {
 }
 
 function reservationRuntimeSnapshot(providerId: string, binding: AgentBinding, now: string) {
-	const bindingDigest = schedulerBindingRequirementDigestV1(binding);
+	const bindingDigest = schedulerBindingRequirementDigest(binding);
 	if (!bindingDigest.ok) throw bindingDigest.error;
 	if (binding.policyRevision.fingerprint === undefined) throw new Error("policy fingerprint missing");
-	const snapshot = createSchedulerExecutorRuntimeSnapshotV1({
+	const snapshot = createSchedulerExecutorRuntimeSnapshot({
 		schemaVersion: 1,
 		capabilitySnapshot: createConnectorCapabilitySnapshot({
 			schemaVersion: 1,
@@ -224,7 +224,7 @@ async function registerReservationExecutor(
 	if (!registered.ok) throw registered.error;
 }
 
-function reservationQueueEntry(queueEntryId: string, sessionId: string, now: string): SchedulerQueueEntryV1 {
+function reservationQueueEntry(queueEntryId: string, sessionId: string, now: string): SchedulerQueueEntry {
 	return {
 		schemaVersion: 1,
 		queueEntryId,
@@ -243,7 +243,7 @@ function reservationQueueEntry(queueEntryId: string, sessionId: string, now: str
 async function reserveExecutor(
 	registry: SchedulerExecutorRegistry,
 	binding: AgentBinding,
-	entry: SchedulerQueueEntryV1,
+	entry: SchedulerQueueEntry,
 ) {
 	return registry.select({
 		queueEntry: entry,

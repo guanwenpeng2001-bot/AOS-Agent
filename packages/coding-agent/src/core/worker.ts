@@ -34,13 +34,13 @@ export const WORKER_LIFECYCLE_STATUSES = [
 export type WorkerLifecycleStatus = (typeof WORKER_LIFECYCLE_STATUSES)[number];
 
 export const WORKER_EXECUTION_TERMINAL_STATUSES = ["completed", "failed", "cancelled", "lost"] as const;
-export type WorkerExecutionTerminalStatusV1 = (typeof WORKER_EXECUTION_TERMINAL_STATUSES)[number];
+export type WorkerExecutionTerminalStatus = (typeof WORKER_EXECUTION_TERMINAL_STATUSES)[number];
 
 export const WORKER_RECLAIM_TERMINAL_STATUSES = ["reclaimed", "reclaim_unknown"] as const;
-export type WorkerReclaimTerminalStatusV1 = (typeof WORKER_RECLAIM_TERMINAL_STATUSES)[number];
+export type WorkerReclaimTerminalStatus = (typeof WORKER_RECLAIM_TERMINAL_STATUSES)[number];
 
 /** Immutable safe identity frozen before Worker activation. */
-export interface WorkerBindingV1 {
+export interface WorkerBinding {
 	readonly schemaVersion: 1;
 	readonly workerId: string;
 	readonly providerId: string;
@@ -59,7 +59,7 @@ export interface WorkerBindingV1 {
 }
 
 /** Durable/public-safe Worker snapshot. Execution resources never enter it. */
-export interface WorkerRecordV1 {
+export interface WorkerRecord {
 	readonly schemaVersion: 1;
 	readonly workerId: string;
 	readonly providerId: string;
@@ -81,11 +81,11 @@ export interface WorkerRecordV1 {
 }
 
 /** One revision-checked mutation request. The binding is an identity echo. */
-export interface WorkerTransitionV1 {
+export interface WorkerTransition {
 	readonly schemaVersion: 1;
 	readonly clientRequestId: string;
 	readonly expectedRevision: number;
-	readonly binding: WorkerBindingV1;
+	readonly binding: WorkerBinding;
 	readonly to: WorkerLifecycleStatus;
 	readonly at: string;
 	readonly activeOperationId?: string;
@@ -93,7 +93,7 @@ export interface WorkerTransitionV1 {
 	readonly sideEffectState?: SideEffectState;
 }
 
-export interface WorkerTransitionReceiptV1 {
+export interface WorkerTransitionReceipt {
 	readonly schemaVersion: 1;
 	readonly clientRequestId: string;
 	readonly requestFingerprint: string;
@@ -108,25 +108,25 @@ export interface WorkerTransitionReceiptV1 {
 }
 
 /** Monotonic liveness fact. It never extends a deadline or lease. */
-export interface WorkerHeartbeatV1 {
+export interface WorkerHeartbeat {
 	readonly schemaVersion: 1;
-	readonly binding: WorkerBindingV1;
+	readonly binding: WorkerBinding;
 	readonly sequence: number;
 	readonly at: string;
 }
 
 /** Pure fold state. Transition receipts make idempotency restart-safe. */
-export interface WorkerLifecycleStateV1 {
+export interface WorkerLifecycleState {
 	readonly schemaVersion: 1;
-	readonly binding: WorkerBindingV1;
-	readonly record: WorkerRecordV1;
-	readonly transitions: readonly WorkerTransitionReceiptV1[];
+	readonly binding: WorkerBinding;
+	readonly record: WorkerRecord;
+	readonly transitions: readonly WorkerTransitionReceipt[];
 	readonly heartbeatSequence?: number;
 }
 
-export interface WorkerMutationResultV1 {
-	readonly state: WorkerLifecycleStateV1;
-	readonly record: WorkerRecordV1;
+export interface WorkerMutationResult {
+	readonly state: WorkerLifecycleState;
+	readonly record: WorkerRecord;
 	readonly idempotent: boolean;
 }
 
@@ -301,7 +301,7 @@ function hasForbiddenWorkerField(value: unknown, seen = new WeakSet<object>()): 
 	return false;
 }
 
-function cloneBinding(value: WorkerBindingV1): WorkerBindingV1 {
+function cloneBinding(value: WorkerBinding): WorkerBinding {
 	return Object.freeze({
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		workerId: value.workerId,
@@ -321,7 +321,7 @@ function cloneBinding(value: WorkerBindingV1): WorkerBindingV1 {
 	});
 }
 
-function cloneRecord(value: WorkerRecordV1): WorkerRecordV1 {
+function cloneRecord(value: WorkerRecord): WorkerRecord {
 	return Object.freeze({
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		workerId: value.workerId,
@@ -344,26 +344,26 @@ function cloneRecord(value: WorkerRecordV1): WorkerRecordV1 {
 	});
 }
 
-export function isWorkerExecutionTerminalStatusV1(
+export function isWorkerExecutionTerminalStatus(
 	status: WorkerLifecycleStatus,
-): status is WorkerExecutionTerminalStatusV1 {
-	return WORKER_EXECUTION_TERMINAL_STATUSES.includes(status as WorkerExecutionTerminalStatusV1);
+): status is WorkerExecutionTerminalStatus {
+	return WORKER_EXECUTION_TERMINAL_STATUSES.includes(status as WorkerExecutionTerminalStatus);
 }
 
-export function isWorkerReclaimTerminalStatusV1(
+export function isWorkerReclaimTerminalStatus(
 	status: WorkerLifecycleStatus,
-): status is WorkerReclaimTerminalStatusV1 {
-	return WORKER_RECLAIM_TERMINAL_STATUSES.includes(status as WorkerReclaimTerminalStatusV1);
+): status is WorkerReclaimTerminalStatus {
+	return WORKER_RECLAIM_TERMINAL_STATUSES.includes(status as WorkerReclaimTerminalStatus);
 }
 
-export function workerTransitionAllowedV1(
+export function workerTransitionAllowed(
 	from: WorkerLifecycleStatus,
 	to: WorkerLifecycleStatus,
 ): boolean {
 	return ALLOWED_TRANSITIONS[from].includes(to);
 }
 
-export function validateWorkerBindingV1(value: unknown): value is WorkerBindingV1 {
+export function validateWorkerBinding(value: unknown): value is WorkerBinding {
 	if (!isRecord(value) || hasForbiddenWorkerField(value) || !hasOnlyKeys(value, BINDING_KEYS)) return false;
 	return (
 		value.schemaVersion === WORKER_SCHEMA_VERSION &&
@@ -417,7 +417,7 @@ function recordStatusShape(value: Record<string, unknown>): boolean {
 	}
 }
 
-export function validateWorkerRecordV1(value: unknown): value is WorkerRecordV1 {
+export function validateWorkerRecord(value: unknown): value is WorkerRecord {
 	if (!isRecord(value) || hasForbiddenWorkerField(value) || !hasOnlyKeys(value, RECORD_KEYS)) return false;
 	if (
 		value.schemaVersion !== WORKER_SCHEMA_VERSION ||
@@ -452,13 +452,13 @@ export function validateWorkerRecordV1(value: unknown): value is WorkerRecordV1 
 	return recordStatusShape(value);
 }
 
-function validateWorkerTransitionV1(value: unknown): value is WorkerTransitionV1 {
+function validateWorkerTransitionV1(value: unknown): value is WorkerTransition {
 	if (!isRecord(value) || hasForbiddenWorkerField(value) || !hasOnlyKeys(value, TRANSITION_KEYS)) return false;
 	return (
 		value.schemaVersion === WORKER_SCHEMA_VERSION &&
 		isSafeIdentifier(value.clientRequestId) &&
 		isNonNegativeInteger(value.expectedRevision) &&
-		validateWorkerBindingV1(value.binding) &&
+		validateWorkerBinding(value.binding) &&
 		WORKER_LIFECYCLE_STATUSES.includes(value.to as WorkerLifecycleStatus) &&
 		isCanonicalTimestamp(value.at) &&
 		isOptionalIdentifier(value.activeOperationId) &&
@@ -470,11 +470,11 @@ function validateWorkerTransitionV1(value: unknown): value is WorkerTransitionV1
 	);
 }
 
-function sameBinding(left: WorkerBindingV1, right: WorkerBindingV1): boolean {
+function sameBinding(left: WorkerBinding, right: WorkerBinding): boolean {
 	return canonicalFoundationJson(cloneBinding(left)) === canonicalFoundationJson(cloneBinding(right));
 }
 
-function recordMatchesBinding(record: WorkerRecordV1, binding: WorkerBindingV1): boolean {
+function recordMatchesBinding(record: WorkerRecord, binding: WorkerBinding): boolean {
 	return (
 		record.workerId === binding.workerId &&
 		record.providerId === binding.providerId &&
@@ -488,7 +488,7 @@ function recordMatchesBinding(record: WorkerRecordV1, binding: WorkerBindingV1):
 	);
 }
 
-function transitionFingerprint(input: WorkerTransitionV1): string {
+function transitionFingerprint(input: WorkerTransition): string {
 	const canonical = canonicalFoundationJson({
 		schemaVersion: input.schemaVersion,
 		expectedRevision: input.expectedRevision,
@@ -502,7 +502,7 @@ function transitionFingerprint(input: WorkerTransitionV1): string {
 	return `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
 }
 
-function transitionPayloadIsValid(current: WorkerRecordV1, input: WorkerTransitionV1): boolean {
+function transitionPayloadIsValid(current: WorkerRecord, input: WorkerTransition): boolean {
 	if (input.to === "running") {
 		return input.activeOperationId !== undefined && input.receiptId === undefined && input.sideEffectState === undefined;
 	}
@@ -526,9 +526,9 @@ function transitionPayloadIsValid(current: WorkerRecordV1, input: WorkerTransiti
 	return input.activeOperationId === undefined && input.receiptId === undefined && input.sideEffectState === undefined;
 }
 
-function nextRecord(current: WorkerRecordV1, input: WorkerTransitionV1): WorkerRecordV1 {
+function nextRecord(current: WorkerRecord, input: WorkerTransition): WorkerRecord {
 	const to = input.to;
-	const next: WorkerRecordV1 = {
+	const next: WorkerRecord = {
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		workerId: current.workerId,
 		providerId: current.providerId,
@@ -543,7 +543,7 @@ function nextRecord(current: WorkerRecordV1, input: WorkerTransitionV1): WorkerR
 		revision: current.revision + 1,
 		createdAt: current.createdAt,
 		...(current.readyAt === undefined && to !== "ready" ? {} : { readyAt: current.readyAt ?? input.at }),
-		...(isWorkerExecutionTerminalStatusV1(to)
+		...(isWorkerExecutionTerminalStatus(to)
 			? { endedAt: input.at }
 			: current.endedAt === undefined
 				? {}
@@ -563,7 +563,7 @@ function nextRecord(current: WorkerRecordV1, input: WorkerTransitionV1): WorkerR
 	return cloneRecord(next);
 }
 
-function initialRecord(binding: WorkerBindingV1, createdAt: string): WorkerRecordV1 {
+function initialRecord(binding: WorkerBinding, createdAt: string): WorkerRecord {
 	return cloneRecord({
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		workerId: binding.workerId,
@@ -581,7 +581,7 @@ function initialRecord(binding: WorkerBindingV1, createdAt: string): WorkerRecor
 	});
 }
 
-function validateWorkerTransitionReceiptV1(value: unknown): value is WorkerTransitionReceiptV1 {
+function validateWorkerTransitionReceiptV1(value: unknown): value is WorkerTransitionReceipt {
 	if (
 		!isRecord(value) ||
 		hasForbiddenWorkerField(value) ||
@@ -608,24 +608,24 @@ function validateWorkerTransitionReceiptV1(value: unknown): value is WorkerTrans
 	);
 }
 
-export function validateWorkerHeartbeatV1(value: unknown): value is WorkerHeartbeatV1 {
+export function validateWorkerHeartbeat(value: unknown): value is WorkerHeartbeat {
 	if (!isRecord(value) || hasForbiddenWorkerField(value) || !hasOnlyKeys(value, HEARTBEAT_KEYS)) return false;
 	return (
 		value.schemaVersion === WORKER_SCHEMA_VERSION &&
-		validateWorkerBindingV1(value.binding) &&
+		validateWorkerBinding(value.binding) &&
 		isNonNegativeInteger(value.sequence) &&
 		isCanonicalTimestamp(value.at)
 	);
 }
 
-export function validateWorkerLifecycleStateV1(value: unknown): value is WorkerLifecycleStateV1 {
+export function validateWorkerLifecycleState(value: unknown): value is WorkerLifecycleState {
 	if (
 		!isRecord(value) ||
 		hasForbiddenWorkerField(value) ||
 		!hasOnlyKeys(value, LIFECYCLE_STATE_KEYS) ||
 		value.schemaVersion !== WORKER_SCHEMA_VERSION ||
-		!validateWorkerBindingV1(value.binding) ||
-		!validateWorkerRecordV1(value.record) ||
+		!validateWorkerBinding(value.binding) ||
+		!validateWorkerRecord(value.record) ||
 		!recordMatchesBinding(value.record, value.binding) ||
 		!Array.isArray(value.transitions) ||
 		(value.heartbeatSequence !== undefined && !isNonNegativeInteger(value.heartbeatSequence)) ||
@@ -644,13 +644,13 @@ export function validateWorkerLifecycleStateV1(value: unknown): value is WorkerL
 			item.previousRevision !== folded.revision ||
 			item.revision !== folded.revision + 1 ||
 			item.at < previousTimestamp ||
-			!workerTransitionAllowedV1(item.from, item.to)
+			!workerTransitionAllowed(item.from, item.to)
 		) {
 			return false;
 		}
 		const priorFingerprint = requestFingerprints.get(item.clientRequestId);
 		if (priorFingerprint !== undefined) return false;
-		const input: WorkerTransitionV1 = {
+		const input: WorkerTransition = {
 			schemaVersion: WORKER_SCHEMA_VERSION,
 			clientRequestId: item.clientRequestId,
 			expectedRevision: item.previousRevision,
@@ -681,11 +681,11 @@ export function validateWorkerLifecycleStateV1(value: unknown): value is WorkerL
 	return canonicalFoundationJson(expected) === canonicalFoundationJson(cloneRecord(value.record));
 }
 
-export function createWorkerLifecycleV1(
+export function createWorkerLifecycle(
 	bindingValue: unknown,
 	createdAt: string,
-): ResultValue<WorkerLifecycleStateV1, FoundationError> {
-	if (!validateWorkerBindingV1(bindingValue) || !isCanonicalTimestamp(createdAt)) {
+): ResultValue<WorkerLifecycleState, FoundationError> {
+	if (!validateWorkerBinding(bindingValue) || !isCanonicalTimestamp(createdAt)) {
 		return Result.err(new FoundationError("worker_invalid", "Worker binding or creation timestamp is invalid"));
 	}
 	const binding = cloneBinding(bindingValue);
@@ -693,11 +693,11 @@ export function createWorkerLifecycleV1(
 	return Result.ok(Object.freeze({ schemaVersion: WORKER_SCHEMA_VERSION, binding, record, transitions: Object.freeze([]) }));
 }
 
-export function applyWorkerTransitionV1(
-	state: WorkerLifecycleStateV1,
+export function applyWorkerTransition(
+	state: WorkerLifecycleState,
 	inputValue: unknown,
-): ResultValue<WorkerMutationResultV1, FoundationError> {
-	if (!validateWorkerLifecycleStateV1(state)) {
+): ResultValue<WorkerMutationResult, FoundationError> {
+	if (!validateWorkerLifecycleState(state)) {
 		return Result.err(new FoundationError("worker_persistence_failed", "Worker lifecycle state is invalid"));
 	}
 	if (!validateWorkerTransitionV1(inputValue)) {
@@ -718,7 +718,7 @@ export function applyWorkerTransitionV1(
 	if (input.expectedRevision !== state.record.revision) {
 		return Result.err(new FoundationError("worker_conflict", "Worker transition revision is stale or has a gap"));
 	}
-	if (!workerTransitionAllowedV1(state.record.status, input.to)) {
+	if (!workerTransitionAllowed(state.record.status, input.to)) {
 		return Result.err(new FoundationError("worker_conflict", "Worker lifecycle transition is not allowed"));
 	}
 	const lastTransitionAt = state.transitions.at(-1)?.at ?? state.record.createdAt;
@@ -730,10 +730,10 @@ export function applyWorkerTransitionV1(
 		return Result.err(new FoundationError("worker_operation_invalid", "Worker transition operation facts are invalid"));
 	}
 	const record = nextRecord(state.record, input);
-	if (!validateWorkerRecordV1(record)) {
+	if (!validateWorkerRecord(record)) {
 		return Result.err(new FoundationError("worker_persistence_failed", "Worker transition produced an invalid safe record"));
 	}
-	const transition: WorkerTransitionReceiptV1 = Object.freeze({
+	const transition: WorkerTransitionReceipt = Object.freeze({
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		clientRequestId: input.clientRequestId,
 		requestFingerprint,
@@ -746,7 +746,7 @@ export function applyWorkerTransitionV1(
 		...(input.receiptId === undefined ? {} : { receiptId: input.receiptId }),
 		...(input.sideEffectState === undefined ? {} : { sideEffectState: input.sideEffectState }),
 	});
-	const nextState: WorkerLifecycleStateV1 = Object.freeze({
+	const nextState: WorkerLifecycleState = Object.freeze({
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		binding: state.binding,
 		record,
@@ -756,14 +756,14 @@ export function applyWorkerTransitionV1(
 	return Result.ok({ state: nextState, record, idempotent: false });
 }
 
-export function applyWorkerHeartbeatV1(
-	state: WorkerLifecycleStateV1,
+export function applyWorkerHeartbeat(
+	state: WorkerLifecycleState,
 	inputValue: unknown,
-): ResultValue<WorkerMutationResultV1, FoundationError> {
-	if (!validateWorkerLifecycleStateV1(state)) {
+): ResultValue<WorkerMutationResult, FoundationError> {
+	if (!validateWorkerLifecycleState(state)) {
 		return Result.err(new FoundationError("worker_persistence_failed", "Worker lifecycle state is invalid"));
 	}
-	if (!validateWorkerHeartbeatV1(inputValue)) {
+	if (!validateWorkerHeartbeat(inputValue)) {
 		return Result.err(new FoundationError("worker_invalid", "Worker heartbeat is invalid"));
 	}
 	const input = inputValue;
@@ -772,9 +772,9 @@ export function applyWorkerHeartbeatV1(
 	}
 	if (
 		state.record.status === "new" ||
-		isWorkerExecutionTerminalStatusV1(state.record.status) ||
+		isWorkerExecutionTerminalStatus(state.record.status) ||
 		state.record.status === "reclaiming" ||
-		isWorkerReclaimTerminalStatusV1(state.record.status)
+		isWorkerReclaimTerminalStatus(state.record.status)
 	) {
 		return Result.err(new FoundationError("worker_conflict", "Worker heartbeat is not allowed in this lifecycle state"));
 	}
@@ -796,7 +796,7 @@ export function applyWorkerHeartbeatV1(
 		return Result.err(new FoundationError("worker_conflict", "Worker heartbeat is stale"));
 	}
 	const record = cloneRecord({ ...state.record, lastHeartbeatAt: input.at });
-	const nextState: WorkerLifecycleStateV1 = Object.freeze({
+	const nextState: WorkerLifecycleState = Object.freeze({
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		binding: state.binding,
 		record,
@@ -807,18 +807,18 @@ export function applyWorkerHeartbeatV1(
 }
 
 /** Serialize only the exact allowlisted safe Worker record. */
-export function serializeWorkerRecordV1(value: unknown): string {
-	if (!validateWorkerRecordV1(value)) {
+export function serializeWorkerRecord(value: unknown): string {
+	if (!validateWorkerRecord(value)) {
 		throw new FoundationError("worker_invalid", "Worker record is not safe to serialize");
 	}
 	return JSON.stringify(cloneRecord(value));
 }
 
 /** Parse an exact safe record; raw process/provider material is rejected. */
-export function parseWorkerRecordV1(text: string): ResultValue<WorkerRecordV1, FoundationError> {
+export function parseWorkerRecord(text: string): ResultValue<WorkerRecord, FoundationError> {
 	try {
 		const value = JSON.parse(text) as unknown;
-		if (!validateWorkerRecordV1(value)) {
+		if (!validateWorkerRecord(value)) {
 			return Result.err(new FoundationError("worker_invalid", "Serialized Worker record is invalid"));
 		}
 		return Result.ok(cloneRecord(value));
@@ -828,8 +828,8 @@ export function parseWorkerRecordV1(text: string): ResultValue<WorkerRecordV1, F
 }
 
 /** Serialize the immutable safe binding for the private initialize handshake. */
-export function serializeWorkerBindingV1(value: unknown): string {
-	if (!validateWorkerBindingV1(value)) {
+export function serializeWorkerBinding(value: unknown): string {
+	if (!validateWorkerBinding(value)) {
 		throw new FoundationError("worker_binding_invalid", "Worker binding is not safe to serialize");
 	}
 	return JSON.stringify(cloneBinding(value));

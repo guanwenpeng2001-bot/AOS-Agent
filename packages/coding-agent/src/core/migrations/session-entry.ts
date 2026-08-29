@@ -15,7 +15,7 @@ const CURRENT_HISTORICAL_SESSION_VERSION = 3 as const;
 const MIGRATION_MARKER_OBJECT_TYPE = "migration.applied";
 const FOUNDATION_CUSTOM_PREFIX = "__aos.foundation.";
 
-export interface MigrationAppliedMarkerV1 {
+export interface MigrationAppliedMarker {
 	readonly schemaVersion: 1;
 	readonly migrationId: string;
 	readonly sourceKind: string;
@@ -26,31 +26,31 @@ export interface MigrationAppliedMarkerV1 {
 	readonly status: "applied";
 }
 
-export interface PrivateMigrationPlanV1<TResult> extends MigrationAppliedMarkerV1 {
+export interface PrivateMigrationPlan<TResult> extends MigrationAppliedMarker {
 	readonly source: unknown;
 	readonly result: TResult;
 }
 
-export interface PrivateMigrationRunResultV1<TResult> {
+export interface PrivateMigrationRunResult<TResult> {
 	readonly status: "applied" | "replayed";
-	readonly marker: MigrationAppliedMarkerV1;
+	readonly marker: MigrationAppliedMarker;
 	readonly result: TResult;
 }
 
-export interface LegacySessionCompatibilityViewV1 {
+export interface LegacySessionCompatibilityView {
 	readonly entryId: string;
 	readonly kind: "entry" | "record" | "lane" | "name" | "label" | "durable";
 	readonly value: unknown;
 }
 
-export interface LegacySessionEntryMigrationResultV1 {
+export interface LegacySessionEntryMigrationResult {
 	readonly schemaVersion: 1;
 	readonly sessionVersion: 3;
 	readonly entries: readonly FileEntry[];
-	readonly compatibilityViews: readonly LegacySessionCompatibilityViewV1[];
+	readonly compatibilityViews: readonly LegacySessionCompatibilityView[];
 }
 
-export interface LegacyUnavailableProviderDescriptorViewV1 {
+export interface LegacyUnavailableProviderDescriptorView {
 	readonly schemaVersion: 1;
 	readonly providerKind: "acp" | "sdk";
 	readonly providerId: string;
@@ -117,7 +117,7 @@ const PRIVATE_MIGRATION_PLAN_KEYS = [
 	"result",
 ] as const;
 
-function validatePrivateMigrationPlan<TResult>(plan: PrivateMigrationPlanV1<TResult>): void {
+function validatePrivateMigrationPlan<TResult>(plan: PrivateMigrationPlan<TResult>): void {
 	if (
 		!isRecord(plan) ||
 		!hasExactRequiredKeys(plan, PRIVATE_MIGRATION_PLAN_KEYS) ||
@@ -152,7 +152,7 @@ function validatePrivateMigrationPlan<TResult>(plan: PrivateMigrationPlanV1<TRes
 	}
 }
 
-function markerFromPlan<TResult>(plan: PrivateMigrationPlanV1<TResult>): MigrationAppliedMarkerV1 {
+function markerFromPlan<TResult>(plan: PrivateMigrationPlan<TResult>): MigrationAppliedMarker {
 	return {
 		schemaVersion: 1,
 		migrationId: plan.migrationId,
@@ -165,7 +165,7 @@ function markerFromPlan<TResult>(plan: PrivateMigrationPlanV1<TResult>): Migrati
 	};
 }
 
-function decodeMigrationMarker(value: unknown): MigrationAppliedMarkerV1 {
+function decodeMigrationMarker(value: unknown): MigrationAppliedMarker {
 	if (
 		!isRecord(value) ||
 		!hasExactRequiredKeys(value, [
@@ -191,21 +191,21 @@ function decodeMigrationMarker(value: unknown): MigrationAppliedMarkerV1 {
 	) {
 		throw new PrivateMigrationError("Persisted migration.applied marker has an invalid exact shape");
 	}
-	return value as unknown as MigrationAppliedMarkerV1;
+	return value as unknown as MigrationAppliedMarker;
 }
 
-function markersEqual(left: MigrationAppliedMarkerV1, right: MigrationAppliedMarkerV1): boolean {
+function markersEqual(left: MigrationAppliedMarker, right: MigrationAppliedMarker): boolean {
 	return canonicalFoundationJson(left) === canonicalFoundationJson(right);
 }
 
-export function createPrivateMigrationIdV1(migrationName: string, sourceIdentity: unknown): string {
+export function createPrivateMigrationId(migrationName: string, sourceIdentity: unknown): string {
 	if (!/^[a-z][a-z0-9.-]{0,63}$/u.test(migrationName)) {
 		throw new PrivateMigrationError("Migration name is invalid");
 	}
 	return `migration:${migrationName}:${fingerprintFoundationValue(sourceIdentity).value}`;
 }
 
-export function createPrivateMigrationPlanV1<TResult>(input: {
+export function createPrivateMigrationPlan<TResult>(input: {
 	readonly migrationName: string;
 	readonly sourceIdentity: unknown;
 	readonly sourceKind: string;
@@ -213,7 +213,7 @@ export function createPrivateMigrationPlanV1<TResult>(input: {
 	readonly targetSchemaVersion: number;
 	readonly source: unknown;
 	readonly result: TResult;
-}): PrivateMigrationPlanV1<TResult> {
+}): PrivateMigrationPlan<TResult> {
 	if (
 		typeof input.sourceKind !== "string" ||
 		input.sourceKind.length === 0 ||
@@ -226,7 +226,7 @@ export function createPrivateMigrationPlanV1<TResult>(input: {
 	const result = cloneCanonical(input.result, "Migration result");
 	return {
 		schemaVersion: 1,
-		migrationId: createPrivateMigrationIdV1(input.migrationName, input.sourceIdentity),
+		migrationId: createPrivateMigrationId(input.migrationName, input.sourceIdentity),
 		sourceKind: input.sourceKind,
 		sourceSchemaVersion: input.sourceSchemaVersion,
 		targetSchemaVersion: input.targetSchemaVersion,
@@ -243,10 +243,10 @@ export function createPrivateMigrationPlanV1<TResult>(input: {
  * expectedRevision is required because SessionLedger checks CAS before its own
  * equivalent-payload replay shortcut.
  */
-export async function runPrivateMigrationV1<TResult>(
+export async function runPrivateMigration<TResult>(
 	ledger: SessionLedger,
-	plan: PrivateMigrationPlanV1<TResult>,
-): Promise<PrivateMigrationRunResultV1<TResult>> {
+	plan: PrivateMigrationPlan<TResult>,
+): Promise<PrivateMigrationRunResult<TResult>> {
 	validatePrivateMigrationPlan(plan);
 	const expectedMarker = markerFromPlan(plan);
 	const existing = await ledger.get(MIGRATION_MARKER_OBJECT_TYPE, plan.migrationId);
@@ -410,7 +410,7 @@ function deterministicLegacyEntryId(sessionId: string, index: number, entry: unk
 	throw new PrivateMigrationError("Historical Session entry id digest collision");
 }
 
-function compatibilityView(entry: SessionEntry): LegacySessionCompatibilityViewV1 | undefined {
+function compatibilityView(entry: SessionEntry): LegacySessionCompatibilityView | undefined {
 	if (entry.type !== "custom") return undefined;
 	if (!entry.customType.startsWith(FOUNDATION_CUSTOM_PREFIX)) return undefined;
 	const decoded = decodeReservedFoundationCompatibilityWrapper(entry.customType, entry.data);
@@ -422,7 +422,7 @@ function compatibilityView(entry: SessionEntry): LegacySessionCompatibilityViewV
 }
 
 /** Decode and deterministically apply the existing Session v1 -> v2 -> v3 rules. */
-export function migrateLegacySessionEntriesV1(source: readonly unknown[]): LegacySessionEntryMigrationResultV1 {
+export function migrateLegacySessionEntries(source: readonly unknown[]): LegacySessionEntryMigrationResult {
 	if (source.length === 0) throw new PrivateMigrationError("Historical Session is empty");
 	const decodedHeader = decodeHeader(source[0]);
 	const sessionId = decodedHeader.header.id as string;
@@ -461,7 +461,7 @@ export function migrateLegacySessionEntriesV1(source: readonly unknown[]): Legac
 	const validatedEntries = migratedEntries.map((entry) => decodeCurrentSessionEntry(entry));
 	const compatibilityViews = validatedEntries
 		.map(compatibilityView)
-		.filter((view): view is LegacySessionCompatibilityViewV1 => view !== undefined);
+		.filter((view): view is LegacySessionCompatibilityView => view !== undefined);
 	return {
 		schemaVersion: 1,
 		sessionVersion: CURRENT_HISTORICAL_SESSION_VERSION,
@@ -471,11 +471,11 @@ export function migrateLegacySessionEntriesV1(source: readonly unknown[]): Legac
 }
 
 /** Create a marker-ready plan for one physical Session file identity. */
-export function planLegacySessionEntryMigrationV1(source: readonly unknown[]): PrivateMigrationPlanV1<LegacySessionEntryMigrationResultV1> {
-	const result = migrateLegacySessionEntriesV1(source);
+export function planLegacySessionEntryMigrationV1(source: readonly unknown[]): PrivateMigrationPlan<LegacySessionEntryMigrationResult> {
+	const result = migrateLegacySessionEntries(source);
 	const header = result.entries[0];
 	if (header === undefined || header.type !== "session") throw new PrivateMigrationError("Migrated Session header is missing");
-	return createPrivateMigrationPlanV1({
+	return createPrivateMigrationPlan({
 		migrationName: "session-entry-v1-v3",
 		sourceIdentity: { sessionId: header.id },
 		sourceKind: "session.entry",
@@ -500,7 +500,7 @@ const DESCRIPTOR_KEYS = [
  * Records carrying execution or lifecycle claims necessarily fail exact-shape
  * decoding and are never converted into an Attempt or AgentInstance.
  */
-export function decodeLegacyUnavailableProviderDescriptorV1(value: unknown): LegacyUnavailableProviderDescriptorViewV1 {
+export function decodeLegacyUnavailableProviderDescriptorV1(value: unknown): LegacyUnavailableProviderDescriptorView {
 	if (!isRecord(value)) {
 		throw new PrivateMigrationError("Historical unavailable provider descriptor must use acp or sdk");
 	}
@@ -546,6 +546,6 @@ export function decodeLegacyUnavailableProviderDescriptorV1(value: unknown): Leg
 }
 
 /** Type-only guard to keep FoundationRecord's historical wire version in this private module. */
-export type HistoricalFoundationRecordV1 = FoundationRecord;
+export type HistoricalFoundationRecord = FoundationRecord;
 /** Type-only guard to document that compatibility wrappers remain Session views. */
-export type HistoricalSessionEntryV1 = SessionEntry;
+export type HistoricalSessionEntry = SessionEntry;

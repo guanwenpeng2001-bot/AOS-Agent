@@ -23,10 +23,10 @@ import {
 } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import {
-	WorkerSandboxProviderV1,
-	createWorkerRequestFingerprintV1,
+	WorkerSandboxProvider,
+	createWorkerRequestFingerprint,
 } from "../src/core/worker-sandbox-provider.ts";
-import { WorkerSupervisorV1 } from "../src/core/worker-supervisor.ts";
+import { OperationWorkerSupervisor } from "../src/core/worker-supervisor.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 
 const MODEL = { provider: "anthropic", id: "claude-sonnet-5", thinkingLevel: "high" as const };
@@ -60,8 +60,8 @@ const TASK: TaskEnvelope = {
 	updatedAt: "2026-08-21T00:00:00.000Z",
 };
 
-function operationWorker(runId: string, isRunAccepted: () => boolean = () => true): WorkerSandboxProviderV1 {
-	return new WorkerSandboxProviderV1({
+function operationWorker(runId: string, isRunAccepted: () => boolean = () => true): WorkerSandboxProvider {
+	return new WorkerSandboxProvider({
 		providerId: "sandbox-worker",
 		profile: {
 			profileId: "success",
@@ -97,7 +97,7 @@ function operationWorker(runId: string, isRunAccepted: () => boolean = () => tru
 				capabilitySummary: ["filesystem.read"],
 				deadlineAt: request.deadlineAt ?? Date.now() + 2_000,
 				credentialTargetRefs: [],
-				requestFingerprint: createWorkerRequestFingerprintV1(request),
+				requestFingerprint: createWorkerRequestFingerprint(request),
 			},
 			runAccepted: isRunAccepted(),
 			sessionOwned: true,
@@ -107,7 +107,7 @@ function operationWorker(runId: string, isRunAccepted: () => boolean = () => tru
 			sandboxAuthorized: true,
 			credentialLeaseActive: true,
 		}),
-		createSupervisor: (config) => new WorkerSupervisorV1(config),
+		createSupervisor: (config) => new OperationWorkerSupervisor(config),
 	});
 }
 

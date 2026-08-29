@@ -30,10 +30,10 @@ import {
 	SCHEDULER_CLAIM_MAX_LEASE_TTL_MS,
 	SCHEDULER_CLAIM_MIN_LEASE_TTL_MS,
 	serializeSchedulerOwnershipTransfer,
-	type SchedulerErrorCodeV1,
-	type SchedulerOwnershipTransferV1,
+	type SchedulerErrorCode,
+	type SchedulerOwnershipTransfer,
 } from "./scheduler.ts";
-import type { SchedulerClaimTransferResultV1, SchedulerQueueStore } from "./scheduler-queue.ts";
+import type { SchedulerClaimTransferResult, SchedulerQueueStore } from "./scheduler-queue.ts";
 
 export const SCHEDULER_HANDOFF_OBJECT_TYPE = "scheduler.handoff";
 export const SCHEDULER_HANDOFF_ACCEPTANCE_OBJECT_TYPE = "scheduler.handoff_acceptance";
@@ -41,7 +41,7 @@ export const SCHEDULER_HANDOFF_ACCEPTANCE_OBJECT_TYPE = "scheduler.handoff_accep
 const WRITER_LEASE_REFRESH_MS = 1000;
 const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
-const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
+const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCode, string>> = {
 	scheduler_queue_invalid: "Scheduler queue entry is invalid.",
 	scheduler_queue_conflict: "Scheduler queue business key already has a different payload.",
 	scheduler_claim_conflict: "Scheduler claim conflict: the task already has an active claim.",
@@ -66,20 +66,20 @@ const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
 	scheduler_persistence_failed: "Scheduler durable append failed; re-read current state.",
 };
 
-const RETRYABLE = new Set<SchedulerErrorCodeV1>([
+const RETRYABLE = new Set<SchedulerErrorCode>([
 	"scheduler_claim_conflict",
 	"scheduler_budget_exhausted_wait",
 	"scheduler_backpressure",
 ]);
 
-export type SchedulerCancelSourceDispatchV1 = (
+export type SchedulerCancelSourceDispatch = (
 	queueEntryId: string,
 	fencingToken: string,
 ) => Promise<ResultValue<void, FoundationError>>;
 
-export type SchedulerHandoffTargetAvailableV1 = (ownerId: string) => Promise<boolean>;
+export type SchedulerHandoffTargetAvailable = (ownerId: string) => Promise<boolean>;
 
-export interface SchedulerHandoffControllerOptionsV1 {
+export interface SchedulerHandoffControllerOptions {
 	readonly ledger: DurableLedgerApi;
 	readonly queue: SchedulerQueueStore;
 	readonly sessionId: string;
@@ -87,37 +87,37 @@ export interface SchedulerHandoffControllerOptionsV1 {
 	readonly lane?: string;
 	readonly now?: () => string;
 	readonly writerLeaseTtlMs?: number;
-	readonly cancelSourceDispatch?: SchedulerCancelSourceDispatchV1;
-	readonly targetAvailable?: SchedulerHandoffTargetAvailableV1;
+	readonly cancelSourceDispatch?: SchedulerCancelSourceDispatch;
+	readonly targetAvailable?: SchedulerHandoffTargetAvailable;
 }
 
-export interface SchedulerHandoffOfferRequestV1 {
+export interface SchedulerHandoffOfferRequest {
 	readonly queueEntryId: string;
 	readonly transfer: unknown;
 }
 
-export interface SchedulerHandoffAcceptRequestV1 {
+export interface SchedulerHandoffAcceptRequest {
 	readonly transferId: string;
 	readonly targetClaimId?: string;
 	readonly targetFencingToken?: string;
 	readonly ttlMs?: number;
 }
 
-export type SchedulerHandoffDecisionV1 = "rejected" | "cancelled";
+export type SchedulerHandoffDecision = "rejected" | "cancelled";
 
-export interface SchedulerHandoffResultV1 {
-	readonly transfer: SchedulerOwnershipTransferV1;
-	readonly claimTransfer?: SchedulerClaimTransferResultV1;
+export interface SchedulerHandoffResult {
+	readonly transfer: SchedulerOwnershipTransfer;
+	readonly claimTransfer?: SchedulerClaimTransferResult;
 }
 
-export interface SchedulerHandoffSnapshotV1 {
-	readonly transfers: readonly SchedulerOwnershipTransferV1[];
-	readonly acceptances: readonly SchedulerHandoffAcceptanceV1[];
+export interface SchedulerHandoffSnapshot {
+	readonly transfers: readonly SchedulerOwnershipTransfer[];
+	readonly acceptances: readonly SchedulerHandoffAcceptance[];
 }
 
-export type SchedulerHandoffAcceptanceStateV1 = "accepting" | "source_cancelled" | "claim_transferred";
+export type SchedulerHandoffAcceptanceState = "accepting" | "source_cancelled" | "claim_transferred";
 
-export interface SchedulerHandoffAcceptanceV1 {
+export interface SchedulerHandoffAcceptance {
 	readonly schemaVersion: 1;
 	readonly transferId: string;
 	readonly queueEntryId: string;
@@ -127,7 +127,7 @@ export interface SchedulerHandoffAcceptanceV1 {
 	readonly targetClaimId: string;
 	readonly targetFencingToken: string;
 	readonly ttlMs?: number;
-	readonly state: SchedulerHandoffAcceptanceStateV1;
+	readonly state: SchedulerHandoffAcceptanceState;
 	readonly startedAt: string;
 	readonly revision: number;
 }
@@ -135,7 +135,7 @@ export interface SchedulerHandoffAcceptanceV1 {
 interface SchedulerHandoffRecordV1 {
 	readonly schemaVersion: 1;
 	readonly queueEntryId: string;
-	readonly transfer: SchedulerOwnershipTransferV1;
+	readonly transfer: SchedulerOwnershipTransfer;
 }
 
 const HANDOFF_RECORD_KEYS = new Set(["schemaVersion", "queueEntryId", "transfer"]);
@@ -154,11 +154,11 @@ const ACCEPTANCE_KEYS = new Set([
 	"revision",
 ]);
 
-function schedulerError(code: SchedulerErrorCodeV1): FoundationError {
+function schedulerError(code: SchedulerErrorCode): FoundationError {
 	return new FoundationError(code, ERROR_MESSAGES[code], { retryable: RETRYABLE.has(code) });
 }
 
-function fail<T>(code: SchedulerErrorCodeV1): ResultValue<T, FoundationError> {
+function fail<T>(code: SchedulerErrorCode): ResultValue<T, FoundationError> {
 	return Result.err(schedulerError(code));
 }
 
@@ -213,8 +213,8 @@ function parseHandoffRecord(value: unknown): ResultValue<SchedulerHandoffRecordV
 	return Result.ok({ schemaVersion: 1, queueEntryId: value.queueEntryId, transfer: transfer.value });
 }
 
-function serializeAcceptance(value: SchedulerHandoffAcceptanceV1): SchedulerHandoffAcceptanceV1 {
-	const acceptance: SchedulerHandoffAcceptanceV1 = {
+function serializeAcceptance(value: SchedulerHandoffAcceptance): SchedulerHandoffAcceptance {
+	const acceptance: SchedulerHandoffAcceptance = {
 		schemaVersion: 1,
 		transferId: value.transferId,
 		queueEntryId: value.queueEntryId,
@@ -233,7 +233,7 @@ function serializeAcceptance(value: SchedulerHandoffAcceptanceV1): SchedulerHand
 	return acceptance;
 }
 
-function parseAcceptance(value: unknown): ResultValue<SchedulerHandoffAcceptanceV1, FoundationError> {
+function parseAcceptance(value: unknown): ResultValue<SchedulerHandoffAcceptance, FoundationError> {
 	if (
 		!isRecord(value) ||
 		Object.keys(value).some((key) => !ACCEPTANCE_KEYS.has(key)) ||
@@ -266,10 +266,10 @@ function parseAcceptance(value: unknown): ResultValue<SchedulerHandoffAcceptance
 	}
 	const expectedRevision = value.state === "accepting" ? 0 : value.state === "source_cancelled" ? 1 : 2;
 	if (value.revision !== expectedRevision) return fail("scheduler_handoff_invalid");
-	return Result.ok(serializeAcceptance(value as unknown as SchedulerHandoffAcceptanceV1));
+	return Result.ok(serializeAcceptance(value as unknown as SchedulerHandoffAcceptance));
 }
 
-function sameAcceptanceIdentity(left: SchedulerHandoffAcceptanceV1, right: SchedulerHandoffAcceptanceV1): boolean {
+function sameAcceptanceIdentity(left: SchedulerHandoffAcceptance, right: SchedulerHandoffAcceptance): boolean {
 	return (
 		left.transferId === right.transferId &&
 		left.queueEntryId === right.queueEntryId &&
@@ -284,8 +284,8 @@ function sameAcceptanceIdentity(left: SchedulerHandoffAcceptanceV1, right: Sched
 }
 
 function acceptanceMatchesRequest(
-	acceptance: SchedulerHandoffAcceptanceV1,
-	request: SchedulerHandoffAcceptRequestV1,
+	acceptance: SchedulerHandoffAcceptance,
+	request: SchedulerHandoffAcceptRequest,
 ): boolean {
 	return (
 		(request.targetClaimId === undefined || request.targetClaimId === acceptance.targetClaimId) &&
@@ -295,7 +295,7 @@ function acceptanceMatchesRequest(
 	);
 }
 
-function handoffEventPayload(transfer: SchedulerOwnershipTransferV1): SchedulerHandoffEventPayload {
+function handoffEventPayload(transfer: SchedulerOwnershipTransfer): SchedulerHandoffEventPayload {
 	const payload: {
 		schemaVersion: 1;
 		transferId: string;
@@ -327,15 +327,15 @@ export class SchedulerHandoffController {
 	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
 	private readonly writerLeaseTtlMs: number;
-	private readonly cancelSourceDispatch: SchedulerCancelSourceDispatchV1 | undefined;
-	private readonly targetAvailable: SchedulerHandoffTargetAvailableV1 | undefined;
+	private readonly cancelSourceDispatch: SchedulerCancelSourceDispatch | undefined;
+	private readonly targetAvailable: SchedulerHandoffTargetAvailable | undefined;
 	private writerLease: LedgerWriterLease | undefined;
 	private transfers = new Map<string, SchedulerHandoffRecordV1>();
-	private acceptances = new Map<string, SchedulerHandoffAcceptanceV1>();
+	private acceptances = new Map<string, SchedulerHandoffAcceptance>();
 	private objectRevisions = new Map<string, number>();
 	private mutationTail: Promise<void> = Promise.resolve();
 
-	constructor(options: SchedulerHandoffControllerOptionsV1) {
+	constructor(options: SchedulerHandoffControllerOptions) {
 		this.clock = runtimeClockFor(options);
 		this.ledger = options.ledger;
 		this.queue = options.queue;
@@ -348,7 +348,7 @@ export class SchedulerHandoffController {
 		this.targetAvailable = options.targetAvailable;
 	}
 
-	async reload(): Promise<ResultValue<SchedulerHandoffSnapshotV1, FoundationError>> {
+	async reload(): Promise<ResultValue<SchedulerHandoffSnapshot, FoundationError>> {
 		try {
 			const records = await this.ledger.findFoundationRecords({ order: "oldestFirst", includePruned: true });
 			return this.replay(records);
@@ -358,14 +358,14 @@ export class SchedulerHandoffController {
 	}
 
 	async offer(
-		request: SchedulerHandoffOfferRequestV1,
-	): Promise<ResultValue<SchedulerHandoffResultV1, FoundationError>> {
+		request: SchedulerHandoffOfferRequest,
+	): Promise<ResultValue<SchedulerHandoffResult, FoundationError>> {
 		return this.withDurableMutation(() => this.offerUnlocked(request));
 	}
 
 	private async offerUnlocked(
-		request: SchedulerHandoffOfferRequestV1,
-	): Promise<ResultValue<SchedulerHandoffResultV1, FoundationError>> {
+		request: SchedulerHandoffOfferRequest,
+	): Promise<ResultValue<SchedulerHandoffResult, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		if (!isSafeIdentifier(request.queueEntryId)) return fail("scheduler_handoff_invalid");
@@ -414,14 +414,14 @@ export class SchedulerHandoffController {
 	}
 
 	async accept(
-		request: SchedulerHandoffAcceptRequestV1,
-	): Promise<ResultValue<SchedulerHandoffResultV1, FoundationError>> {
+		request: SchedulerHandoffAcceptRequest,
+	): Promise<ResultValue<SchedulerHandoffResult, FoundationError>> {
 		return this.withDurableMutation(() => this.acceptUnlocked(request));
 	}
 
 	private async acceptUnlocked(
-		request: SchedulerHandoffAcceptRequestV1,
-	): Promise<ResultValue<SchedulerHandoffResultV1, FoundationError>> {
+		request: SchedulerHandoffAcceptRequest,
+	): Promise<ResultValue<SchedulerHandoffResult, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const record = this.transfers.get(request.transferId);
@@ -511,8 +511,8 @@ export class SchedulerHandoffController {
 
 	async decide(
 		transferId: string,
-		decision: SchedulerHandoffDecisionV1,
-	): Promise<ResultValue<SchedulerHandoffResultV1, FoundationError>> {
+		decision: SchedulerHandoffDecision,
+	): Promise<ResultValue<SchedulerHandoffResult, FoundationError>> {
 		return this.withDurableMutation(async () => {
 			const loaded = await this.reload();
 			if (!loaded.ok) return loaded;
@@ -520,11 +520,11 @@ export class SchedulerHandoffController {
 		});
 	}
 
-	async recover(): Promise<ResultValue<readonly SchedulerHandoffResultV1[], FoundationError>> {
+	async recover(): Promise<ResultValue<readonly SchedulerHandoffResult[], FoundationError>> {
 		return this.withDurableMutation(async () => {
 			const loaded = await this.reload();
 			if (!loaded.ok) return loaded;
-			const outcomes: SchedulerHandoffResultV1[] = [];
+			const outcomes: SchedulerHandoffResult[] = [];
 			for (const record of [...this.transfers.values()]) {
 				if (record.transfer.state !== "offered") continue;
 				const acceptance = this.acceptances.get(record.transfer.transferId);
@@ -543,14 +543,14 @@ export class SchedulerHandoffController {
 		});
 	}
 
-	async snapshot(): Promise<ResultValue<SchedulerHandoffSnapshotV1, FoundationError>> {
+	async snapshot(): Promise<ResultValue<SchedulerHandoffSnapshot, FoundationError>> {
 		return this.reload();
 	}
 
 	private async resumeAcceptance(
 		record: SchedulerHandoffRecordV1,
-		initial: SchedulerHandoffAcceptanceV1,
-	): Promise<ResultValue<SchedulerHandoffResultV1, FoundationError>> {
+		initial: SchedulerHandoffAcceptance,
+	): Promise<ResultValue<SchedulerHandoffResult, FoundationError>> {
 		let acceptance = initial;
 		if (acceptance.state === "accepting") {
 			if (acceptance.sourceAttemptId !== undefined) {
@@ -566,7 +566,7 @@ export class SchedulerHandoffController {
 				}
 				if (!cancelled.ok) return fail("scheduler_attempt_recovery_failed");
 			}
-			const sourceCancelled: SchedulerHandoffAcceptanceV1 = {
+			const sourceCancelled: SchedulerHandoffAcceptance = {
 				...serializeAcceptance(acceptance),
 				state: "source_cancelled",
 				revision: acceptance.revision + 1,
@@ -589,7 +589,7 @@ export class SchedulerHandoffController {
 		});
 		if (!claimTransfer.ok) return claimTransfer;
 		if (acceptance.state === "source_cancelled") {
-			const claimTransferred: SchedulerHandoffAcceptanceV1 = {
+			const claimTransferred: SchedulerHandoffAcceptance = {
 				...serializeAcceptance(acceptance),
 				state: "claim_transferred",
 				revision: acceptance.revision + 1,
@@ -605,7 +605,7 @@ export class SchedulerHandoffController {
 		if (latest.transfer.state === "accepted") {
 			return Result.ok({ transfer: latest.transfer, claimTransfer: claimTransfer.value });
 		}
-		const acceptedCandidate: SchedulerOwnershipTransferV1 = {
+		const acceptedCandidate: SchedulerOwnershipTransfer = {
 			...serializeSchedulerOwnershipTransfer(latest.transfer),
 			state: "accepted",
 			decidedAt: acceptance.startedAt,
@@ -626,16 +626,16 @@ export class SchedulerHandoffController {
 
 	private async decideUnlocked(
 		transferId: string,
-		decision: SchedulerHandoffDecisionV1 | "timed_out",
+		decision: SchedulerHandoffDecision | "timed_out",
 		decidedAt: string,
-	): Promise<ResultValue<SchedulerHandoffResultV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerHandoffResult, FoundationError>> {
 		const record = this.transfers.get(transferId);
 		if (record === undefined) return fail("scheduler_not_found");
 		if (record.transfer.state === decision) return Result.ok({ transfer: record.transfer });
 		if (record.transfer.state !== "offered" || this.acceptances.has(transferId)) {
 			return fail("scheduler_handoff_invalid");
 		}
-		const candidate: SchedulerOwnershipTransferV1 = {
+		const candidate: SchedulerOwnershipTransfer = {
 			...serializeSchedulerOwnershipTransfer(record.transfer),
 			state: decision,
 			decidedAt,
@@ -654,7 +654,7 @@ export class SchedulerHandoffController {
 		return Result.ok({ transfer: applied.value });
 	}
 
-	private replay(records: readonly FoundationRecord[]): ResultValue<SchedulerHandoffSnapshotV1, FoundationError> {
+	private replay(records: readonly FoundationRecord[]): ResultValue<SchedulerHandoffSnapshot, FoundationError> {
 		this.transfers = new Map();
 		this.acceptances = new Map();
 		this.objectRevisions = new Map();
@@ -759,7 +759,7 @@ export class SchedulerHandoffController {
 	}
 
 	private async writeAcceptance(
-		acceptance: SchedulerHandoffAcceptanceV1,
+		acceptance: SchedulerHandoffAcceptance,
 	): Promise<ResultValue<void, FoundationError>> {
 		const expectedRevision =
 			this.objectRevisions.get(this.objectKey(SCHEDULER_HANDOFF_ACCEPTANCE_OBJECT_TYPE, acceptance.transferId)) ?? 0;
@@ -780,7 +780,7 @@ export class SchedulerHandoffController {
 	}
 
 	private async writeHandoffEvent(
-		transfer: SchedulerOwnershipTransferV1,
+		transfer: SchedulerOwnershipTransfer,
 	): Promise<ResultValue<void, FoundationError>> {
 		let sequence = 1;
 		try {

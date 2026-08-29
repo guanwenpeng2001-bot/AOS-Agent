@@ -17,7 +17,7 @@ function validIdentity(value: string): boolean {
 	return IDENTITY_PATTERN.test(value);
 }
 
-export function createChildMemoryScopeV1(
+export function createChildMemoryScope(
 	parentStore: ScopedMemoryStore,
 	childAgentInstanceId: string,
 	parentAgentInstanceId: string,
@@ -50,7 +50,7 @@ export function createChildMemoryScopeV1(
 	});
 }
 
-export async function cleanupChildMemoryScopeV1(
+export async function cleanupChildMemoryScope(
 	store: ScopedMemoryStore,
 ): Promise<ResultValue<number, FoundationError>> {
 	if (

@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
-	AgentHarnessChildAgentEntryRuntimeV1,
-	runChildAgentEntryV1,
-	type ChildAgentEntryRuntimeV1,
+	AgentHarnessChildAgentEntryRuntime,
+	runChildAgentProcess,
+	type ChildAgentEntryRuntime,
 } from "../src/child-agent-entry.ts";
 import {
 	createAgentInstance,
@@ -46,7 +46,7 @@ import {
 } from "@aos-agent/agent-core";
 import { createAssistantMessageEventStream, createModels, fauxProvider } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
-import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
 import {
 	CHILD_BINDING_PROJECTION_FIELDS,
 	CHILD_BINDING_PROJECTION_OBJECT_TYPE,
@@ -54,22 +54,22 @@ import {
 import {
 	CHILD_AGENT_PROTOCOL_FEATURES,
 	CHILD_AGENT_PROTOCOL_VERSION,
-	parseChildAgentFrameV1,
-	serializeChildAgentFrameLineV1,
-	type ChildAgentInitializeRequestV1,
-	type ChildAgentRequestFrameV1,
+	parseChildAgentFrame,
+	serializeChildAgentFrameLine,
+	type ChildAgentInitializeRequest,
+	type ChildAgentRequestFrame,
 } from "../src/core/subagent-fork-protocol.ts";
 import {
-	ForkChildAgentProviderV1,
-	type ChildAgentProcessV1,
-	type ChildAgentProcessSpawnSpecV1,
+	ForkChildAgentProvider,
+	type ChildAgentProcess,
+	type ChildAgentProcessSpawnSpec,
 } from "../src/core/subagent-fork-provider.ts";
 import {
-	SubagentSupervisorV1,
-	type PlanSubagentSpawnInputV1,
-	type SubagentSpawnPlanV1,
+	SubagentSupervisor,
+	type PlanSubagentSpawnInput,
+	type SubagentSpawnPlan,
 } from "../src/core/subagent-supervisor.ts";
-import type { LoadParentContextV1 } from "../src/core/subagent-provider-context.ts";
+import type { LoadParentContext } from "../src/core/subagent-provider-context.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const PROVIDER_ID = "native.fork";
@@ -167,7 +167,7 @@ function rootAgent(agentInstanceId: string, taskId: string, roleRevision: RoleRe
 	return result.value;
 }
 
-const descriptor: SubagentProviderDescriptorV1 = {
+const descriptor: SubagentProviderDescriptor = {
 	schemaVersion: 1,
 	providerKind: "fork",
 	descriptor: { schemaVersion: 1, providerId: PROVIDER_ID, providerClass: "agent" },
@@ -228,14 +228,14 @@ type FakeMode =
 	| "cancel-succeeded"
 	| "cancel-write-failure";
 
-class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
+class FakeChild extends EventEmitter implements ChildAgentProcess {
 	readonly stdin: PassThrough;
 	readonly stdout = new PassThrough();
 	readonly stderr = new PassThrough();
 	readonly mode: FakeMode;
 	readonly pid: number;
 	killed = false;
-	initialize: ChildAgentInitializeRequestV1 | undefined;
+	initialize: ChildAgentInitializeRequest | undefined;
 	lastParseError: string | undefined;
 	turnRequestId: string | undefined;
 	cancelReceived = false;
@@ -281,7 +281,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 	}
 
 	private handleLine(line: string): void {
-		const parsed = parseChildAgentFrameV1(line);
+		const parsed = parseChildAgentFrame(line);
 		if (!parsed.ok) {
 			this.lastParseError = parsed.error.message;
 			return;
@@ -301,9 +301,9 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 		}
 	}
 
-	private dispatchFrame(frame: ChildAgentRequestFrameV1): void {
+	private dispatchFrame(frame: ChildAgentRequestFrame): void {
 		if (frame.type === "initialize") {
-			this.initialize = frame as ChildAgentInitializeRequestV1;
+			this.initialize = frame as ChildAgentInitializeRequest;
 			if (this.mode === "exit") {
 				this.emit("exit", 1, null);
 				return;
@@ -317,7 +317,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 				return;
 			}
 			this.emitLine(
-				serializeChildAgentFrameLineV1({
+				serializeChildAgentFrameLine({
 					type: "ready",
 					requestId: frame.requestId,
 					spawnId: frame.spawnId,
@@ -335,7 +335,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 			if (this.initialize === undefined || frame.attemptId === undefined) return;
 			const requestId = frame.requestId;
 			this.emitLine(
-				serializeChildAgentFrameLineV1({
+				serializeChildAgentFrameLine({
 					type: "turn.started",
 					requestId,
 					spawnId: frame.spawnId,
@@ -350,7 +350,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 				this.mode === "cancel-write-failure"
 			) return;
 			this.emitLine(
-				serializeChildAgentFrameLineV1({
+				serializeChildAgentFrameLine({
 					type: "turn.completed",
 					requestId,
 					spawnId: frame.spawnId,
@@ -364,7 +364,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 				this.stdout.write(`${JSON.stringify({ type: "receipt", requestId, receipt: this.receipt(true) })}\n`);
 				return;
 			}
-			this.emitLine(serializeChildAgentFrameLineV1({ type: "receipt", requestId, receipt: this.receipt(false) }));
+			this.emitLine(serializeChildAgentFrameLine({ type: "receipt", requestId, receipt: this.receipt(false) }));
 		}
 		if (frame.type === "cancel") {
 			this.cancelReceived = true;
@@ -372,7 +372,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 			const requestId = this.turnRequestId ?? this.initialize.requestId;
 			if (this.mode === "cancel-succeeded") {
 				this.emitLine(
-					serializeChildAgentFrameLineV1({
+					serializeChildAgentFrameLine({
 						type: "turn.completed",
 						requestId,
 						spawnId: frame.spawnId,
@@ -382,12 +382,12 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 						at: NOW,
 					}),
 				);
-				this.emitLine(serializeChildAgentFrameLineV1({ type: "receipt", requestId, receipt: this.receipt(false) }));
+				this.emitLine(serializeChildAgentFrameLine({ type: "receipt", requestId, receipt: this.receipt(false) }));
 				return;
 			}
 			if (this.mode === "cancel-receipt-only") {
 				this.emitLine(
-					serializeChildAgentFrameLineV1({
+					serializeChildAgentFrameLine({
 						type: "receipt",
 						requestId,
 						receipt: this.cancelledReceipt(),
@@ -396,7 +396,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 				return;
 			}
 			this.emitLine(
-				serializeChildAgentFrameLineV1({
+				serializeChildAgentFrameLine({
 					type: "turn.completed",
 					requestId,
 					spawnId: frame.spawnId,
@@ -407,7 +407,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 				}),
 			);
 			this.emitLine(
-				serializeChildAgentFrameLineV1({
+				serializeChildAgentFrameLine({
 					type: "receipt",
 					requestId,
 					receipt: this.cancelledReceipt(),
@@ -418,7 +418,7 @@ class FakeChild extends EventEmitter implements ChildAgentProcessV1 {
 			this.closeReceived = true;
 			if (this.mode === "hang-close") return;
 			this.emitLine(
-				serializeChildAgentFrameLineV1({
+				serializeChildAgentFrameLine({
 					type: "closed",
 					requestId: this.mode === "mismatched-closed" ? `${frame.requestId}-other` : frame.requestId,
 					spawnId: frame.spawnId,
@@ -488,7 +488,7 @@ interface Fixture {
 	readonly session: Session;
 	readonly ledger: SessionLedger;
 	readonly ledgerForLane: (laneId: string) => SessionLedger;
-	readonly supervisor: SubagentSupervisorV1;
+	readonly supervisor: SubagentSupervisor;
 	readonly roleRevision: RoleRevision;
 	readonly modelProfile: ModelProfile;
 }
@@ -509,7 +509,7 @@ function fixture(): Fixture {
 		session,
 		ledger,
 		ledgerForLane,
-		supervisor: new SubagentSupervisorV1({
+		supervisor: new SubagentSupervisor({
 			schemaVersion: 1,
 			ledger,
 			ledgerForLane,
@@ -527,7 +527,7 @@ function fixture(): Fixture {
 	};
 }
 
-async function planInput(value: Fixture, overrides: Partial<PlanSubagentSpawnInputV1> = {}): Promise<PlanSubagentSpawnInputV1> {
+async function planInput(value: Fixture, overrides: Partial<PlanSubagentSpawnInput> = {}): Promise<PlanSubagentSpawnInput> {
 	const origin = overrides.originParentAgentInstance ?? rootAgent("parent-1", "task-parent", value.roleRevision);
 	const lineageParent = overrides.lineageParentAgentInstance ?? origin;
 	const childTask = overrides.request?.taskEnvelope ?? task(`task-child-${overrides.childAgentInstanceId ?? "1"}`);
@@ -704,7 +704,7 @@ function settlementFor(value: Fixture, laneId: string): LayeredResultSettlement 
 	});
 }
 
-async function planChild(value: Fixture, childAgentInstanceId = "child-1"): Promise<SubagentSpawnPlanV1> {
+async function planChild(value: Fixture, childAgentInstanceId = "child-1"): Promise<SubagentSpawnPlan> {
 	const input = await planInput(value, { childAgentInstanceId });
 	const planned = await value.supervisor.planSpawn(input);
 	if (!planned.ok) throw planned.error;
@@ -714,11 +714,11 @@ async function planChild(value: Fixture, childAgentInstanceId = "child-1"): Prom
 function createProvider(
 	value: Fixture,
 	quota: RecordingQuota,
-	mode: FakeMode | ((spec: ChildAgentProcessSpawnSpecV1, index: number) => FakeChild),
-	loadParentContext: LoadParentContextV1 = async () => Result.err(new FoundationError("subagent_context_fork_invalid", "no parent context")),
-): { readonly provider: ForkChildAgentProviderV1; readonly children: FakeChild[] } {
+	mode: FakeMode | ((spec: ChildAgentProcessSpawnSpec, index: number) => FakeChild),
+	loadParentContext: LoadParentContext = async () => Result.err(new FoundationError("subagent_context_fork_invalid", "no parent context")),
+): { readonly provider: ForkChildAgentProvider; readonly children: FakeChild[] } {
 	const children: FakeChild[] = [];
-	const provider = new ForkChildAgentProviderV1({
+	const provider = new ForkChildAgentProvider({
 		schemaVersion: 1,
 		providerId: PROVIDER_ID,
 		supervisor: value.supervisor,
@@ -753,7 +753,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 500): Promise<voi
 }
 
 function childEntryInitialize(): {
-	readonly initialize: ChildAgentInitializeRequestV1;
+	readonly initialize: ChildAgentInitializeRequest;
 	readonly succeeded: AttemptReceipt;
 } {
 	const correlation = {
@@ -768,7 +768,7 @@ function childEntryInitialize(): {
 		providerId: PROVIDER_ID,
 		revision: 0,
 	};
-	const initialize: ChildAgentInitializeRequestV1 = {
+	const initialize: ChildAgentInitializeRequest = {
 		type: "initialize",
 		requestId: "initialize:spawn-entry:1",
 		spawnId: "spawn-entry",
@@ -837,7 +837,7 @@ function childEntryInitialize(): {
 	return { initialize, succeeded };
 }
 
-describe("ForkChildAgentProviderV1", () => {
+describe("ForkChildAgentProvider", () => {
 	it("handshakes, runs a turn, and settles a legal agent_executor receipt through public gates", async () => {
 		const value = fixture();
 		const planned = await planChild(value);
@@ -1156,7 +1156,7 @@ describe("ForkChildAgentProviderV1", () => {
 			while (newline >= 0) {
 				const line = outputBuffer.slice(0, newline + 1);
 				outputBuffer = outputBuffer.slice(newline + 1);
-				const parsed = parseChildAgentFrameV1(line);
+				const parsed = parseChildAgentFrame(line);
 				if (parsed.ok) frames.push(parsed.value);
 				newline = outputBuffer.indexOf("\n");
 			}
@@ -1170,7 +1170,7 @@ describe("ForkChildAgentProviderV1", () => {
 		const turnHold = new Promise<void>((resolve) => {
 			releaseTurn = resolve;
 		});
-		const runtime: ChildAgentEntryRuntimeV1 = {
+		const runtime: ChildAgentEntryRuntime = {
 			initialize: async () => Result.ok(undefined),
 			turn: async (_frame, signal) => {
 				turnStarted = true;
@@ -1191,17 +1191,17 @@ describe("ForkChildAgentProviderV1", () => {
 			},
 			close: async () => undefined,
 		};
-		const running = runChildAgentEntryV1({
+		const running = runChildAgentProcess({
 			runtime,
 			input,
 			output,
 			diagnostic,
 			now: () => NOW,
 		});
-		input.write(serializeChildAgentFrameLineV1(initialize));
+		input.write(serializeChildAgentFrameLine(initialize));
 		await waitUntil(() => frames.some((frame) => frame.type === "ready"));
 		input.write(
-			serializeChildAgentFrameLineV1({
+			serializeChildAgentFrameLine({
 				type: "turn",
 				requestId: "turn:spawn-entry:1",
 				spawnId: "spawn-entry",
@@ -1211,7 +1211,7 @@ describe("ForkChildAgentProviderV1", () => {
 		);
 		await waitUntil(() => turnStarted);
 		input.write(
-			serializeChildAgentFrameLineV1({
+			serializeChildAgentFrameLine({
 				type: "cancel",
 				requestId: "cancel:spawn-entry:1",
 				spawnId: "spawn-entry",
@@ -1235,7 +1235,7 @@ describe("ForkChildAgentProviderV1", () => {
 			frames.findIndex((frame) => frame.type === "receipt"),
 		);
 		input.write(
-			serializeChildAgentFrameLineV1({
+			serializeChildAgentFrameLine({
 				type: "close",
 				requestId: "close:spawn-entry:1",
 				spawnId: "spawn-entry",
@@ -1257,7 +1257,7 @@ describe("ForkChildAgentProviderV1", () => {
 			outputBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
 			let newline = outputBuffer.indexOf("\n");
 			while (newline >= 0) {
-				const parsed = parseChildAgentFrameV1(outputBuffer.slice(0, newline + 1));
+				const parsed = parseChildAgentFrame(outputBuffer.slice(0, newline + 1));
 				outputBuffer = outputBuffer.slice(newline + 1);
 				if (parsed.ok) frames.push(parsed.value);
 				newline = outputBuffer.indexOf("\n");
@@ -1271,7 +1271,7 @@ describe("ForkChildAgentProviderV1", () => {
 				error: { code: "child_failed", message: "Child turn failed", retryable: false },
 			}
 			: { ...succeeded, status };
-		const runtime: ChildAgentEntryRuntimeV1 = {
+		const runtime: ChildAgentEntryRuntime = {
 			initialize: async () => Result.ok(undefined),
 			turn: async () => Result.ok({
 				receipt,
@@ -1281,10 +1281,10 @@ describe("ForkChildAgentProviderV1", () => {
 			cancel: async () => Result.ok(undefined),
 			close: async () => undefined,
 		};
-		const running = runChildAgentEntryV1({ runtime, input, output, now: () => NOW });
-		input.write(serializeChildAgentFrameLineV1(initialize));
+		const running = runChildAgentProcess({ runtime, input, output, now: () => NOW });
+		input.write(serializeChildAgentFrameLine(initialize));
 		await waitUntil(() => frames.some((frame) => frame.type === "ready"));
-		input.write(serializeChildAgentFrameLineV1({
+		input.write(serializeChildAgentFrameLine({
 			type: "turn",
 			requestId: "turn:spawn-entry:1",
 			spawnId: initialize.spawnId,
@@ -1294,7 +1294,7 @@ describe("ForkChildAgentProviderV1", () => {
 		await waitUntil(() => frames.some((frame) => frame.type === "receipt"));
 		expect(frames.find((frame) => frame.type === "turn.completed")?.stopReason).toBe(expectedStopReason);
 		expect(frames.find((frame) => frame.type === "receipt")?.receipt?.status).toBe(status);
-		input.write(serializeChildAgentFrameLineV1({
+		input.write(serializeChildAgentFrameLine({
 			type: "close",
 			requestId: "close:spawn-entry:1",
 			spawnId: initialize.spawnId,
@@ -1316,7 +1316,7 @@ describe("ForkChildAgentProviderV1", () => {
 			sideEffectState: "none",
 			execute: async () => ({ content: [{ type: "text", text: "echoed" }], details: {} }),
 		};
-		const runtime = new AgentHarnessChildAgentEntryRuntimeV1({
+		const runtime = new AgentHarnessChildAgentEntryRuntime({
 			models,
 			tools: [tool],
 			retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 },
@@ -1394,7 +1394,7 @@ describe("ForkChildAgentProviderV1", () => {
 				return { content: [{ type: "text", text: "mutated" }], details: {} };
 			},
 		};
-		const runtime = new AgentHarnessChildAgentEntryRuntimeV1({
+		const runtime = new AgentHarnessChildAgentEntryRuntime({
 			models,
 			tools: [tool],
 			streamFunction: (model) => {
@@ -1466,7 +1466,7 @@ describe("ForkChildAgentProviderV1", () => {
 			while (newline >= 0) {
 				const line = outputBuffer.slice(0, newline + 1);
 				outputBuffer = outputBuffer.slice(newline + 1);
-				const parsed = parseChildAgentFrameV1(line);
+				const parsed = parseChildAgentFrame(line);
 				if (parsed.ok) frames.push(parsed.value);
 				newline = outputBuffer.indexOf("\n");
 			}
@@ -1478,11 +1478,11 @@ describe("ForkChildAgentProviderV1", () => {
 		const turnHold = new Promise<void>((resolve) => {
 			releaseTurn = resolve;
 		});
-		let settleCancel: (value: Awaited<ReturnType<ChildAgentEntryRuntimeV1["cancel"]>>) => void = () => undefined;
-		const cancelHold = new Promise<Awaited<ReturnType<ChildAgentEntryRuntimeV1["cancel"]>>>((resolve) => {
+		let settleCancel: (value: Awaited<ReturnType<ChildAgentEntryRuntime["cancel"]>>) => void = () => undefined;
+		const cancelHold = new Promise<Awaited<ReturnType<ChildAgentEntryRuntime["cancel"]>>>((resolve) => {
 			settleCancel = resolve;
 		});
-		const runtime: ChildAgentEntryRuntimeV1 = {
+		const runtime: ChildAgentEntryRuntime = {
 			initialize: async () => Result.ok(undefined),
 			turn: async () => {
 				turnStarted = true;
@@ -1499,17 +1499,17 @@ describe("ForkChildAgentProviderV1", () => {
 			},
 			close: async () => undefined,
 		};
-		const running = runChildAgentEntryV1({
+		const running = runChildAgentProcess({
 			runtime,
 			input,
 			output,
 			diagnostic,
 			now: () => NOW,
 		});
-		input.write(serializeChildAgentFrameLineV1(initialize));
+		input.write(serializeChildAgentFrameLine(initialize));
 		await waitUntil(() => frames.some((frame) => frame.type === "ready"));
 		input.write(
-			serializeChildAgentFrameLineV1({
+			serializeChildAgentFrameLine({
 				type: "turn",
 				requestId: "turn:spawn-entry:1",
 				spawnId: "spawn-entry",
@@ -1519,7 +1519,7 @@ describe("ForkChildAgentProviderV1", () => {
 		);
 		await waitUntil(() => turnStarted);
 		input.write(
-			serializeChildAgentFrameLineV1({
+			serializeChildAgentFrameLine({
 				type: "cancel",
 				requestId: "cancel:spawn-entry:1",
 				spawnId: "spawn-entry",
@@ -1643,7 +1643,7 @@ describe("ForkChildAgentProviderV1", () => {
 		const value = fixture();
 		expect(
 			() =>
-				new ForkChildAgentProviderV1({
+				new ForkChildAgentProvider({
 					schemaVersion: 1,
 					providerId: PROVIDER_ID,
 					supervisor: value.supervisor,
@@ -1657,7 +1657,7 @@ describe("ForkChildAgentProviderV1", () => {
 		).toThrowError(/invalid/i);
 		expect(
 			() =>
-				new ForkChildAgentProviderV1({
+				new ForkChildAgentProvider({
 					schemaVersion: 1,
 					providerId: PROVIDER_ID,
 					supervisor: value.supervisor,
@@ -1695,7 +1695,7 @@ describe("ForkChildAgentProviderV1", () => {
 			budget: { maxTokens: 1000 },
 		});
 		const outputs: string[] = [];
-		const provider = new ForkChildAgentProviderV1({
+		const provider = new ForkChildAgentProvider({
 			schemaVersion: 1,
 			providerId: PROVIDER_ID,
 			supervisor: value.supervisor,

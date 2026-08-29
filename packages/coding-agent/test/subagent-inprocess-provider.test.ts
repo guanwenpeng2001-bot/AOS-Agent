@@ -43,15 +43,15 @@ import {
 } from "@aos-agent/agent-core";
 import { createAssistantMessageEventStream, createModels, fauxProvider } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
-import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
 import {
-	InProcessChildAgentProviderV1,
-	type ChildAgentHarnessCreateInputV1,
+	InProcessChildAgentProvider,
+	type ChildAgentHarnessCreateInput,
 } from "../src/core/subagent-inprocess-provider.ts";
 import {
-	SubagentSupervisorV1,
-	type PlanSubagentSpawnInputV1,
-	type SubagentSpawnPlanV1,
+	SubagentSupervisor,
+	type PlanSubagentSpawnInput,
+	type SubagentSpawnPlan,
 } from "../src/core/subagent-supervisor.ts";
 
 
@@ -144,7 +144,7 @@ function rootAgent(agentInstanceId: string, taskId: string, roleRevision: RoleRe
 	return result.value;
 }
 
-const descriptor: SubagentProviderDescriptorV1 = {
+const descriptor: SubagentProviderDescriptor = {
 	schemaVersion: 1,
 	providerKind: "in_process",
 	descriptor: { schemaVersion: 1, providerId: PROVIDER_ID, providerClass: "agent" },
@@ -247,7 +247,7 @@ interface Fixture {
 	readonly session: Session;
 	readonly ledger: SessionLedger;
 	readonly ledgerForLane: (laneId: string) => SessionLedger;
-	readonly supervisor: SubagentSupervisorV1;
+	readonly supervisor: SubagentSupervisor;
 	readonly roleRevision: RoleRevision;
 	readonly modelProfile: ModelProfile;
 }
@@ -268,7 +268,7 @@ function fixture(): Fixture {
 		session,
 		ledger,
 		ledgerForLane,
-		supervisor: new SubagentSupervisorV1({
+		supervisor: new SubagentSupervisor({
 			schemaVersion: 1,
 			ledger,
 			ledgerForLane,
@@ -286,7 +286,7 @@ function fixture(): Fixture {
 	};
 }
 
-async function planInput(value: Fixture, overrides: Partial<PlanSubagentSpawnInputV1> = {}): Promise<PlanSubagentSpawnInputV1> {
+async function planInput(value: Fixture, overrides: Partial<PlanSubagentSpawnInput> = {}): Promise<PlanSubagentSpawnInput> {
 	const origin = overrides.originParentAgentInstance ?? rootAgent("parent-1", "task-parent", value.roleRevision);
 	const lineageParent = overrides.lineageParentAgentInstance ?? origin;
 	const childTask = overrides.request?.taskEnvelope ?? task(`task-child-${overrides.childAgentInstanceId ?? "1"}`);
@@ -424,7 +424,7 @@ async function planInput(value: Fixture, overrides: Partial<PlanSubagentSpawnInp
 	};
 }
 
-async function driveScopedGateway(input: ChildAgentHarnessCreateInputV1): Promise<void> {
+async function driveScopedGateway(input: ChildAgentHarnessCreateInput): Promise<void> {
 	const streamed = await input.gateway.stream(
 		{
 			schemaVersion: 1,
@@ -464,7 +464,7 @@ async function driveScopedGateway(input: ChildAgentHarnessCreateInputV1): Promis
 	if (!executed.ok) throw executed.error;
 }
 
-async function createHarness(input: ChildAgentHarnessCreateInputV1): Promise<AgentHarness> {
+async function createHarness(input: ChildAgentHarnessCreateInput): Promise<AgentHarness> {
 	const faux = fauxProvider();
 	const created = await AgentHarness.create({
 		session: input.session,
@@ -543,8 +543,8 @@ function providerFor(
 	modelGateway: RecordingModelGateway,
 	toolGateway: RecordingToolGateway,
 	loadParentContext?: () => Promise<ResultValue<ContextSnapshot, FoundationError>>,
-): InProcessChildAgentProviderV1 {
-	return new InProcessChildAgentProviderV1({
+): InProcessChildAgentProvider {
+	return new InProcessChildAgentProvider({
 		schemaVersion: 1,
 		providerId: PROVIDER_ID,
 		supervisor: value.supervisor,
@@ -568,7 +568,7 @@ function settlementFor(value: Fixture, laneId: string): LayeredResultSettlement 
 	});
 }
 
-async function planChild(value: Fixture, overrides: Partial<PlanSubagentSpawnInputV1> = {}): Promise<SubagentSpawnPlanV1> {
+async function planChild(value: Fixture, overrides: Partial<PlanSubagentSpawnInput> = {}): Promise<SubagentSpawnPlan> {
 	const input = await planInput(value, overrides);
 	const planned = await value.supervisor.planSpawn(input);
 	if (!planned.ok) throw planned.error;
@@ -617,7 +617,7 @@ function fakeHarness(hooks: {
 	} as unknown as AgentHarness;
 }
 
-describe("InProcessChildAgentProviderV1", () => {
+describe("InProcessChildAgentProvider", () => {
 	it("spawns and settles a legal agent_executor receipt through LayeredResultSettlementV1", async () => {
 		const value = fixture();
 		const planned = await planChild(value);
@@ -742,7 +742,7 @@ describe("InProcessChildAgentProviderV1", () => {
 		const quota = new RecordingQuota();
 		const modelGateway = new RecordingModelGateway();
 		const toolGateway = new RecordingToolGateway();
-		const provider = new InProcessChildAgentProviderV1({
+		const provider = new InProcessChildAgentProvider({
 			schemaVersion: 1,
 			providerId: PROVIDER_ID,
 			supervisor: value.supervisor,
@@ -817,11 +817,11 @@ describe("InProcessChildAgentProviderV1", () => {
 		const quota = new RecordingQuota();
 		const modelGateway = new RecordingModelGateway();
 		const toolGateway = new RecordingToolGateway();
-		const created: ChildAgentHarnessCreateInputV1[] = [];
+		const created: ChildAgentHarnessCreateInput[] = [];
 		const resumedLanes: string[] = [];
 		let prompts = 0;
 		let resumes = 0;
-		const provider = new InProcessChildAgentProviderV1({
+		const provider = new InProcessChildAgentProvider({
 			schemaVersion: 1,
 			providerId: PROVIDER_ID,
 			supervisor: value.supervisor,
@@ -890,11 +890,11 @@ describe("InProcessChildAgentProviderV1", () => {
 		const quota = new RecordingQuota();
 		const modelGateway = new RecordingModelGateway();
 		const toolGateway = new RecordingToolGateway();
-		const created: ChildAgentHarnessCreateInputV1[] = [];
+		const created: ChildAgentHarnessCreateInput[] = [];
 		const promptedLanes: string[] = [];
 		const resumedLanes: string[] = [];
 		let prompts = 0;
-		const provider = new InProcessChildAgentProviderV1({
+		const provider = new InProcessChildAgentProvider({
 			schemaVersion: 1,
 			providerId: PROVIDER_ID,
 			supervisor: value.supervisor,
@@ -943,8 +943,8 @@ describe("InProcessChildAgentProviderV1", () => {
 	it("fails closed when reconstructed resume has no durable child-lane transcript", async () => {
 		const value = fixture();
 		const planned = await planChild(value);
-		const created: ChildAgentHarnessCreateInputV1[] = [];
-		const provider = new InProcessChildAgentProviderV1({
+		const created: ChildAgentHarnessCreateInput[] = [];
+		const provider = new InProcessChildAgentProvider({
 			schemaVersion: 1,
 			providerId: PROVIDER_ID,
 			supervisor: value.supervisor,
@@ -977,7 +977,7 @@ describe("InProcessChildAgentProviderV1", () => {
 		const planned = await planChild(value);
 		const prompts: string[] = [];
 		let boundaryLoads = 0;
-		const provider = new InProcessChildAgentProviderV1({
+		const provider = new InProcessChildAgentProvider({
 			schemaVersion: 1,
 			providerId: PROVIDER_ID,
 			supervisor: value.supervisor,
@@ -1024,7 +1024,7 @@ describe("InProcessChildAgentProviderV1", () => {
 		const planned = await planChild(value);
 		const privateDiagnostic = "provider-private-diagnostic";
 		let childMemory: ScopedMemoryStore | undefined;
-		const provider = new InProcessChildAgentProviderV1({
+		const provider = new InProcessChildAgentProvider({
 			schemaVersion: 1,
 			providerId: PROVIDER_ID,
 			supervisor: value.supervisor,
@@ -1078,7 +1078,7 @@ describe("InProcessChildAgentProviderV1", () => {
 		const value = fixture();
 		const planned = await planChild(value);
 		let childMemory: ScopedMemoryStore | undefined;
-		const provider = new InProcessChildAgentProviderV1({
+		const provider = new InProcessChildAgentProvider({
 			schemaVersion: 1,
 			providerId: PROVIDER_ID,
 			supervisor: value.supervisor,
@@ -1140,9 +1140,9 @@ describe("InProcessChildAgentProviderV1", () => {
 		const quota = new RecordingQuota();
 		const modelGateway = new RecordingModelGateway();
 		const toolGateway = new RecordingToolGateway();
-		const created: ChildAgentHarnessCreateInputV1[] = [];
+		const created: ChildAgentHarnessCreateInput[] = [];
 		const promptedLanes: string[] = [];
-		const provider = new InProcessChildAgentProviderV1({
+		const provider = new InProcessChildAgentProvider({
 			schemaVersion: 1,
 			providerId: PROVIDER_ID,
 			supervisor: value.supervisor,

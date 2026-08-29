@@ -9,10 +9,10 @@ import {
 	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import type {
-	SafeLeaseProjectionV1,
-	SafeLeaseReferenceV1,
+	SafeLeaseProjection,
+	SafeLeaseReference,
 } from "../../src/core/worker-protocol.ts";
-import type { WorkerRuntimeSandboxOperationProviderV1 } from "../../src/core/worker-runtime.ts";
+import type { WorkerRuntimeSandboxOperationProvider } from "../../src/core/worker-runtime.ts";
 
 export type FakeWorkerStartBehaviorV1 = "success" | "provider-error" | "throw" | "correlation-drift" | "oversized-frame" | "pending";
 export type FakeWorkerCredentialActionV1 = "project" | "renew" | "revoke";
@@ -26,15 +26,15 @@ export interface FakeWorkerProviderOptionsV1 {
 	readonly disposeThrows?: boolean;
 }
 
-export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProviderV1 {
+export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerClass = "operation_worker" as const;
 	readonly providerId: string;
 	readonly starts: Array<{ readonly request: SandboxOperationRequest; readonly correlation: ExecutionCorrelation }> = [];
 	readonly cancellations: string[] = [];
-	readonly projectedLeases: SafeLeaseProjectionV1[] = [];
-	readonly renewedLeases: SafeLeaseProjectionV1[] = [];
-	readonly revokedLeases: SafeLeaseReferenceV1[] = [];
+	readonly projectedLeases: SafeLeaseProjection[] = [];
+	readonly renewedLeases: SafeLeaseProjection[] = [];
+	readonly revokedLeases: SafeLeaseReference[] = [];
 	readonly receipts: WorkerReceipt[] = [];
 	capabilityCalls = 0;
 	disposeCalls = 0;
@@ -88,17 +88,17 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 			: Result.ok(undefined);
 	}
 
-	async projectCredential(lease: SafeLeaseProjectionV1): Promise<ResultValue<void, FoundationError>> {
+	async projectCredential(lease: SafeLeaseProjection): Promise<ResultValue<void, FoundationError>> {
 		this.projectedLeases.push(lease);
 		return this.credentialResult("project");
 	}
 
-	async renewCredential(lease: SafeLeaseProjectionV1): Promise<ResultValue<void, FoundationError>> {
+	async renewCredential(lease: SafeLeaseProjection): Promise<ResultValue<void, FoundationError>> {
 		this.renewedLeases.push(lease);
 		return this.credentialResult("renew");
 	}
 
-	async revokeCredential(lease: SafeLeaseReferenceV1): Promise<ResultValue<void, FoundationError>> {
+	async revokeCredential(lease: SafeLeaseReference): Promise<ResultValue<void, FoundationError>> {
 		this.revokedLeases.push(lease);
 		return this.credentialResult("revoke");
 	}

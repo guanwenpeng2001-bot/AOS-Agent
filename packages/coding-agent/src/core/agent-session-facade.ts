@@ -166,19 +166,19 @@ import {
 	FoundationControlPlane,
 	type SchedulerSafeStatus,
 } from "./foundation-control-plane.ts";
-import type { WorkerSandboxProviderV1 } from "./worker-sandbox-provider.ts";
+import type { WorkerSandboxProvider } from "./worker-sandbox-provider.ts";
 import { createAllTools } from "./tools/index.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { buildSystemPrompt, type BuildSystemPromptOptions } from "./system-prompt.ts";
 import {
 	BUILTIN_CODING_AGENT_PROVIDER_ID,
-	ProductPromptIngressV1,
-	type ProductPromptDependencySnapshotContextV1,
+	ProductPromptIngress,
+	type ProductPromptDependencySnapshotContext,
 } from "./product-prompt-ingress.ts";
 import type { PromptTaskDependencyName } from "./prompt-task-adapter.ts";
 import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
 import type {
-	TrustedSubagentCompositionV1,
+	TrustedSubagentComposition,
 } from "./subagent-composition.ts";
 import {
 	createAgentSessionReadProjection,
@@ -613,7 +613,7 @@ export class CanonicalAgentSessionServices {
 	private _extensionRunner: ExtensionRunner;
 	private compatibilityEventEmitter: ((event: AgentEvent) => Promise<AgentEvent | undefined>) | undefined;
 	private readonly controlPlane: FoundationControlPlane;
-	private readonly productPromptIngress: ProductPromptIngressV1;
+	private readonly productPromptIngress: ProductPromptIngress;
 	private readonly compatibilityAgent: CanonicalAgentCompatibility;
 	private readonly contextMemoryStore: ContextMemoryStore;
 	private readonly mcpAttachmentRegistry: McpAttachmentRegistry;
@@ -727,7 +727,7 @@ export class CanonicalAgentSessionServices {
 				this.controlPlane.authorizeExternalToolGatewayRequest(request, route),
 		});
 		const subagents = this.controlPlane.getSubagentComposition();
-		this.productPromptIngress = new ProductPromptIngressV1({
+		this.productPromptIngress = new ProductPromptIngress({
 			session: this.canonicalSession,
 			harness: this.harness,
 			models: this._modelRuntime,
@@ -2274,7 +2274,7 @@ export class CanonicalAgentSessionServices {
 
 	private productPromptDependencySnapshot(
 		name: PromptTaskDependencyName,
-		context: ProductPromptDependencySnapshotContextV1,
+		context: ProductPromptDependencySnapshotContext,
 	): FoundationJsonValue {
 		const capability = this.controlPlane.getCapabilityContextMetadata();
 		switch (name) {
@@ -3381,7 +3381,7 @@ export class CanonicalAgentSessionServices {
 	}
 
 	getWorkerRegistry():
-		| Pick<WorkerSandboxProviderV1, "getWorkerRecord" | "listWorkerRecords" | "reclaimWorker">
+		| Pick<WorkerSandboxProvider, "getWorkerRecord" | "listWorkerRecords" | "reclaimWorker">
 		| undefined {
 		if (this.controlPlane.getWorkerSandboxProvider() === undefined) return undefined;
 
@@ -3396,7 +3396,7 @@ export class CanonicalAgentSessionServices {
 		};
 	}
 
-	getSubagentRegistry(): Pick<TrustedSubagentCompositionV1, "get" | "list" | "cancel"> | undefined {
+	getSubagentRegistry(): Pick<TrustedSubagentComposition, "get" | "list" | "cancel"> | undefined {
 		const subagents = this.controlPlane.getSubagentComposition();
 		if (subagents === undefined) return undefined;
 		return {

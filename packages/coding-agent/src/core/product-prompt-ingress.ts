@@ -37,13 +37,13 @@ import {
 	type PromptTaskMcpSelectionSource,
 } from "./prompt-task-adapter.ts";
 import {
-	ProductPromptBindingRevisionAuthorityV1,
-	type ProductPromptDependencySnapshotContextV1,
+	ProductPromptBindingRevisionAuthority,
+	type ProductPromptDependencySnapshotContext,
 } from "./product-prompt-binding-authority.ts";
 import { isRuntimeSessionSurface, type RuntimeSessionSurface } from "./runtime-session-surface.ts";
-import type { TrustedSubagentCompositionV1 } from "./subagent-composition.ts";
+import type { TrustedSubagentComposition } from "./subagent-composition.ts";
 
-export type { ProductPromptDependencySnapshotContextV1 } from "./product-prompt-binding-authority.ts";
+export type { ProductPromptDependencySnapshotContext } from "./product-prompt-binding-authority.ts";
 
 export const BUILTIN_CODING_AGENT_ROLE_ID = "aos.builtin.coding-agent";
 export const BUILTIN_CODING_AGENT_PROVIDER_ID = "aos.builtin.coding-agent";
@@ -122,7 +122,7 @@ type ProductPromptIngressFactV1 = {
 	readonly submittedAt: string;
 } & { readonly [key: string]: FoundationJsonValue };
 
-export interface ProductPromptIngressOptionsV1 {
+export interface ProductPromptIngressOptions {
 	readonly session: Session;
 	readonly harness: AgentHarness;
 	readonly models: Models;
@@ -132,14 +132,14 @@ export interface ProductPromptIngressOptionsV1 {
 	readonly mcpSelectionSource: PromptTaskMcpSelectionSource;
 	readonly dependencySnapshot: (
 		name: PromptTaskDependencyName,
-		context: ProductPromptDependencySnapshotContextV1,
+		context: ProductPromptDependencySnapshotContext,
 	) => FoundationJsonValue;
 	/** Explicit trusted Host opt-in. Omission keeps product prompts on the existing path. */
-	readonly subagents?: TrustedSubagentCompositionV1;
+	readonly subagents?: TrustedSubagentComposition;
 	readonly now?: () => string;
 }
 
-export interface ProductPromptInputV1 {
+export interface ProductPromptInput {
 	readonly prompt: string;
 	readonly surface: RuntimeSessionSurface;
 	readonly images?: readonly ImageContent[];
@@ -431,18 +431,18 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 	async dispose(): Promise<void> {}
 }
 
-export class ProductPromptIngressV1 {
-	private readonly options: ProductPromptIngressOptionsV1;
+export class ProductPromptIngress {
+	private readonly options: ProductPromptIngressOptions;
 	private readonly provider: CodingAgentTaskExecutorProvider;
-	private readonly bindingAuthority: ProductPromptBindingRevisionAuthorityV1;
+	private readonly bindingAuthority: ProductPromptBindingRevisionAuthority;
 
-	constructor(options: ProductPromptIngressOptionsV1) {
+	constructor(options: ProductPromptIngressOptions) {
 		if (options.harness.session !== options.session) {
 			throw new FoundationError("session_ledger_conflict", "Product prompt ingress and Harness must share one Session");
 		}
 		this.options = options;
 		this.provider = new CodingAgentTaskExecutorProvider(options.session);
-		this.bindingAuthority = new ProductPromptBindingRevisionAuthorityV1({
+		this.bindingAuthority = new ProductPromptBindingRevisionAuthority({
 			session: options.session,
 			roleId: BUILTIN_CODING_AGENT_ROLE_ID,
 			providerId: this.provider.providerId,
@@ -505,7 +505,7 @@ export class ProductPromptIngressV1 {
 		return written.payload;
 	}
 
-	async execute(input: ProductPromptInputV1): Promise<PromptTaskExecution> {
+	async execute(input: ProductPromptInput): Promise<PromptTaskExecution> {
 		if (input.prompt.trim().length === 0) throw new FoundationError("foundation_schema_invalid_shape", "Product prompt must be non-empty");
 		if (!isRuntimeSessionSurface(input.surface)) throw new FoundationError("foundation_schema_invalid_shape", "Product prompt surface is invalid");
 		const runId = requireRunId(input.runId ?? randomUUID());
@@ -524,7 +524,7 @@ export class ProductPromptIngressV1 {
 		const model = this.options.currentModel();
 		const thinkingLevel = this.options.currentThinkingLevel();
 		const taskId = `task_coding_agent_${token}`;
-		const dependencyContext: ProductPromptDependencySnapshotContextV1 = {
+		const dependencyContext: ProductPromptDependencySnapshotContext = {
 			runId,
 			goalId: goal.goalId,
 			taskId,

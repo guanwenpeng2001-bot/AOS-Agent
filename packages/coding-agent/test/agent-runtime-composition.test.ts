@@ -70,16 +70,16 @@ import { AgentSession } from "../src/core/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createRunLifecycleCoordinator, type RunHandle } from "../src/core/run-lifecycle.ts";
-import type { SchedulerNativeAgentResolveInputV1 } from "../src/core/scheduler-dispatch.ts";
+import type { SchedulerNativeAgentResolveInput } from "../src/core/scheduler-dispatch.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
 import type { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type {
-	TrustedSubagentCompositionOptionsV1,
+	TrustedSubagentCompositionOptions,
 } from "../src/core/subagent-composition.ts";
-import type { SubagentProviderDescriptorV1 } from "../src/core/subagent-registry.ts";
-import type { PlanSubagentSpawnInputV1 } from "../src/core/subagent-supervisor.ts";
+import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
+import type { PlanSubagentSpawnInput } from "../src/core/subagent-supervisor.ts";
 import { createTaskCredentialTestProvider } from "../src/core/task-credential-provider.ts";
 import { TaskGraphStore } from "../src/core/task-graph.ts";
 import { createCodingAgentHarness } from "../src/server/create-harness.ts";
@@ -101,7 +101,7 @@ interface CompositionCaptures {
 	readonly gateways: ToolGateway[];
 	readonly composedGateways: ToolGateway[];
 	readonly workers: ReturnType<typeof createTrustedWorkerSandboxComposition>[];
-	readonly subagents: TrustedSubagentCompositionOptionsV1[];
+	readonly subagents: TrustedSubagentCompositionOptions[];
 	readonly schedulers: TrustedSchedulerRuntimeOptions[];
 	readonly externalRegistries: ExternalConnectorRegistry[];
 	readonly credentialProviders: TaskCredentialProvider[];
@@ -307,8 +307,8 @@ function schedulerBinding(currentTask: TaskEnvelope, sessionId: string): AgentBi
 function createSubagents(
 	context: AgentRuntimeCompositionContext,
 	toolGateway: ToolGateway,
-	createHarness: NonNullable<TrustedSubagentCompositionOptionsV1["createHarness"]> = async () => context.harness,
-): TrustedSubagentCompositionOptionsV1 {
+	createHarness: NonNullable<TrustedSubagentCompositionOptions["createHarness"]> = async () => context.harness,
+): TrustedSubagentCompositionOptions {
 	const memoryLedger = new SessionT5Ledger(context.session, {
 		writer: context.harness.t5.writer,
 		memoryScopeId: `composition-memory-scope-${context.sessionId}`,
@@ -430,12 +430,12 @@ function createNativeSchedulerPlanProof(sessionId: string): NativeSchedulerPlanP
 }
 
 function nativeSchedulerPlan(
-	input: SchedulerNativeAgentResolveInputV1,
-	descriptor: SubagentProviderDescriptorV1,
+	input: SchedulerNativeAgentResolveInput,
+	descriptor: SubagentProviderDescriptor,
 	currentTask: TaskEnvelope,
 	currentBinding: AgentBinding,
 	proof: NativeSchedulerPlanProof,
-): ReturnType<typeof Result.ok<PlanSubagentSpawnInputV1>> {
+): ReturnType<typeof Result.ok<PlanSubagentSpawnInput>> {
 	const request: ChildSpawnRequest = {
 		schemaVersion: 1,
 		spawnId: input.spawnId,

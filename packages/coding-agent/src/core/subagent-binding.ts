@@ -68,40 +68,40 @@ export const CHILD_BINDING_PROJECTION_FIELDS = [
 	"git",
 	"budget",
 ] as const;
-export type ChildBindingProjectionFieldV1 = (typeof CHILD_BINDING_PROJECTION_FIELDS)[number];
-export type ChildBindingTighteningProofV1 = "equal" | "narrowed";
+export type ChildBindingProjectionField = (typeof CHILD_BINDING_PROJECTION_FIELDS)[number];
+export type ChildBindingTighteningProof = "equal" | "narrowed";
 
-export interface ChildBindingProjectionFieldRecordV1 {
-	readonly field: ChildBindingProjectionFieldV1;
+export interface ChildBindingProjectionFieldRecord {
+	readonly field: ChildBindingProjectionField;
 	readonly parentDigest: Fingerprint;
 	readonly childDigest: Fingerprint;
-	readonly tighteningProof: ChildBindingTighteningProofV1;
+	readonly tighteningProof: ChildBindingTighteningProof;
 }
 
-export interface ChildBindingProjectionV1 {
+export interface ChildBindingProjection {
 	readonly schemaVersion: 1;
 	readonly parentBindingId: string;
 	readonly childBindingId: string;
 	readonly spawnId: string;
-	readonly fields: readonly ChildBindingProjectionFieldRecordV1[];
+	readonly fields: readonly ChildBindingProjectionFieldRecord[];
 	readonly digest: Fingerprint;
 	readonly createdAt: string;
 	readonly mcpApprovalEvidenceId?: string;
 }
 
-export interface ChildBindingHostPreflightV1 {
+export interface ChildBindingHostPreflight {
 	readonly policyTighter?: boolean;
 	readonly capabilityTighter?: boolean;
 	readonly instructionsTighter?: boolean;
 }
 
 /** Nominal Host authority backed by one effective PolicyBinding and its durable approval ledger. */
-export interface TrustedMcpInheritanceApprovalAuthorityV1 {
+export interface TrustedMcpInheritanceApprovalAuthority {
 	readonly schemaVersion: 1;
 	readonly policyBindingId: string;
 }
 
-export interface CreateTrustedMcpInheritanceApprovalAuthorityInputV1 {
+export interface CreateTrustedMcpInheritanceApprovalAuthorityInput {
 	readonly schemaVersion: 1;
 	readonly profile: ExecutionPolicyProfile;
 	readonly binding: PolicyBinding;
@@ -110,7 +110,7 @@ export interface CreateTrustedMcpInheritanceApprovalAuthorityInputV1 {
 	readonly onApprovalRequired?: (approval: PolicyApprovalRequest) => void;
 }
 
-export interface ProjectChildBindingInputV1 {
+export interface ProjectChildBindingInput {
 	readonly schemaVersion: 1;
 	readonly spawnId: string;
 	readonly parentBinding: AgentBinding;
@@ -128,8 +128,8 @@ export interface ProjectChildBindingInputV1 {
 	readonly childPolicyRevision?: RevisionReference;
 	readonly childCapabilityRevision?: RevisionReference;
 	readonly childMcpSelection?: McpSelection;
-	readonly managedLocks?: readonly ChildBindingProjectionFieldV1[];
-	readonly hostPreflight?: ChildBindingHostPreflightV1;
+	readonly managedLocks?: readonly ChildBindingProjectionField[];
+	readonly hostPreflight?: ChildBindingHostPreflight;
 }
 
 const BUDGET_KEYS = ["tokens", "costUsd", "modelCalls", "toolCalls", "wallClockMs", "concurrency"] as const;
@@ -202,14 +202,14 @@ interface TrustedMcpInheritanceApprovalAuthorityStateV1 {
 }
 
 const MCP_INHERITANCE_AUTHORITIES = new WeakMap<
-	TrustedMcpInheritanceApprovalAuthorityV1,
+	TrustedMcpInheritanceApprovalAuthority,
 	TrustedMcpInheritanceApprovalAuthorityStateV1
 >();
-const TRUSTED_CHILD_BINDING_PROJECTIONS = new WeakSet<ChildBindingProjectionV1>();
+const TRUSTED_CHILD_BINDING_PROJECTIONS = new WeakSet<ChildBindingProjection>();
 
-export function createTrustedMcpInheritanceApprovalAuthorityV1(
-	input: CreateTrustedMcpInheritanceApprovalAuthorityInputV1,
-): TrustedMcpInheritanceApprovalAuthorityV1 {
+export function createTrustedMcpInheritanceApprovalAuthority(
+	input: CreateTrustedMcpInheritanceApprovalAuthorityInput,
+): TrustedMcpInheritanceApprovalAuthority {
 	if (input.schemaVersion !== 1 || !(input.ledger instanceof InMemoryExecutionPolicyLedger)) {
 		throw new FoundationError("subagent_binding_projection_invalid", "MCP inheritance approval authority is invalid");
 	}
@@ -251,7 +251,7 @@ function isCanonicalTimestamp(value: unknown): value is string {
 }
 
 function resolveMcpInheritanceApproval(
-	authority: TrustedMcpInheritanceApprovalAuthorityV1 | undefined,
+	authority: TrustedMcpInheritanceApprovalAuthority | undefined,
 	input: {
 		readonly parentBindingId: string;
 		readonly childBindingId: string;
@@ -374,7 +374,7 @@ function cloneSelector(value: ResourceSelector): ResourceSelector {
 	return { policy: value.policy, named: Object.freeze([...(value.named ?? [])]) };
 }
 
-function selectorProof(parent: ResourceSelector, child: ResourceSelector): ChildBindingTighteningProofV1 | undefined {
+function selectorProof(parent: ResourceSelector, child: ResourceSelector): ChildBindingTighteningProof | undefined {
 	if (!selectorsNarrow(parent, child)) return undefined;
 	return canonicalFoundationJson(parent) === canonicalFoundationJson(child) ? "equal" : "narrowed";
 }
@@ -388,10 +388,10 @@ function digestOf(value: unknown): Fingerprint {
 }
 
 function applyManagedLock(
-	field: ChildBindingProjectionFieldV1,
-	locks: ReadonlySet<ChildBindingProjectionFieldV1>,
-	proof: ChildBindingTighteningProofV1 | undefined,
-): ChildBindingTighteningProofV1 | undefined {
+	field: ChildBindingProjectionField,
+	locks: ReadonlySet<ChildBindingProjectionField>,
+	proof: ChildBindingTighteningProof | undefined,
+): ChildBindingTighteningProof | undefined {
 	if (proof === undefined) return undefined;
 	if (!locks.has(field)) return proof;
 	return proof === "equal" ? "equal" : undefined;
@@ -401,7 +401,7 @@ function referenceProof(
 	parent: VersionedReference | RevisionReference | undefined,
 	child: VersionedReference | RevisionReference | undefined,
 	preflightTighter: boolean,
-): ChildBindingTighteningProofV1 | undefined {
+): ChildBindingTighteningProof | undefined {
 	if (parent === undefined && child === undefined) return "equal";
 	if (parent === undefined && child !== undefined) return "narrowed";
 	if (parent !== undefined && child === undefined) return undefined;
@@ -421,11 +421,11 @@ function referenceProof(
 }
 
 function fieldRecord(
-	field: ChildBindingProjectionFieldV1,
+	field: ChildBindingProjectionField,
 	parentValue: unknown,
 	childValue: unknown,
-	proof: ChildBindingTighteningProofV1,
-): ChildBindingProjectionFieldRecordV1 {
+	proof: ChildBindingTighteningProof,
+): ChildBindingProjectionFieldRecord {
 	return {
 		field,
 		parentDigest: digestOf(parentValue),
@@ -446,21 +446,21 @@ function validateOptionalRevision(value: unknown, label: string): ResultValue<Re
 	return checked.ok ? checked : projectionError(`${label} is not an exact RevisionReferenceV1`);
 }
 
-function validateInputShape(value: unknown): value is ProjectChildBindingInputV1 {
+function validateInputShape(value: unknown): value is ProjectChildBindingInput {
 	if (!isRecord(value) || Object.keys(value).some((key) => !INPUT_KEYS.has(key))) return false;
 	if (value.schemaVersion !== CHILD_BINDING_PROJECTION_SCHEMA_VERSION) return false;
 	if (!isSafeIdentifier(value.spawnId) || !isSafeIdentifier(value.childBindingId) || !isCanonicalTimestamp(value.createdAt)) return false;
 	if (value.managedLocks !== undefined) {
 		if (!Array.isArray(value.managedLocks)) return false;
-		if (!value.managedLocks.every((field) => CHILD_BINDING_PROJECTION_FIELDS.includes(field as ChildBindingProjectionFieldV1))) return false;
+		if (!value.managedLocks.every((field) => CHILD_BINDING_PROJECTION_FIELDS.includes(field as ChildBindingProjectionField))) return false;
 	}
 	return true;
 }
 
 function projectChildBindingUnchecked(
-	input: ProjectChildBindingInputV1,
-	mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthorityV1,
-): ResultValue<ChildBindingProjectionV1, FoundationError> {
+	input: ProjectChildBindingInput,
+	mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthority,
+): ResultValue<ChildBindingProjection, FoundationError> {
 	if (input.childBudget !== undefined) {
 		const budget = validateBudget(input.childBudget);
 		if (!budget.ok) return projectionError("Child budget is not an exact BudgetV1");
@@ -470,7 +470,7 @@ function projectChildBindingUnchecked(
 		if (!route.ok) return projectionError("Child model route is not an exact ModelRouteV1");
 	}
 	if (input.hostPreflight !== undefined) {
-		const preflight = validateExactShape<ChildBindingHostPreflightV1>(HostPreflightV1Schema, input.hostPreflight, "host_preflight");
+		const preflight = validateExactShape<ChildBindingHostPreflight>(HostPreflightV1Schema, input.hostPreflight, "host_preflight");
 		if (!preflight.ok) return projectionError("Host preflight is not an exact shape");
 	}
 	const parentGitSelector = validateOptionalSelector(input.parentGitSelector, "Parent git selector");
@@ -554,7 +554,7 @@ function projectChildBindingUnchecked(
 		childSelection: checkedChildMcpSelection.value,
 	});
 	if (!mcpApprovalEvidenceId.ok) return mcpApprovalEvidenceId;
-	const mcpBaseProof: ChildBindingTighteningProofV1 =
+	const mcpBaseProof: ChildBindingTighteningProof =
 		mcpSelectorProof === "equal" && sameJson(parentBinding.value.mcpSelection, checkedChildMcpSelection.value)
 			? "equal"
 			: "narrowed";
@@ -575,7 +575,7 @@ function projectChildBindingUnchecked(
 		},
 		modelRoute: childRoute,
 	};
-	const modelBaseProof: ChildBindingTighteningProofV1 = sameJson(parentModelValue, childModelValue) ? "equal" : "narrowed";
+	const modelBaseProof: ChildBindingTighteningProof = sameJson(parentModelValue, childModelValue) ? "equal" : "narrowed";
 	const modelProof = applyManagedLock("model", locks, modelBaseProof);
 	if (modelProof === undefined) return projectionError("Managed Lock forbids changing the parent model");
 
@@ -613,11 +613,11 @@ function projectChildBindingUnchecked(
 		}
 	}
 	const projectedBudget = requested === undefined ? floor : mergeBudgetMin(floor, requested);
-	const budgetBaseProof: ChildBindingTighteningProofV1 = sameJson(projectedBudget, parentBinding.value.budget) ? "equal" : "narrowed";
+	const budgetBaseProof: ChildBindingTighteningProof = sameJson(projectedBudget, parentBinding.value.budget) ? "equal" : "narrowed";
 	const budgetProof = applyManagedLock("budget", locks, budgetBaseProof);
 	if (budgetProof === undefined) return projectionError("Managed Lock forbids changing the parent budget");
 
-	const fields: ChildBindingProjectionFieldRecordV1[] = [
+	const fields: ChildBindingProjectionFieldRecord[] = [
 		fieldRecord("instructions", instructionParent ?? null, instructionChild ?? null, instructionProof),
 		fieldRecord("skills", parentRole.value.skillSelector, childRole.value.skillSelector, skillProof),
 		fieldRecord("mcp", parentBinding.value.mcpSelection, checkedChildMcpSelection.value, mcpProof),
@@ -652,10 +652,10 @@ function projectChildBindingUnchecked(
  * Project the seven inherited resources from parent Binding + child Role/Profile/Task.
  * Any widening, Managed Lock change, or unfrozen model route fails closed.
  */
-export function projectChildBindingV1(
+export function projectChildBinding(
 	inputValue: unknown,
-	mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthorityV1,
-): ResultValue<ChildBindingProjectionV1, FoundationError> {
+	mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthority,
+): ResultValue<ChildBindingProjection, FoundationError> {
 	try {
 		if (!validateInputShape(inputValue)) {
 			return projectionError("Child Binding projection input is invalid");
@@ -666,9 +666,9 @@ export function projectChildBindingV1(
 	}
 }
 
-export function validateChildBindingProjectionV1(value: unknown): value is ChildBindingProjectionV1 {
+export function validateChildBindingProjection(value: unknown): value is ChildBindingProjection {
 	try {
-		const checked = validateExactShape<ChildBindingProjectionV1>(ChildBindingProjectionV1Schema, value, "child_binding_projection");
+		const checked = validateExactShape<ChildBindingProjection>(ChildBindingProjectionV1Schema, value, "child_binding_projection");
 		if (!checked.ok) return false;
 		if (
 			!isSafeIdentifier(checked.value.parentBindingId) ||
@@ -687,15 +687,15 @@ export function validateChildBindingProjectionV1(value: unknown): value is Child
 	}
 }
 
-export async function persistChildBindingProjectionV1(
+export async function persistChildBindingProjection(
 	ledger: SessionLedger,
-	projection: ChildBindingProjectionV1,
+	projection: ChildBindingProjection,
 	options: {
 		readonly clientRequestId: string;
 		readonly correlation: { readonly taskId?: string; readonly attemptId?: string; readonly agentInstanceId?: string };
 	},
-): Promise<ResultValue<ChildBindingProjectionV1, FoundationError>> {
-	if (!validateChildBindingProjectionV1(projection)) {
+): Promise<ResultValue<ChildBindingProjection, FoundationError>> {
+	if (!validateChildBindingProjection(projection)) {
 		return projectionError("Child Binding projection cannot be persisted");
 	}
 	if (!TRUSTED_CHILD_BINDING_PROJECTIONS.has(projection)) {

@@ -185,9 +185,9 @@ export interface PromptTaskCompositionRootOptions {
 		readonly registry: Pick<RoleRegistry, "get" | "search" | "resolve">;
 		readonly scope: "global" | "project";
 		readonly parentLaneId: string;
-		spawn(input: PromptTaskSubagentSpawnInputV1): Promise<ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>>;
+		spawn(input: PromptTaskSubagentSpawnInput): Promise<ResultValue<PromptTaskSubagentSpawnResult, FoundationError>>;
 		/** Fixed trusted Host composition. Presence makes composition independent of prompt/model selection. */
-		compose?(input: PromptTaskSubagentCompositionInputV1): Promise<ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>>;
+		compose?(input: PromptTaskSubagentCompositionInput): Promise<ResultValue<PromptTaskSubagentSpawnResult, FoundationError>>;
 	};
 }
 
@@ -198,11 +198,11 @@ export interface PromptTaskMcpSelectionUniverse {
 
 export type PromptTaskMcpSelectionSource = () => PromptTaskMcpSelectionUniverse;
 
-export interface PromptTaskSubagentSpawnResultV1 {
+export interface PromptTaskSubagentSpawnResult {
 	readonly attemptReceiptIds: readonly string[];
 }
 
-export interface PromptTaskSubagentCompositionInputV1 {
+export interface PromptTaskSubagentCompositionInput {
 	readonly schemaVersion: 1;
 	readonly runId: string;
 	readonly prompt: string;
@@ -219,7 +219,7 @@ export interface PromptTaskSubagentCompositionInputV1 {
 	readonly timestamp: string;
 }
 
-export interface PromptTaskSubagentSpawnInputV1 extends PromptTaskSubagentCompositionInputV1 {
+export interface PromptTaskSubagentSpawnInput extends PromptTaskSubagentCompositionInput {
 	readonly selectedRoleRevision: RoleRevision;
 }
 
@@ -625,7 +625,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					if (checkedDurableParent === undefined || !checkedDurableParent.ok) {
 						throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Parent AgentInstance proof is not durable before Child Agent spawn");
 					}
-					const childInput: PromptTaskSubagentCompositionInputV1 = {
+					const childInput: PromptTaskSubagentCompositionInput = {
 						schemaVersion: 1,
 						runId: input.runId,
 						prompt: input.prompt,
@@ -641,7 +641,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 						...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs }),
 						timestamp,
 					};
-					let spawned: ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>;
+					let spawned: ResultValue<PromptTaskSubagentSpawnResult, FoundationError>;
 					if (options.subagentRoles.compose !== undefined) {
 						spawned = await options.subagentRoles.compose(childInput);
 					} else {

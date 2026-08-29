@@ -82,8 +82,8 @@ import {
 import { type ExternalConnectorSelection, serializeExternalConnectorSelection } from "./external-agent-registry.ts";
 import type { McpAttachment } from "./mcp-attachment.ts";
 import {
-	type LegacyAutomationRunLedgerSourceEntryV1,
-	reconcileLegacyAutomationRunLedgerV1,
+	type LegacyAutomationRunLedgerSourceEntry,
+	reconcileLegacyAutomationRunLedger,
 } from "./migrations/automation-run-ledger.ts";
 import type { ModelRoleSelection, ModelRouteSelection } from "./model-broker.ts";
 import {
@@ -2920,9 +2920,9 @@ interface ReconciledSessionRunState {
 	readonly projections: readonly AutomationRunProjection[];
 }
 
-function legacyRunLedgerSource(session: RunLedgerSession): LegacyAutomationRunLedgerSourceEntryV1[] {
+function legacyRunLedgerSource(session: RunLedgerSession): LegacyAutomationRunLedgerSourceEntry[] {
 	const entries = session.getPhysicalEntries?.() ?? session.getEntries();
-	const source: LegacyAutomationRunLedgerSourceEntryV1[] = [];
+	const source: LegacyAutomationRunLedgerSourceEntry[] = [];
 	for (const [sequence, entry] of entries.entries()) {
 		if (entry.type !== "custom" || entry.customType !== LEGACY_RUN_LEDGER_CUSTOM_TYPE) continue;
 		source.push({ sequence, entryId: entry.id, data: entry.data });
@@ -2934,7 +2934,7 @@ function legacyRunLedgerSource(session: RunLedgerSession): LegacyAutomationRunLe
 function reconciledSessionRunState(session: RunLedgerSession): ReconciledSessionRunState {
 	const canonicalResults = canonicalRunResultsFromSession(session);
 	const canonicalProjections = projectAutomationRuns({ canonicalRuns: canonicalResults });
-	const reconciliation = reconcileLegacyAutomationRunLedgerV1(
+	const reconciliation = reconcileLegacyAutomationRunLedger(
 		session.getSessionId(),
 		legacyRunLedgerSource(session),
 		canonicalProjections,

@@ -9,28 +9,28 @@ import {
 	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import {
-	WorkerProtocolSessionV1,
-	formatWorkerStderrDiagnosticV1,
-	parseWorkerFrameV1,
-	type SafeLeaseProjectionV1,
-	type SafeLeaseReferenceV1,
-	type WorkerEventFrameV1,
-	type WorkerRequestFrameV1,
+	OperationWorkerProtocolSession,
+	formatWorkerStderrDiagnostic,
+	parseOperationWorkerFrame,
+	type SafeLeaseProjection,
+	type SafeLeaseReference,
+	type OperationWorkerEventFrame,
+	type OperationWorkerRequestFrame,
 } from "./worker-protocol.ts";
-import type { WorkerBindingV1 } from "./worker.ts";
+import type { WorkerBinding } from "./worker.ts";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
 
 /** Credential projection is an optional operation-worker capability, never a Host credential store. */
-export interface WorkerRuntimeSandboxOperationProviderV1 extends SandboxOperationProvider {
-	projectCredential?(lease: SafeLeaseProjectionV1): Promise<Result<void, FoundationError>>;
-	renewCredential?(lease: SafeLeaseProjectionV1): Promise<Result<void, FoundationError>>;
-	revokeCredential?(lease: SafeLeaseReferenceV1): Promise<Result<void, FoundationError>>;
+export interface WorkerRuntimeSandboxOperationProvider extends SandboxOperationProvider {
+	projectCredential?(lease: SafeLeaseProjection): Promise<Result<void, FoundationError>>;
+	renewCredential?(lease: SafeLeaseProjection): Promise<Result<void, FoundationError>>;
+	revokeCredential?(lease: SafeLeaseReference): Promise<Result<void, FoundationError>>;
 }
 
-export interface WorkerRuntimeOptionsV1 {
-	readonly provider: WorkerRuntimeSandboxOperationProviderV1;
-	readonly emit: (frame: WorkerEventFrameV1) => void | Promise<void>;
+export interface WorkerRuntimeOptions {
+	readonly provider: WorkerRuntimeSandboxOperationProvider;
+	readonly emit: (frame: OperationWorkerEventFrame) => void | Promise<void>;
 	readonly diagnostic?: (line: string) => void;
 	readonly now?: () => string;
 	readonly heartbeatIntervalMs?: number;
@@ -42,22 +42,22 @@ export interface WorkerRuntimeOptionsV1 {
  * It delegates only bounded operation and credential calls to one injected
  * operation provider and has no task, attempt, agent, model, or settlement authority.
  */
-export class WorkerRuntimeV1 {
-	private readonly provider: WorkerRuntimeSandboxOperationProviderV1;
-	private readonly emitFrame: (frame: WorkerEventFrameV1) => void | Promise<void>;
+export class OperationWorkerRuntime {
+	private readonly provider: WorkerRuntimeSandboxOperationProvider;
+	private readonly emitFrame: (frame: OperationWorkerEventFrame) => void | Promise<void>;
 	private readonly diagnosticWriter: ((line: string) => void) | undefined;
 	private readonly now: () => string;
 	private readonly heartbeatIntervalMs: number;
 	private readonly onClosed: (() => void) | undefined;
-	private readonly protocol = new WorkerProtocolSessionV1();
+	private readonly protocol = new OperationWorkerProtocolSession();
 	private readonly pendingOperations = new Set<Promise<void>>();
 	private outputTail: Promise<void> = Promise.resolve();
-	private bindingValue?: WorkerBindingV1;
+	private bindingValue?: WorkerBinding;
 	private heartbeatTimer?: NodeJS.Timeout;
 	private heartbeatSequence = 0;
 	private closedValue = false;
 
-	constructor(options: WorkerRuntimeOptionsV1) {
+	constructor(options: WorkerRuntimeOptions) {
 		this.provider = options.provider;
 		this.emitFrame = options.emit;
 		this.diagnosticWriter = options.diagnostic;
@@ -73,13 +73,13 @@ export class WorkerRuntimeV1 {
 		return this.closedValue;
 	}
 
-	get binding(): WorkerBindingV1 | undefined {
+	get binding(): WorkerBinding | undefined {
 		return this.bindingValue;
 	}
 
 	async receiveLine(line: string): Promise<void> {
 		if (this.closedValue) return;
-		const parsed = parseWorkerFrameV1(line);
+		const parsed = parseOperationWorkerFrame(line);
 		if (!parsed.ok) {
 			this.failClosed("invalid worker request frame");
 			return;
@@ -94,7 +94,7 @@ export class WorkerRuntimeV1 {
 			this.failClosed("worker protocol violation");
 			return;
 		}
-		const frame = accepted.value.frame as WorkerRequestFrameV1;
+		const frame = accepted.value.frame as OperationWorkerRequestFrame;
 		switch (frame.type) {
 			case "initialize":
 				await this.initialize(frame);
@@ -150,7 +150,7 @@ export class WorkerRuntimeV1 {
 		this.onClosed?.();
 	}
 
-	private async initialize(frame: Extract<WorkerRequestFrameV1, { type: "initialize" }>): Promise<void> {
+	private async initialize(frame: Extract<OperationWorkerRequestFrame, { type: "initialize" }>): Promise<void> {
 		this.bindingValue = frame.binding;
 		if (this.provider.schemaVersion !== 1 || this.provider.providerClass !== "operation_worker" || this.provider.providerId !== frame.binding.providerId) {
 			await this.requestError(frame.requestId, "worker_binding_invalid", "operation provider identity mismatch", true);
@@ -187,7 +187,7 @@ export class WorkerRuntimeV1 {
 		}
 	}
 
-	private async execute(frame: Extract<WorkerRequestFrameV1, { type: "execute" }>): Promise<void> {
+	private async execute(frame: Extract<OperationWorkerRequestFrame, { type: "execute" }>): Promise<void> {
 		const binding = this.bindingValue;
 		if (binding === undefined) {
 			this.failClosed("execute without worker binding");
@@ -201,7 +201,7 @@ export class WorkerRuntimeV1 {
 		this.pendingOperations.add(pending);
 	}
 
-	private async runOperation(frame: Extract<WorkerRequestFrameV1, { type: "execute" }>, correlation: ExecutionCorrelation): Promise<void> {
+	private async runOperation(frame: Extract<OperationWorkerRequestFrame, { type: "execute" }>, correlation: ExecutionCorrelation): Promise<void> {
 		try {
 			const result = await this.provider.start(frame.request, { correlation });
 			if (this.closedValue) return;
@@ -234,7 +234,7 @@ export class WorkerRuntimeV1 {
 		}
 	}
 
-	private validReceipt(receipt: WorkerReceipt, correlation: ExecutionCorrelation, request: Extract<WorkerRequestFrameV1, { type: "execute" }>['request']): WorkerReceipt | undefined {
+	private validReceipt(receipt: WorkerReceipt, correlation: ExecutionCorrelation, request: Extract<OperationWorkerRequestFrame, { type: "execute" }>['request']): WorkerReceipt | undefined {
 		const checked = validateWorkerReceiptForProvider(receipt, { providerId: this.provider.providerId, providerClass: "operation_worker" });
 		if (!checked.ok || checked.value.operationId !== request.operationId) return undefined;
 		for (const field of ["taskId", "dispatchId", "attemptId"] as const) {
@@ -250,7 +250,7 @@ export class WorkerRuntimeV1 {
 	}
 
 	private async credential(
-		frame: Extract<WorkerRequestFrameV1, { type: "credential.project" | "credential.renew" }>,
+		frame: Extract<OperationWorkerRequestFrame, { type: "credential.project" | "credential.renew" }>,
 		method: "projectCredential" | "renewCredential",
 	): Promise<void> {
 		const operation = this.provider[method];
@@ -266,7 +266,7 @@ export class WorkerRuntimeV1 {
 		}
 	}
 
-	private async revokeCredential(frame: Extract<WorkerRequestFrameV1, { type: "credential.revoke" }>): Promise<void> {
+	private async revokeCredential(frame: Extract<OperationWorkerRequestFrame, { type: "credential.revoke" }>): Promise<void> {
 		const operation = this.provider.revokeCredential;
 		if (operation === undefined) {
 			await this.requestError(frame.requestId, "task_credential_target_unavailable", "credential target unavailable");
@@ -280,7 +280,7 @@ export class WorkerRuntimeV1 {
 		}
 	}
 
-	private async cancel(frame: Extract<WorkerRequestFrameV1, { type: "cancel" }>): Promise<void> {
+	private async cancel(frame: Extract<OperationWorkerRequestFrame, { type: "cancel" }>): Promise<void> {
 		const operationId = frame.operationId ?? this.protocol.state.operations.find((operation) => !operation.terminal)?.operationId;
 		if (operationId === undefined) {
 			await this.requestError(frame.requestId, "worker_cancel_failed", "worker has no cancellable operation");
@@ -296,7 +296,7 @@ export class WorkerRuntimeV1 {
 		}
 	}
 
-	private async reclaim(frame: Extract<WorkerRequestFrameV1, { type: "reclaim" }>): Promise<void> {
+	private async reclaim(frame: Extract<OperationWorkerRequestFrame, { type: "reclaim" }>): Promise<void> {
 		try {
 			await this.provider.dispose();
 			this.close();
@@ -313,7 +313,7 @@ export class WorkerRuntimeV1 {
 		if (close) this.close();
 	}
 
-	private emit(frame: WorkerEventFrameV1): Promise<void> {
+	private emit(frame: OperationWorkerEventFrame): Promise<void> {
 		if (this.closedValue) return Promise.resolve();
 		// This state-machine transition serializes the complete frame and applies
 		// WORKER_PROTOCOL_MAX_FRAME_BYTES before the transport callback can run.
@@ -324,7 +324,7 @@ export class WorkerRuntimeV1 {
 			this.failClosed("worker emitted an invalid protocol frame");
 			return Promise.resolve();
 		}
-		const operation = this.outputTail.then(() => this.emitFrame(accepted.value.frame as WorkerEventFrameV1));
+		const operation = this.outputTail.then(() => this.emitFrame(accepted.value.frame as OperationWorkerEventFrame));
 		this.outputTail = operation.catch(() => this.failClosed("worker output transport failed"));
 		return operation.catch(() => undefined);
 	}
@@ -344,20 +344,20 @@ export class WorkerRuntimeV1 {
 
 	private writeDiagnostic(value: string): void {
 		try {
-			this.diagnosticWriter?.(formatWorkerStderrDiagnosticV1(value));
+			this.diagnosticWriter?.(formatWorkerStderrDiagnostic(value));
 		} catch {
 			// Diagnostic transport is best effort and never changes protocol state.
 		}
 	}
 }
 
-export const WorkerRuntime = WorkerRuntimeV1;
+export const WorkerRuntime = OperationWorkerRuntime;
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
 	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function operationCorrelation(binding: WorkerBindingV1, request: Extract<WorkerRequestFrameV1, { type: "execute" }>['request']): ExecutionCorrelation {
+function operationCorrelation(binding: WorkerBinding, request: Extract<OperationWorkerRequestFrame, { type: "execute" }>['request']): ExecutionCorrelation {
 	return {
 		sessionId: binding.sessionId,
 		laneId: binding.laneId,

@@ -13,14 +13,14 @@ import {
 	type SessionLedger,
 } from "@aos-agent/agent-core";
 import { SUBAGENT_PROVIDER_KINDS } from "./subagent.ts";
-import type { ChildAgentRosterEntryV1 } from "./subagent-supervisor.ts";
+import type { ChildAgentRosterEntry } from "./subagent-supervisor.ts";
 
 export const SUBAGENT_MAILBOX_SENT_OBJECT_TYPE = "subagent.mailbox_message_sent";
 export const SUBAGENT_MAILBOX_ACK_OBJECT_TYPE = "subagent.mailbox_message_acknowledged";
 
-export type ChildMailboxMessageKindV1 = "input" | "query" | "notice" | "result_ref";
+export type ChildMailboxMessageKind = "input" | "query" | "notice" | "result_ref";
 
-export interface ChildMailboxCorrelationV1 {
+export interface ChildMailboxCorrelation {
 	readonly sessionId: string;
 	readonly laneId: string;
 	readonly taskId: string;
@@ -28,14 +28,14 @@ export interface ChildMailboxCorrelationV1 {
 	readonly agentInstanceId: string;
 }
 
-export interface ChildMailboxMessageV1 {
+export interface ChildMailboxMessage {
 	readonly schemaVersion: 1;
 	readonly messageId: string;
 	readonly fromAgentInstanceId: string;
 	readonly toAgentInstanceId: string;
-	readonly kind: ChildMailboxMessageKindV1;
+	readonly kind: ChildMailboxMessageKind;
 	readonly body: FoundationJsonValue;
-	readonly correlation: ChildMailboxCorrelationV1;
+	readonly correlation: ChildMailboxCorrelation;
 	readonly createdAt: string;
 	readonly ack?: {
 		readonly at: string;
@@ -43,7 +43,7 @@ export interface ChildMailboxMessageV1 {
 	};
 }
 
-export interface ChildMailboxEndpointV1 {
+export interface ChildMailboxEndpoint {
 	readonly schemaVersion: 1;
 	readonly sessionId: string;
 	readonly laneId: string;
@@ -52,25 +52,25 @@ export interface ChildMailboxEndpointV1 {
 	readonly attemptId: string;
 }
 
-export interface SendChildMailboxMessageInputV1 {
+export interface SendChildMailboxMessageInput {
 	readonly schemaVersion: 1;
 	readonly messageId: string;
 	readonly fromAgentInstanceId: string;
 	readonly fromAttemptId: string;
 	readonly toAgentInstanceId: string;
-	readonly kind: ChildMailboxMessageKindV1;
+	readonly kind: ChildMailboxMessageKind;
 	readonly body: FoundationJsonValue;
-	readonly correlation: ChildMailboxCorrelationV1;
+	readonly correlation: ChildMailboxCorrelation;
 }
 
-export interface AcknowledgeChildMailboxMessageInputV1 {
+export interface AcknowledgeChildMailboxMessageInput {
 	readonly schemaVersion: 1;
 	readonly messageId: string;
 	readonly toAgentInstanceId: string;
 	readonly byAttemptId: string;
 }
 
-export interface ConsumeChildMailboxInputV1 {
+export interface ConsumeChildMailboxInput {
 	readonly schemaVersion: 1;
 	readonly sessionId: string;
 	readonly toAgentInstanceId: string;
@@ -78,35 +78,35 @@ export interface ConsumeChildMailboxInputV1 {
 	readonly limit: number;
 }
 
-export interface WaitForChildrenInputV1 {
+export interface WaitForChildrenInput {
 	readonly schemaVersion: 1;
 	readonly sessionId: string;
 	readonly childAgentInstanceIds: readonly string[];
 	readonly timeoutMs: number;
 }
 
-export interface QueryChildMailboxInputV1 {
+export interface QueryChildMailboxInput {
 	readonly schemaVersion: 1;
 	readonly sessionId: string;
 	readonly childAgentInstanceId: string;
 	readonly timeoutMs: number;
 }
 
-export interface ChildMailboxQueryV1 {
+export interface ChildMailboxQuery {
 	readonly schemaVersion: 1;
-	readonly child: ChildAgentRosterEntryV1;
+	readonly child: ChildAgentRosterEntry;
 	readonly pendingMessages: number;
 	readonly lastMessageSequence?: number;
 }
 
-export interface SubagentMailboxOptionsV1 {
+export interface SubagentMailboxOptions {
 	readonly schemaVersion: 1;
 	readonly ledger: SessionLedger;
 	readonly ledgerForLane: (laneId: string) => SessionLedger;
 	readonly sessionId: string;
 	readonly laneId: string;
-	readonly roster: () => readonly ChildAgentRosterEntryV1[];
-	readonly endpoints?: readonly ChildMailboxEndpointV1[];
+	readonly roster: () => readonly ChildAgentRosterEntry[];
+	readonly endpoints?: readonly ChildMailboxEndpoint[];
 	readonly maxBodyBytes: number;
 	readonly maxPendingPerRecipient: number;
 	readonly maxMessagesPerWindow: number;
@@ -123,9 +123,9 @@ interface ChildMailboxSentPayloadV1 {
 	readonly messageId: string;
 	readonly fromAgentInstanceId: string;
 	readonly toAgentInstanceId: string;
-	readonly kind: ChildMailboxMessageKindV1;
+	readonly kind: ChildMailboxMessageKind;
 	readonly body: FoundationJsonValue;
-	readonly correlation: ChildMailboxCorrelationV1;
+	readonly correlation: ChildMailboxCorrelation;
 	readonly createdAt: string;
 }
 
@@ -217,7 +217,7 @@ function isJson(value: unknown): value is FoundationJsonValue {
 	}
 }
 
-function validateCorrelation(value: unknown): value is ChildMailboxCorrelationV1 {
+function validateCorrelation(value: unknown): value is ChildMailboxCorrelation {
 	return (
 		isRecord(value) &&
 		exactKeys(value, CORRELATION_KEYS) &&
@@ -229,7 +229,7 @@ function validateCorrelation(value: unknown): value is ChildMailboxCorrelationV1
 	);
 }
 
-function validateEndpoint(value: unknown): value is ChildMailboxEndpointV1 {
+function validateEndpoint(value: unknown): value is ChildMailboxEndpoint {
 	return (
 		isRecord(value) &&
 		exactKeys(value, ENDPOINT_KEYS) &&
@@ -242,7 +242,7 @@ function validateEndpoint(value: unknown): value is ChildMailboxEndpointV1 {
 	);
 }
 
-function validateRosterEntry(value: unknown): value is ChildAgentRosterEntryV1 {
+function validateRosterEntry(value: unknown): value is ChildAgentRosterEntry {
 	return (
 		isRecord(value) &&
 		exactKeys(value, ROSTER_KEYS) &&
@@ -268,7 +268,7 @@ function validateRosterEntry(value: unknown): value is ChildAgentRosterEntryV1 {
 	);
 }
 
-function validateSendInput(value: unknown): value is SendChildMailboxMessageInputV1 {
+function validateSendInput(value: unknown): value is SendChildMailboxMessageInput {
 	return (
 		isRecord(value) &&
 		exactKeys(value, SEND_KEYS) &&
@@ -316,14 +316,14 @@ function validateAckPayload(value: unknown): value is ChildMailboxAckPayloadV1 {
 	);
 }
 
-function publicMessage(sent: ChildMailboxSentPayloadV1, ack: ChildMailboxAckPayloadV1 | undefined): ChildMailboxMessageV1 {
+function publicMessage(sent: ChildMailboxSentPayloadV1, ack: ChildMailboxAckPayloadV1 | undefined): ChildMailboxMessage {
 	return cloneDeepFrozen({
 		...sent,
 		...(ack === undefined ? {} : { ack: { at: ack.at, byAttemptId: ack.byAttemptId } }),
 	});
 }
 
-function inputMatchesStored(input: SendChildMailboxMessageInputV1, stored: ChildMailboxSentPayloadV1): boolean {
+function inputMatchesStored(input: SendChildMailboxMessageInput, stored: ChildMailboxSentPayloadV1): boolean {
 	return (
 		input.messageId === stored.messageId &&
 		input.fromAgentInstanceId === stored.fromAgentInstanceId &&
@@ -334,12 +334,12 @@ function inputMatchesStored(input: SendChildMailboxMessageInputV1, stored: Child
 	);
 }
 
-export class SubagentMailboxV1 {
+export class SubagentMailbox {
 	private readonly ledger: SessionLedger;
 	private readonly ledgerForLane: (laneId: string) => SessionLedger;
 	private readonly sessionId: string;
-	private readonly rosterSource: () => readonly ChildAgentRosterEntryV1[];
-	private readonly endpoints = new Map<string, ChildMailboxEndpointV1>();
+	private readonly rosterSource: () => readonly ChildAgentRosterEntry[];
+	private readonly endpoints = new Map<string, ChildMailboxEndpoint>();
 	private readonly sealedEndpoints = new Set<string>();
 	private readonly maxBodyBytes: number;
 	private readonly maxPendingPerRecipient: number;
@@ -352,7 +352,7 @@ export class SubagentMailboxV1 {
 	private readonly waitDelay: (milliseconds: number) => Promise<void>;
 	private mutationTail: Promise<void> = Promise.resolve();
 
-	constructor(options: SubagentMailboxOptionsV1) {
+	constructor(options: SubagentMailboxOptions) {
 		const endpoints = options.endpoints ?? [];
 		if (
 			options.schemaVersion !== 1 ||
@@ -392,7 +392,7 @@ export class SubagentMailboxV1 {
 		if (!roster.ok) throw new FoundationError("subagent_mailbox_invalid", "Subagent mailbox roster is invalid");
 	}
 
-	async send(inputValue: unknown): Promise<ResultValue<ChildMailboxMessageV1, FoundationError>> {
+	async send(inputValue: unknown): Promise<ResultValue<ChildMailboxMessage, FoundationError>> {
 		if (!validateSendInput(inputValue)) {
 			return Result.err(new FoundationError("subagent_mailbox_invalid", "Child mailbox message has an invalid exact shape"));
 		}
@@ -528,7 +528,7 @@ export class SubagentMailboxV1 {
 		return Result.ok(undefined);
 	}
 
-	async acknowledge(inputValue: unknown): Promise<ResultValue<ChildMailboxMessageV1, FoundationError>> {
+	async acknowledge(inputValue: unknown): Promise<ResultValue<ChildMailboxMessage, FoundationError>> {
 		if (
 			!isRecord(inputValue) ||
 			!exactKeys(inputValue, ACK_INPUT_KEYS) ||
@@ -539,7 +539,7 @@ export class SubagentMailboxV1 {
 		) {
 			return Result.err(new FoundationError("subagent_mailbox_invalid", "Child mailbox acknowledgement is invalid"));
 		}
-		const input: AcknowledgeChildMailboxMessageInputV1 = {
+		const input: AcknowledgeChildMailboxMessageInput = {
 			schemaVersion: 1,
 			messageId: inputValue.messageId,
 			toAgentInstanceId: inputValue.toAgentInstanceId,
@@ -611,7 +611,7 @@ export class SubagentMailboxV1 {
 		});
 	}
 
-	async consume(inputValue: unknown): Promise<ResultValue<readonly ChildMailboxMessageV1[], FoundationError>> {
+	async consume(inputValue: unknown): Promise<ResultValue<readonly ChildMailboxMessage[], FoundationError>> {
 		if (
 			!isRecord(inputValue) ||
 			!exactKeys(inputValue, CONSUME_KEYS) ||
@@ -634,7 +634,7 @@ export class SubagentMailboxV1 {
 					!acknowledgements.value.has(record.payload.messageId),
 			)
 			.slice(0, inputValue.limit as number);
-		const consumed: ChildMailboxMessageV1[] = [];
+		const consumed: ChildMailboxMessage[] = [];
 		for (const record of pending) {
 			const ack = await this.acknowledge({
 				schemaVersion: 1,
@@ -648,19 +648,19 @@ export class SubagentMailboxV1 {
 		return Result.ok(Object.freeze(consumed));
 	}
 
-	async waitAny(inputValue: unknown): Promise<ResultValue<readonly ChildAgentRosterEntryV1[], FoundationError>> {
+	async waitAny(inputValue: unknown): Promise<ResultValue<readonly ChildAgentRosterEntry[], FoundationError>> {
 		const input = this.validateWaitInput(inputValue);
 		if (!input.ok) return input;
 		return this.waitFor(input.value, false);
 	}
 
-	async waitAll(inputValue: unknown): Promise<ResultValue<readonly ChildAgentRosterEntryV1[], FoundationError>> {
+	async waitAll(inputValue: unknown): Promise<ResultValue<readonly ChildAgentRosterEntry[], FoundationError>> {
 		const input = this.validateWaitInput(inputValue);
 		if (!input.ok) return input;
 		return this.waitFor(input.value, true);
 	}
 
-	async query(inputValue: unknown): Promise<ResultValue<ChildMailboxQueryV1, FoundationError>> {
+	async query(inputValue: unknown): Promise<ResultValue<ChildMailboxQuery, FoundationError>> {
 		if (
 			!isRecord(inputValue) ||
 			!exactKeys(inputValue, QUERY_KEYS) ||
@@ -704,7 +704,7 @@ export class SubagentMailboxV1 {
 		}
 	}
 
-	siblingRoster(inputValue: unknown): ResultValue<readonly ChildAgentRosterEntryV1[], FoundationError> {
+	siblingRoster(inputValue: unknown): ResultValue<readonly ChildAgentRosterEntry[], FoundationError> {
 		if (
 			!isRecord(inputValue) ||
 			!exactKeys(inputValue, new Set(["schemaVersion", "sessionId", "agentInstanceId"])) ||
@@ -733,7 +733,7 @@ export class SubagentMailboxV1 {
 		);
 	}
 
-	private endpoint(agentInstanceId: string): ResultValue<ChildMailboxEndpointV1 | undefined, FoundationError> {
+	private endpoint(agentInstanceId: string): ResultValue<ChildMailboxEndpoint | undefined, FoundationError> {
 		const explicit = this.endpoints.get(agentInstanceId);
 		if (explicit !== undefined) return Result.ok(explicit);
 		const roster = this.readRoster();
@@ -753,8 +753,8 @@ export class SubagentMailboxV1 {
 		);
 	}
 
-	private readRoster(): ResultValue<readonly ChildAgentRosterEntryV1[], FoundationError> {
-		let roster: readonly ChildAgentRosterEntryV1[];
+	private readRoster(): ResultValue<readonly ChildAgentRosterEntry[], FoundationError> {
+		let roster: readonly ChildAgentRosterEntry[];
 		try {
 			roster = this.rosterSource();
 		} catch {
@@ -779,7 +779,7 @@ export class SubagentMailboxV1 {
 		return Result.ok(Object.freeze(roster.map((entry) => cloneDeepFrozen(entry))));
 	}
 
-	private validateWaitInput(value: unknown): ResultValue<WaitForChildrenInputV1, FoundationError> {
+	private validateWaitInput(value: unknown): ResultValue<WaitForChildrenInput, FoundationError> {
 		if (
 			!isRecord(value) ||
 			!exactKeys(value, WAIT_KEYS) ||
@@ -794,13 +794,13 @@ export class SubagentMailboxV1 {
 		) {
 			return Result.err(new FoundationError("subagent_mailbox_invalid", "Child wait input is invalid"));
 		}
-		return Result.ok(value as unknown as WaitForChildrenInputV1);
+		return Result.ok(value as unknown as WaitForChildrenInput);
 	}
 
 	private async waitFor(
-		input: WaitForChildrenInputV1,
+		input: WaitForChildrenInput,
 		all: boolean,
-	): Promise<ResultValue<readonly ChildAgentRosterEntryV1[], FoundationError>> {
+	): Promise<ResultValue<readonly ChildAgentRosterEntry[], FoundationError>> {
 		const deadline = this.clock() + input.timeoutMs;
 		while (true) {
 			const checkedRoster = this.readRoster();
@@ -837,10 +837,10 @@ export class SubagentMailboxV1 {
 		}
 	}
 
-	private ownedEndpoints(): ResultValue<ReadonlyMap<string, ChildMailboxEndpointV1>, FoundationError> {
+	private ownedEndpoints(): ResultValue<ReadonlyMap<string, ChildMailboxEndpoint>, FoundationError> {
 		const roster = this.readRoster();
 		if (!roster.ok) return roster;
-		const result = new Map<string, ChildMailboxEndpointV1>();
+		const result = new Map<string, ChildMailboxEndpoint>();
 		for (const endpoint of this.endpoints.values()) result.set(endpoint.agentInstanceId, endpoint);
 		for (const child of roster.value) {
 			result.set(child.childAgentInstanceId, {
@@ -1037,6 +1037,6 @@ export class SubagentMailboxV1 {
 }
 
 /** Exact event correlation projection used by observers and tests. */
-export function childMailboxEventCorrelationV1(message: ChildMailboxMessageV1): EventCorrelationRef {
+export function childMailboxEventCorrelation(message: ChildMailboxMessage): EventCorrelationRef {
 	return cloneDeepFrozen({ ...message.correlation });
 }

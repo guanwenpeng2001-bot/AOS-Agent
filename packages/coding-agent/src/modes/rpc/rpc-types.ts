@@ -51,8 +51,8 @@ import type {
 	RunStatus,
 } from "../../core/run-lifecycle.ts";
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
-import type { ChildLifecycleStatusV1 } from "../../core/subagent.ts";
-import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
+import type { ChildLifecycleStatus } from "../../core/subagent.ts";
+import type { SafeSubagentLifecycleProjection } from "../../core/subagent-composition.ts";
 import type {
 	TaskCredentialDeliveryReceipt,
 	TaskCredentialGrant,
@@ -381,7 +381,7 @@ export type RpcCommand =
 			type: "subagent.list";
 			runId: string;
 			parentAgentInstanceId?: string;
-			status?: ChildLifecycleStatusV1;
+			status?: ChildLifecycleStatus;
 			limit?: number;
 	  }
 	| { id?: string; type: "subagent.cancel"; runId: string; childAgentInstanceId: string }
@@ -1214,16 +1214,16 @@ export type RpcWorkerResponse =
 	  };
 
 export interface SubagentGetData {
-	subagent: SafeSubagentLifecycleProjectionV1;
+	subagent: SafeSubagentLifecycleProjection;
 }
 
 export interface SubagentListData {
-	subagents: SafeSubagentLifecycleProjectionV1[];
+	subagents: SafeSubagentLifecycleProjection[];
 	truncated: boolean;
 }
 
 export interface SubagentCancelData {
-	subagent: SafeSubagentLifecycleProjectionV1;
+	subagent: SafeSubagentLifecycleProjection;
 	idempotent: boolean;
 }
 

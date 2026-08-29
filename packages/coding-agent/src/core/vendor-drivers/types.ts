@@ -37,7 +37,7 @@ import type {
 	ExternalResolvedModelProjection,
 	ExternalTranslatedModelProjection,
 } from "../external-model-projection.ts";
-import type { SafeLeaseProjectionV1 } from "../worker-protocol.ts";
+import type { SafeLeaseProjection } from "../worker-protocol.ts";
 
 export interface ExternalConnectorDriverHandle {
 	readonly externalSessionId: string;
@@ -63,7 +63,7 @@ export interface ExternalConnectorDriverSpawnRequest {
 	readonly bindingDigest: string;
 	readonly bindingRevision: number;
 	/** Material-free, exact per-binding lease projection issued by the Host. */
-	readonly credential?: SafeLeaseProjectionV1;
+	readonly credential?: SafeLeaseProjection;
 	/** Exact MCP authority from the durable AgentBinding for this Attempt. */
 	readonly mcpSelection?: McpSelection;
 	/** Policy-filtered, exact Tool Gateway visibility for this Attempt. */

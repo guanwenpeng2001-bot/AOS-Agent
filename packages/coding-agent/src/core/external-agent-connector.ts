@@ -72,10 +72,10 @@ import type {
 	TaskCredentialWorkerTarget,
 } from "./task-credential-service.ts";
 import {
-	validateSafeLeaseProjectionV1,
-	validateSafeLeaseReferenceV1,
-	type SafeLeaseProjectionV1,
-	type SafeLeaseReferenceV1,
+	validateOperationWorkerLeaseProjection,
+	validateOperationWorkerLeaseReference,
+	type SafeLeaseProjection,
+	type SafeLeaseReference,
 } from "./worker-protocol.ts";
 
 export interface ExternalConnectorCredentialRuntime {
@@ -378,15 +378,15 @@ function externalConnectorCredentialIssueRequestId(attemptId: string): string {
 
 function externalConnectorCredentialReference(
 	lease: ExternalConnectorCredentialLease,
-): SafeLeaseReferenceV1 {
-	const reference: SafeLeaseReferenceV1 = {
+): SafeLeaseReference {
+	const reference: SafeLeaseReference = {
 		schemaVersion: 1,
 		leaseId: lease.projection.leaseId,
 		grantId: lease.projection.grantId,
 		bindingId: lease.projection.bindingId,
 		clientRequestId: lease.projection.clientRequestId,
 	};
-	if (!validateSafeLeaseReferenceV1(reference)) {
+	if (!validateOperationWorkerLeaseReference(reference)) {
 		throw externalFailure("external_credential_unavailable", "External connector lease reference is invalid");
 	}
 	return Object.freeze(reference);
@@ -659,11 +659,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				),
 			);
 		}
-		let projected: SafeLeaseProjectionV1 | undefined;
+		let projected: SafeLeaseProjection | undefined;
 		const target: TaskCredentialWorkerTarget = Object.freeze({
-			project: (lease: SafeLeaseProjectionV1) => {
+			project: (lease: SafeLeaseProjection) => {
 				if (
-					!validateSafeLeaseProjectionV1(lease) ||
+					!validateOperationWorkerLeaseProjection(lease) ||
 					lease.scopeDigest !== plan.requirement.scopeDigest
 				) {
 					return Object.freeze({ ok: false });
@@ -671,9 +671,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				projected = Object.freeze({ ...lease });
 				return Object.freeze({ ok: true });
 			},
-			renew: (lease: SafeLeaseProjectionV1) => {
+			renew: (lease: SafeLeaseProjection) => {
 				if (
-					!validateSafeLeaseProjectionV1(lease) ||
+					!validateOperationWorkerLeaseProjection(lease) ||
 					lease.scopeDigest !== plan.requirement.scopeDigest ||
 					(projected !== undefined &&
 						(lease.leaseId !== projected.leaseId ||
@@ -685,9 +685,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				projected = Object.freeze({ ...lease });
 				return Object.freeze({ ok: true });
 			},
-			revoke: (lease: SafeLeaseReferenceV1) => {
+			revoke: (lease: SafeLeaseReference) => {
 				if (
-					!validateSafeLeaseReferenceV1(lease) ||
+					!validateOperationWorkerLeaseReference(lease) ||
 					(projected !== undefined &&
 						(lease.leaseId !== projected.leaseId ||
 							lease.grantId !== projected.grantId ||
@@ -717,7 +717,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				),
 			);
 		}
-		const projection: SafeLeaseProjectionV1 = projected ?? Object.freeze({
+		const projection: SafeLeaseProjection = projected ?? Object.freeze({
 			schemaVersion: 1,
 			leaseId: issued.grant.leaseId,
 			grantId: issued.grant.grantId,
@@ -767,7 +767,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 
 	#requireCredentialLease(
 		operation: ExternalConnectorOperation,
-	): ResultValue<SafeLeaseProjectionV1 | undefined, FoundationError> {
+	): ResultValue<SafeLeaseProjection | undefined, FoundationError> {
 		if (operation.credentialRequirement === undefined && operation.credential === undefined) {
 			return Result.ok(undefined);
 		}

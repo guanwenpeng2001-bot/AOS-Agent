@@ -1,24 +1,24 @@
 import type { WorkerReceipt } from "@aos-agent/agent-core";
 import type {
-	WorkerEventFrameV1,
-	WorkerRequestFrameV1,
+	OperationWorkerEventFrame,
+	OperationWorkerRequestFrame,
 } from "../../src/core/worker-protocol.ts";
-import type { WorkerBindingV1 } from "../../src/core/worker.ts";
+import type { WorkerBinding } from "../../src/core/worker.ts";
 
 const MAX_FRAME_BYTES = 64 * 1024;
 
-let binding: WorkerBindingV1 | undefined;
-let activeExecute: Extract<WorkerRequestFrameV1, { type: "execute" }> | undefined;
+let binding: WorkerBinding | undefined;
+let activeExecute: Extract<OperationWorkerRequestFrame, { type: "execute" }> | undefined;
 let inputBuffer = "";
 let heartbeatSequence = 0;
 let heartbeatTimer: NodeJS.Timeout | undefined;
 let keepAliveTimer: NodeJS.Timeout | undefined;
 
-function emit(frame: WorkerEventFrameV1): void {
+function emit(frame: OperationWorkerEventFrame): void {
 	process.stdout.write(`${JSON.stringify(frame)}\n`);
 }
 
-function emitBatch(frames: readonly WorkerEventFrameV1[]): void {
+function emitBatch(frames: readonly OperationWorkerEventFrame[]): void {
 	process.stdout.write(frames.map((frame) => `${JSON.stringify(frame)}\n`).join(""));
 }
 
@@ -44,7 +44,7 @@ function startHeartbeat(oneShot = false): void {
 }
 
 function receipt(
-	frame: Extract<WorkerRequestFrameV1, { type: "execute" }>,
+	frame: Extract<OperationWorkerRequestFrame, { type: "execute" }>,
 	status: "succeeded" | "failed" | "cancelled",
 	overrides: { readonly taskId?: string } = {},
 ): WorkerReceipt {
@@ -86,12 +86,12 @@ function receipt(
 }
 
 function complete(
-	frame: Extract<WorkerRequestFrameV1, { type: "execute" }>,
+	frame: Extract<OperationWorkerRequestFrame, { type: "execute" }>,
 	status: "succeeded" | "failed" | "cancelled",
 	overrides: { readonly taskId?: string } = {},
 ): void {
 	stopHeartbeat();
-	const completed: WorkerEventFrameV1 = {
+	const completed: OperationWorkerEventFrame = {
 		type: "operation.completed",
 		requestId: frame.requestId,
 		workerId: frame.workerId,
@@ -106,7 +106,7 @@ function complete(
 				: {}),
 		},
 	};
-	const terminal: WorkerEventFrameV1 = {
+	const terminal: OperationWorkerEventFrame = {
 		type: "receipt",
 		requestId: frame.requestId,
 		receipt: receipt(frame, status, overrides),
@@ -136,8 +136,8 @@ function complete(
 	emitBatch([completed, terminal]);
 }
 
-function ready(frame: Extract<WorkerRequestFrameV1, { type: "initialize" }>): void {
-	const readyFrame: WorkerEventFrameV1 = {
+function ready(frame: Extract<OperationWorkerRequestFrame, { type: "initialize" }>): void {
+	const readyFrame: OperationWorkerEventFrame = {
 		type: "ready",
 		requestId: frame.requestId,
 		workerId: frame.binding.workerId,
@@ -166,7 +166,7 @@ function ready(frame: Extract<WorkerRequestFrameV1, { type: "initialize" }>): vo
 	startHeartbeat();
 }
 
-function handleInitialize(frame: Extract<WorkerRequestFrameV1, { type: "initialize" }>): void {
+function handleInitialize(frame: Extract<OperationWorkerRequestFrame, { type: "initialize" }>): void {
 	binding = frame.binding;
 	const profile = frame.binding.profileId;
 	if (profile === "environment_probe" && process.env.AOS_WORKER_SECRET_SENTINEL !== undefined) {
@@ -189,7 +189,7 @@ function handleInitialize(frame: Extract<WorkerRequestFrameV1, { type: "initiali
 	ready(frame);
 }
 
-function handleExecute(frame: Extract<WorkerRequestFrameV1, { type: "execute" }>): void {
+function handleExecute(frame: Extract<OperationWorkerRequestFrame, { type: "execute" }>): void {
 	activeExecute = frame;
 	emit({
 		type: "operation.started",
@@ -228,7 +228,7 @@ function exitCleanly(): void {
 	process.stdout.write("", () => process.exit(0));
 }
 
-function handleReclaim(frame: Extract<WorkerRequestFrameV1, { type: "reclaim" }>): void {
+function handleReclaim(frame: Extract<OperationWorkerRequestFrame, { type: "reclaim" }>): void {
 	if (binding?.profileId === "reclaim_unknown") {
 		emit({
 			type: "error",
@@ -241,7 +241,7 @@ function handleReclaim(frame: Extract<WorkerRequestFrameV1, { type: "reclaim" }>
 	exitCleanly();
 }
 
-function handleFrame(frame: WorkerRequestFrameV1): void {
+function handleFrame(frame: OperationWorkerRequestFrame): void {
 	switch (frame.type) {
 		case "initialize":
 			handleInitialize(frame);
@@ -273,9 +273,9 @@ process.stdin.on("data", (chunk: string) => {
 		if (newline < 0) break;
 		const line = inputBuffer.slice(0, newline + 1);
 		inputBuffer = inputBuffer.slice(newline + 1);
-		let frame: WorkerRequestFrameV1;
+		let frame: OperationWorkerRequestFrame;
 		try {
-			frame = JSON.parse(line) as WorkerRequestFrameV1;
+			frame = JSON.parse(line) as OperationWorkerRequestFrame;
 		} catch {
 			process.exit(2);
 			return;

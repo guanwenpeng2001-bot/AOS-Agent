@@ -26,7 +26,7 @@ import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { TrustedSubagentCompositionV1 } from "../src/core/subagent-composition.ts";
+import type { TrustedSubagentComposition } from "../src/core/subagent-composition.ts";
 
 const MODEL: Model<"anthropic-messages"> = {
 	id: "faux-model",
@@ -129,7 +129,7 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 		const directory = join(tmpdir(), `aos-subagent-facade-${Date.now()}`);
 		mkdirSync(directory, { recursive: true });
 		const contexts: Context[] = [];
-		let composition: TrustedSubagentCompositionV1 | undefined;
+		let composition: TrustedSubagentComposition | undefined;
 		const enabled = createAgentSessionWithRuntimeComposition({
 			agent: createAgent(contexts),
 			sessionManager: SessionManager.create(directory),

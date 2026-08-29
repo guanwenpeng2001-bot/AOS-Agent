@@ -15,13 +15,13 @@ import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { WorkerLifecycleStatus, WorkerRecordV1 } from "../src/core/worker.ts";
+import type { WorkerLifecycleStatus, WorkerRecord } from "../src/core/worker.ts";
 import {
 	createAgentRuntimeCompositionFactory,
 	createAgentSession,
 	createTrustedWorkerSandboxComposition,
 } from "../src/index.ts";
-import type { WorkerSandboxProviderV1 } from "../src/core/worker-sandbox-provider.ts";
+import type { WorkerSandboxProvider } from "../src/core/worker-sandbox-provider.ts";
 import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
 import { RpcHostController, type RpcWorkerRegistry } from "../src/modes/rpc/rpc-host.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
@@ -202,7 +202,7 @@ function workerRecord(input: {
 	status?: WorkerLifecycleStatus;
 	runId?: string;
 	createdAt?: string;
-}): WorkerRecordV1 {
+}): WorkerRecord {
 	const status = input.status ?? "lost";
 	const createdAt = input.createdAt ?? "2026-08-21T00:00:00.000Z";
 	const readyAt = "2026-08-21T00:00:01.000Z";
@@ -256,7 +256,7 @@ function testModels(): Models {
 async function createCanonicalWorkerSession(
 	tempDir: string,
 	workerId: string,
-): Promise<{ session: AgentSession; provider: WorkerSandboxProviderV1 }> {
+): Promise<{ session: AgentSession; provider: WorkerSandboxProvider }> {
 	mkdirSync(tempDir, { recursive: true });
 	const sessionManager = SessionManager.create(tempDir);
 	const models = testModels();
@@ -591,11 +591,11 @@ describe("RpcHostController Worker management", () => {
 
 	it("enforces current-Session ownership and projects only safe exact fields", async () => {
 		let currentSessionId = "";
-		const records = new Map<string, WorkerRecordV1>();
+		const records = new Map<string, WorkerRecord>();
 		const registry: RpcWorkerRegistry = {
 			getWorkerRecord: (workerId) => records.get(workerId),
 			listWorkerRecords: () => [...records.values()],
-			reclaimWorker: async (workerId) => Result.ok(records.get(workerId) as WorkerRecordV1),
+			reclaimWorker: async (workerId) => Result.ok(records.get(workerId) as WorkerRecord),
 		};
 		const resolver = vi.fn((session: AgentSession) => {
 			currentSessionId = session.sessionId;
@@ -642,12 +642,12 @@ describe("RpcHostController Worker management", () => {
 	});
 
 	it("applies stable ordering, filtering, limits, and cursor pagination", async () => {
-		const records: WorkerRecordV1[] = [];
+		const records: WorkerRecord[] = [];
 		const registry: RpcWorkerRegistry = {
 			getWorkerRecord: (workerId) => records.find((record) => record.workerId === workerId),
 			listWorkerRecords: () => records,
 			reclaimWorker: async (workerId) =>
-				Result.ok(records.find((record) => record.workerId === workerId) as WorkerRecordV1),
+				Result.ok(records.find((record) => record.workerId === workerId) as WorkerRecord),
 		};
 		const harness = await createHarness(() => registry);
 		try {
@@ -712,7 +712,7 @@ describe("RpcHostController Worker management", () => {
 	});
 
 	it("reclaims only owned terminal Workers and keeps repeated reclaim idempotent", async () => {
-		const records = new Map<string, WorkerRecordV1>();
+		const records = new Map<string, WorkerRecord>();
 		const reclaimWorker = vi.fn(async (workerId: string) => {
 			const existing = records.get(workerId);
 			if (existing === undefined) return Result.err(new FoundationError("worker_not_found", "raw secret not found"));
@@ -773,7 +773,7 @@ describe("RpcHostController Worker management", () => {
 	});
 
 	it("fails closed on unsafe registry data, stable reclaim errors, and unknown commands", async () => {
-		let unsafe: WorkerRecordV1 | undefined;
+		let unsafe: WorkerRecord | undefined;
 		const registry: RpcWorkerRegistry = {
 			getWorkerRecord: () => unsafe,
 			listWorkerRecords: () => (unsafe === undefined ? [] : [unsafe]),
@@ -786,7 +786,7 @@ describe("RpcHostController Worker management", () => {
 			unsafe = {
 				...workerRecord({ workerId: "unsafe", sessionId, status: "lost" }),
 				providerRawError: "secret=provider-token C:\\private\\worker.ts",
-			} as WorkerRecordV1;
+			} as WorkerRecord;
 			await harness.controller.dispatch({ type: "initialize", protocolVersion: 1 });
 			for (const command of [
 				{ type: "worker.get", workerId: "unsafe" },
@@ -848,8 +848,8 @@ describe("RpcHostController Worker management", () => {
 		let getRecord: unknown = null;
 		let listRecords: unknown = [null];
 		const malformedListRegistry: RpcWorkerRegistry = {
-			getWorkerRecord: () => getRecord as WorkerRecordV1 | undefined,
-			listWorkerRecords: () => listRecords as unknown as readonly WorkerRecordV1[],
+			getWorkerRecord: () => getRecord as WorkerRecord | undefined,
+			listWorkerRecords: () => listRecords as unknown as readonly WorkerRecord[],
 			reclaimWorker: async () => Result.err(new FoundationError("worker_reclaim_failed", "reclaim failed")),
 		};
 		const listHarness = await createHarness(() => malformedListRegistry);

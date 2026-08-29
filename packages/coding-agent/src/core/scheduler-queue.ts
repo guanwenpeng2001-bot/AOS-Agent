@@ -44,12 +44,12 @@ import {
 	SCHEDULER_DURABLE_EVENT_CATEGORIES,
 	SCHEDULER_ERROR_CODES,
 	SCHEDULER_QUEUE_MAX_DEPTH,
-	type SchedulerClaimV1,
-	type SchedulerDispatchRecordV1,
-	type SchedulerEnqueueResultV1,
-	type SchedulerErrorCodeV1,
-	type SchedulerProviderClassV1,
-	type SchedulerQueueEntryV1,
+	type SchedulerClaim,
+	type SchedulerDispatchRecord,
+	type SchedulerEnqueueResult,
+	type SchedulerErrorCode,
+	type SchedulerProviderClass,
+	type SchedulerQueueEntry,
 	schedulerQueueBusinessKey,
 	serializeSchedulerClaim,
 	serializeSchedulerDispatchRecord,
@@ -75,7 +75,7 @@ export const SCHEDULER_QUEUE_LEDGER_OBJECT_TYPES = Object.freeze([
 
 const WRITER_LEASE_REFRESH_MS = 1000;
 
-const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
+const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCode, string>> = {
 	scheduler_queue_invalid: "Scheduler queue entry is invalid.",
 	scheduler_queue_conflict: "Scheduler queue business key already has a different payload.",
 	scheduler_claim_conflict: "Scheduler claim conflict: the task already has an active claim.",
@@ -100,26 +100,26 @@ const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCodeV1, string>> = {
 	scheduler_persistence_failed: "Scheduler durable append failed; re-read current state.",
 };
 
-const RETRYABLE = new Set<SchedulerErrorCodeV1>([
+const RETRYABLE = new Set<SchedulerErrorCode>([
 	"scheduler_claim_conflict",
 	"scheduler_budget_exhausted_wait",
 	"scheduler_backpressure",
 ]);
 
-export type SchedulerCancelAttemptV1 = (attemptId: string) => Promise<ResultValue<void, FoundationError>>;
+export type SchedulerCancelAttempt = (attemptId: string) => Promise<ResultValue<void, FoundationError>>;
 
-export interface SchedulerQueueStoreOptionsV1 {
+export interface SchedulerQueueStoreOptions {
 	readonly ledger: DurableLedgerApi;
 	readonly sessionId: string;
 	readonly ownerId: string;
 	readonly lane?: string;
 	readonly now?: () => string;
 	readonly writerLeaseTtlMs?: number;
-	readonly cancelAttempt?: SchedulerCancelAttemptV1;
+	readonly cancelAttempt?: SchedulerCancelAttempt;
 	readonly maxAttempts?: number;
 }
 
-export interface SchedulerClaimRequestV1 {
+export interface SchedulerClaimRequest {
 	readonly queueEntryId: string;
 	readonly ownerId: string;
 	readonly claimId?: string;
@@ -127,15 +127,15 @@ export interface SchedulerClaimRequestV1 {
 	readonly ttlMs?: number;
 }
 
-export interface SchedulerClaimRenewRequestV1 {
+export interface SchedulerClaimRenewRequest {
 	readonly claimId: string;
 	readonly fencingToken: string;
 	readonly ttlMs?: number;
 }
 
-export type SchedulerClaimTransferStateV1 = "prepared" | "committed";
+export type SchedulerClaimTransferState = "prepared" | "committed";
 
-export interface SchedulerClaimTransferRequestV1 {
+export interface SchedulerClaimTransferRequest {
 	readonly transferId: string;
 	readonly queueEntryId: string;
 	readonly sourceFencingToken: string;
@@ -146,7 +146,7 @@ export interface SchedulerClaimTransferRequestV1 {
 	readonly ttlMs?: number;
 }
 
-export interface SchedulerClaimTransferV1 {
+export interface SchedulerClaimTransfer {
 	readonly schemaVersion: 1;
 	readonly transferId: string;
 	readonly queueEntryId: string;
@@ -161,30 +161,30 @@ export interface SchedulerClaimTransferV1 {
 	readonly targetFencingToken: string;
 	readonly targetAcquiredAt: string;
 	readonly targetExpiresAt: string;
-	readonly state: SchedulerClaimTransferStateV1;
+	readonly state: SchedulerClaimTransferState;
 	readonly createdAt: string;
 	readonly committedAt?: string;
 	readonly revision: number;
 }
 
-export interface SchedulerClaimTransferResultV1 {
-	readonly entry: SchedulerQueueEntryV1;
-	readonly sourceClaim: SchedulerClaimV1;
-	readonly targetClaim: SchedulerClaimV1;
-	readonly transfer: SchedulerClaimTransferV1;
+export interface SchedulerClaimTransferResult {
+	readonly entry: SchedulerQueueEntry;
+	readonly sourceClaim: SchedulerClaim;
+	readonly targetClaim: SchedulerClaim;
+	readonly transfer: SchedulerClaimTransfer;
 }
 
-export interface SchedulerDispatchRequestV1 {
+export interface SchedulerDispatchRequest {
 	readonly queueEntryId: string;
 	readonly fencingToken: string;
 	readonly dispatchId: string;
 	readonly attemptId: string;
 	readonly providerId: string;
-	readonly providerClass: SchedulerProviderClassV1;
+	readonly providerClass: SchedulerProviderClass;
 	readonly reservationId?: string;
 }
 
-export interface SchedulerQueueTerminalRequestV1 {
+export interface SchedulerQueueTerminalRequest {
 	readonly queueEntryId: string;
 	readonly dispatchId: string;
 	readonly attemptId: string;
@@ -192,30 +192,30 @@ export interface SchedulerQueueTerminalRequestV1 {
 	readonly outcome: "settled" | "cancelled";
 }
 
-export interface SchedulerClaimAcquireResultV1 {
-	readonly entry: SchedulerQueueEntryV1;
-	readonly claim: SchedulerClaimV1;
+export interface SchedulerClaimAcquireResult {
+	readonly entry: SchedulerQueueEntry;
+	readonly claim: SchedulerClaim;
 }
 
-export interface SchedulerDispatchResultV1 {
-	readonly entry: SchedulerQueueEntryV1;
-	readonly claim: SchedulerClaimV1;
-	readonly dispatch: SchedulerDispatchRecordV1;
+export interface SchedulerDispatchResult {
+	readonly entry: SchedulerQueueEntry;
+	readonly claim: SchedulerClaim;
+	readonly dispatch: SchedulerDispatchRecord;
 }
 
-export type SchedulerRecoveryActionV1 = "requeued" | "cancelled";
+export type SchedulerRecoveryAction = "requeued" | "cancelled";
 
-export interface SchedulerRecoveryOutcomeV1 {
-	readonly entry: SchedulerQueueEntryV1;
-	readonly action: SchedulerRecoveryActionV1;
+export interface SchedulerRecoveryOutcome {
+	readonly entry: SchedulerQueueEntry;
+	readonly action: SchedulerRecoveryAction;
 	readonly attemptsUsed: number;
 	readonly cancelledAttemptId?: string;
 }
 
-export interface SchedulerQueueSnapshotV1 {
-	readonly entries: readonly SchedulerQueueEntryV1[];
-	readonly claims: readonly SchedulerClaimV1[];
-	readonly dispatches: readonly SchedulerDispatchRecordV1[];
+export interface SchedulerQueueSnapshot {
+	readonly entries: readonly SchedulerQueueEntry[];
+	readonly claims: readonly SchedulerClaim[];
+	readonly dispatches: readonly SchedulerDispatchRecord[];
 }
 
 interface QueueKeyPayloadV1 {
@@ -252,15 +252,15 @@ const CLAIM_TRANSFER_KEYS = new Set([
 	"revision",
 ]);
 
-function schedulerError(code: SchedulerErrorCodeV1): FoundationError {
+function schedulerError(code: SchedulerErrorCode): FoundationError {
 	return new FoundationError(code, ERROR_MESSAGES[code], { retryable: RETRYABLE.has(code) });
 }
 
-function fail<T>(code: SchedulerErrorCodeV1): ResultValue<T, FoundationError> {
+function fail<T>(code: SchedulerErrorCode): ResultValue<T, FoundationError> {
 	return Result.err(schedulerError(code));
 }
 
-function isSchedulerErrorCode(value: string): value is SchedulerErrorCodeV1 {
+function isSchedulerErrorCode(value: string): value is SchedulerErrorCode {
 	return (SCHEDULER_ERROR_CODES as readonly string[]).includes(value);
 }
 
@@ -276,7 +276,7 @@ function newSafeId(prefix: string): string {
 	return `${prefix}_${randomUUID().replaceAll("-", "")}`;
 }
 
-function keyObjectId(sessionId: string, taskId: string, nodeRef: SchedulerQueueEntryV1["nodeRef"]): string {
+function keyObjectId(sessionId: string, taskId: string, nodeRef: SchedulerQueueEntry["nodeRef"]): string {
 	const digest = createHash("sha256")
 		.update(schedulerQueueBusinessKey(sessionId, taskId, nodeRef))
 		.digest("hex");
@@ -298,7 +298,7 @@ function ledgerCode(error: unknown): string | undefined {
 	return undefined;
 }
 
-function mapLedgerError(error: unknown, staleCode: SchedulerErrorCodeV1): FoundationError {
+function mapLedgerError(error: unknown, staleCode: SchedulerErrorCode): FoundationError {
 	if (error instanceof FoundationError) return error;
 	const code = ledgerCode(error);
 	if (code === "session_writer_stale_revision") return schedulerError(staleCode);
@@ -344,8 +344,8 @@ function isSafeIdentifier(value: unknown): value is string {
 	return typeof value === "string" && SAFE_IDENTIFIER_PATTERN.test(value);
 }
 
-function serializeClaimTransfer(value: SchedulerClaimTransferV1): SchedulerClaimTransferV1 {
-	const transfer: SchedulerClaimTransferV1 = {
+function serializeClaimTransfer(value: SchedulerClaimTransfer): SchedulerClaimTransfer {
+	const transfer: SchedulerClaimTransfer = {
 		schemaVersion: 1,
 		transferId: value.transferId,
 		queueEntryId: value.queueEntryId,
@@ -370,7 +370,7 @@ function serializeClaimTransfer(value: SchedulerClaimTransferV1): SchedulerClaim
 	return transfer;
 }
 
-function parseClaimTransfer(value: unknown): ResultValue<SchedulerClaimTransferV1, FoundationError> {
+function parseClaimTransfer(value: unknown): ResultValue<SchedulerClaimTransfer, FoundationError> {
 	if (!isRecord(value) || Object.keys(value).some((key) => !CLAIM_TRANSFER_KEYS.has(key))) {
 		return fail("scheduler_handoff_invalid");
 	}
@@ -423,10 +423,10 @@ function parseClaimTransfer(value: unknown): ResultValue<SchedulerClaimTransferV
 	) {
 		return fail("scheduler_handoff_invalid");
 	}
-	return Result.ok(serializeClaimTransfer(value as unknown as SchedulerClaimTransferV1));
+	return Result.ok(serializeClaimTransfer(value as unknown as SchedulerClaimTransfer));
 }
 
-function sameClaimTransferIdentity(left: SchedulerClaimTransferV1, right: SchedulerClaimTransferV1): boolean {
+function sameClaimTransferIdentity(left: SchedulerClaimTransfer, right: SchedulerClaimTransfer): boolean {
 	return (
 		left.transferId === right.transferId &&
 		left.queueEntryId === right.queueEntryId &&
@@ -446,7 +446,7 @@ function sameClaimTransferIdentity(left: SchedulerClaimTransferV1, right: Schedu
 }
 
 function optionalCorrelation(
-	entry: SchedulerQueueEntryV1,
+	entry: SchedulerQueueEntry,
 	extra: { dispatchId?: string; attemptId?: string } = {},
 ): EventCorrelationRef {
 	const correlation: EventCorrelationRef = { sessionId: entry.sessionId, taskId: entry.taskId };
@@ -456,7 +456,7 @@ function optionalCorrelation(
 	return correlation;
 }
 
-function queueEventPayload(entry: SchedulerQueueEntryV1): FoundationJsonValue {
+function queueEventPayload(entry: SchedulerQueueEntry): FoundationJsonValue {
 	const payload: {
 		schemaVersion: 1;
 		queueEntryId: string;
@@ -487,7 +487,7 @@ function queueEventPayload(entry: SchedulerQueueEntryV1): FoundationJsonValue {
 	return payload;
 }
 
-function claimEventPayload(claim: SchedulerClaimV1, sessionId: string): FoundationJsonValue {
+function claimEventPayload(claim: SchedulerClaim, sessionId: string): FoundationJsonValue {
 	return {
 		schemaVersion: 1,
 		claimId: claim.claimId,
@@ -499,7 +499,7 @@ function claimEventPayload(claim: SchedulerClaimV1, sessionId: string): Foundati
 	};
 }
 
-function dispatchEventPayload(dispatch: SchedulerDispatchRecordV1): FoundationJsonValue {
+function dispatchEventPayload(dispatch: SchedulerDispatchRecord): FoundationJsonValue {
 	const payload: {
 		schemaVersion: 1;
 		queueEntryId: string;
@@ -534,19 +534,19 @@ export class SchedulerQueueStore {
 	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
 	private readonly writerLeaseTtlMs: number;
-	private readonly cancelAttempt: SchedulerCancelAttemptV1 | undefined;
+	private readonly cancelAttempt: SchedulerCancelAttempt | undefined;
 	private readonly defaultMaxAttempts: number;
 	private writerLease: LedgerWriterLease | undefined;
-	private entries = new Map<string, SchedulerQueueEntryV1>();
+	private entries = new Map<string, SchedulerQueueEntry>();
 	private keys = new Map<string, string>();
-	private claims = new Map<string, SchedulerClaimV1>();
-	private claimTransfers = new Map<string, SchedulerClaimTransferV1>();
-	private dispatches = new Map<string, SchedulerDispatchRecordV1>();
+	private claims = new Map<string, SchedulerClaim>();
+	private claimTransfers = new Map<string, SchedulerClaimTransfer>();
+	private dispatches = new Map<string, SchedulerDispatchRecord>();
 	private policies = new Map<string, number>();
 	private objectRevisions = new Map<string, number>();
 	private mutationTail: Promise<void> = Promise.resolve();
 
-	constructor(options: SchedulerQueueStoreOptionsV1) {
+	constructor(options: SchedulerQueueStoreOptions) {
 		this.clock = runtimeClockFor(options);
 		this.ledger = options.ledger;
 		this.sessionId = options.sessionId;
@@ -558,7 +558,7 @@ export class SchedulerQueueStore {
 		this.defaultMaxAttempts = options.maxAttempts ?? SCHEDULER_DEFAULT_MAX_ATTEMPTS;
 	}
 
-	async reload(): Promise<ResultValue<SchedulerQueueSnapshotV1, FoundationError>> {
+	async reload(): Promise<ResultValue<SchedulerQueueSnapshot, FoundationError>> {
 		try {
 			const records = await this.ledger.findFoundationRecords({ order: "oldestFirst", includePruned: true });
 			return this.replay(records);
@@ -570,7 +570,7 @@ export class SchedulerQueueStore {
 	async enqueue(
 		candidate: unknown,
 		options: { maxAttempts?: number } = {},
-	): Promise<ResultValue<SchedulerEnqueueResultV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerEnqueueResult, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const parsed = parseSchedulerQueueEntry(candidate);
@@ -607,7 +607,7 @@ export class SchedulerQueueStore {
 		return applied;
 	}
 
-	async claim(request: SchedulerClaimRequestV1): Promise<ResultValue<SchedulerClaimAcquireResultV1, FoundationError>> {
+	async claim(request: SchedulerClaimRequest): Promise<ResultValue<SchedulerClaimAcquireResult, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const nowIso = this.nowIso();
@@ -621,7 +621,7 @@ export class SchedulerQueueStore {
 		if (ttlMs < SCHEDULER_CLAIM_MIN_LEASE_TTL_MS || ttlMs > SCHEDULER_CLAIM_MAX_LEASE_TTL_MS) {
 			return fail("scheduler_queue_invalid");
 		}
-		const claim: SchedulerClaimV1 = {
+		const claim: SchedulerClaim = {
 			schemaVersion: 1,
 			claimId: request.claimId ?? newSafeId("claim"),
 			queueEntryId: current.queueEntryId,
@@ -639,7 +639,7 @@ export class SchedulerQueueStore {
 		return Result.ok(acquired.value);
 	}
 
-	async renew(request: SchedulerClaimRenewRequestV1): Promise<ResultValue<SchedulerClaimV1, FoundationError>> {
+	async renew(request: SchedulerClaimRenewRequest): Promise<ResultValue<SchedulerClaim, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const nowIso = this.nowIso();
@@ -655,7 +655,7 @@ export class SchedulerQueueStore {
 			return fail("scheduler_lease_lost");
 		}
 		const ttlMs = request.ttlMs ?? SCHEDULER_CLAIM_MAX_LEASE_TTL_MS;
-		const next: SchedulerClaimV1 = {
+		const next: SchedulerClaim = {
 			...serializeSchedulerClaim(current),
 			revision: current.revision + 1,
 			expiresAt: plusMs(nowIso, ttlMs),
@@ -674,14 +674,14 @@ export class SchedulerQueueStore {
 	 * issued. Replaying the same transferId resumes the durable sequence.
 	 */
 	async transferClaim(
-		request: SchedulerClaimTransferRequestV1,
-	): Promise<ResultValue<SchedulerClaimTransferResultV1, FoundationError>> {
+		request: SchedulerClaimTransferRequest,
+	): Promise<ResultValue<SchedulerClaimTransferResult, FoundationError>> {
 		return this.withDurableMutation(() => this.transferClaimUnlocked(request));
 	}
 
 	private async transferClaimUnlocked(
-		request: SchedulerClaimTransferRequestV1,
-	): Promise<ResultValue<SchedulerClaimTransferResultV1, FoundationError>> {
+		request: SchedulerClaimTransferRequest,
+	): Promise<ResultValue<SchedulerClaimTransferResult, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const existing = this.claimTransfers.get(request.transferId);
@@ -742,7 +742,7 @@ export class SchedulerQueueStore {
 		const createdAt = this.nowIso();
 		const targetClaimId = request.targetClaimId ?? newSafeId("claim");
 		const targetFencingToken = request.targetFencingToken ?? newSafeId("fence");
-		const targetClaim: SchedulerClaimV1 = {
+		const targetClaim: SchedulerClaim = {
 			schemaVersion: 1,
 			claimId: targetClaimId,
 			queueEntryId: entry.queueEntryId,
@@ -755,7 +755,7 @@ export class SchedulerQueueStore {
 		};
 		const parsedTarget = parseSchedulerClaim(targetClaim);
 		if (!parsedTarget.ok) return parsedTarget;
-		const prepared: SchedulerClaimTransferV1 = {
+		const prepared: SchedulerClaimTransfer = {
 			schemaVersion: 1,
 			transferId: request.transferId,
 			queueEntryId: entry.queueEntryId,
@@ -783,14 +783,14 @@ export class SchedulerQueueStore {
 	}
 
 	async markDispatched(
-		request: SchedulerDispatchRequestV1,
-	): Promise<ResultValue<SchedulerDispatchResultV1, FoundationError>> {
+		request: SchedulerDispatchRequest,
+	): Promise<ResultValue<SchedulerDispatchResult, FoundationError>> {
 		return this.withDurableMutation(() => this.markDispatchedUnlocked(request));
 	}
 
 	private async markDispatchedUnlocked(
-		request: SchedulerDispatchRequestV1,
-	): Promise<ResultValue<SchedulerDispatchResultV1, FoundationError>> {
+		request: SchedulerDispatchRequest,
+	): Promise<ResultValue<SchedulerDispatchResult, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const nowIso = this.nowIso();
@@ -811,7 +811,7 @@ export class SchedulerQueueStore {
 		if (this.nonTerminalDispatchesFor(current.queueEntryId).length > 0) {
 			return fail("scheduler_dispatch_invalid");
 		}
-		const dispatchedEntry: SchedulerQueueEntryV1 = {
+		const dispatchedEntry: SchedulerQueueEntry = {
 			...serializeSchedulerQueueEntry(current),
 			state: "dispatched",
 			claimId: claim.claimId,
@@ -819,7 +819,7 @@ export class SchedulerQueueStore {
 		};
 		const applied = applySchedulerQueueTransition(current, dispatchedEntry);
 		if (!applied.ok) return applied;
-		const prepared: SchedulerDispatchRecordV1 = {
+		const prepared: SchedulerDispatchRecord = {
 			schemaVersion: 1,
 			queueEntryId: current.queueEntryId,
 			claimId: claim.claimId,
@@ -834,7 +834,7 @@ export class SchedulerQueueStore {
 		}
 		const parsedPrepared = parseSchedulerDispatchRecord(prepared);
 		if (!parsedPrepared.ok) return parsedPrepared;
-		const inFlight: SchedulerDispatchRecordV1 = {
+		const inFlight: SchedulerDispatchRecord = {
 			...parsedPrepared.value,
 			status: "in_flight",
 			attemptId: request.attemptId,
@@ -853,14 +853,14 @@ export class SchedulerQueueStore {
 	 * the two appends can resume the exact transition without reopening work.
 	 */
 	async markTerminal(
-		request: SchedulerQueueTerminalRequestV1,
-	): Promise<ResultValue<SchedulerDispatchResultV1, FoundationError>> {
+		request: SchedulerQueueTerminalRequest,
+	): Promise<ResultValue<SchedulerDispatchResult, FoundationError>> {
 		return this.withDurableMutation(() => this.markTerminalUnlocked(request));
 	}
 
 	private async markTerminalUnlocked(
-		request: SchedulerQueueTerminalRequestV1,
-	): Promise<ResultValue<SchedulerDispatchResultV1, FoundationError>> {
+		request: SchedulerQueueTerminalRequest,
+	): Promise<ResultValue<SchedulerDispatchResult, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const entry = this.entries.get(request.queueEntryId);
@@ -890,7 +890,7 @@ export class SchedulerQueueStore {
 		const dispatchStatus = request.outcome === "settled" ? "settled" : "cancelled";
 		let terminalDispatch = dispatch;
 		if (dispatch.status === "in_flight") {
-			const candidate: SchedulerDispatchRecordV1 = {
+			const candidate: SchedulerDispatchRecord = {
 				...serializeSchedulerDispatchRecord(dispatch),
 				status: dispatchStatus,
 				revision: dispatch.revision + 1,
@@ -904,7 +904,7 @@ export class SchedulerQueueStore {
 		} else if (dispatch.status !== dispatchStatus) {
 			return fail("scheduler_dispatch_invalid");
 		}
-		const terminalEntry: SchedulerQueueEntryV1 = {
+		const terminalEntry: SchedulerQueueEntry = {
 			...serializeSchedulerQueueEntry(entry),
 			state: request.outcome,
 			revision: entry.revision + 1,
@@ -919,11 +919,11 @@ export class SchedulerQueueStore {
 		return Result.ok({ entry: appliedEntry.value, claim, dispatch: terminalDispatch });
 	}
 
-	async recoverExpired(): Promise<ResultValue<readonly SchedulerRecoveryOutcomeV1[], FoundationError>> {
+	async recoverExpired(): Promise<ResultValue<readonly SchedulerRecoveryOutcome[], FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const nowIso = this.nowIso();
-		const outcomes: SchedulerRecoveryOutcomeV1[] = [];
+		const outcomes: SchedulerRecoveryOutcome[] = [];
 		const candidates = [...this.entries.values()].filter(
 			(entry) => entry.state === "claimed" || entry.state === "dispatched",
 		);
@@ -937,14 +937,14 @@ export class SchedulerQueueStore {
 		return Result.ok(outcomes);
 	}
 
-	async getEntry(queueEntryId: string): Promise<ResultValue<SchedulerQueueEntryV1, FoundationError>> {
+	async getEntry(queueEntryId: string): Promise<ResultValue<SchedulerQueueEntry, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const entry = this.entries.get(queueEntryId);
 		return entry === undefined ? fail("scheduler_not_found") : Result.ok(serializeSchedulerQueueEntry(entry));
 	}
 
-	async getClaim(claimId: string): Promise<ResultValue<SchedulerClaimV1, FoundationError>> {
+	async getClaim(claimId: string): Promise<ResultValue<SchedulerClaim, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const claim = this.claims.get(claimId);
@@ -953,14 +953,14 @@ export class SchedulerQueueStore {
 
 	async getClaimTransfer(
 		transferId: string,
-	): Promise<ResultValue<SchedulerClaimTransferV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerClaimTransfer, FoundationError>> {
 		const loaded = await this.reload();
 		if (!loaded.ok) return loaded;
 		const transfer = this.claimTransfers.get(transferId);
 		return transfer === undefined ? fail("scheduler_not_found") : Result.ok(serializeClaimTransfer(transfer));
 	}
 
-	async snapshot(): Promise<ResultValue<SchedulerQueueSnapshotV1, FoundationError>> {
+	async snapshot(): Promise<ResultValue<SchedulerQueueSnapshot, FoundationError>> {
 		return this.reload();
 	}
 
@@ -993,7 +993,7 @@ export class SchedulerQueueStore {
 		return `${objectType}\0${objectId}`;
 	}
 
-	private replay(records: readonly FoundationRecord[]): ResultValue<SchedulerQueueSnapshotV1, FoundationError> {
+	private replay(records: readonly FoundationRecord[]): ResultValue<SchedulerQueueSnapshot, FoundationError> {
 		this.entries = new Map();
 		this.keys = new Map();
 		this.claims = new Map();
@@ -1099,7 +1099,7 @@ export class SchedulerQueueStore {
 		return Result.ok(this.currentSnapshot());
 	}
 
-	private currentSnapshot(): SchedulerQueueSnapshotV1 {
+	private currentSnapshot(): SchedulerQueueSnapshot {
 		return {
 			entries: [...this.entries.values()].map(serializeSchedulerQueueEntry),
 			claims: [...this.claims.values()].map(serializeSchedulerClaim),
@@ -1108,9 +1108,9 @@ export class SchedulerQueueStore {
 	}
 
 	private replayTransferredEntry(
-		previous: SchedulerQueueEntryV1,
-		next: SchedulerQueueEntryV1,
-	): ResultValue<SchedulerQueueEntryV1, FoundationError> | undefined {
+		previous: SchedulerQueueEntry,
+		next: SchedulerQueueEntry,
+	): ResultValue<SchedulerQueueEntry, FoundationError> | undefined {
 		const transfer = [...this.claimTransfers.values()].find(
 			(candidate) =>
 				candidate.queueEntryId === previous.queueEntryId &&
@@ -1135,7 +1135,7 @@ export class SchedulerQueueStore {
 		return Result.ok(next);
 	}
 
-	private sameTransferredEntryIdentity(left: SchedulerQueueEntryV1, right: SchedulerQueueEntryV1): boolean {
+	private sameTransferredEntryIdentity(left: SchedulerQueueEntry, right: SchedulerQueueEntry): boolean {
 		return (
 			left.queueEntryId === right.queueEntryId &&
 			left.sessionId === right.sessionId &&
@@ -1160,8 +1160,8 @@ export class SchedulerQueueStore {
 	}
 
 	private async resumeClaimTransfer(
-		transfer: SchedulerClaimTransferV1,
-	): Promise<ResultValue<SchedulerClaimTransferResultV1, FoundationError>> {
+		transfer: SchedulerClaimTransfer,
+	): Promise<ResultValue<SchedulerClaimTransferResult, FoundationError>> {
 		const sourceClaim = this.claims.get(transfer.sourceClaimId);
 		if (
 			sourceClaim === undefined ||
@@ -1172,7 +1172,7 @@ export class SchedulerQueueStore {
 		) {
 			return fail("scheduler_handoff_invalid");
 		}
-		const targetCandidate: SchedulerClaimV1 = {
+		const targetCandidate: SchedulerClaim = {
 			schemaVersion: 1,
 			claimId: transfer.targetClaimId,
 			queueEntryId: transfer.queueEntryId,
@@ -1198,7 +1198,7 @@ export class SchedulerQueueStore {
 			);
 			if (sourceDispatch === undefined) return fail("scheduler_attempt_recovery_failed");
 			if (!isSchedulerDispatchTerminal(sourceDispatch.status)) {
-				const cancelled: SchedulerDispatchRecordV1 = {
+				const cancelled: SchedulerDispatchRecord = {
 					...serializeSchedulerDispatchRecord(sourceDispatch),
 					status: "cancelled",
 					revision: sourceDispatch.revision + 1,
@@ -1234,7 +1234,7 @@ export class SchedulerQueueStore {
 		let entry = this.entries.get(transfer.queueEntryId);
 		if (entry === undefined) return fail("scheduler_not_found");
 		if (entry.claimId === transfer.sourceClaimId && entry.state === transfer.sourceEntryState) {
-			const transferred: SchedulerQueueEntryV1 = {
+			const transferred: SchedulerQueueEntry = {
 				...serializeSchedulerQueueEntry(entry),
 				state: "claimed",
 				claimId: targetClaim.claimId,
@@ -1257,7 +1257,7 @@ export class SchedulerQueueStore {
 		}
 
 		if (transfer.state === "prepared") {
-			const committedCandidate: SchedulerClaimTransferV1 = {
+			const committedCandidate: SchedulerClaimTransfer = {
 				...serializeClaimTransfer(transfer),
 				state: "committed",
 				committedAt: this.nowIso(),
@@ -1273,8 +1273,8 @@ export class SchedulerQueueStore {
 		return Result.ok({ entry, sourceClaim, targetClaim, transfer });
 	}
 
-	private nonTerminalDispatchesFor(queueEntryId: string): SchedulerDispatchRecordV1[] {
-		const live: SchedulerDispatchRecordV1[] = [];
+	private nonTerminalDispatchesFor(queueEntryId: string): SchedulerDispatchRecord[] {
+		const live: SchedulerDispatchRecord[] = [];
 		for (const dispatch of this.dispatches.values()) {
 			if (dispatch.queueEntryId === queueEntryId && !isSchedulerDispatchTerminal(dispatch.status)) {
 				live.push(dispatch);
@@ -1284,9 +1284,9 @@ export class SchedulerQueueStore {
 	}
 
 	private async recoverOne(
-		entry: SchedulerQueueEntryV1,
-		claim: SchedulerClaimV1 | undefined,
-	): Promise<ResultValue<SchedulerRecoveryOutcomeV1, FoundationError>> {
+		entry: SchedulerQueueEntry,
+		claim: SchedulerClaim | undefined,
+	): Promise<ResultValue<SchedulerRecoveryOutcome, FoundationError>> {
 		let cancelledAttemptId: string | undefined;
 		for (const dispatch of this.nonTerminalDispatchesFor(entry.queueEntryId)) {
 			const attemptId = dispatch.attemptId;
@@ -1301,7 +1301,7 @@ export class SchedulerQueueStore {
 				if (!cancelled.ok) return fail("scheduler_attempt_recovery_failed");
 				cancelledAttemptId = attemptId;
 			}
-			const expiredDispatch: SchedulerDispatchRecordV1 = {
+			const expiredDispatch: SchedulerDispatchRecord = {
 				...serializeSchedulerDispatchRecord(dispatch),
 				status: "expired",
 				revision: dispatch.revision + 1,
@@ -1312,7 +1312,7 @@ export class SchedulerQueueStore {
 			if (!persistedDispatch.ok) return persistedDispatch;
 			this.dispatches.set(appliedDispatch.value.dispatchId, appliedDispatch.value);
 		}
-		const expiredEntry: SchedulerQueueEntryV1 = {
+		const expiredEntry: SchedulerQueueEntry = {
 			...serializeSchedulerQueueEntry(entry),
 			state: "expired",
 			claimId: entry.claimId,
@@ -1326,7 +1326,7 @@ export class SchedulerQueueStore {
 		// attemptsUsed is the failed-recycle count; maxAttempts=1 cancels on first expiry with attemptsUsed still 0.
 		const maxAttempts = this.policies.get(entry.taskId) ?? this.defaultMaxAttempts;
 		const exhausted = expired.value.attemptsUsed + 1 >= maxAttempts;
-		const nextEntry: SchedulerQueueEntryV1 = exhausted
+		const nextEntry: SchedulerQueueEntry = exhausted
 			? {
 					...serializeSchedulerQueueEntry(expired.value),
 					state: "cancelled",
@@ -1348,7 +1348,7 @@ export class SchedulerQueueStore {
 			const released = await this.writeClaimEvent(claim, "scheduler.claim_released");
 			if (!released.ok) return released;
 		}
-		const outcome: SchedulerRecoveryOutcomeV1 = {
+		const outcome: SchedulerRecoveryOutcome = {
 			entry: applied.value,
 			action: exhausted ? "cancelled" : "requeued",
 			attemptsUsed: applied.value.attemptsUsed,
@@ -1360,7 +1360,7 @@ export class SchedulerQueueStore {
 	}
 
 	private async writeEnqueue(
-		entry: SchedulerQueueEntryV1,
+		entry: SchedulerQueueEntry,
 		keyId: string,
 		maxAttempts: number,
 	): Promise<ResultValue<void, FoundationError>> {
@@ -1390,7 +1390,7 @@ export class SchedulerQueueStore {
 	}
 
 	private async writeInterruptedEnqueue(
-		entry: SchedulerQueueEntryV1,
+		entry: SchedulerQueueEntry,
 		maxAttempts: number,
 	): Promise<ResultValue<void, FoundationError>> {
 		const entryWrite = await this.writeQueueEntry(entry);
@@ -1413,11 +1413,11 @@ export class SchedulerQueueStore {
 	}
 
 	private async resumeMarkDispatched(
-		current: SchedulerQueueEntryV1,
-		claim: SchedulerClaimV1,
-		existingDispatch: SchedulerDispatchRecordV1,
-		request: SchedulerDispatchRequestV1,
-	): Promise<ResultValue<SchedulerDispatchResultV1, FoundationError>> {
+		current: SchedulerQueueEntry,
+		claim: SchedulerClaim,
+		existingDispatch: SchedulerDispatchRecord,
+		request: SchedulerDispatchRequest,
+	): Promise<ResultValue<SchedulerDispatchResult, FoundationError>> {
 		const parsedExisting = parseSchedulerDispatchRecord(existingDispatch);
 		if (!parsedExisting.ok) return parsedExisting;
 		const existing = parsedExisting.value;
@@ -1436,7 +1436,7 @@ export class SchedulerQueueStore {
 			return this.finishDispatchedEntry(current, claim, existing);
 		}
 		if (existing.status !== "prepared") return fail("scheduler_dispatch_invalid");
-		const inFlight: SchedulerDispatchRecordV1 = {
+		const inFlight: SchedulerDispatchRecord = {
 			...serializeSchedulerDispatchRecord(existing),
 			status: "in_flight",
 			attemptId: request.attemptId,
@@ -1450,17 +1450,17 @@ export class SchedulerQueueStore {
 	}
 
 	private async finishDispatchedEntry(
-		current: SchedulerQueueEntryV1,
-		claim: SchedulerClaimV1,
-		dispatch: SchedulerDispatchRecordV1,
-	): Promise<ResultValue<SchedulerDispatchResultV1, FoundationError>> {
+		current: SchedulerQueueEntry,
+		claim: SchedulerClaim,
+		dispatch: SchedulerDispatchRecord,
+	): Promise<ResultValue<SchedulerDispatchResult, FoundationError>> {
 		if (current.state === "dispatched") {
 			this.claims.set(claim.claimId, claim);
 			this.dispatches.set(dispatch.dispatchId, dispatch);
 			return Result.ok({ entry: current, claim, dispatch });
 		}
 		if (current.state !== "claimed") return fail("scheduler_queue_invalid");
-		const dispatchedEntry: SchedulerQueueEntryV1 = {
+		const dispatchedEntry: SchedulerQueueEntry = {
 			...serializeSchedulerQueueEntry(current),
 			state: "dispatched",
 			claimId: claim.claimId,
@@ -1477,8 +1477,8 @@ export class SchedulerQueueStore {
 	}
 
 	private async writeClaimAcquire(
-		entry: SchedulerQueueEntryV1,
-		claim: SchedulerClaimV1,
+		entry: SchedulerQueueEntry,
+		claim: SchedulerClaim,
 	): Promise<ResultValue<void, FoundationError>> {
 		const entryWrite = await this.writeQueueEntry(entry, "scheduler_claim_conflict");
 		if (!entryWrite.ok) return entryWrite;
@@ -1490,10 +1490,10 @@ export class SchedulerQueueStore {
 	}
 
 	private async writeDispatch(
-		entry: SchedulerQueueEntryV1,
-		claim: SchedulerClaimV1,
-		prepared: SchedulerDispatchRecordV1,
-		inFlight: SchedulerDispatchRecordV1,
+		entry: SchedulerQueueEntry,
+		claim: SchedulerClaim,
+		prepared: SchedulerDispatchRecord,
+		inFlight: SchedulerDispatchRecord,
 	): Promise<ResultValue<void, FoundationError>> {
 		const preparedWrite = await this.writeDispatchRecord(prepared);
 		if (!preparedWrite.ok) return preparedWrite;
@@ -1508,8 +1508,8 @@ export class SchedulerQueueStore {
 	}
 
 	private async writeQueueEntry(
-		entry: SchedulerQueueEntryV1,
-		staleCode: SchedulerErrorCodeV1 = "scheduler_persistence_failed",
+		entry: SchedulerQueueEntry,
+		staleCode: SchedulerErrorCode = "scheduler_persistence_failed",
 	): Promise<ResultValue<void, FoundationError>> {
 		const expectedRevision =
 			this.objectRevisions.get(this.objectKey(SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE, entry.queueEntryId)) ?? 0;
@@ -1539,7 +1539,7 @@ export class SchedulerQueueStore {
 	}
 
 	private async writeClaim(
-		claim: SchedulerClaimV1,
+		claim: SchedulerClaim,
 		category: "scheduler.claim_acquired" | "scheduler.claim_renewed",
 	): Promise<ResultValue<void, FoundationError>> {
 		const expectedRevision =
@@ -1564,7 +1564,7 @@ export class SchedulerQueueStore {
 	}
 
 	private async writeClaimTransfer(
-		transfer: SchedulerClaimTransferV1,
+		transfer: SchedulerClaimTransfer,
 	): Promise<ResultValue<void, FoundationError>> {
 		const expectedRevision =
 			this.objectRevisions.get(this.objectKey(SCHEDULER_CLAIM_TRANSFER_OBJECT_TYPE, transfer.transferId)) ?? 0;
@@ -1586,7 +1586,7 @@ export class SchedulerQueueStore {
 	}
 
 	private async writeClaimEvent(
-		claim: SchedulerClaimV1,
+		claim: SchedulerClaim,
 		category: "scheduler.claim_acquired" | "scheduler.claim_renewed" | "scheduler.claim_released",
 	): Promise<ResultValue<void, FoundationError>> {
 		return this.writeDurableEvent(
@@ -1598,7 +1598,7 @@ export class SchedulerQueueStore {
 		);
 	}
 
-	private async writeDispatchRecord(dispatch: SchedulerDispatchRecordV1): Promise<ResultValue<void, FoundationError>> {
+	private async writeDispatchRecord(dispatch: SchedulerDispatchRecord): Promise<ResultValue<void, FoundationError>> {
 		const expectedRevision =
 			this.objectRevisions.get(this.objectKey(SCHEDULER_DISPATCH_OBJECT_TYPE, dispatch.dispatchId)) ?? 0;
 		const written = await this.appendFact(
@@ -1685,7 +1685,7 @@ export class SchedulerQueueStore {
 		clientRequestId: string,
 		expectedRevision: number,
 		correlation: EventCorrelationRef,
-		staleCode: SchedulerErrorCodeV1,
+		staleCode: SchedulerErrorCode,
 	): Promise<ResultValue<{ replayed: boolean }, FoundationError>> {
 		try {
 			const lease = await this.ensureWriterLease();
@@ -1766,18 +1766,18 @@ export function isSchedulerQueueLedgerObjectType(value: string): boolean {
 	return (SCHEDULER_QUEUE_LEDGER_OBJECT_TYPES as readonly string[]).includes(value);
 }
 
-export function isSchedulerQueueProjectionEntry(value: unknown): value is SchedulerQueueEntryV1 {
+export function isSchedulerQueueProjectionEntry(value: unknown): value is SchedulerQueueEntry {
 	return isSchedulerQueueEntry(value);
 }
 
-export function isSchedulerQueueProjectionClaim(value: unknown): value is SchedulerClaimV1 {
+export function isSchedulerQueueProjectionClaim(value: unknown): value is SchedulerClaim {
 	return isSchedulerClaim(value);
 }
 
-export function isSchedulerQueueProjectionTransfer(value: unknown): value is SchedulerClaimTransferV1 {
+export function isSchedulerQueueProjectionTransfer(value: unknown): value is SchedulerClaimTransfer {
 	return parseClaimTransfer(value).ok;
 }
 
-export function isSchedulerQueueProjectionDispatch(value: unknown): value is SchedulerDispatchRecordV1 {
+export function isSchedulerQueueProjectionDispatch(value: unknown): value is SchedulerDispatchRecord {
 	return isSchedulerDispatchRecord(value);
 }

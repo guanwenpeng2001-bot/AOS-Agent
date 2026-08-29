@@ -7,7 +7,7 @@
 - Removed `BuildSystemPromptOptions.contextFiles`. Route session context through Context Engine sources; direct prompt construction can use approved `instructionBlocks`.
 - With Context Engine enabled (the default), extensions must return a labeled `before_agent_start` `contribution` for model-facing input. Legacy `message`/`systemPrompt` returns, `context` mutations, and `before_provider_request` payload rewrites require `context.enabled: false`.
 - Capability registry ids, revisions, binding ids, and public capability provenance are now installation-scoped opaque references. Public RPC, SDK, Context Engine, run receipt, and session-event surfaces no longer return raw capability source paths, URLs, session file paths, or legacy raw capability identifiers.
-- Public Scheduler, Worker, Subagent, Foundation, and external-agent exports now use unversioned names; transitional version-suffixed aliases were removed. Use `scripts/migrate-versioned-names.mjs` to update source references.
+- Public and internal Scheduler, Worker, Subagent, migration, and external-agent business names no longer use the false `V1` suffix. Update source imports and references to the unversioned names.
 - Removed the writable execution-association API and binding association/handle execution inputs. Execution now uses canonical `AgentBinding`/`BindingEpoch`; historical associations remain read-only migration and public views.
 - Removed Line13 trace and upgrade exports from the `aos-agent/external-connector` subpath.
 

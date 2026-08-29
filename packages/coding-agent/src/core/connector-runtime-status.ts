@@ -6,8 +6,8 @@ import {
 	type Fingerprint,
 } from "@aos-agent/agent-core";
 import type {
-	ConnectorCircuitFactV1,
-	ConnectorCircuitStateV1,
+	ConnectorCircuitFact,
+	ConnectorCircuitState,
 } from "./connector-retry-circuit.ts";
 import {
 	validateExternalConnectorActivationSource,
@@ -76,7 +76,7 @@ export interface ConnectorRuntimeAggregateSnapshot {
 	readonly observedAt: string;
 	readonly expiresAt: string;
 	readonly ttlMs: number;
-	readonly circuit: ConnectorCircuitFactV1 | null;
+	readonly circuit: ConnectorCircuitFact | null;
 	readonly limits: RuntimeLimitsSnapshot;
 	readonly activity: ConnectorRuntimeActivitySnapshot;
 	readonly counters: ConnectorRuntimeCounterSnapshot;
@@ -89,7 +89,7 @@ export interface ConnectorRuntimeAggregateSnapshotInput {
 	readonly targetId: string;
 	readonly observedAtMs: number;
 	readonly ttlMs: number;
-	readonly circuit: ConnectorCircuitFactV1 | null;
+	readonly circuit: ConnectorCircuitFact | null;
 	readonly limits: RuntimeLimitsSnapshot;
 	readonly activity: ConnectorRuntimeActivitySnapshot;
 	readonly counters: ConnectorRuntimeCounterSnapshot;
@@ -118,7 +118,7 @@ export interface ConnectorRuntimeReadinessStatus {
 }
 
 export interface ConnectorRuntimeCircuitStatus {
-	readonly state: ConnectorCircuitStateV1;
+	readonly state: ConnectorCircuitState;
 	readonly nextTransition: "none" | "half_open" | "open";
 	readonly transitionInMs?: number;
 }
@@ -413,7 +413,7 @@ function validOptionalIdentity(value: unknown): boolean {
 	return value === undefined || (typeof value === "string" && value.length > 0 && value.length <= 256);
 }
 
-function parseCircuit(value: unknown, targetId: string): ConnectorCircuitFactV1 | null | undefined {
+function parseCircuit(value: unknown, targetId: string): ConnectorCircuitFact | null | undefined {
 	if (value === null) return null;
 	if (
 		!isRecord(value) ||
@@ -450,7 +450,7 @@ function parseCircuit(value: unknown, targetId: string): ConnectorCircuitFactV1 
 	) {
 		return undefined;
 	}
-	return cloneDeepFrozen(value) as unknown as ConnectorCircuitFactV1;
+	return cloneDeepFrozen(value) as unknown as ConnectorCircuitFact;
 }
 
 function parseReadiness(
@@ -580,7 +580,7 @@ function unavailableStatus(
 }
 
 function projectCircuit(
-	fact: ConnectorCircuitFactV1 | null,
+	fact: ConnectorCircuitFact | null,
 	nowMs: number,
 ): ConnectorRuntimeCircuitStatus | undefined {
 	if (fact === null || fact.state === "closed") {

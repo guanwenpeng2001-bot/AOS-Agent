@@ -44,7 +44,7 @@ export const SafeChildResultProjectionV1Schema = Type.Object(
 	{ additionalProperties: false },
 );
 
-export type SafeChildResultProjectionV1 = Omit<Static<typeof SafeChildResultProjectionV1Schema>, "artifacts"> & {
+export type SafeChildResultProjection = Omit<Static<typeof SafeChildResultProjectionV1Schema>, "artifacts"> & {
 	readonly artifacts: readonly ArtifactRef[];
 };
 
@@ -72,9 +72,9 @@ const ChildResultTransportInputV1Schema = Type.Union([
 	),
 ]);
 
-export type ChildResultTransportInputV1 = Static<typeof ChildResultTransportInputV1Schema>;
+export type ChildResultTransportInput = Static<typeof ChildResultTransportInputV1Schema>;
 
-export interface ChildResultTransportHostV1 {
+export interface ChildResultTransportHost {
 	readonly artifactStore: ArtifactStoreProvider;
 	readonly ledger: SessionLedger;
 	readonly sessionId: string;
@@ -136,7 +136,7 @@ function validateAgentReceipt(value: unknown): ResultValue<AttemptReceipt, Found
 }
 
 function validateTransportInput(value: unknown): ResultValue<ValidatedChildResultV1, FoundationError> {
-	const input = validateExactShape<ChildResultTransportInputV1>(ChildResultTransportInputV1Schema, value, "child_result_transport_input");
+	const input = validateExactShape<ChildResultTransportInput>(ChildResultTransportInputV1Schema, value, "child_result_transport_input");
 	if (!input.ok) return untrusted("Child result transport input has an invalid exact shape", input.error);
 	if (input.value.type === "attempt_receipt") {
 		const receipt = validateAgentReceipt(input.value.receipt);
@@ -192,7 +192,7 @@ function validateTransportInput(value: unknown): ResultValue<ValidatedChildResul
 }
 
 async function verifyDurableSources(
-	host: ChildResultTransportHostV1,
+	host: ChildResultTransportHost,
 	value: ValidatedChildResultV1,
 ): Promise<ResultValue<void, FoundationError>> {
 	for (const receipt of value.sourceReceipts) {
@@ -281,7 +281,7 @@ function buildProjection(
 	value: ValidatedChildResultV1,
 	artifacts: readonly ArtifactRef[],
 	producedAt: string,
-): SafeChildResultProjectionV1 {
+): SafeChildResultProjection {
 	const base = {
 		schemaVersion: 1 as const,
 		childAgentInstanceId: value.childAgentInstanceId,
@@ -296,7 +296,7 @@ function buildProjection(
 }
 
 function projectionRecordMatches(
-	host: ChildResultTransportHostV1,
+	host: ChildResultTransportHost,
 	value: ValidatedChildResultV1,
 	record: Awaited<ReturnType<SessionLedger["get"]>>,
 ): boolean {
@@ -316,10 +316,10 @@ function projectionRecordMatches(
 		record.correlation.taskResultId === value.taskResultId;
 }
 
-export async function projectSafeChildResultV1(
-	host: ChildResultTransportHostV1,
+export async function projectSafeChildResult(
+	host: ChildResultTransportHost,
 	input: unknown,
-): Promise<ResultValue<SafeChildResultProjectionV1, FoundationError>> {
+): Promise<ResultValue<SafeChildResultProjection, FoundationError>> {
 	const validated = validateTransportInput(input);
 	if (!validated.ok) return validated;
 	let durable: ResultValue<void, FoundationError>;
@@ -337,7 +337,7 @@ export async function projectSafeChildResultV1(
 		if (existing !== undefined) {
 			if (!projectionRecordMatches(host, validated.value, existing)) return untrusted("Child result projection durable metadata conflicts with its source");
 			if (existing.kind !== "fact") return untrusted("Child result projection durable identity is terminal");
-			const checked = validateSafeChildResultProjectionV1(existing.payload);
+			const checked = validateSafeChildResultProjection(existing.payload);
 			if (!checked.ok) return checked;
 			const expected = buildProjection(validated.value, artifacts.value, checked.value.producedAt);
 			if (canonicalFoundationJson(checked.value) !== canonicalFoundationJson(expected)) {
@@ -362,7 +362,7 @@ export async function projectSafeChildResultV1(
 			},
 		});
 		if (!projectionRecordMatches(host, validated.value, stored.record)) return untrusted("Persisted child result projection metadata is invalid");
-		const checked = validateSafeChildResultProjectionV1(stored.payload);
+		const checked = validateSafeChildResultProjection(stored.payload);
 		if (!checked.ok || canonicalFoundationJson(checked.value) !== canonicalFoundationJson(projection)) {
 			return untrusted("Persisted child result projection content is invalid");
 		}
@@ -372,10 +372,10 @@ export async function projectSafeChildResultV1(
 	}
 }
 
-export function validateSafeChildResultProjectionV1(
+export function validateSafeChildResultProjection(
 	value: unknown,
-): ResultValue<SafeChildResultProjectionV1, FoundationError> {
-	const checked = validateExactShape<SafeChildResultProjectionV1>(SafeChildResultProjectionV1Schema, value, "safe_child_result_projection");
+): ResultValue<SafeChildResultProjection, FoundationError> {
+	const checked = validateExactShape<SafeChildResultProjection>(SafeChildResultProjectionV1Schema, value, "safe_child_result_projection");
 	if (!checked.ok) return untrusted("Child result projection has an invalid exact shape", checked.error);
 	if (new TextEncoder().encode(checked.value.summary).byteLength > MAX_SUMMARY_BYTES) return untrusted("Child result projection summary exceeds its byte bound");
 	try {
@@ -394,16 +394,16 @@ export function validateSafeChildResultProjectionV1(
 	return Result.ok(detached);
 }
 
-export type ChildTaskSettlementPolicyV1 =
+export type ChildTaskSettlementPolicy =
 	| { readonly type: "all_succeed" }
 	| { readonly type: "quorum"; readonly minimumSucceeded: number }
 	| { readonly type: "partial" };
 
-export interface ChildTaskSettlementAdapterInputV1 {
+export interface ChildTaskSettlementAdapterInput {
 	readonly taskResultId: string;
 	readonly task: TaskEnvelope;
 	readonly receipts: readonly AttemptReceipt[];
-	readonly policy: ChildTaskSettlementPolicyV1;
+	readonly policy: ChildTaskSettlementPolicy;
 	readonly summary: string;
 	readonly artifacts?: SettleTaskResultInput["artifacts"];
 	readonly diff?: SettleTaskResultInput["diff"];
@@ -414,7 +414,7 @@ export interface ChildTaskSettlementAdapterInputV1 {
 }
 
 function selectSettlementReceipts(
-	input: ChildTaskSettlementAdapterInputV1,
+	input: ChildTaskSettlementAdapterInput,
 ): ResultValue<readonly AttemptReceipt[], FoundationError> {
 	if (input.producer.producerKind !== "host") return Result.err(new FoundationError("task_result_validation_failed", "Only the Host settlement gate may synthesize child results"));
 	if (input.receipts.length === 0) return Result.err(new FoundationError("task_result_no_source_receipts", "Child result synthesis requires provider receipts"));
@@ -450,9 +450,9 @@ function selectSettlementReceipts(
 		: Result.err(new FoundationError("task_result_validation_failed", "partial settlement requires at least one succeeded child receipt"));
 }
 
-export async function settleChildTaskResultV1(
+export async function settleChildTaskResult(
 	hostGate: Pick<LayeredResultSettlement, "getAttemptReceipt" | "settle">,
-	input: ChildTaskSettlementAdapterInputV1,
+	input: ChildTaskSettlementAdapterInput,
 ): Promise<ResultValue<TaskResult, FoundationError>> {
 	const selected = selectSettlementReceipts(input);
 	if (!selected.ok) return selected;

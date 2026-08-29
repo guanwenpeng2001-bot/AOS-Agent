@@ -154,8 +154,8 @@ import {
 import { SchedulerDeadlockController } from "./scheduler-deadlock.ts";
 import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
-	createSchedulerExecutorRuntimeSnapshotV1,
-	schedulerBindingRequirementDigestV1,
+	createSchedulerExecutorRuntimeSnapshot,
+	schedulerBindingRequirementDigest,
 	type SchedulerExecutorRegistry,
 } from "./scheduler-executors.ts";
 import type { SchedulerSelectionReservationStore } from "./scheduler-selection-reservations.ts";
@@ -164,14 +164,14 @@ import type { SchedulerHandoffController } from "./scheduler-handoff.ts";
 import type { SchedulerMessageOrchestrator } from "./scheduler-messages.ts";
 import {
 	SchedulerWorkflowController,
-	type SchedulerWorkflowConnectorRetryOptionsV1,
+	type SchedulerWorkflowConnectorRetryOptions,
 } from "./scheduler-workflow.ts";
 import {
 	SCHEDULER_HOST_DEFAULT_POLL_INTERVAL_MS,
 	SCHEDULER_HOST_MAX_POLL_INTERVAL_MS,
 	SCHEDULER_HOST_MIN_POLL_INTERVAL_MS,
 	SchedulerHost,
-	type SchedulerHostEventSourceV1,
+	type SchedulerHostEventSource,
 	type SchedulerHostOptions,
 } from "./scheduler.ts";
 import {
@@ -179,21 +179,21 @@ import {
 	type TaskGraphGateLookup,
 } from "./task-graph.ts";
 import {
-	createTrustedSubagentCompositionV1,
-	type TrustedSchedulerNativeAgentPlannerV1,
-	type TrustedSubagentCompositionOptionsV1,
-	type TrustedSubagentCompositionV1,
+	createTrustedSubagentComposition,
+	type TrustedSchedulerNativeAgentPlanner,
+	type TrustedSubagentCompositionOptions,
+	type TrustedSubagentComposition,
 } from "./subagent-composition.ts";
 import {
-	parseWorkerRecordV1,
-	workerTransitionAllowedV1,
-	type WorkerRecordV1,
-	type WorkerTransitionReceiptV1,
+	parseWorkerRecord,
+	workerTransitionAllowed,
+	type WorkerRecord,
+	type WorkerTransitionReceipt,
 } from "./worker.ts";
 import type {
-	WorkerSandboxFactV1,
-	WorkerSandboxProviderV1,
-	WorkerSandboxRecoveryV1,
+	WorkerSandboxFact,
+	WorkerSandboxProvider,
+	WorkerSandboxRecovery,
 } from "./worker-sandbox-provider.ts";
 
 /**
@@ -227,9 +227,9 @@ export interface FoundationControlPlaneOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Explicit Operation Worker profile/provider. Omission preserves the inline/Host path. */
-	workerSandboxProvider?: WorkerSandboxProviderV1;
+	workerSandboxProvider?: WorkerSandboxProvider;
 	/** Explicit trusted Host opt-in. Project/model/RPC configuration cannot populate this option. */
-	subagents?: TrustedSubagentCompositionOptionsV1;
+	subagents?: TrustedSubagentCompositionOptions;
 	/** Explicit trusted Host-only Scheduler opt-in. Omission preserves the original runtime path. */
 	scheduler?: TrustedSchedulerCompositionOptions;
 	/** Testable optimization bound; Session eventId lookup remains authoritative. */
@@ -259,18 +259,18 @@ export interface TrustedSchedulerCompositionOptions {
 	/** Canonical Session-backed owner shared with the exact-selection registry. */
 	readonly selectionReservationStore?: SchedulerSelectionReservationStore;
 	/** Per-Session trusted factory planner; prompt, RPC, and project configuration cannot supply it. */
-	readonly nativeAgentPlanner?: TrustedSchedulerNativeAgentPlannerV1;
+	readonly nativeAgentPlanner?: TrustedSchedulerNativeAgentPlanner;
 	/** Trusted product initialization that must complete before the Scheduler can start. */
 	readonly initializeBeforeStart?: () => Promise<void>;
 	/** Exact External Connector target and frozen retry policy for this composition generation. */
-	readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
+	readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptions;
 	readonly task: TaskEnvelope;
 	readonly binding: AgentBinding;
 	readonly gateLookup: TaskGraphGateLookup;
 	readonly resolveRunAssociation: SchedulerHostOptions["resolveRunAssociation"];
 	readonly settlementEvidence?: SchedulerHostOptions["settlementEvidence"];
 	readonly settleRunAtHost: SchedulerHostOptions["settleRunAtHost"];
-	readonly eventSource?: SchedulerHostEventSourceV1;
+	readonly eventSource?: SchedulerHostEventSource;
 	readonly pollIntervalMs?: number;
 	readonly now?: () => string;
 }
@@ -283,7 +283,7 @@ function nativeSchedulerRuntimeSnapshot(
 	revision: number,
 	now: string,
 ) {
-	const bindingRequirementDigest = schedulerBindingRequirementDigestV1(binding);
+	const bindingRequirementDigest = schedulerBindingRequirementDigest(binding);
 	if (!bindingRequirementDigest.ok) throw bindingRequirementDigest.error;
 	const policyRevisionDigest = binding.policyRevision.fingerprint;
 	if (policyRevisionDigest === undefined) {
@@ -292,7 +292,7 @@ function nativeSchedulerRuntimeSnapshot(
 			"Native Scheduler executor registration requires a fingerprinted policy revision",
 		);
 	}
-	const snapshot = createSchedulerExecutorRuntimeSnapshotV1({
+	const snapshot = createSchedulerExecutorRuntimeSnapshot({
 		schemaVersion: 1,
 		capabilitySnapshot: createConnectorCapabilitySnapshot({
 			schemaVersion: 1,
@@ -326,7 +326,7 @@ function nativeSchedulerRuntimeSnapshot(
 
 async function registerNativeSchedulerProviders(
 	options: TrustedSchedulerCompositionOptions,
-	subagents: TrustedSubagentCompositionV1,
+	subagents: TrustedSubagentComposition,
 	now: string,
 ): Promise<void> {
 	const descriptors = new Map(
@@ -441,7 +441,7 @@ export class TrustedSchedulerComposition {
 	private readonly host: SchedulerHost;
 	private readonly sessionId: string;
 	private readonly pollIntervalMs: number;
-	private readonly eventSource: SchedulerHostEventSourceV1 | undefined;
+	private readonly eventSource: SchedulerHostEventSource | undefined;
 	private readonly clock: RuntimeClock;
 	private readonly unregisterRunHooks: () => void;
 	private readonly sourceSession: Session;
@@ -462,7 +462,7 @@ export class TrustedSchedulerComposition {
 	private tickFailures = 0;
 	private lastTick: SchedulerSafeStatus["lastTick"];
 
-	constructor(options: TrustedSchedulerCompositionOptions, subagents?: TrustedSubagentCompositionV1) {
+	constructor(options: TrustedSchedulerCompositionOptions, subagents?: TrustedSubagentComposition) {
 		if (options.schemaVersion !== 1 || options.enabled !== true) {
 			throw new FoundationError("scheduler_queue_invalid", "Scheduler requires an explicit trusted Host opt-in");
 		}
@@ -1022,13 +1022,13 @@ export class FoundationControlPlane {
 	private readonly taskCredentialPolicyMaxTtlMs: number | undefined;
 	private readonly taskCredentialProviderAvailability: TaskCredentialProviderAvailability | undefined;
 	private readonly sandboxProviders: ReadonlyMap<string, SandboxProvider>;
-	private readonly workerSandboxProvider: WorkerSandboxProviderV1 | undefined;
+	private readonly workerSandboxProvider: WorkerSandboxProvider | undefined;
 	private readonly scheduler: TrustedSchedulerComposition | undefined;
 	private readonly workerLifecycleHooks: RunWorkerLifecycleHooks | undefined;
 	private readonly unregisterWorkerLifecycleHooks: (() => void) | undefined;
 	private readonly releaseWorkerDurableSink: (() => void) | undefined;
 	private readonly releaseWorkerCredentialDetachSink: (() => void) | undefined;
-	private readonly subagents: TrustedSubagentCompositionV1 | undefined;
+	private readonly subagents: TrustedSubagentComposition | undefined;
 	private readonly unregisterSubagentLifecycleHooks: (() => void) | undefined;
 	private readonly persistedWorkerFacts = new Map<string, {
 		readonly customType: string;
@@ -1107,7 +1107,7 @@ export class FoundationControlPlane {
 		if (options.subagents !== undefined && options.subagents.sessionId !== this.sessionManager.getSessionId()) {
 			throw new FoundationError("subagent_spawn_invalid", "Trusted subagent composition must use the control-plane Session");
 		}
-		this.subagents = createTrustedSubagentCompositionV1(options.subagents);
+		this.subagents = createTrustedSubagentComposition(options.subagents);
 		this.workerFactCacheLimit = options.workerFactCacheLimit ?? 4_096;
 		if (!Number.isSafeInteger(this.workerFactCacheLimit) || this.workerFactCacheLimit < 1) {
 			throw new RangeError("workerFactCacheLimit must be a positive safe integer");
@@ -2818,7 +2818,7 @@ export class FoundationControlPlane {
 		for (const controller of this.bashControllers) controller.abort(new DOMException("Bash execution cancelled", "AbortError"));
 	}
 	getSandboxHandle(): SandboxHandle | undefined { return this.sandboxHandle; }
-	getWorkerSandboxProvider(): WorkerSandboxProviderV1 | undefined { return this.workerSandboxProvider; }
+	getWorkerSandboxProvider(): WorkerSandboxProvider | undefined { return this.workerSandboxProvider; }
 	getWorkerRecord(workerId: string) { return this.workerSandboxProvider?.getWorkerRecord(workerId); }
 	listWorkerRecords() { return this.workerSandboxProvider?.listWorkerRecords() ?? []; }
 	getWorkerReceipt(workerReceiptId: string) { return this.workerSandboxProvider?.getWorkerReceipt(workerReceiptId); }
@@ -2826,7 +2826,7 @@ export class FoundationControlPlane {
 	reclaimWorker(workerId: string) { return this.workerSandboxProvider?.reclaimWorker(workerId); }
 	async cancelWorkerOperations(): Promise<void> { await this.workerSandboxProvider?.cancelAll("cancel"); }
 	getWorkerRunLifecycleHooks(): RunWorkerLifecycleHooks | undefined { return this.workerLifecycleHooks; }
-	getSubagentComposition(): TrustedSubagentCompositionV1 | undefined { return this.subagents; }
+	getSubagentComposition(): TrustedSubagentComposition | undefined { return this.subagents; }
 	getSchedulerStatus(): SchedulerSafeStatus | undefined { return this.scheduler?.status(); }
 	/**
 	 * Narrow compatibility projection for RPC integrations that need to
@@ -2908,15 +2908,15 @@ export class FoundationControlPlane {
 	}
 
 	private readPersistedWorkerRecovery(): {
-		readonly recovery: WorkerSandboxRecoveryV1;
-		readonly convergenceFacts: readonly WorkerSandboxFactV1[];
+		readonly recovery: WorkerSandboxRecovery;
+		readonly convergenceFacts: readonly WorkerSandboxFact[];
 	} {
 		const sessionId = this.sessionManager.getSessionId();
 		const seen = new Map<string, { readonly customType: string; readonly canonicalEnvelope: string }>();
 		const operationIds = new Set<string>();
 		const workerIds = new Set<string>();
 		const terminalLifecycle = new Map<string, { readonly operationId: string; readonly receiptId?: string }>();
-		const lifecycleRevisions = new Map<string, WorkerRecordV1>();
+		const lifecycleRevisions = new Map<string, WorkerRecord>();
 		const operationEvents: Array<{
 			readonly workerId: string;
 			readonly providerId: string;
@@ -2938,7 +2938,7 @@ export class FoundationControlPlane {
 			readonly streamId: string;
 		}> = [];
 		const lifecycle = new Map<string, {
-			record: WorkerRecordV1;
+			record: WorkerRecord;
 			lastTimestamp: string;
 			activeOperationId?: string;
 			receiptId?: string;
@@ -3069,7 +3069,7 @@ export class FoundationControlPlane {
 				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker lifecycle correlation is invalid");
 			}
 			const recordValue = Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "operationId"));
-			const parsed = parseWorkerRecordV1(canonicalFoundationJson(recordValue));
+			const parsed = parseWorkerRecord(canonicalFoundationJson(recordValue));
 			if (!parsed.ok) {
 				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker record is invalid");
 			}
@@ -3129,7 +3129,7 @@ export class FoundationControlPlane {
 					? record.revision !== 1 || record.status !== "starting" || event.value.timestamp < record.createdAt
 					: record.revision !== previous.record.revision + 1 ||
 						event.value.timestamp < previous.lastTimestamp ||
-						!workerTransitionAllowedV1(previous.record.status, record.status)) ||
+						!workerTransitionAllowed(previous.record.status, record.status)) ||
 				!transitionOperationValid || !transitionReceiptValid ||
 				record.readyAt !== expectedReadyAt || record.endedAt !== expectedEndedAt ||
 				record.activeOperationId !== expectedActiveOperationId || record.receiptId !== expectedReceiptId ||
@@ -3246,7 +3246,7 @@ export class FoundationControlPlane {
 		for (const [eventId, value] of seen) {
 			this.markWorkerFactPersisted(eventId, value.customType, value.canonicalEnvelope);
 		}
-		const convergenceFacts: WorkerSandboxFactV1[] = [];
+		const convergenceFacts: WorkerSandboxFact[] = [];
 		const records = [...lifecycle.values()].map(({ record, activeOperationId, lastTimestamp }) => {
 			if (record.status === "reclaimed" || record.status === "reclaim_unknown") return record;
 			const convergence = this.createWorkerRecoveryConvergenceFact(record, activeOperationId, lastTimestamp);
@@ -3264,16 +3264,16 @@ export class FoundationControlPlane {
 	}
 
 	private createWorkerRecoveryConvergenceFact(
-		record: WorkerRecordV1,
+		record: WorkerRecord,
 		activeOperationId: string | undefined,
 		at: string,
-	): Extract<WorkerSandboxFactV1, { readonly type: "record" }> {
-		const transitions: WorkerTransitionReceiptV1[] = [];
-		const transitionRecords: WorkerRecordV1[] = [];
+	): Extract<WorkerSandboxFact, { readonly type: "record" }> {
+		const transitions: WorkerTransitionReceipt[] = [];
+		const transitionRecords: WorkerRecord[] = [];
 		let current = record;
 		const append = (
-			to: WorkerRecordV1["status"],
-			next: WorkerRecordV1,
+			to: WorkerRecord["status"],
+			next: WorkerRecord,
 			operationId?: string,
 			sideEffectState?: "side_effect_unknown",
 		): void => {
@@ -3330,7 +3330,7 @@ export class FoundationControlPlane {
 		});
 	}
 
-	private persistWorkerFact(fact: WorkerSandboxFactV1): void {
+	private persistWorkerFact(fact: WorkerSandboxFact): void {
 		const sessionId = this.sessionManager.getSessionId();
 		if (fact.type === "operation") {
 			if (fact.sessionId !== sessionId) {
@@ -3407,9 +3407,9 @@ export class FoundationControlPlane {
 		let receiptId: string | undefined;
 		for (const transition of fact.transitions) {
 			const suppliedRecord = fact.transitionRecords?.find((candidate) => candidate.revision === transition.revision);
-			let transitionRecord: WorkerRecordV1;
+			let transitionRecord: WorkerRecord;
 			if (suppliedRecord !== undefined) {
-				const parsed = parseWorkerRecordV1(canonicalFoundationJson(suppliedRecord));
+				const parsed = parseWorkerRecord(canonicalFoundationJson(suppliedRecord));
 				if (
 					!parsed.ok || parsed.value.workerId !== record.workerId || parsed.value.providerId !== record.providerId ||
 					parsed.value.sessionId !== record.sessionId || parsed.value.laneId !== record.laneId ||

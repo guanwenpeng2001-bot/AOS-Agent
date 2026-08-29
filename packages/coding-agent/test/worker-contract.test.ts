@@ -2,25 +2,25 @@ import { describe, expect, it } from "vitest";
 import {
 	WORKER_FORBIDDEN_KEYS,
 	WORKER_LIFECYCLE_STATUSES,
-	applyWorkerHeartbeatV1,
-	applyWorkerTransitionV1,
-	createWorkerLifecycleV1,
-	parseWorkerRecordV1,
-	serializeWorkerBindingV1,
-	serializeWorkerRecordV1,
-	validateWorkerBindingV1,
-	validateWorkerLifecycleStateV1,
-	validateWorkerRecordV1,
-	workerTransitionAllowedV1,
-	type WorkerBindingV1,
-	type WorkerLifecycleStateV1,
+	applyWorkerHeartbeat,
+	applyWorkerTransition,
+	createWorkerLifecycle,
+	parseWorkerRecord,
+	serializeWorkerBinding,
+	serializeWorkerRecord,
+	validateWorkerBinding,
+	validateWorkerLifecycleState,
+	validateWorkerRecord,
+	workerTransitionAllowed,
+	type WorkerBinding,
+	type WorkerLifecycleState,
 	type WorkerLifecycleStatus,
-	type WorkerTransitionV1,
+	type WorkerTransition,
 } from "../src/core/worker.ts";
 
 const BASE_TIME_MS = Date.parse("2026-08-21T00:00:00.000Z");
 
-const binding: WorkerBindingV1 = {
+const binding: WorkerBinding = {
 	schemaVersion: 1,
 	workerId: "worker-1",
 	providerId: "sandbox-worker",
@@ -42,18 +42,18 @@ function at(index: number): string {
 	return new Date(BASE_TIME_MS + index * 1_000).toISOString();
 }
 
-function mustCreate(): WorkerLifecycleStateV1 {
-	const result = createWorkerLifecycleV1(binding, at(0));
+function mustCreate(): WorkerLifecycleState {
+	const result = createWorkerLifecycle(binding, at(0));
 	if (!result.ok) throw result.error;
 	return result.value;
 }
 
 function command(
-	state: WorkerLifecycleStateV1,
+	state: WorkerLifecycleState,
 	to: WorkerLifecycleStatus,
 	index: number,
-	overrides: Partial<WorkerTransitionV1> = {},
-): WorkerTransitionV1 {
+	overrides: Partial<WorkerTransition> = {},
+): WorkerTransition {
 	const terminal = to === "completed" || to === "failed" || to === "cancelled" || to === "lost";
 	return {
 		schemaVersion: 1,
@@ -78,12 +78,12 @@ function command(
 }
 
 function mustApply(
-	state: WorkerLifecycleStateV1,
+	state: WorkerLifecycleState,
 	to: WorkerLifecycleStatus,
 	index: number,
-	overrides: Partial<WorkerTransitionV1> = {},
-): WorkerLifecycleStateV1 {
-	const result = applyWorkerTransitionV1(state, command(state, to, index, overrides));
+	overrides: Partial<WorkerTransition> = {},
+): WorkerLifecycleState {
+	const result = applyWorkerTransition(state, command(state, to, index, overrides));
 	if (!result.ok) throw result.error;
 	return result.value.state;
 }
@@ -103,7 +103,7 @@ const PATHS: Readonly<Record<WorkerLifecycleStatus, readonly WorkerLifecycleStat
 	reclaim_unknown: ["starting", "lost", "reclaiming", "reclaim_unknown"],
 };
 
-function stateAt(status: WorkerLifecycleStatus): WorkerLifecycleStateV1 {
+function stateAt(status: WorkerLifecycleStatus): WorkerLifecycleState {
 	let state = mustCreate();
 	let index = 1;
 	for (const next of PATHS[status]) {
@@ -140,14 +140,14 @@ describe("Operation Worker core contract", () => {
 		for (const from of WORKER_LIFECYCLE_STATUSES) {
 			for (const to of WORKER_LIFECYCLE_STATUSES) {
 				const state = stateAt(from);
-				const result = applyWorkerTransitionV1(
+				const result = applyWorkerTransition(
 					state,
 					command(state, to, state.transitions.length + 20, {
 						clientRequestId: `edge-${from}-${to}`,
 					}),
 				);
 				const expected = LEGAL_EDGES.has(`${from}->${to}`);
-				expect(workerTransitionAllowedV1(from, to), `${from}->${to}`).toBe(expected);
+				expect(workerTransitionAllowed(from, to), `${from}->${to}`).toBe(expected);
 				expect(result.ok, `${from}->${to}`).toBe(expected);
 				if (result.ok) {
 					expect(result.value.record.status).toBe(to);
@@ -161,7 +161,7 @@ describe("Operation Worker core contract", () => {
 
 	it("enforces revision continuity and immutable Worker identity", () => {
 		const state = stateAt("ready");
-		const gap = applyWorkerTransitionV1(state, command(state, "running", 10, { expectedRevision: 99 }));
+		const gap = applyWorkerTransition(state, command(state, "running", 10, { expectedRevision: 99 }));
 		expect(gap).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 
 		for (const drift of [
@@ -172,8 +172,8 @@ describe("Operation Worker core contract", () => {
 				requestFingerprint:
 					"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			},
-		] satisfies ReadonlyArray<Partial<WorkerBindingV1>>) {
-			const identityDrift = applyWorkerTransitionV1(
+		] satisfies ReadonlyArray<Partial<WorkerBinding>>) {
+			const identityDrift = applyWorkerTransition(
 				state,
 				command(state, "running", 10, { binding: { ...binding, ...drift } }),
 			);
@@ -187,21 +187,21 @@ describe("Operation Worker core contract", () => {
 	it("deduplicates an identical terminal once and rejects conflicting terminals", () => {
 		const running = stateAt("running");
 		const terminal = command(running, "completed", 10, { clientRequestId: "terminal-once" });
-		const first = applyWorkerTransitionV1(running, terminal);
+		const first = applyWorkerTransition(running, terminal);
 		expect(first).toMatchObject({ ok: true, value: { idempotent: false } });
 		if (!first.ok) return;
 
-		const duplicate = applyWorkerTransitionV1(first.value.state, terminal);
+		const duplicate = applyWorkerTransition(first.value.state, terminal);
 		expect(duplicate).toMatchObject({
 			ok: true,
 			value: { idempotent: true, record: { status: "completed", revision: 4 } },
 		});
-		const reusedKey = applyWorkerTransitionV1(
+		const reusedKey = applyWorkerTransition(
 			first.value.state,
 			{ ...terminal, receiptId: "receipt-other" },
 		);
 		expect(reusedKey).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
-		const secondTerminal = applyWorkerTransitionV1(
+		const secondTerminal = applyWorkerTransition(
 			first.value.state,
 			command(first.value.state, "failed", 11, { clientRequestId: "terminal-twice" }),
 		);
@@ -211,19 +211,19 @@ describe("Operation Worker core contract", () => {
 	it("requires terminal facts to correlate the active operation", () => {
 		const running = stateAt("running");
 		expect(
-			applyWorkerTransitionV1(
+			applyWorkerTransition(
 				running,
 				command(running, "completed", 10, { activeOperationId: undefined }),
 			),
 		).toMatchObject({ ok: false, error: { code: "worker_operation_invalid" } });
 		expect(
-			applyWorkerTransitionV1(
+			applyWorkerTransition(
 				running,
 				command(running, "completed", 10, { activeOperationId: "operation-other" }),
 			),
 		).toMatchObject({ ok: false, error: { code: "worker_operation_invalid" } });
 
-		const completed = applyWorkerTransitionV1(running, command(running, "completed", 10));
+		const completed = applyWorkerTransition(running, command(running, "completed", 10));
 		expect(completed).toMatchObject({
 			ok: true,
 			value: {
@@ -244,7 +244,7 @@ describe("Operation Worker core contract", () => {
 			sequence: 7,
 			at: at(5),
 		};
-		const first = applyWorkerHeartbeatV1(starting, heartbeat);
+		const first = applyWorkerHeartbeat(starting, heartbeat);
 		expect(first).toMatchObject({
 			ok: true,
 			value: {
@@ -255,28 +255,28 @@ describe("Operation Worker core contract", () => {
 		});
 		if (!first.ok) return;
 		expect(first.value.state.binding.deadlineAt).toBe(binding.deadlineAt);
-		expect(applyWorkerHeartbeatV1(first.value.state, heartbeat)).toMatchObject({
+		expect(applyWorkerHeartbeat(first.value.state, heartbeat)).toMatchObject({
 			ok: true,
 			value: { idempotent: true },
 		});
 		expect(
-			applyWorkerHeartbeatV1(first.value.state, { ...heartbeat, sequence: 6, at: at(6) }),
+			applyWorkerHeartbeat(first.value.state, { ...heartbeat, sequence: 6, at: at(6) }),
 		).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 		expect(
-			applyWorkerHeartbeatV1(first.value.state, { ...heartbeat, at: at(6) }),
+			applyWorkerHeartbeat(first.value.state, { ...heartbeat, at: at(6) }),
 		).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 
 		const ready = mustApply(first.value.state, "ready", 7);
 		expect(ready.record.lastHeartbeatAt).toBe(at(5));
 		const lost = mustApply(ready, "lost", 8);
 		expect(
-			applyWorkerHeartbeatV1(lost, { ...heartbeat, sequence: 8, at: at(9) }),
+			applyWorkerHeartbeat(lost, { ...heartbeat, sequence: 8, at: at(9) }),
 		).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 	});
 
 	it("validates the complete lifecycle record against its transition log", () => {
 		const completed = stateAt("completed");
-		expect(validateWorkerLifecycleStateV1(completed)).toBe(true);
+		expect(validateWorkerLifecycleState(completed)).toBe(true);
 
 		const last = completed.transitions.at(-1);
 		if (last === undefined) throw new Error("expected terminal transition");
@@ -287,21 +287,21 @@ describe("Operation Worker core contract", () => {
 				{ ...last, requestFingerprint: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" },
 			],
 		};
-		expect(validateWorkerLifecycleStateV1(alteredFingerprint)).toBe(false);
+		expect(validateWorkerLifecycleState(alteredFingerprint)).toBe(false);
 		expect(
-			applyWorkerTransitionV1(
-				alteredFingerprint as WorkerLifecycleStateV1,
+			applyWorkerTransition(
+				alteredFingerprint as WorkerLifecycleState,
 				command(completed, "reclaiming", 20),
 			),
 		).toMatchObject({ ok: false, error: { code: "worker_persistence_failed" } });
 		expect(
-			validateWorkerLifecycleStateV1({
+			validateWorkerLifecycleState({
 				...completed,
 				transitions: completed.transitions.slice(0, -1),
 			}),
 		).toBe(false);
 		expect(
-			validateWorkerLifecycleStateV1({
+			validateWorkerLifecycleState({
 				...completed,
 				record: { ...completed.record, revision: completed.record.revision + 1 },
 			}),
@@ -311,19 +311,19 @@ describe("Operation Worker core contract", () => {
 	it("makes reclaim and its cleanup outcome idempotent without rewriting execution terminal", () => {
 		const lost = stateAt("lost");
 		const reclaim = command(lost, "reclaiming", 10, { clientRequestId: "reclaim-once" });
-		const reclaiming = applyWorkerTransitionV1(lost, reclaim);
+		const reclaiming = applyWorkerTransition(lost, reclaim);
 		expect(reclaiming).toMatchObject({ ok: true, value: { record: { status: "reclaiming" } } });
 		if (!reclaiming.ok) return;
-		const duplicate = applyWorkerTransitionV1(reclaiming.value.state, reclaim);
+		const duplicate = applyWorkerTransition(reclaiming.value.state, reclaim);
 		expect(duplicate).toMatchObject({ ok: true, value: { idempotent: true } });
 
 		const finish = command(reclaiming.value.state, "reclaimed", 11, {
 			clientRequestId: "reclaim-finish-once",
 		});
-		const reclaimed = applyWorkerTransitionV1(reclaiming.value.state, finish);
+		const reclaimed = applyWorkerTransition(reclaiming.value.state, finish);
 		expect(reclaimed).toMatchObject({ ok: true, value: { record: { status: "reclaimed" } } });
 		if (!reclaimed.ok) return;
-		expect(applyWorkerTransitionV1(reclaimed.value.state, finish)).toMatchObject({
+		expect(applyWorkerTransition(reclaimed.value.state, finish)).toMatchObject({
 			ok: true,
 			value: { idempotent: true },
 		});
@@ -333,13 +333,13 @@ describe("Operation Worker core contract", () => {
 	it("requires safe side-effect evidence for every execution terminal", () => {
 		const running = stateAt("running");
 		expect(
-			applyWorkerTransitionV1(
+			applyWorkerTransition(
 				running,
 				command(running, "completed", 10, { sideEffectState: "unknown" }),
 			),
 		).toMatchObject({ ok: false, error: { code: "worker_operation_invalid" } });
 		expect(
-			applyWorkerTransitionV1(
+			applyWorkerTransition(
 				running,
 				command(running, "lost", 10, { sideEffectState: "none" }),
 			),
@@ -348,17 +348,17 @@ describe("Operation Worker core contract", () => {
 
 	it("serializes only safe exact records and rejects every forbidden field", () => {
 		const completed = stateAt("completed").record;
-		const serialized = serializeWorkerRecordV1(completed);
-		expect(parseWorkerRecordV1(serialized)).toMatchObject({ ok: true, value: completed });
+		const serialized = serializeWorkerRecord(completed);
+		expect(parseWorkerRecord(serialized)).toMatchObject({ ok: true, value: completed });
 		expect(JSON.parse(serialized)).toEqual(completed);
-		expect(serializeWorkerBindingV1(binding)).not.toContain("agentInstanceId");
-		expect(validateWorkerBindingV1(binding)).toBe(true);
-		expect(validateWorkerRecordV1(completed)).toBe(true);
+		expect(serializeWorkerBinding(binding)).not.toContain("agentInstanceId");
+		expect(validateWorkerBinding(binding)).toBe(true);
+		expect(validateWorkerRecord(completed)).toBe(true);
 
 		for (const key of WORKER_FORBIDDEN_KEYS) {
 			const unsafe = { ...completed, [key]: "must-not-persist" };
-			expect(validateWorkerRecordV1(unsafe), key).toBe(false);
-			expect(() => serializeWorkerRecordV1(unsafe), key).toThrowError(
+			expect(validateWorkerRecord(unsafe), key).toBe(false);
+			expect(() => serializeWorkerRecord(unsafe), key).toThrowError(
 				expect.objectContaining({ code: "worker_invalid" }),
 			);
 		}
@@ -370,7 +370,7 @@ describe("Operation Worker core contract", () => {
 			"attemptReceiptId",
 			"runReceiptId",
 		]) {
-			expect(validateWorkerRecordV1({ ...completed, [key]: "forbidden" }), key).toBe(false);
+			expect(validateWorkerRecord({ ...completed, [key]: "forbidden" }), key).toBe(false);
 		}
 	});
 

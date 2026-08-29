@@ -5,25 +5,25 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SandboxOperationRequest } from "@aos-agent/agent-core";
 import {
-	WorkerSupervisorV1,
-	type WorkerSupervisorConfigV1,
+	OperationWorkerSupervisor,
+	type WorkerSupervisorConfig,
 } from "../src/core/worker-supervisor.ts";
 import {
 	WORKER_SCHEMA_VERSION,
-	applyWorkerTransitionV1,
-	createWorkerLifecycleV1,
-	type WorkerBindingV1,
-	type WorkerLifecycleStateV1,
+	applyWorkerTransition,
+	createWorkerLifecycle,
+	type WorkerBinding,
+	type WorkerLifecycleState,
 	type WorkerLifecycleStatus,
 } from "../src/core/worker.ts";
 
 const CHILD_ENTRY = fileURLToPath(new URL("./fixtures/fake-worker-child.ts", import.meta.url));
-const supervisors: WorkerSupervisorV1[] = [];
+const supervisors: OperationWorkerSupervisor[] = [];
 
 function binding(
 	profileId: string,
-	overrides: Partial<WorkerBindingV1> = {},
-): WorkerBindingV1 {
+	overrides: Partial<WorkerBinding> = {},
+): WorkerBinding {
 	return {
 		schemaVersion: 1,
 		workerId: `worker-${profileId}`,
@@ -46,8 +46,8 @@ function binding(
 
 function config(
 	profileId: string,
-	overrides: Partial<WorkerSupervisorConfigV1> = {},
-): WorkerSupervisorConfigV1 {
+	overrides: Partial<WorkerSupervisorConfig> = {},
+): WorkerSupervisorConfig {
 	return {
 		executable: process.execPath,
 		entrypoint: CHILD_ENTRY,
@@ -68,18 +68,18 @@ function config(
 function create(
 	profileId: string,
 	options: {
-		readonly binding?: Partial<WorkerBindingV1>;
-		readonly config?: Partial<WorkerSupervisorConfigV1>;
+		readonly binding?: Partial<WorkerBinding>;
+		readonly config?: Partial<WorkerSupervisorConfig>;
 	} = {},
-): { readonly supervisor: WorkerSupervisorV1; readonly workerBinding: WorkerBindingV1 } {
-	const supervisor = new WorkerSupervisorV1(config(profileId, options.config));
+): { readonly supervisor: OperationWorkerSupervisor; readonly workerBinding: WorkerBinding } {
+	const supervisor = new OperationWorkerSupervisor(config(profileId, options.config));
 	supervisors.push(supervisor);
 	return { supervisor, workerBinding: binding(profileId, options.binding) };
 }
 
 async function activate(
-	supervisor: WorkerSupervisorV1,
-	workerBinding: WorkerBindingV1,
+	supervisor: OperationWorkerSupervisor,
+	workerBinding: WorkerBinding,
 ): Promise<void> {
 	const preflight = supervisor.preflight({ binding: workerBinding, runAccepted: true });
 	if (!preflight.ok) throw preflight.error;
@@ -87,7 +87,7 @@ async function activate(
 	if (!activated.ok) throw activated.error;
 }
 
-function request(workerBinding: WorkerBindingV1, operationId = "operation-1"): SandboxOperationRequest {
+function request(workerBinding: WorkerBinding, operationId = "operation-1"): SandboxOperationRequest {
 	return {
 		schemaVersion: 1,
 		operationId,
@@ -102,7 +102,7 @@ function request(workerBinding: WorkerBindingV1, operationId = "operation-1"): S
 }
 
 async function waitForStatus(
-	supervisor: WorkerSupervisorV1,
+	supervisor: OperationWorkerSupervisor,
 	status: WorkerLifecycleStatus,
 	timeoutMs = 1_000,
 ): Promise<void> {
@@ -115,7 +115,7 @@ async function waitForStatus(
 }
 
 async function waitForNoLiveProcess(
-	supervisor: WorkerSupervisorV1,
+	supervisor: OperationWorkerSupervisor,
 	timeoutMs = 1_000,
 ): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
@@ -126,10 +126,10 @@ async function waitForNoLiveProcess(
 	throw new Error("Timed out waiting for the worker process to stop");
 }
 
-function recoveredReadyState(workerBinding: WorkerBindingV1): WorkerLifecycleStateV1 {
-	const created = createWorkerLifecycleV1(workerBinding, "2026-08-21T00:00:00.000Z");
+function recoveredReadyState(workerBinding: WorkerBinding): WorkerLifecycleState {
+	const created = createWorkerLifecycle(workerBinding, "2026-08-21T00:00:00.000Z");
 	if (!created.ok) throw created.error;
-	const starting = applyWorkerTransitionV1(created.value, {
+	const starting = applyWorkerTransition(created.value, {
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		clientRequestId: "restore-starting",
 		expectedRevision: 0,
@@ -138,7 +138,7 @@ function recoveredReadyState(workerBinding: WorkerBindingV1): WorkerLifecycleSta
 		at: "2026-08-21T00:00:01.000Z",
 	});
 	if (!starting.ok) throw starting.error;
-	const ready = applyWorkerTransitionV1(starting.value.state, {
+	const ready = applyWorkerTransition(starting.value.state, {
 		schemaVersion: WORKER_SCHEMA_VERSION,
 		clientRequestId: "restore-ready",
 		expectedRevision: 1,

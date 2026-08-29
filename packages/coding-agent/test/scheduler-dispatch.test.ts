@@ -43,22 +43,22 @@ import {
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
-import type { SchedulerClaimV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
+import type { SchedulerClaim, SchedulerQueueEntry } from "../src/core/scheduler.ts";
 import {
-	assembleSchedulerDispatchV1,
-	bindSchedulerInProcessTaskExecutorV1,
+	assembleSchedulerDispatch,
+	bindSchedulerInProcessTaskExecutor,
 	SchedulerDispatchController,
-	schedulerDispatchIdentityV1,
-	type SchedulerNativeAgentBridgeV1,
-	type SchedulerNativeAgentResolutionV1,
-	type SchedulerNativeAgentResolveInputV1,
+	schedulerDispatchIdentity,
+	type SchedulerNativeAgentBridge,
+	type SchedulerNativeAgentResolution,
+	type SchedulerNativeAgentResolveInput,
 } from "../src/core/scheduler-dispatch.ts";
 import {
-	createSchedulerExecutorRuntimeSnapshotV1,
+	createSchedulerExecutorRuntimeSnapshot,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SCHEDULER_IN_PROCESS_PROVIDER_ID,
 	SchedulerExecutorRegistry,
-	schedulerBindingRequirementDigestV1,
+	schedulerBindingRequirementDigest,
 } from "../src/core/scheduler-executors.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
 import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
@@ -200,7 +200,7 @@ async function seedBindingFacts(session: Session, value: AgentBinding): Promise<
 	await ledger.release();
 }
 
-function queued(deadlineAt?: string): SchedulerQueueEntryV1 {
+function queued(deadlineAt?: string): SchedulerQueueEntry {
 	return {
 		schemaVersion: 1,
 		queueEntryId: "queue_dispatch_1",
@@ -372,7 +372,7 @@ class ResumableTaskExecutor extends ScriptedTaskExecutor {
 		options: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		this.resumeCount += 1;
-		const ids = schedulerDispatchIdentityV1(this.queueEntryId, this.claimId);
+		const ids = schedulerDispatchIdentity(this.queueEntryId, this.claimId);
 		if (attemptId !== ids.attemptId) {
 			return Result.err(new FoundationError("invalid_correlation", "Resume attempt identity mismatch"));
 		}
@@ -461,7 +461,7 @@ class NativeAgentTaskExecutor implements TaskExecutorProvider {
 	async dispose(): Promise<void> {}
 }
 
-class TestNativeAgentBridge implements SchedulerNativeAgentBridgeV1 {
+class TestNativeAgentBridge implements SchedulerNativeAgentBridge {
 	readonly session: Session;
 	readonly provider: NativeAgentTaskExecutor;
 	resolveCount = 0;
@@ -477,7 +477,7 @@ class TestNativeAgentBridge implements SchedulerNativeAgentBridgeV1 {
 		this.provider = provider;
 	}
 
-	async resolve(input: SchedulerNativeAgentResolveInputV1) {
+	async resolve(input: SchedulerNativeAgentResolveInput) {
 		this.resolveCount += 1;
 		this.resolvedLaneId = input.laneId;
 		const instance = createAgentInstance({
@@ -500,7 +500,7 @@ class TestNativeAgentBridge implements SchedulerNativeAgentBridgeV1 {
 			now: () => input.now,
 		});
 		if (!epoch.ok) return epoch;
-		const resolution: SchedulerNativeAgentResolutionV1 = {
+		const resolution: SchedulerNativeAgentResolution = {
 			schemaVersion: 1 as const,
 			providerId: input.provider.providerId,
 			dispatch: {
@@ -528,12 +528,12 @@ class TestNativeAgentBridge implements SchedulerNativeAgentBridgeV1 {
 		};
 		return Result.ok(
 			this.omitInstance
-				? ({ ...resolution, agentInstance: undefined } as unknown as SchedulerNativeAgentResolutionV1)
+				? ({ ...resolution, agentInstance: undefined } as unknown as SchedulerNativeAgentResolution)
 				: resolution,
 		);
 	}
 
-	async revalidate(input: Parameters<SchedulerNativeAgentBridgeV1["revalidate"]>[0]) {
+	async revalidate(input: Parameters<SchedulerNativeAgentBridge["revalidate"]>[0]) {
 		this.revalidateCount += 1;
 		const durable = await this.session.getFoundationObject(
 			"attempt",
@@ -573,7 +573,7 @@ async function registerScripted(registry: SchedulerExecutorRegistry, provider: T
 }
 
 function runtimeSnapshot(providerId: string, bindingValue: AgentBinding) {
-	const bindingDigest = schedulerBindingRequirementDigestV1(bindingValue);
+	const bindingDigest = schedulerBindingRequirementDigest(bindingValue);
 	if (!bindingDigest.ok) throw bindingDigest.error;
 	if (bindingValue.policyRevision.fingerprint === undefined) throw new Error("policy fingerprint missing");
 	const capabilitySnapshot = createConnectorCapabilitySnapshot({
@@ -587,7 +587,7 @@ function runtimeSnapshot(providerId: string, bindingValue: AgentBinding) {
 		artifacts: true,
 		images: false,
 	});
-	const created = createSchedulerExecutorRuntimeSnapshotV1({
+	const created = createSchedulerExecutorRuntimeSnapshot({
 		schemaVersion: 1,
 		capabilitySnapshot,
 		configRevision: fingerprintFoundationValue(`config:${providerId}:1`),
@@ -680,7 +680,7 @@ async function claimedHarness(
 	readonly session: Session;
 	readonly queue: SchedulerQueueStore;
 	readonly binding: AgentBinding;
-	readonly claim: SchedulerClaimV1;
+	readonly claim: SchedulerClaim;
 }> {
 	const session =
 		options.session ?? new Session(new InMemorySessionStorage({ id: "session_dispatch_1", createdAt: 1 }));
@@ -709,13 +709,13 @@ async function claimedHarness(
 describe("scheduler dispatch assembly", () => {
 	it("builds bounded deterministic identities and rejects frozen-contract violations", () => {
 		const currentBinding = binding();
-		const entry: SchedulerQueueEntryV1 = {
+		const entry: SchedulerQueueEntry = {
 			...queued("2026-08-22T10:05:00.000Z"),
 			state: "claimed",
 			claimId: "claim_dispatch_1",
 			revision: 1,
 		};
-		const claim: SchedulerClaimV1 = {
+		const claim: SchedulerClaim = {
 			schemaVersion: 1,
 			claimId: "claim_dispatch_1",
 			queueEntryId: entry.queueEntryId,
@@ -736,8 +736,8 @@ describe("scheduler dispatch assembly", () => {
 			laneId: "main",
 			now: NOW,
 		};
-		const first = assembleSchedulerDispatchV1(input);
-		const second = assembleSchedulerDispatchV1(input);
+		const first = assembleSchedulerDispatch(input);
+		const second = assembleSchedulerDispatch(input);
 		expect(first.ok).toBe(true);
 		expect(second).toEqual(first);
 		if (!first.ok) return;
@@ -756,23 +756,23 @@ describe("scheduler dispatch assembly", () => {
 			roleRevisionId: currentBinding.roleRevision.id,
 			modelProfileRevisionId: currentBinding.modelProfileRevision.id,
 		});
-		for (const id of Object.values(schedulerDispatchIdentityV1("q".repeat(256), "c".repeat(256)))) {
+		for (const id of Object.values(schedulerDispatchIdentity("q".repeat(256), "c".repeat(256)))) {
 			expect(id.length).toBeLessThanOrEqual(256);
 		}
-		expect(schedulerDispatchIdentityV1(entry.queueEntryId, claim.claimId)).not.toEqual(
-			schedulerDispatchIdentityV1(entry.queueEntryId, "claim_dispatch_2"),
+		expect(schedulerDispatchIdentity(entry.queueEntryId, claim.claimId)).not.toEqual(
+			schedulerDispatchIdentity(entry.queueEntryId, "claim_dispatch_2"),
 		);
 		const invalidEntry = { ...entry, prompt: "forbidden" };
-		expectCode(assembleSchedulerDispatchV1({ ...input, entry: invalidEntry }), "scheduler_queue_invalid");
+		expectCode(assembleSchedulerDispatch({ ...input, entry: invalidEntry }), "scheduler_queue_invalid");
 		expectCode(
-			assembleSchedulerDispatchV1({
+			assembleSchedulerDispatch({
 				...input,
 				binding: { ...currentBinding, resolvedAt: "2026-08-22T10:00:01.000Z" },
 			}),
 			"profile_conflict",
 		);
 		expectCode(
-			assembleSchedulerDispatchV1({ ...input, providerClass: "agent" }),
+			assembleSchedulerDispatch({ ...input, providerClass: "agent" }),
 			"agent_instance_required_for_agent_provider",
 		);
 	});
@@ -807,7 +807,7 @@ describe("scheduler native AgentInstance bridge", () => {
 		});
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
-		const ids = schedulerDispatchIdentityV1("queue_dispatch_1", fixture.claim.claimId);
+		const ids = schedulerDispatchIdentity("queue_dispatch_1", fixture.claim.claimId);
 		expect(fixture.bridge.resolveCount).toBe(1);
 		expect(fixture.bridge.revalidateCount).toBe(1);
 		expect(fixture.bridge.resolvedLaneId).toBe(ids.laneId);
@@ -883,7 +883,7 @@ describe("scheduler native AgentInstance bridge", () => {
 			"subagent_conflict",
 		);
 		expect(stale.provider.runCount).toBe(0);
-		const ids = schedulerDispatchIdentityV1("queue_dispatch_1", stale.claim.claimId);
+		const ids = schedulerDispatchIdentity("queue_dispatch_1", stale.claim.claimId);
 		expect((await stale.session.getFoundationObject("attempt", ids.attemptId))?.kind).toBe("fact");
 	});
 
@@ -921,7 +921,7 @@ describe("scheduler dispatch controller", () => {
 		const quota = new RecordingQuota();
 		let observedQueueState: string | undefined;
 		let observedAttempt = false;
-		const registered = await bindSchedulerInProcessTaskExecutorV1(registry, {
+		const registered = await bindSchedulerInProcessTaskExecutor(registry, {
 			now: () => NOW,
 			sessionId: "session_dispatch_1",
 			budget: { tokens: 100 },
@@ -1432,7 +1432,7 @@ describe("scheduler dispatch controller", () => {
 			binding: currentBinding,
 		});
 		expectCode(first, "worker_lost");
-		const firstIds = schedulerDispatchIdentityV1("queue_dispatch_1", "claim_dispatch_1");
+		const firstIds = schedulerDispatchIdentity("queue_dispatch_1", "claim_dispatch_1");
 		currentNow = LATER;
 		const recovered = await queue.recoverExpired();
 		expect(recovered.ok).toBe(true);
@@ -1462,7 +1462,7 @@ describe("scheduler dispatch controller", () => {
 		if (!second.ok) return;
 		expect(second.value.dispatch.dispatchId).not.toBe(firstIds.dispatchId);
 		expect(second.value.dispatch.dispatchId).toBe(
-			schedulerDispatchIdentityV1("queue_dispatch_1", "claim_dispatch_2").dispatchId,
+			schedulerDispatchIdentity("queue_dispatch_1", "claim_dispatch_2").dispatchId,
 		);
 	});
 });

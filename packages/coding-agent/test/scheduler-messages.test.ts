@@ -8,13 +8,13 @@ import {
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
-import type { SchedulerMessageV1 } from "../src/core/scheduler.ts";
+import type { SchedulerMessage } from "../src/core/scheduler.ts";
 import {
-	SCHEDULER_MESSAGE_OBJECT_TYPES_V1,
-	type SchedulerMessageMaterialV1,
+	SCHEDULER_MESSAGE_OBJECT_TYPES,
+	type SchedulerMessageMaterial,
 	SchedulerMessageOrchestrator,
-	type SchedulerMessageSessionEndpointV1,
-	type SchedulerResultReferenceV1,
+	type SchedulerMessageSessionEndpoint,
+	type SchedulerResultReference,
 } from "../src/core/scheduler-messages.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
@@ -51,7 +51,7 @@ interface PairFixture {
 	readonly targetRuns: RunLifecycleCoordinator;
 	readonly sourceGraph: TaskGraphStore;
 	readonly targetGraph: TaskGraphStore;
-	readonly endpoints: readonly [SchedulerMessageSessionEndpointV1, SchedulerMessageSessionEndpointV1];
+	readonly endpoints: readonly [SchedulerMessageSessionEndpoint, SchedulerMessageSessionEndpoint];
 	readonly messages: SchedulerMessageOrchestrator;
 }
 
@@ -102,7 +102,7 @@ function pair(): PairFixture {
 	};
 }
 
-function requiredMessage(overrides: Partial<SchedulerMessageV1> = {}): SchedulerMessageV1 {
+function requiredMessage(overrides: Partial<SchedulerMessage> = {}): SchedulerMessage {
 	return {
 		schemaVersion: 1,
 		messageId: "message-1",
@@ -167,7 +167,7 @@ async function settleGraphNode(
 async function seedTaskResult(
 	session: Session,
 	input: { readonly taskResultId: string; readonly taskId: string; readonly status: TaskResult["status"] },
-): Promise<SchedulerResultReferenceV1> {
+): Promise<SchedulerResultReference> {
 	const result: TaskResult = {
 		schemaVersion: 1,
 		taskResultId: input.taskResultId,
@@ -220,7 +220,7 @@ async function seedRunReceipt(
 		readonly taskId: string;
 		readonly status: RunReceipt["terminalStatus"];
 	},
-): Promise<SchedulerResultReferenceV1> {
+): Promise<SchedulerResultReference> {
 	const receipt: RunReceipt = {
 		schemaVersion: 1,
 		runReceiptId: input.runReceiptId,
@@ -357,7 +357,7 @@ describe("durable scheduler message lifecycle", () => {
 			() => fixture.messages.post({ message: requiredMessage(), credentials: { token: "secret" } }),
 			"scheduler_message_invalid",
 		);
-		const artifact: SchedulerMessageMaterialV1 = {
+		const artifact: SchedulerMessageMaterial = {
 			schemaVersion: 1,
 			kind: "artifact",
 			sessionId: "session-source",
@@ -394,7 +394,7 @@ describe("durable scheduler message lifecycle", () => {
 		await fixture.messages.post({ message: requiredMessage() });
 		const ledger = new SessionLedger(fixture.sourceSession, { ownerId: "foundation-t7" });
 		await ledger.appendFact(
-			SCHEDULER_MESSAGE_OBJECT_TYPES_V1.posted,
+			SCHEDULER_MESSAGE_OBJECT_TYPES.posted,
 			"message-1",
 			{ schemaVersion: 1, message: requiredMessage({ revision: 2, createdAt: T2, expiresAt: T3 }) },
 			{

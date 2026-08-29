@@ -2,7 +2,7 @@ import type { AgentHarness, Session, ToolGateway, ToolGatewayProvider } from "@a
 import { createFoundationToolGateway, FoundationError, fingerprintFoundationValue, Result } from "@aos-agent/agent-core";
 import type { Models } from "@aos-agent/ai";
 import type { CapabilityRegistry } from "./capability-registry.ts";
-import { type ConnectorRetryPolicyV1, DEFAULT_CONNECTOR_RETRY_POLICY } from "./connector-retry-circuit.ts";
+import { type ConnectorRetryPolicy, DEFAULT_CONNECTOR_RETRY_POLICY } from "./connector-retry-circuit.ts";
 import type { ExternalConnectorRegistry } from "./external-agent-registry.ts";
 import {
 	assertExternalConnectorCapabilityWithinTarget,
@@ -26,30 +26,30 @@ import {
 	resolveRuntimeLimitsSource,
 } from "./runtime-limits.ts";
 import type { SandboxProvider } from "./sandbox.ts";
-import { bindSchedulerInProcessTaskExecutorV1 } from "./scheduler-dispatch.ts";
+import { bindSchedulerInProcessTaskExecutor } from "./scheduler-dispatch.ts";
 import {
-	createSchedulerExecutorRuntimeSnapshotV1,
+	createSchedulerExecutorRuntimeSnapshot,
 	SCHEDULER_IN_PROCESS_PROVIDER_ID,
-	schedulerBindingRequirementDigestV1,
+	schedulerBindingRequirementDigest,
 } from "./scheduler-executors.ts";
 import { SchedulerSelectionReservationStore } from "./scheduler-selection-reservations.ts";
 import type { SessionManager } from "./session-manager.ts";
-import type { TrustedSubagentCompositionOptionsV1 } from "./subagent-composition.ts";
+import type { TrustedSubagentCompositionOptions } from "./subagent-composition.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import {
-	type WorkerSandboxProfileV1,
-	type WorkerSandboxProviderOptionsV1,
-	WorkerSandboxProviderV1,
+	type WorkerSandboxProfile,
+	type WorkerSandboxProviderOptions,
+	WorkerSandboxProvider,
 } from "./worker-sandbox-provider.ts";
 
-export type TrustedWorkerSandboxProviderOptions = Omit<WorkerSandboxProviderOptionsV1, "profile"> & {
-	readonly profile: WorkerSandboxProfileV1;
+export type TrustedWorkerSandboxProviderOptions = Omit<WorkerSandboxProviderOptions, "profile"> & {
+	readonly profile: WorkerSandboxProfile;
 };
 
 const trustedWorkerSandboxBrand: unique symbol = Symbol("trustedWorkerSandbox");
 
 export interface TrustedWorkerSandboxComposition {
-	readonly provider: WorkerSandboxProviderV1;
+	readonly provider: WorkerSandboxProvider;
 	readonly [trustedWorkerSandboxBrand]: true;
 }
 
@@ -60,13 +60,13 @@ export function createTrustedWorkerSandboxComposition(
 	options: TrustedWorkerSandboxProviderOptions,
 ): TrustedWorkerSandboxComposition {
 	return Object.freeze({
-		provider: new WorkerSandboxProviderV1(options),
+		provider: new WorkerSandboxProvider(options),
 		[trustedWorkerSandboxBrand]: true as const,
 	});
 }
 
-function requireTrustedWorkerSandboxProvider(composition: TrustedWorkerSandboxComposition): WorkerSandboxProviderV1 {
-	if (composition[trustedWorkerSandboxBrand] !== true || !(composition.provider instanceof WorkerSandboxProviderV1)) {
+function requireTrustedWorkerSandboxProvider(composition: TrustedWorkerSandboxComposition): WorkerSandboxProvider {
+	if (composition[trustedWorkerSandboxBrand] !== true || !(composition.provider instanceof WorkerSandboxProvider)) {
 		throw new TypeError("Trusted Worker composition is invalid");
 	}
 	return composition.provider;
@@ -96,7 +96,7 @@ export interface TrustedToolGatewayCatalog {
 export type TrustedToolGatewayCatalogFactory = (context: AgentRuntimeCompositionContext) => TrustedToolGatewayCatalog;
 export type TrustedSubagentCompositionFactory = (
 	context: AgentRuntimeCompositionContext,
-) => TrustedSubagentCompositionOptionsV1;
+) => TrustedSubagentCompositionOptions;
 export type TrustedSchedulerCompositionFactory = (
 	context: AgentRuntimeCompositionContext,
 	/** Canonical Session-backed exact-selection and capacity authority. */
@@ -146,8 +146,8 @@ export interface AgentRuntimeCompositionOptions {
 export interface AgentRuntimeComposition extends AgentRuntimeCompositionContext {
 	readonly factory: AgentRuntimeCompositionFactory;
 	readonly toolGateway?: ToolGateway;
-	readonly workerSandboxProvider?: WorkerSandboxProviderV1;
-	readonly subagents?: TrustedSubagentCompositionOptionsV1;
+	readonly workerSandboxProvider?: WorkerSandboxProvider;
+	readonly subagents?: TrustedSubagentCompositionOptions;
 	readonly scheduler?: TrustedSchedulerRuntimeOptions;
 	readonly externalConnectorTargetConfig?: ExternalConnectorTargetConfig;
 	readonly externalConnectorTarget?: ExternalConnectorResolvedTarget;
@@ -167,8 +167,8 @@ export interface AgentRuntimeCompositionFactory {
 }
 
 interface InternalAgentRuntimeCompositionOptions extends AgentRuntimeCompositionOptions {
-	readonly workerSandboxProvider?: WorkerSandboxProviderV1;
-	readonly subagentOptions?: TrustedSubagentCompositionOptionsV1;
+	readonly workerSandboxProvider?: WorkerSandboxProvider;
+	readonly subagentOptions?: TrustedSubagentCompositionOptions;
 	readonly schedulerOptions?: TrustedSchedulerCompositionOptions;
 	readonly externalConnectorRegistryInstance?: ExternalConnectorRegistry;
 	readonly taskCredentialProviderInstance?: TaskCredentialProvider;
@@ -177,7 +177,7 @@ interface InternalAgentRuntimeCompositionOptions extends AgentRuntimeComposition
 function assertCanonicalProviders(
 	context: AgentRuntimeCompositionContext,
 	toolGateway: ToolGateway | undefined,
-	subagents: TrustedSubagentCompositionOptionsV1 | undefined,
+	subagents: TrustedSubagentCompositionOptions | undefined,
 	scheduler: TrustedSchedulerRuntimeOptions | undefined,
 ): void {
 	if (subagents !== undefined) {
@@ -218,7 +218,7 @@ function createPublicContext(context: AgentRuntimeCompositionContext): AgentRunt
 	});
 }
 
-function connectorRetryPolicy(runtimeLimits: RuntimeLimitsSnapshot): ConnectorRetryPolicyV1 {
+function connectorRetryPolicy(runtimeLimits: RuntimeLimitsSnapshot): ConnectorRetryPolicy {
 	const totalRetryTimeMs = runtimeLimits.values.retryBudgetMs;
 	const maxDelayMs = Math.min(DEFAULT_CONNECTOR_RETRY_POLICY.maxDelayMs, totalRetryTimeMs);
 	return Object.freeze({
@@ -282,7 +282,7 @@ async function registerSelectedExternalConnector(options: {
 			"Selected External Connector execution identity drifted before Scheduler registration",
 		);
 	}
-	const bindingRequirementDigest = schedulerBindingRequirementDigestV1(options.scheduler.binding);
+	const bindingRequirementDigest = schedulerBindingRequirementDigest(options.scheduler.binding);
 	if (!bindingRequirementDigest.ok) throw bindingRequirementDigest.error;
 	const policyRevisionFingerprint = options.scheduler.binding.policyRevision.fingerprint;
 	if (policyRevisionFingerprint === undefined) {
@@ -291,7 +291,7 @@ async function registerSelectedExternalConnector(options: {
 			"Selected External Connector registration requires a fingerprinted policy revision",
 		);
 	}
-	const runtimeSnapshot = createSchedulerExecutorRuntimeSnapshotV1({
+	const runtimeSnapshot = createSchedulerExecutorRuntimeSnapshot({
 		schemaVersion: 1,
 		capabilitySnapshot: selected.value.capabilitySnapshot,
 		configRevision: fingerprintFoundationValue({
@@ -471,7 +471,7 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 					initializeBeforeStart: async () => {
 						await schedulerForInitialization.initializeBeforeStart?.();
 						if (schedulerForInitialization.registry.get(SCHEDULER_IN_PROCESS_PROVIDER_ID) !== undefined) return;
-						const registered = await bindSchedulerInProcessTaskExecutorV1(schedulerForInitialization.registry, {
+						const registered = await bindSchedulerInProcessTaskExecutor(schedulerForInitialization.registry, {
 							sessionId: publicContext.sessionId,
 							allowFailClosedRegistration: true,
 							hostAttemptRunner: async () =>

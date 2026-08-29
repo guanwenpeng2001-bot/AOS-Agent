@@ -24,8 +24,8 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	WORKER_SCHEMA_VERSION,
-	validateWorkerBindingV1,
-	type WorkerBindingV1,
+	validateWorkerBinding,
+	type WorkerBinding,
 } from "./worker.ts";
 
 export const WORKER_PROTOCOL_SCHEMA_VERSION = 1 as const;
@@ -68,7 +68,7 @@ export const WORKER_REQUEST_FRAME_TYPES = Object.freeze([
 	"reclaim",
 	"ping",
 ] as const);
-export type WorkerRequestFrameTypeV1 = (typeof WORKER_REQUEST_FRAME_TYPES)[number];
+export type WorkerRequestFrameType = (typeof WORKER_REQUEST_FRAME_TYPES)[number];
 
 export const WORKER_EVENT_FRAME_TYPES = Object.freeze([
 	"ready",
@@ -80,12 +80,12 @@ export const WORKER_EVENT_FRAME_TYPES = Object.freeze([
 	"error",
 	"pong",
 ] as const);
-export type WorkerEventFrameTypeV1 = (typeof WORKER_EVENT_FRAME_TYPES)[number];
+export type WorkerEventFrameType = (typeof WORKER_EVENT_FRAME_TYPES)[number];
 
-export type WorkerCancelReasonV1 = "cancel" | "deadline" | "shutdown" | "detach";
-export type WorkerDataStreamV1 = "stdout" | "stderr" | "content";
+export type WorkerCancelReason = "cancel" | "deadline" | "shutdown" | "detach";
+export type WorkerDataStream = "stdout" | "stderr" | "content";
 
-export interface SafeLeaseProjectionV1 {
+export interface SafeLeaseProjection {
 	readonly schemaVersion: 1;
 	readonly leaseId: string;
 	readonly grantId: string;
@@ -95,7 +95,7 @@ export interface SafeLeaseProjectionV1 {
 	readonly clientRequestId: string;
 }
 
-export interface SafeLeaseReferenceV1 {
+export interface SafeLeaseReference {
 	readonly schemaVersion: 1;
 	readonly leaseId: string;
 	readonly grantId: string;
@@ -103,7 +103,7 @@ export interface SafeLeaseReferenceV1 {
 	readonly clientRequestId: string;
 }
 
-export interface SafeOperationResultV1 {
+export interface SafeOperationResult {
 	readonly schemaVersion: 1;
 	readonly operationId: string;
 	readonly ok: boolean;
@@ -113,11 +113,11 @@ export interface SafeOperationResultV1 {
 	readonly error?: PublicExecutionError;
 }
 
-export type WorkerRequestFrameV1 =
+export type OperationWorkerRequestFrame =
 	| {
 			readonly type: "initialize";
 			readonly requestId: string;
-			readonly binding: WorkerBindingV1;
+			readonly binding: WorkerBinding;
 	  }
 	| {
 			readonly type: "execute";
@@ -130,20 +130,20 @@ export type WorkerRequestFrameV1 =
 			readonly type: "credential.project" | "credential.renew";
 			readonly requestId: string;
 			readonly workerId: string;
-			readonly lease: SafeLeaseProjectionV1;
+			readonly lease: SafeLeaseProjection;
 	  }
 	| {
 			readonly type: "credential.revoke";
 			readonly requestId: string;
 			readonly workerId: string;
-			readonly leaseRef: SafeLeaseReferenceV1;
+			readonly leaseRef: SafeLeaseReference;
 	  }
 	| {
 			readonly type: "cancel";
 			readonly requestId: string;
 			readonly workerId: string;
 			readonly operationId?: string;
-			readonly reason: WorkerCancelReasonV1;
+			readonly reason: WorkerCancelReason;
 	  }
 	| {
 			readonly type: "reclaim";
@@ -156,7 +156,7 @@ export type WorkerRequestFrameV1 =
 			readonly workerId: string;
 	  };
 
-export type WorkerEventFrameV1 =
+export type OperationWorkerEventFrame =
 	| {
 			readonly type: "ready";
 			readonly requestId: string;
@@ -183,7 +183,7 @@ export type WorkerEventFrameV1 =
 			readonly requestId: string;
 			readonly workerId: string;
 			readonly operationId: string;
-			readonly stream: WorkerDataStreamV1;
+			readonly stream: WorkerDataStream;
 			readonly data: string;
 			readonly truncated?: boolean;
 	  }
@@ -192,7 +192,7 @@ export type WorkerEventFrameV1 =
 			readonly requestId: string;
 			readonly workerId: string;
 			readonly operationId: string;
-			readonly result: SafeOperationResultV1;
+			readonly result: SafeOperationResult;
 	  }
 	| {
 			readonly type: "receipt";
@@ -212,14 +212,14 @@ export type WorkerEventFrameV1 =
 			readonly at: string;
 	  };
 
-export type WorkerProtocolFrameV1 = WorkerRequestFrameV1 | WorkerEventFrameV1;
-export type WorkerFrameV1 = WorkerProtocolFrameV1;
-export type WorkerProtocolDirectionV1 = "host" | "worker";
-export type WorkerRequestFrame = WorkerRequestFrameV1;
-export type WorkerEventFrame = WorkerEventFrameV1;
-export type WorkerProtocolFrame = WorkerProtocolFrameV1;
+export type OperationWorkerProtocolFrame = OperationWorkerRequestFrame | OperationWorkerEventFrame;
+export type WorkerFrame = OperationWorkerProtocolFrame;
+export type WorkerProtocolDirection = "host" | "worker";
+export type WorkerRequestFrame = OperationWorkerRequestFrame;
+export type WorkerEventFrame = OperationWorkerEventFrame;
+export type WorkerProtocolFrame = OperationWorkerProtocolFrame;
 
-export const WORKER_REQUEST_FRAME_KEYS_V1: Readonly<Record<WorkerRequestFrameTypeV1, readonly string[]>> = Object.freeze({
+export const WORKER_REQUEST_FRAME_KEYS: Readonly<Record<WorkerRequestFrameType, readonly string[]>> = Object.freeze({
 	initialize: Object.freeze(["type", "requestId", "binding"]),
 	execute: Object.freeze(["type", "requestId", "workerId", "operationId", "request"]),
 	"credential.project": Object.freeze(["type", "requestId", "workerId", "lease"]),
@@ -230,7 +230,7 @@ export const WORKER_REQUEST_FRAME_KEYS_V1: Readonly<Record<WorkerRequestFrameTyp
 	ping: Object.freeze(["type", "requestId", "workerId"]),
 });
 
-export const WORKER_EVENT_FRAME_KEYS_V1: Readonly<Record<WorkerEventFrameTypeV1, readonly string[]>> = Object.freeze({
+export const WORKER_EVENT_FRAME_KEYS: Readonly<Record<WorkerEventFrameType, readonly string[]>> = Object.freeze({
 	ready: Object.freeze(["type", "requestId", "workerId", "providerId", "requestFingerprint", "capabilities"]),
 	heartbeat: Object.freeze(["type", "workerId", "sequence", "at"]),
 	"operation.started": Object.freeze(["type", "requestId", "workerId", "operationId", "at"]),
@@ -379,13 +379,13 @@ function truncateUtf8(value: string, maxBytes: number): { readonly value: string
 	return { value: output, bytes, truncated: true };
 }
 
-export interface WorkerDataTruncationV1 {
+export interface WorkerDataTruncation {
 	readonly value: string;
 	readonly bytes: number;
 	readonly truncated: boolean;
 }
 
-export function truncateWorkerDataChunkV1(value: string, maxBytes = WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES): WorkerDataTruncationV1 {
+export function truncateWorkerDataChunk(value: string, maxBytes = WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES): WorkerDataTruncation {
 	return truncateUtf8(value, maxBytes);
 }
 
@@ -478,7 +478,7 @@ function isSafeArtifact(value: unknown): value is ArtifactRef {
 	);
 }
 
-export function validateSafeLeaseProjectionV1(value: unknown): value is SafeLeaseProjectionV1 {
+export function validateOperationWorkerLeaseProjection(value: unknown): value is SafeLeaseProjection {
 	if (!isRecord(value) || !hasExactKeys(value, ["schemaVersion", "leaseId", "grantId", "bindingId", "scopeDigest", "expiresAt", "clientRequestId"])) return false;
 	return (
 		value.schemaVersion === WORKER_PROTOCOL_SCHEMA_VERSION &&
@@ -491,7 +491,7 @@ export function validateSafeLeaseProjectionV1(value: unknown): value is SafeLeas
 	);
 }
 
-export function validateSafeLeaseReferenceV1(value: unknown): value is SafeLeaseReferenceV1 {
+export function validateOperationWorkerLeaseReference(value: unknown): value is SafeLeaseReference {
 	if (!isRecord(value) || !hasExactKeys(value, ["schemaVersion", "leaseId", "grantId", "bindingId", "clientRequestId"])) return false;
 	return (
 		value.schemaVersion === WORKER_PROTOCOL_SCHEMA_VERSION &&
@@ -502,7 +502,7 @@ export function validateSafeLeaseReferenceV1(value: unknown): value is SafeLease
 	);
 }
 
-export function validateSafeOperationResultV1(value: unknown): value is SafeOperationResultV1 {
+export function validateOperationWorkerResult(value: unknown): value is SafeOperationResult {
 	if (!isRecord(value) || !hasExactKeys(value, ["schemaVersion", "operationId", "ok", "sideEffectState"], ["data", "artifacts", "error"])) return false;
 	if (
 		value.schemaVersion !== WORKER_PROTOCOL_SCHEMA_VERSION ||
@@ -521,11 +521,11 @@ export function validateSafeOperationResultV1(value: unknown): value is SafeOper
 	return true;
 }
 
-export const validateSafeLeaseProjection = validateSafeLeaseProjectionV1;
-export const validateSafeLeaseReference = validateSafeLeaseReferenceV1;
-export const validateSafeOperationResult = validateSafeOperationResultV1;
+export const validateSafeLeaseProjection = validateOperationWorkerLeaseProjection;
+export const validateSafeLeaseReference = validateOperationWorkerLeaseReference;
+export const validateSafeOperationResult = validateOperationWorkerResult;
 
-function cloneBinding(value: WorkerBindingV1): WorkerBindingV1 {
+function cloneBinding(value: WorkerBinding): WorkerBinding {
 	return Object.freeze({
 		...value,
 		capabilitySummary: Object.freeze([...value.capabilitySummary]),
@@ -533,7 +533,7 @@ function cloneBinding(value: WorkerBindingV1): WorkerBindingV1 {
 	});
 }
 
-function sameBinding(left: WorkerBindingV1, right: WorkerBindingV1): boolean {
+function sameBinding(left: WorkerBinding, right: WorkerBinding): boolean {
 	try {
 		return canonicalFoundationJson(left) === canonicalFoundationJson(right);
 	} catch {
@@ -545,7 +545,7 @@ function sameStringSequence(left: readonly string[], right: readonly string[]): 
 	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function receiptMatchesRequestAndBinding(receipt: WorkerReceipt, request: WorkerProtocolRequestStateV1, binding: WorkerBindingV1): boolean {
+function receiptMatchesRequestAndBinding(receipt: WorkerReceipt, request: WorkerProtocolRequestState, binding: WorkerBinding): boolean {
 	const correlation = receipt.provenance.correlation;
 	if (
 		correlation === undefined ||
@@ -610,11 +610,11 @@ function validateExecuteRequest(value: unknown): value is SandboxOperationReques
 	return checked.ok && isSafeIdentifier(checked.value.operationId);
 }
 
-function validateWorkerRequestFrameInternal(value: unknown): value is WorkerRequestFrameV1 {
+function validateWorkerRequestFrameInternal(value: unknown): value is OperationWorkerRequestFrame {
 	if (!isRecord(value) || typeof value.type !== "string") return false;
 	switch (value.type) {
 		case "initialize":
-			return hasExactKeys(value, ["type", "requestId", "binding"]) && isSafeRequestId(value.requestId) && validateWorkerBindingV1(value.binding);
+			return hasExactKeys(value, ["type", "requestId", "binding"]) && isSafeRequestId(value.requestId) && validateWorkerBinding(value.binding);
 		case "execute":
 			return (
 				hasExactKeys(value, ["type", "requestId", "workerId", "operationId", "request"]) &&
@@ -626,9 +626,9 @@ function validateWorkerRequestFrameInternal(value: unknown): value is WorkerRequ
 			);
 		case "credential.project":
 		case "credential.renew":
-			return hasExactKeys(value, ["type", "requestId", "workerId", "lease"]) && isSafeRequestId(value.requestId) && isSafeIdentifier(value.workerId) && validateSafeLeaseProjectionV1(value.lease);
+			return hasExactKeys(value, ["type", "requestId", "workerId", "lease"]) && isSafeRequestId(value.requestId) && isSafeIdentifier(value.workerId) && validateOperationWorkerLeaseProjection(value.lease);
 		case "credential.revoke":
-			return hasExactKeys(value, ["type", "requestId", "workerId", "leaseRef"]) && isSafeRequestId(value.requestId) && isSafeIdentifier(value.workerId) && validateSafeLeaseReferenceV1(value.leaseRef);
+			return hasExactKeys(value, ["type", "requestId", "workerId", "leaseRef"]) && isSafeRequestId(value.requestId) && isSafeIdentifier(value.workerId) && validateOperationWorkerLeaseReference(value.leaseRef);
 		case "cancel":
 			return (
 				hasExactKeys(value, ["type", "requestId", "workerId", "reason"], ["operationId"]) &&
@@ -645,7 +645,7 @@ function validateWorkerRequestFrameInternal(value: unknown): value is WorkerRequ
 	}
 }
 
-function validateWorkerEventFrameInternal(value: unknown): value is WorkerEventFrameV1 {
+function validateWorkerEventFrameInternal(value: unknown): value is OperationWorkerEventFrame {
 	if (!isRecord(value) || typeof value.type !== "string") return false;
 	switch (value.type) {
 		case "ready":
@@ -678,7 +678,7 @@ function validateWorkerEventFrameInternal(value: unknown): value is WorkerEventF
 				isSafeRequestId(value.requestId) &&
 				isSafeIdentifier(value.workerId) &&
 				isSafeIdentifier(value.operationId) &&
-				validateSafeOperationResultV1(value.result) &&
+				validateOperationWorkerResult(value.result) &&
 				value.operationId === value.result.operationId
 			);
 		case "receipt":
@@ -698,7 +698,7 @@ function validateWorkerEventFrameInternal(value: unknown): value is WorkerEventF
 	}
 }
 
-export function validateWorkerRequestFrameV1(value: unknown): value is WorkerRequestFrameV1 {
+export function validateOperationWorkerRequestFrame(value: unknown): value is OperationWorkerRequestFrame {
 	try {
 		return validateWorkerRequestFrameInternal(value);
 	} catch {
@@ -706,7 +706,7 @@ export function validateWorkerRequestFrameV1(value: unknown): value is WorkerReq
 	}
 }
 
-export function validateWorkerEventFrameV1(value: unknown): value is WorkerEventFrameV1 {
+export function validateOperationWorkerEventFrame(value: unknown): value is OperationWorkerEventFrame {
 	try {
 		return validateWorkerEventFrameInternal(value);
 	} catch {
@@ -714,44 +714,44 @@ export function validateWorkerEventFrameV1(value: unknown): value is WorkerEvent
 	}
 }
 
-export function validateWorkerFrameV1(value: unknown): value is WorkerProtocolFrameV1 {
-	return validateWorkerRequestFrameV1(value) || validateWorkerEventFrameV1(value);
+export function validateOperationWorkerFrame(value: unknown): value is OperationWorkerProtocolFrame {
+	return validateOperationWorkerRequestFrame(value) || validateOperationWorkerEventFrame(value);
 }
 
-export const validateWorkerRequestFrame = validateWorkerRequestFrameV1;
-export const validateWorkerEventFrame = validateWorkerEventFrameV1;
-export const validateWorkerFrame = validateWorkerFrameV1;
+export const validateWorkerRequestFrame = validateOperationWorkerRequestFrame;
+export const validateWorkerEventFrame = validateOperationWorkerEventFrame;
+export const validateWorkerFrame = validateOperationWorkerFrame;
 
-function validateRequestResult(value: unknown): ProtocolResult<WorkerRequestFrameV1> {
-	return validateWorkerRequestFrameV1(value) ? Result.ok(value) : Result.err(operationInvalid());
+function validateRequestResult(value: unknown): ProtocolResult<OperationWorkerRequestFrame> {
+	return validateOperationWorkerRequestFrame(value) ? Result.ok(value) : Result.err(operationInvalid());
 }
 
-function validateEventResult(value: unknown): ProtocolResult<WorkerEventFrameV1> {
-	if (validateWorkerEventFrameV1(value)) return Result.ok(value);
+function validateEventResult(value: unknown): ProtocolResult<OperationWorkerEventFrame> {
+	if (validateOperationWorkerEventFrame(value)) return Result.ok(value);
 	if (isRecord(value) && value.type === "receipt") return Result.err(receiptInvalid());
 	return Result.err(operationInvalid());
 }
 
-export function validateWorkerRequestFrameResultV1(value: unknown): ProtocolResult<WorkerRequestFrameV1> {
+export function validateWorkerRequestFrameResult(value: unknown): ProtocolResult<OperationWorkerRequestFrame> {
 	return validateRequestResult(value);
 }
 
-export function validateWorkerEventFrameResultV1(value: unknown): ProtocolResult<WorkerEventFrameV1> {
+export function validateWorkerEventFrameResult(value: unknown): ProtocolResult<OperationWorkerEventFrame> {
 	return validateEventResult(value);
 }
 
-export function validateWorkerFrameResultV1(value: unknown): ProtocolResult<WorkerProtocolFrameV1> {
-	if (validateWorkerRequestFrameV1(value)) return Result.ok(value);
-	if (isRecord(value) && typeof value.type === "string" && WORKER_EVENT_FRAME_TYPES.includes(value.type as WorkerEventFrameTypeV1)) return validateEventResult(value);
+export function validateWorkerFrameResult(value: unknown): ProtocolResult<OperationWorkerProtocolFrame> {
+	if (validateOperationWorkerRequestFrame(value)) return Result.ok(value);
+	if (isRecord(value) && typeof value.type === "string" && WORKER_EVENT_FRAME_TYPES.includes(value.type as WorkerEventFrameType)) return validateEventResult(value);
 	return Result.err(operationInvalid());
 }
 
-export function serializeWorkerFrameV1(value: unknown): string {
-	const checked = validateWorkerFrameResultV1(value);
+export function serializeOperationWorkerFrame(value: unknown): string {
+	const checked = validateWorkerFrameResult(value);
 	if (!checked.ok) throw checked.error;
 	const normalized = checked.value.type === "operation.data"
 		? (() => {
-			const bounded = truncateWorkerDataChunkV1(checked.value.data);
+			const bounded = truncateWorkerDataChunk(checked.value.data);
 			return Object.freeze({
 				...checked.value,
 				data: bounded.value,
@@ -769,21 +769,21 @@ export function serializeWorkerFrameV1(value: unknown): string {
 	return encoded;
 }
 
-function workerFrameSerializationError(value: WorkerProtocolFrameV1): FoundationError | undefined {
+function workerFrameSerializationError(value: OperationWorkerProtocolFrame): FoundationError | undefined {
 	try {
-		serializeWorkerFrameV1(value);
+		serializeOperationWorkerFrame(value);
 		return undefined;
 	} catch {
 		return operationInvalid();
 	}
 }
 
-export function serializeWorkerFrameLineV1(value: unknown): string {
-	return `${serializeWorkerFrameV1(value)}\n`;
+export function serializeWorkerFrameLine(value: unknown): string {
+	return `${serializeOperationWorkerFrame(value)}\n`;
 }
 
-export const serializeWorkerJsonlFrameV1 = serializeWorkerFrameLineV1;
-export const serializeWorkerProtocolLineV1 = serializeWorkerFrameLineV1;
+export const serializeOperationWorkerJsonlFrame = serializeWorkerFrameLine;
+export const serializeWorkerProtocolLine = serializeWorkerFrameLine;
 
 function stripSingleLineEnding(value: string): string | undefined {
 	if (value.endsWith("\r\n")) return value.slice(0, -2);
@@ -792,56 +792,56 @@ function stripSingleLineEnding(value: string): string | undefined {
 	return value;
 }
 
-export function parseWorkerFrameV1(text: string): ProtocolResult<WorkerProtocolFrameV1> {
+export function parseOperationWorkerFrame(text: string): ProtocolResult<OperationWorkerProtocolFrame> {
 	if (typeof text !== "string" || utf8ByteLength(text) > WORKER_PROTOCOL_MAX_FRAME_BYTES) return Result.err(operationInvalid());
 	const line = stripSingleLineEnding(text);
 	if (line === undefined || line.length === 0) return Result.err(operationInvalid());
 	try {
 		const value = JSON.parse(line) as unknown;
-		return validateWorkerFrameResultV1(value);
+		return validateWorkerFrameResult(value);
 	} catch {
 		return Result.err(operationInvalid());
 	}
 }
 
-export const parseWorkerFrameLineV1 = parseWorkerFrameV1;
-export const parseWorkerJsonlFrameV1 = parseWorkerFrameV1;
-export const serializeWorkerFrame = serializeWorkerFrameV1;
-export const serializeWorkerJsonlFrame = serializeWorkerFrameLineV1;
-export const parseWorkerFrame = parseWorkerFrameV1;
-export const parseWorkerJsonlFrame = parseWorkerFrameV1;
-export const encodeWorkerFrameV1 = serializeWorkerFrameLineV1;
-export const decodeWorkerFrameV1 = parseWorkerFrameV1;
+export const parseWorkerFrameLine = parseOperationWorkerFrame;
+export const parseOperationWorkerJsonlFrame = parseOperationWorkerFrame;
+export const serializeWorkerFrame = serializeOperationWorkerFrame;
+export const serializeWorkerJsonlFrame = serializeWorkerFrameLine;
+export const parseWorkerFrame = parseOperationWorkerFrame;
+export const parseWorkerJsonlFrame = parseOperationWorkerFrame;
+export const encodeWorkerFrame = serializeWorkerFrameLine;
+export const decodeWorkerFrame = parseOperationWorkerFrame;
 
-export function parseWorkerJsonlV1(text: string): ProtocolResult<readonly WorkerProtocolFrameV1[]> {
+export function parseWorkerJsonl(text: string): ProtocolResult<readonly OperationWorkerProtocolFrame[]> {
 	if (typeof text !== "string" || text.length === 0) return Result.err(operationInvalid());
 	const lines = text.split("\n");
 	if (lines.at(-1) === "") lines.pop();
 	if (lines.length === 0 || lines.some((line) => line.length === 0)) return Result.err(operationInvalid());
-	const frames: WorkerProtocolFrameV1[] = [];
+	const frames: OperationWorkerProtocolFrame[] = [];
 	for (const line of lines) {
-		const parsed = parseWorkerFrameV1(line);
+		const parsed = parseOperationWorkerFrame(line);
 		if (!parsed.ok) return parsed;
 		frames.push(parsed.value);
 	}
 	return Result.ok(Object.freeze(frames));
 }
 
-export function redactWorkerDiagnosticV1(value: string): string {
+export function redactOperationWorkerDiagnostic(value: string): string {
 	void value;
 	return "[redacted worker diagnostic]";
 }
 
-export function formatWorkerStderrDiagnosticV1(value: string): string {
-	return `${redactWorkerDiagnosticV1(value)}\n`;
+export function formatWorkerStderrDiagnostic(value: string): string {
+	return `${redactOperationWorkerDiagnostic(value)}\n`;
 }
 
-export const redactWorkerStderrV1 = redactWorkerDiagnosticV1;
-export const redactWorkerDiagnostic = redactWorkerDiagnosticV1;
+export const redactWorkerStderr = redactOperationWorkerDiagnostic;
+export const redactWorkerDiagnostic = redactOperationWorkerDiagnostic;
 
-export interface WorkerProtocolRequestStateV1 {
+export interface WorkerProtocolRequestState {
 	readonly requestId: string;
-	readonly type: WorkerRequestFrameTypeV1;
+	readonly type: WorkerRequestFrameType;
 	readonly operationId?: string;
 	readonly providerId?: string;
 	readonly taskId?: string;
@@ -850,10 +850,10 @@ export interface WorkerProtocolRequestStateV1 {
 	readonly bindingId?: string;
 	readonly bindingEpochId?: string;
 	readonly responseCount: number;
-	readonly responseType?: WorkerEventFrameTypeV1;
+	readonly responseType?: WorkerEventFrameType;
 }
 
-export interface WorkerProtocolOperationStateV1 {
+export interface WorkerProtocolOperationState {
 	readonly operationId: string;
 	readonly requestId: string;
 	readonly started: boolean;
@@ -865,38 +865,38 @@ export interface WorkerProtocolOperationStateV1 {
 	readonly dataTruncated: boolean;
 }
 
-export type WorkerProtocolPhaseV1 = "new" | "initializing" | "ready" | "running" | "cancelling" | "terminal" | "lost";
+export type WorkerProtocolPhase = "new" | "initializing" | "ready" | "running" | "cancelling" | "terminal" | "lost";
 
-export interface WorkerProtocolStateV1 {
+export interface OperationWorkerProtocolState {
 	readonly schemaVersion: 1;
-	readonly phase: WorkerProtocolPhaseV1;
-	readonly binding?: WorkerBindingV1;
+	readonly phase: WorkerProtocolPhase;
+	readonly binding?: WorkerBinding;
 	readonly initializedRequestId?: string;
 	readonly readyRequestId?: string;
 	readonly heartbeatSequence?: number;
 	readonly lastHeartbeatAt?: string;
-	readonly requests: readonly WorkerProtocolRequestStateV1[];
-	readonly operations: readonly WorkerProtocolOperationStateV1[];
+	readonly requests: readonly WorkerProtocolRequestState[];
+	readonly operations: readonly WorkerProtocolOperationState[];
 	readonly reclaimRequested: boolean;
 	readonly disconnected: boolean;
 }
 
-export interface WorkerProtocolMutationV1 {
-	readonly state: WorkerProtocolStateV1;
-	readonly frame?: WorkerProtocolFrameV1;
+export interface WorkerProtocolMutation {
+	readonly state: OperationWorkerProtocolState;
+	readonly frame?: OperationWorkerProtocolFrame;
 	readonly idempotent: boolean;
 	readonly truncated?: boolean;
 }
 
-function freezeRequest(value: WorkerProtocolRequestStateV1): WorkerProtocolRequestStateV1 {
+function freezeRequest(value: WorkerProtocolRequestState): WorkerProtocolRequestState {
 	return Object.freeze({ ...value });
 }
 
-function freezeOperation(value: WorkerProtocolOperationStateV1): WorkerProtocolOperationStateV1 {
+function freezeOperation(value: WorkerProtocolOperationState): WorkerProtocolOperationState {
 	return Object.freeze({ ...value });
 }
 
-function freezeState(value: WorkerProtocolStateV1): WorkerProtocolStateV1 {
+function freezeState(value: OperationWorkerProtocolState): OperationWorkerProtocolState {
 	return Object.freeze({
 		...value,
 		...(value.binding === undefined ? {} : { binding: cloneBinding(value.binding) }),
@@ -925,8 +925,8 @@ function requestIdentity(request: SandboxOperationRequest): WorkerRequestIdentit
 	};
 }
 
-export function createWorkerProtocolStateV1(binding?: WorkerBindingV1): WorkerProtocolStateV1 {
-	if (binding !== undefined && !validateWorkerBindingV1(binding)) throw protocolError("worker_binding_invalid", "Worker protocol binding is invalid");
+export function createOperationWorkerProtocolState(binding?: WorkerBinding): OperationWorkerProtocolState {
+	if (binding !== undefined && !validateWorkerBinding(binding)) throw protocolError("worker_binding_invalid", "Worker protocol binding is invalid");
 	return freezeState({
 		schemaVersion: WORKER_PROTOCOL_SCHEMA_VERSION,
 		phase: "new",
@@ -938,10 +938,10 @@ export function createWorkerProtocolStateV1(binding?: WorkerBindingV1): WorkerPr
 	});
 }
 
-export const newWorkerProtocolStateV1 = createWorkerProtocolStateV1;
-export const createWorkerProtocolState = createWorkerProtocolStateV1;
+export const newWorkerProtocolState = createOperationWorkerProtocolState;
+export const createWorkerProtocolState = createOperationWorkerProtocolState;
 
-function responseTypeCompatible(type: WorkerRequestFrameTypeV1, responseType: WorkerEventFrameTypeV1): boolean {
+function responseTypeCompatible(type: WorkerRequestFrameType, responseType: WorkerEventFrameType): boolean {
 	switch (type) {
 		case "initialize":
 			return responseType === "ready" || responseType === "error";
@@ -954,7 +954,7 @@ function responseTypeCompatible(type: WorkerRequestFrameTypeV1, responseType: Wo
 	}
 }
 
-export function protocolStateValid(value: unknown): value is WorkerProtocolStateV1 {
+export function protocolStateValid(value: unknown): value is OperationWorkerProtocolState {
 	try {
 	if (
 		!isRecord(value) ||
@@ -963,10 +963,10 @@ export function protocolStateValid(value: unknown): value is WorkerProtocolState
 		!Array.isArray(value.requests) ||
 		!Array.isArray(value.operations)
 	) return false;
-	const state = value as unknown as WorkerProtocolStateV1;
-	const phases: readonly WorkerProtocolPhaseV1[] = ["new", "initializing", "ready", "running", "cancelling", "terminal", "lost"];
-	if (!phases.includes(state.phase as WorkerProtocolPhaseV1)) return false;
-	if (state.binding !== undefined && !validateWorkerBindingV1(state.binding)) return false;
+	const state = value as unknown as OperationWorkerProtocolState;
+	const phases: readonly WorkerProtocolPhase[] = ["new", "initializing", "ready", "running", "cancelling", "terminal", "lost"];
+	if (!phases.includes(state.phase as WorkerProtocolPhase)) return false;
+	if (state.binding !== undefined && !validateWorkerBinding(state.binding)) return false;
 	if (state.initializedRequestId !== undefined && !isSafeRequestId(state.initializedRequestId)) return false;
 	if (state.readyRequestId !== undefined && !isSafeRequestId(state.readyRequestId)) return false;
 	if (state.heartbeatSequence !== undefined && !isSafeInteger(state.heartbeatSequence)) return false;
@@ -979,10 +979,10 @@ export function protocolStateValid(value: unknown): value is WorkerProtocolState
 
 	const requestIds = new Set<string>();
 	for (const request of state.requests) {
-		if (!isRecord(request) || !hasExactKeys(request, ["requestId", "type", "responseCount"], ["operationId", "providerId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId", "responseType"]) || !isSafeRequestId(request.requestId) || requestIds.has(request.requestId) || !WORKER_REQUEST_FRAME_TYPES.includes(request.type as WorkerRequestFrameTypeV1)) return false;
+		if (!isRecord(request) || !hasExactKeys(request, ["requestId", "type", "responseCount"], ["operationId", "providerId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId", "responseType"]) || !isSafeRequestId(request.requestId) || requestIds.has(request.requestId) || !WORKER_REQUEST_FRAME_TYPES.includes(request.type as WorkerRequestFrameType)) return false;
 		if (!isSafeInteger(request.responseCount) || request.responseCount > 1) return false;
 		if (request.responseCount === 0 && request.responseType !== undefined) return false;
-		if (request.responseCount === 1 && (request.responseType === undefined || !WORKER_EVENT_FRAME_TYPES.includes(request.responseType as WorkerEventFrameTypeV1) || !responseTypeCompatible(request.type as WorkerRequestFrameTypeV1, request.responseType as WorkerEventFrameTypeV1))) return false;
+		if (request.responseCount === 1 && (request.responseType === undefined || !WORKER_EVENT_FRAME_TYPES.includes(request.responseType as WorkerEventFrameType) || !responseTypeCompatible(request.type as WorkerRequestFrameType, request.responseType as WorkerEventFrameType))) return false;
 		if (request.operationId !== undefined && !isSafeIdentifier(request.operationId)) return false;
 		if (request.type === "execute" && request.operationId === undefined) return false;
 		if (request.type !== "execute" && request.type !== "cancel" && request.operationId !== undefined) return false;
@@ -1041,18 +1041,18 @@ export function protocolStateValid(value: unknown): value is WorkerProtocolState
 	}
 }
 
-function withState(state: WorkerProtocolStateV1, patch: {
-	readonly phase?: WorkerProtocolPhaseV1;
-	readonly binding?: WorkerBindingV1;
+function withState(state: OperationWorkerProtocolState, patch: {
+	readonly phase?: WorkerProtocolPhase;
+	readonly binding?: WorkerBinding;
 	readonly initializedRequestId?: string;
 	readonly readyRequestId?: string;
 	readonly heartbeatSequence?: number;
 	readonly lastHeartbeatAt?: string;
-	readonly requests?: readonly WorkerProtocolRequestStateV1[];
-	readonly operations?: readonly WorkerProtocolOperationStateV1[];
+	readonly requests?: readonly WorkerProtocolRequestState[];
+	readonly operations?: readonly WorkerProtocolOperationState[];
 	readonly reclaimRequested?: boolean;
 	readonly disconnected?: boolean;
-}): WorkerProtocolStateV1 {
+}): OperationWorkerProtocolState {
 	return freezeState({
 		schemaVersion: WORKER_PROTOCOL_SCHEMA_VERSION,
 		phase: patch.phase ?? state.phase,
@@ -1068,40 +1068,40 @@ function withState(state: WorkerProtocolStateV1, patch: {
 	});
 }
 
-function findRequest(state: WorkerProtocolStateV1, requestId: string): WorkerProtocolRequestStateV1 | undefined {
+function findRequest(state: OperationWorkerProtocolState, requestId: string): WorkerProtocolRequestState | undefined {
 	return state.requests.find((request) => request.requestId === requestId);
 }
 
-function findOperation(state: WorkerProtocolStateV1, operationId: string): WorkerProtocolOperationStateV1 | undefined {
+function findOperation(state: OperationWorkerProtocolState, operationId: string): WorkerProtocolOperationState | undefined {
 	return state.operations.find((operation) => operation.operationId === operationId);
 }
 
-function operationBlocksNewExecute(state: WorkerProtocolStateV1, operation: WorkerProtocolOperationStateV1): boolean {
+function operationBlocksNewExecute(state: OperationWorkerProtocolState, operation: WorkerProtocolOperationState): boolean {
 	if (operation.receiptReceived) return false;
 	const request = findRequest(state, operation.requestId);
 	return request?.responseType !== "error";
 }
 
-function addRequest(state: WorkerProtocolStateV1, requestId: string, type: WorkerRequestFrameTypeV1, operationId?: string, identity?: WorkerRequestIdentityV1): ProtocolResult<WorkerProtocolStateV1> {
+function addRequest(state: OperationWorkerProtocolState, requestId: string, type: WorkerRequestFrameType, operationId?: string, identity?: WorkerRequestIdentityV1): ProtocolResult<OperationWorkerProtocolState> {
 	if (findRequest(state, requestId) !== undefined) return Result.err(conflict());
 	return Result.ok(withState(state, { requests: [...state.requests, freezeRequest({ requestId, type, ...(operationId === undefined ? {} : { operationId }), ...(identity ?? {}), responseCount: 0 })] }));
 }
 
-function updateRequest(state: WorkerProtocolStateV1, requestId: string, responseType: WorkerEventFrameTypeV1): ProtocolResult<WorkerProtocolStateV1> {
+function updateRequest(state: OperationWorkerProtocolState, requestId: string, responseType: WorkerEventFrameType): ProtocolResult<OperationWorkerProtocolState> {
 	const request = findRequest(state, requestId);
 	if (request === undefined || request.responseCount > 0) return Result.err(conflict());
 	const requests = state.requests.map((item) => item.requestId === requestId ? freezeRequest({ ...item, responseCount: item.responseCount + 1, responseType }) : item);
 	return Result.ok(withState(state, { requests }));
 }
 
-function updateOperation(state: WorkerProtocolStateV1, operationId: string, patch: Partial<WorkerProtocolOperationStateV1>): ProtocolResult<WorkerProtocolStateV1> {
+function updateOperation(state: OperationWorkerProtocolState, operationId: string, patch: Partial<WorkerProtocolOperationState>): ProtocolResult<OperationWorkerProtocolState> {
 	const operation = findOperation(state, operationId);
 	if (operation === undefined) return Result.err(bindingInvalid());
 	const operations = state.operations.map((item) => item.operationId === operationId ? freezeOperation({ ...item, ...patch }) : item);
 	return Result.ok(withState(state, { operations }));
 }
 
-function bindingMatchesRequest(binding: WorkerBindingV1, request: SandboxOperationRequest): boolean {
+function bindingMatchesRequest(binding: WorkerBinding, request: SandboxOperationRequest): boolean {
 	return (
 		(request.providerId === undefined || request.providerId === binding.providerId) &&
 		(request.bindingId === undefined || request.bindingId === binding.bindingId) &&
@@ -1110,15 +1110,15 @@ function bindingMatchesRequest(binding: WorkerBindingV1, request: SandboxOperati
 	);
 }
 
-function bindingMatchesLease(binding: WorkerBindingV1, leaseBindingId: string): boolean {
+function bindingMatchesLease(binding: WorkerBinding, leaseBindingId: string): boolean {
 	return binding.bindingId !== undefined && binding.bindingId === leaseBindingId;
 }
 
-function mutation(state: WorkerProtocolStateV1, frame: WorkerProtocolFrameV1, truncated = false): WorkerProtocolMutationV1 {
+function mutation(state: OperationWorkerProtocolState, frame: OperationWorkerProtocolFrame, truncated = false): WorkerProtocolMutation {
 	return Object.freeze({ state, frame, idempotent: false, ...(truncated ? { truncated: true } : {}) });
 }
 
-export function applyWorkerRequestFrameV1(stateValue: WorkerProtocolStateV1, value: unknown): ProtocolResult<WorkerProtocolMutationV1> {
+export function applyOperationWorkerRequestFrame(stateValue: OperationWorkerProtocolState, value: unknown): ProtocolResult<WorkerProtocolMutation> {
 	if (!protocolStateValid(stateValue)) return Result.err(operationInvalid());
 	const checked = validateRequestResult(value);
 	if (!checked.ok) return checked;
@@ -1175,14 +1175,14 @@ export function applyWorkerRequestFrameV1(stateValue: WorkerProtocolStateV1, val
 	return added.ok ? Result.ok(mutation(added.value, frame)) : added;
 }
 
-function operationForFrame(state: WorkerProtocolStateV1, requestId: string, operationId: string): ProtocolResult<WorkerProtocolOperationStateV1> {
+function operationForFrame(state: OperationWorkerProtocolState, requestId: string, operationId: string): ProtocolResult<WorkerProtocolOperationState> {
 	const request = findRequest(state, requestId);
 	if (request === undefined || request.type !== "execute" || request.operationId !== operationId) return Result.err(bindingInvalid());
 	const operation = findOperation(state, operationId);
 	return operation === undefined ? Result.err(bindingInvalid()) : Result.ok(operation);
 }
 
-function normalizeDataFrame(frame: Extract<WorkerEventFrameV1, { type: "operation.data" }>, operation: WorkerProtocolOperationStateV1): { readonly frame: WorkerEventFrameV1; readonly bytes: number; readonly truncated: boolean } {
+function normalizeDataFrame(frame: Extract<OperationWorkerEventFrame, { type: "operation.data" }>, operation: WorkerProtocolOperationState): { readonly frame: OperationWorkerEventFrame; readonly bytes: number; readonly truncated: boolean } {
 	const remainingBytes = Math.max(0, WORKER_PROTOCOL_MAX_OPERATION_DATA_BYTES - operation.dataBytes);
 	const chunk = truncateUtf8(frame.data, WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES);
 	const total = truncateUtf8(chunk.value, remainingBytes);
@@ -1200,7 +1200,7 @@ function normalizeDataFrame(frame: Extract<WorkerEventFrameV1, { type: "operatio
 	};
 }
 
-export function applyWorkerEventFrameV1(stateValue: WorkerProtocolStateV1, value: unknown): ProtocolResult<WorkerProtocolMutationV1> {
+export function applyOperationWorkerEventFrame(stateValue: OperationWorkerProtocolState, value: unknown): ProtocolResult<WorkerProtocolMutation> {
 	if (!protocolStateValid(stateValue)) return Result.err(operationInvalid());
 	const checked = validateEventResult(value);
 	if (!checked.ok) return checked;
@@ -1301,74 +1301,74 @@ export function applyWorkerEventFrameV1(stateValue: WorkerProtocolStateV1, value
 	return updatedRequest.ok ? Result.ok(mutation(withState(updatedRequest.value, { phase: "ready" }), receiptFrame)) : updatedRequest;
 }
 
-export function applyWorkerProtocolFrameV1(state: WorkerProtocolStateV1, direction: WorkerProtocolDirectionV1, value: unknown): ProtocolResult<WorkerProtocolMutationV1> {
-	return direction === "host" ? applyWorkerRequestFrameV1(state, value) : applyWorkerEventFrameV1(state, value);
+export function applyOperationWorkerProtocolFrame(state: OperationWorkerProtocolState, direction: WorkerProtocolDirection, value: unknown): ProtocolResult<WorkerProtocolMutation> {
+	return direction === "host" ? applyOperationWorkerRequestFrame(state, value) : applyOperationWorkerEventFrame(state, value);
 }
 
-export const applyWorkerRequestFrame = applyWorkerRequestFrameV1;
-export const applyWorkerEventFrame = applyWorkerEventFrameV1;
-export const applyWorkerProtocolFrame = applyWorkerProtocolFrameV1;
+export const applyWorkerRequestFrame = applyOperationWorkerRequestFrame;
+export const applyWorkerEventFrame = applyOperationWorkerEventFrame;
+export const applyWorkerProtocolFrame = applyOperationWorkerProtocolFrame;
 
-export function applyWorkerRequestLineV1(state: WorkerProtocolStateV1, text: string): ProtocolResult<WorkerProtocolMutationV1> {
-	const parsed = parseWorkerFrameV1(text);
+export function applyWorkerRequestLine(state: OperationWorkerProtocolState, text: string): ProtocolResult<WorkerProtocolMutation> {
+	const parsed = parseOperationWorkerFrame(text);
 	if (!parsed.ok) return parsed;
-	return applyWorkerRequestFrameV1(state, parsed.value);
+	return applyOperationWorkerRequestFrame(state, parsed.value);
 }
 
-export function applyWorkerEventLineV1(state: WorkerProtocolStateV1, text: string): ProtocolResult<WorkerProtocolMutationV1> {
-	const parsed = parseWorkerFrameV1(text);
+export function applyWorkerEventLine(state: OperationWorkerProtocolState, text: string): ProtocolResult<WorkerProtocolMutation> {
+	const parsed = parseOperationWorkerFrame(text);
 	if (!parsed.ok) return parsed;
-	return applyWorkerEventFrameV1(state, parsed.value);
+	return applyOperationWorkerEventFrame(state, parsed.value);
 }
 
-export function disconnectWorkerProtocolV1(stateValue: WorkerProtocolStateV1): WorkerProtocolStateV1 {
+export function disconnectWorkerProtocol(stateValue: OperationWorkerProtocolState): OperationWorkerProtocolState {
 	if (!protocolStateValid(stateValue)) return freezeState({ schemaVersion: WORKER_PROTOCOL_SCHEMA_VERSION, phase: "lost", requests: [], operations: [], reclaimRequested: false, disconnected: true });
 	return withState(stateValue, { phase: "lost", disconnected: true });
 }
 
-export function applyWorkerDisconnectV1(stateValue: WorkerProtocolStateV1): ProtocolResult<WorkerProtocolMutationV1> {
+export function applyWorkerDisconnect(stateValue: OperationWorkerProtocolState): ProtocolResult<WorkerProtocolMutation> {
 	if (!protocolStateValid(stateValue)) return Result.err(workerLost());
 	if (stateValue.disconnected || stateValue.phase === "lost") return Result.err(workerLost());
-	const state = disconnectWorkerProtocolV1(stateValue);
+	const state = disconnectWorkerProtocol(stateValue);
 	return Result.ok(Object.freeze({ state, idempotent: false }));
 }
 
-export class WorkerProtocolSessionV1 {
-	private currentState: WorkerProtocolStateV1;
+export class OperationWorkerProtocolSession {
+	private currentState: OperationWorkerProtocolState;
 
-	constructor(binding?: WorkerBindingV1) {
-		this.currentState = createWorkerProtocolStateV1(binding);
+	constructor(binding?: WorkerBinding) {
+		this.currentState = createOperationWorkerProtocolState(binding);
 	}
 
-	get state(): WorkerProtocolStateV1 {
+	get state(): OperationWorkerProtocolState {
 		return this.currentState;
 	}
 
-	receiveHostFrame(value: unknown): ProtocolResult<WorkerProtocolMutationV1> {
-		const result = applyWorkerRequestFrameV1(this.currentState, value);
+	receiveHostFrame(value: unknown): ProtocolResult<WorkerProtocolMutation> {
+		const result = applyOperationWorkerRequestFrame(this.currentState, value);
 		if (result.ok) this.currentState = result.value.state;
 		return result;
 	}
 
-	receiveWorkerFrame(value: unknown): ProtocolResult<WorkerProtocolMutationV1> {
-		const result = applyWorkerEventFrameV1(this.currentState, value);
+	receiveWorkerFrame(value: unknown): ProtocolResult<WorkerProtocolMutation> {
+		const result = applyOperationWorkerEventFrame(this.currentState, value);
 		if (result.ok) this.currentState = result.value.state;
 		return result;
 	}
 
-	acceptHostFrame(value: unknown): ProtocolResult<WorkerProtocolMutationV1> {
+	acceptHostFrame(value: unknown): ProtocolResult<WorkerProtocolMutation> {
 		return this.receiveHostFrame(value);
 	}
 
-	acceptWorkerFrame(value: unknown): ProtocolResult<WorkerProtocolMutationV1> {
+	acceptWorkerFrame(value: unknown): ProtocolResult<WorkerProtocolMutation> {
 		return this.receiveWorkerFrame(value);
 	}
 
 	disconnect(): FoundationError {
-		this.currentState = disconnectWorkerProtocolV1(this.currentState);
+		this.currentState = disconnectWorkerProtocol(this.currentState);
 		return workerLost();
 	}
 }
 
-export const WorkerProtocolState = WorkerProtocolSessionV1;
-export const WorkerProtocolSession = WorkerProtocolSessionV1;
+export const WorkerProtocolState = OperationWorkerProtocolSession;
+export const WorkerProtocolSession = OperationWorkerProtocolSession;

@@ -3,15 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	SCHEDULER_DEADLOCK_OBJECT_TYPE,
 	SchedulerDeadlockController,
-	type SchedulerDeadlockQueueV1,
-	schedulerEffectivePriorityV1,
-	schedulerOrderQueuedWorkV1,
+	type SchedulerDeadlockQueue,
+	schedulerEffectivePriority,
+	schedulerOrderQueuedWork,
 } from "../src/core/scheduler-deadlock.ts";
 import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
 import { SchedulerMessageOrchestrator } from "../src/core/scheduler-messages.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
 import { withRuntimeClock } from "../src/core/runtime-clock.ts";
-import type { SchedulerOwnershipTransferV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
+import type { SchedulerOwnershipTransfer, SchedulerQueueEntry } from "../src/core/scheduler.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
 import { TaskGateStore } from "../src/core/task-gate.ts";
@@ -39,7 +39,7 @@ const T1 = "2026-08-22T12:00:10.000Z";
 const DEADLINE = "2026-08-22T12:05:00.000Z";
 const OWNER_ID = "scheduler_host_1";
 
-function queued(overrides: Partial<SchedulerQueueEntryV1> = {}): SchedulerQueueEntryV1 {
+function queued(overrides: Partial<SchedulerQueueEntry> = {}): SchedulerQueueEntry {
 	const taskId = overrides.taskId ?? "task_a";
 	return {
 		schemaVersion: 1,
@@ -56,7 +56,7 @@ function queued(overrides: Partial<SchedulerQueueEntryV1> = {}): SchedulerQueueE
 	};
 }
 
-function transfer(overrides: Partial<SchedulerOwnershipTransferV1> = {}): SchedulerOwnershipTransferV1 {
+function transfer(overrides: Partial<SchedulerOwnershipTransfer> = {}): SchedulerOwnershipTransfer {
 	return {
 		schemaVersion: 1,
 		transferId: "transfer_a",
@@ -161,8 +161,8 @@ async function baseHarness(
 
 function queueFacade(
 	queue: SchedulerQueueStore,
-	snapshot: SchedulerDeadlockQueueV1["snapshot"],
-): SchedulerDeadlockQueueV1 {
+	snapshot: SchedulerDeadlockQueue["snapshot"],
+): SchedulerDeadlockQueue {
 	return {
 		snapshot,
 		enqueue: (candidate, options) => queue.enqueue(candidate, options),
@@ -171,7 +171,7 @@ function queueFacade(
 
 async function enqueueClaimed(
 	queue: SchedulerQueueStore,
-	entry: SchedulerQueueEntryV1,
+	entry: SchedulerQueueEntry,
 	ownerId: string,
 	claimId: string,
 	fencingToken: string,
@@ -821,9 +821,9 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			priority: 0,
 			enqueuedAt: T0,
 		});
-		expect(schedulerEffectivePriorityV1(fresh, T1)).toBe(5);
-		expect(schedulerEffectivePriorityV1(aged, T1)).toBe(10);
-		const ordered = schedulerOrderQueuedWorkV1([fresh, aged], T1);
+		expect(schedulerEffectivePriority(fresh, T1)).toBe(5);
+		expect(schedulerEffectivePriority(aged, T1)).toBe(10);
+		const ordered = schedulerOrderQueuedWork([fresh, aged], T1);
 		expect(ordered.map((entry) => entry.queueEntryId)).toEqual(["queue_aged", "queue_fresh"]);
 		const harness = await baseHarness({ clock: clock(T1), maxQueueDepth: 8 });
 		harness.graph.create({
@@ -1085,7 +1085,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			now: frozen.now,
 		});
 		let snapshotCalls = 0;
-		const hanging: SchedulerDeadlockQueueV1 = queueFacade(queue, () => {
+		const hanging: SchedulerDeadlockQueue = queueFacade(queue, () => {
 			snapshotCalls += 1;
 			return new Promise(() => {});
 		});

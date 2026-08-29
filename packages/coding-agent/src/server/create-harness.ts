@@ -42,8 +42,8 @@ import { editToolSystemPromptContribution } from "../core/tools/edit.ts";
 import { readToolSystemPromptContribution } from "../core/tools/read.ts";
 import { writeToolSystemPromptContribution } from "../core/tools/write.ts";
 import {
-	createTrustedSubagentCompositionV1,
-	type TrustedSubagentCompositionOptionsV1,
+	createTrustedSubagentComposition,
+	type TrustedSubagentCompositionOptions,
 } from "../core/subagent-composition.ts";
 
 export interface CodingAgentHarnessTool extends HarnessTool {
@@ -221,7 +221,7 @@ interface InternalCreateCodingAgentHarnessOptions extends CreateCodingAgentHarne
 		readonly onOperationPayload?: (operationId: string, payload: FoundationJsonValue) => void;
 	};
 	/** Package-private test bridge; product paths use runtimeComposition. */
-	subagents?: TrustedSubagentCompositionOptionsV1;
+	subagents?: TrustedSubagentCompositionOptions;
 }
 
 export interface BuildCodingAgentHarnessSystemPromptOptions {
@@ -363,7 +363,7 @@ async function createCodingAgentHarnessInternal(options: InternalCreateCodingAge
 	});
 	if (runtimeCompositionFactory !== undefined) {
 		const runtimeComposition = materializeRuntimeComposition(runtimeCompositionFactory);
-		const subagentComposition = createTrustedSubagentCompositionV1(runtimeComposition.subagents);
+		const subagentComposition = createTrustedSubagentComposition(runtimeComposition.subagents);
 		if (runtimeComposition.toolGateway === undefined) {
 			return {
 				...created,
@@ -382,7 +382,7 @@ async function createCodingAgentHarnessInternal(options: InternalCreateCodingAge
 		await created.harness.close();
 		throw new FoundationError("subagent_spawn_invalid", "Trusted subagent composition must use the Harness Session");
 	}
-	const subagentComposition = createTrustedSubagentCompositionV1(subagents);
+	const subagentComposition = createTrustedSubagentComposition(subagents);
 	if (workerSandbox === undefined) {
 		const runtimeComposition = materializeRuntimeComposition(
 			createAgentRuntimeCompositionFactoryFromTrustedProviders({

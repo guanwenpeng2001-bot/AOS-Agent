@@ -28,44 +28,44 @@ import { contentText, type Api, type Model, type Models } from "@aos-agent/ai";
 import { attachJsonlLineReader, createJsonlLineWriter } from "./modes/rpc/jsonl.ts";
 import {
 	CHILD_AGENT_PROTOCOL_MAX_FRAME_BYTES,
-	ChildAgentProtocolSessionV1,
-	parseChildAgentFrameV1,
-	serializeChildAgentFrameLineV1,
-	type ChildAgentCancelRequestV1,
-	type ChildAgentEventFrameV1,
-	type ChildAgentInitializeRequestV1,
-	type ChildAgentTurnCompletedEventV1,
-	type ChildAgentTurnRequestV1,
+	ChildAgentProtocolSession,
+	parseChildAgentFrame,
+	serializeChildAgentFrameLine,
+	type ChildAgentCancelRequest,
+	type ChildAgentEventFrame,
+	type ChildAgentInitializeRequest,
+	type ChildAgentTurnCompletedEvent,
+	type ChildAgentTurnRequest,
 } from "./core/subagent-fork-protocol.ts";
 
-export interface ChildAgentTurnResultV1 {
+export interface ChildAgentTurnResult {
 	readonly receipt: AttemptReceipt;
 	readonly usage: BudgetUsage;
-	readonly stopReason: ChildAgentTurnCompletedEventV1["stopReason"];
+	readonly stopReason: ChildAgentTurnCompletedEvent["stopReason"];
 	readonly output?: string;
 }
 
-export interface ChildAgentEntryRuntimeV1 {
-	initialize(frame: ChildAgentInitializeRequestV1): Promise<ResultValue<void, FoundationError>>;
+export interface ChildAgentEntryRuntime {
+	initialize(frame: ChildAgentInitializeRequest): Promise<ResultValue<void, FoundationError>>;
 	turn(
-		frame: ChildAgentTurnRequestV1,
+		frame: ChildAgentTurnRequest,
 		signal: AbortSignal,
-	): Promise<ResultValue<ChildAgentTurnResultV1, FoundationError>>;
-	cancel(frame: ChildAgentCancelRequestV1): Promise<ResultValue<void, FoundationError>>;
+	): Promise<ResultValue<ChildAgentTurnResult, FoundationError>>;
+	cancel(frame: ChildAgentCancelRequest): Promise<ResultValue<void, FoundationError>>;
 	close(): Promise<void>;
 }
 
-export interface ChildAgentEntryOptionsV1 {
-	readonly runtime: ChildAgentEntryRuntimeV1;
+export interface ChildAgentEntryOptions {
+	readonly runtime: ChildAgentEntryRuntime;
 	readonly input?: Readable;
 	readonly output?: Writable;
 	readonly diagnostic?: Writable;
 	readonly now?: () => string;
 }
 
-export interface ChildAgentHarnessRuntimeAuthorityV1 {
+export interface ChildAgentHarnessRuntimeAuthority {
 	readonly models: Models;
-	readonly resolveModel: (selection: ChildAgentInitializeRequestV1["model"]) =>
+	readonly resolveModel: (selection: ChildAgentInitializeRequest["model"]) =>
 		ResultValue<Model<Api>, FoundationError> | Promise<ResultValue<Model<Api>, FoundationError>>;
 	readonly streamFunction: NonNullable<AgentHarnessOptions["streamFunction"]>;
 	readonly tools?: AgentHarnessOptions["tools"];
@@ -90,17 +90,17 @@ interface ToolExecutionEvidenceV1 {
 }
 
 /** AgentHarness runtime backed by a process-composed provider/model authority. */
-export class AgentHarnessChildAgentEntryRuntimeV1 implements ChildAgentEntryRuntimeV1 {
-	private initialized: ChildAgentInitializeRequestV1 | undefined;
+export class AgentHarnessChildAgentEntryRuntime implements ChildAgentEntryRuntime {
+	private initialized: ChildAgentInitializeRequest | undefined;
 	private harness: AgentHarnessType | undefined;
 	private activeUsage: ExactTurnUsageV1 | undefined;
-	private readonly authority: ChildAgentHarnessRuntimeAuthorityV1;
+	private readonly authority: ChildAgentHarnessRuntimeAuthority;
 
-	constructor(authority: ChildAgentHarnessRuntimeAuthorityV1) {
+	constructor(authority: ChildAgentHarnessRuntimeAuthority) {
 		this.authority = authority;
 	}
 
-	async initialize(frame: ChildAgentInitializeRequestV1): Promise<ResultValue<void, FoundationError>> {
+	async initialize(frame: ChildAgentInitializeRequest): Promise<ResultValue<void, FoundationError>> {
 		if (this.harness !== undefined) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent runtime is already initialized"));
 		}
@@ -188,9 +188,9 @@ export class AgentHarnessChildAgentEntryRuntimeV1 implements ChildAgentEntryRunt
 	}
 
 	async turn(
-		_frame: ChildAgentTurnRequestV1,
+		_frame: ChildAgentTurnRequest,
 		signal: AbortSignal,
-	): Promise<ResultValue<ChildAgentTurnResultV1, FoundationError>> {
+	): Promise<ResultValue<ChildAgentTurnResult, FoundationError>> {
 		const initialized = this.initialized;
 		const harness = this.harness;
 		if (initialized === undefined || harness === undefined) {
@@ -265,7 +265,7 @@ export class AgentHarnessChildAgentEntryRuntimeV1 implements ChildAgentEntryRunt
 				toolCalls: exactUsage.toolCalls,
 			};
 			const attemptReceiptId = `attempt-receipt:${initialized.attemptId}`;
-			const stopReason: ChildAgentTurnCompletedEventV1["stopReason"] = status === "failed"
+			const stopReason: ChildAgentTurnCompletedEvent["stopReason"] = status === "failed"
 				? "error"
 				: status === "cancelled"
 					? "aborted"
@@ -308,7 +308,7 @@ export class AgentHarnessChildAgentEntryRuntimeV1 implements ChildAgentEntryRunt
 		}
 	}
 
-	async cancel(_frame: ChildAgentCancelRequestV1): Promise<ResultValue<void, FoundationError>> {
+	async cancel(_frame: ChildAgentCancelRequest): Promise<ResultValue<void, FoundationError>> {
 		if (this.harness === undefined) {
 			return Result.err(new FoundationError("subagent_cancel_failed", "Child Agent harness is not initialized"));
 		}
@@ -330,15 +330,15 @@ interface ActiveTurnV1 {
 	readonly attemptId: string;
 }
 
-export function runChildAgentEntryV1(options: ChildAgentEntryOptionsV1): Promise<void> {
+export function runChildAgentProcess(options: ChildAgentEntryOptions): Promise<void> {
 	const input = options.input ?? stdin;
 	const output = options.output ?? stdout;
 	const diagnostic = options.diagnostic ?? stderr;
 	const now = options.now ?? (() => new Date().toISOString());
-	const writer = createJsonlLineWriter<ChildAgentEventFrameV1>(output, {
+	const writer = createJsonlLineWriter<ChildAgentEventFrame>(output, {
 		maxFrameBytes: CHILD_AGENT_PROTOCOL_MAX_FRAME_BYTES,
 	});
-	const protocol = new ChildAgentProtocolSessionV1();
+	const protocol = new ChildAgentProtocolSession();
 	const runtime = options.runtime;
 	let detachInput = (): void => undefined;
 	let inputTail = Promise.resolve();
@@ -360,9 +360,9 @@ export function runChildAgentEntryV1(options: ChildAgentEntryOptionsV1): Promise
 		}
 	};
 
-	const emit = (frame: ChildAgentEventFrameV1): void => {
+	const emit = (frame: ChildAgentEventFrame): void => {
 		try {
-			writer.writeLine(serializeChildAgentFrameLineV1(frame));
+			writer.writeLine(serializeChildAgentFrameLine(frame));
 		} catch {
 			protocol.markLost();
 			writeDiagnostic("child-agent protocol emit failed\n");
@@ -404,7 +404,7 @@ export function runChildAgentEntryV1(options: ChildAgentEntryOptionsV1): Promise
 		protocol.state.phase === "lost" ||
 		protocol.state.disconnected;
 
-	const emitChild = (frame: ChildAgentEventFrameV1): boolean => {
+	const emitChild = (frame: ChildAgentEventFrame): boolean => {
 		if (sessionIsTerminal() && frame.type !== "closed") return false;
 		const applied = protocol.receiveChildFrame(frame);
 		if (!applied.ok) {
@@ -422,7 +422,7 @@ export function runChildAgentEntryV1(options: ChildAgentEntryOptionsV1): Promise
 
 	const handleLine = async (line: string): Promise<void> => {
 		if (settled) return;
-		const parsed = parseChildAgentFrameV1(line);
+		const parsed = parseChildAgentFrame(line);
 		if (!parsed.ok) {
 			failLost(protocol.state.spawnId ?? "unknown");
 			return;
@@ -485,7 +485,7 @@ export function runChildAgentEntryV1(options: ChildAgentEntryOptionsV1): Promise
 				failLost(frame.spawnId, frame.requestId);
 				return;
 			}
-			const stopReason: ChildAgentTurnCompletedEventV1["stopReason"] = turned.value.receipt.status === "failed"
+			const stopReason: ChildAgentTurnCompletedEvent["stopReason"] = turned.value.receipt.status === "failed"
 				? "error"
 				: turned.value.receipt.status === "cancelled"
 					? "aborted"
@@ -530,7 +530,7 @@ export function runChildAgentEntryV1(options: ChildAgentEntryOptionsV1): Promise
 	detachInput = attachJsonlLineReader(
 		input,
 		(line) => {
-			const parsed = parseChildAgentFrameV1(line);
+			const parsed = parseChildAgentFrame(line);
 			if (parsed.ok && (parsed.value.type === "cancel" || parsed.value.type === "close")) {
 				controlTail = controlTail.then(
 					() => handleLine(line),
@@ -557,4 +557,4 @@ export function runChildAgentEntryV1(options: ChildAgentEntryOptionsV1): Promise
 	return run;
 }
 
-export const runChildAgentEntry = runChildAgentEntryV1;
+export const runChildAgentEntry = runChildAgentProcess;

@@ -8,15 +8,15 @@ import { describe, expect, it } from "vitest";
 import {
 	ConnectorRetryCircuit,
 	DEFAULT_CONNECTOR_RETRY_POLICY,
-	type ConnectorRetryFailureInputV1,
-	type ConnectorRetryPolicyV1,
+	type ConnectorRetryFailureInput,
+	type ConnectorRetryPolicy,
 } from "../src/core/connector-retry-circuit.ts";
 import { withRuntimeClock } from "../src/core/runtime-clock.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 const START_MS = Date.parse("2026-08-28T00:00:00.000Z");
 
-function policy(overrides: Partial<ConnectorRetryPolicyV1> = {}): ConnectorRetryPolicyV1 {
+function policy(overrides: Partial<ConnectorRetryPolicy> = {}): ConnectorRetryPolicy {
 	return { ...DEFAULT_CONNECTOR_RETRY_POLICY, ...overrides };
 }
 
@@ -29,8 +29,8 @@ function retryableError(
 
 function retryInput(
 	operationId: string,
-	overrides: Partial<ConnectorRetryFailureInputV1> = {},
-): ConnectorRetryFailureInputV1 {
+	overrides: Partial<ConnectorRetryFailureInput> = {},
+): ConnectorRetryFailureInput {
 	return {
 		operationId,
 		targetId: "connector_target_a",
@@ -42,7 +42,7 @@ function retryInput(
 	};
 }
 
-function createHarness(retryPolicy: ConnectorRetryPolicyV1 = policy()) {
+function createHarness(retryPolicy: ConnectorRetryPolicy = policy()) {
 	const clock = new DeterministicClock({ wallTimeMs: START_MS, monotonicTimeMs: 0 });
 	const session = new Session(new InMemorySessionStorage({ id: "session_connector_retry", createdAt: 1 }));
 	const ledger = new SessionLedger(session, { ownerId: "connector_retry_owner" });
@@ -60,7 +60,7 @@ describe("durable connector retry eligibility", () => {
 		const harness = createHarness();
 		const cases: readonly {
 			readonly operationId: string;
-			readonly overrides: Partial<ConnectorRetryFailureInputV1>;
+			readonly overrides: Partial<ConnectorRetryFailureInput>;
 			readonly reason: string;
 		}[] = [
 			{

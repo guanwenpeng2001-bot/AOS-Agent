@@ -16,7 +16,7 @@ import {
 } from "../src/core/connector-runtime-status.ts";
 import {
 	DEFAULT_CONNECTOR_RETRY_POLICY,
-	type ConnectorCircuitFactV1,
+	type ConnectorCircuitFact,
 } from "../src/core/connector-retry-circuit.ts";
 import {
 	createDescriptorExternalConnectorActivationSource,
@@ -68,7 +68,7 @@ function readiness(
 function circuit(
 	state: "closed" | "open" | "half_open",
 	targetId = TARGET_ID,
-): ConnectorCircuitFactV1 {
+): ConnectorCircuitFact {
 	const common = {
 		schemaVersion: 1 as const,
 		targetId,

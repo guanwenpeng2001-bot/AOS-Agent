@@ -32,10 +32,10 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
 import {
-	createSchedulerExecutorRuntimeSnapshotV1,
+	createSchedulerExecutorRuntimeSnapshot,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SchedulerExecutorRegistry,
-	schedulerBindingRequirementDigestV1,
+	schedulerBindingRequirementDigest,
 } from "../src/core/scheduler-executors.ts";
 import { SchedulerDispatchController } from "../src/core/scheduler-dispatch.ts";
 import { SchedulerFanInController } from "../src/core/scheduler-fan-in.ts";
@@ -44,10 +44,10 @@ import { SchedulerMessageOrchestrator } from "../src/core/scheduler-messages.ts"
 import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import {
 	CONNECTOR_RETRY_DECISION_OBJECT_TYPE,
-	type ConnectorRetryPolicyV1,
+	type ConnectorRetryPolicy,
 } from "../src/core/connector-retry-circuit.ts";
 import { withRuntimeClock, type RuntimeClock } from "../src/core/runtime-clock.ts";
-import { SchedulerHost, type SchedulerWakeV1 } from "../src/core/scheduler.ts";
+import { SchedulerHost, type SchedulerWake } from "../src/core/scheduler.ts";
 import {
 	SCHEDULER_WORKFLOW_ATTEMPT_OBJECT_TYPE,
 	SCHEDULER_WORKFLOW_COMPENSATION_OBJECT_TYPE,
@@ -55,10 +55,10 @@ import {
 	SCHEDULER_WORKFLOW_POLICY_OBJECT_TYPE,
 	SCHEDULER_WORKFLOW_WAKE_OBJECT_TYPE,
 	SchedulerWorkflowController,
-	type SchedulerWorkflowCompensationFactV1,
-	type SchedulerWorkflowCompensationPolicyV1,
-	type SchedulerWorkflowConnectorRetryOptionsV1,
-	type SchedulerWorkflowPolicyFactV1,
+	type SchedulerWorkflowCompensationFact,
+	type SchedulerWorkflowCompensationPolicy,
+	type SchedulerWorkflowConnectorRetryOptions,
+	type SchedulerWorkflowPolicyFact,
 	schedulerWorkflowExternalIds,
 } from "../src/core/scheduler-workflow.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -241,10 +241,10 @@ function bindingFor(task: TaskEnvelope): AgentBinding {
 }
 
 function runtimeSnapshot(providerId: string, binding: AgentBinding) {
-	const bindingDigest = schedulerBindingRequirementDigestV1(binding);
+	const bindingDigest = schedulerBindingRequirementDigest(binding);
 	if (!bindingDigest.ok) throw bindingDigest.error;
 	if (binding.policyRevision.fingerprint === undefined) throw new Error("policy fingerprint missing");
-	const snapshot = createSchedulerExecutorRuntimeSnapshotV1({
+	const snapshot = createSchedulerExecutorRuntimeSnapshot({
 		schemaVersion: 1,
 		capabilitySnapshot: createConnectorCapabilitySnapshot({
 			schemaVersion: 1,
@@ -486,11 +486,11 @@ function graphStore(manager: SessionManager, runs: RunLifecycleCoordinator, now:
 async function createHarness(
 	options: {
 		readonly enabled?: boolean;
-		readonly compensationPolicy?: SchedulerWorkflowCompensationPolicyV1;
+		readonly compensationPolicy?: SchedulerWorkflowCompensationPolicy;
 		readonly maxAttempts?: number;
 		readonly executorOwnerId?: string;
 		readonly providerClass?: "task_executor" | "external_connector";
-		readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
+		readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptions;
 		readonly clock?: RuntimeClock;
 		readonly durableSelections?: boolean;
 	} = {},
@@ -579,9 +579,9 @@ async function createHarness(
 async function reopenController(
 	harness: WorkflowHarness,
 	options: {
-		readonly compensationPolicy?: SchedulerWorkflowCompensationPolicyV1;
+		readonly compensationPolicy?: SchedulerWorkflowCompensationPolicy;
 		readonly maxAttempts?: number;
-		readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
+		readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptions;
 		readonly clock?: RuntimeClock;
 	} = {},
 ): Promise<SchedulerWorkflowController> {
@@ -1040,7 +1040,7 @@ describe("scheduler T7 production Workflow controller", () => {
 			clientRequestId: "pause_wake",
 			expectedRevision: workflow.revision,
 		});
-		const wake: SchedulerWakeV1 = {
+		const wake: SchedulerWake = {
 			schemaVersion: 1,
 			wakeId: "wake_due",
 			workflowId: workflow.workflowId,
@@ -1071,7 +1071,7 @@ describe("scheduler T7 production Workflow controller", () => {
 		const again = await reloaded.tick();
 		expect(again.wakesFired).toBe(0);
 		harness.setNow(T2);
-		const overdueWake: SchedulerWakeV1 = {
+		const overdueWake: SchedulerWake = {
 			schemaVersion: 1,
 			wakeId: "wake_overdue",
 			workflowId: (await reloaded.store.get(workflow.workflowId)).workflowId,
@@ -1128,7 +1128,7 @@ describe("scheduler T7 production Workflow controller", () => {
 
 	it("delays eligible connector retry across ticks and replays the durable deadline after restart", async () => {
 		const clock = new DeterministicClock({ wallTimeMs: Date.parse(T0), monotonicTimeMs: 0 });
-		const retryPolicy: ConnectorRetryPolicyV1 = {
+		const retryPolicy: ConnectorRetryPolicy = {
 			maxAttempts: 3,
 			baseDelayMs: 100,
 			maxDelayMs: 100,
@@ -1138,7 +1138,7 @@ describe("scheduler T7 production Workflow controller", () => {
 			openDurationMs: 100,
 			halfOpenProbeTimeoutMs: 100,
 		};
-		const connectorRetry: SchedulerWorkflowConnectorRetryOptionsV1 = {
+		const connectorRetry: SchedulerWorkflowConnectorRetryOptions = {
 			providerId: "external_connector_scheduler_workflow",
 			targetId: "external_connector_scheduler_workflow",
 			guarantee: "idempotent",
@@ -1423,7 +1423,7 @@ describe("scheduler T7 production Workflow controller", () => {
 				nodeId: "compensate_tool1_r2",
 				state: "scheduled",
 				scheduledAt: T0,
-			} satisfies SchedulerWorkflowCompensationFactV1,
+			} satisfies SchedulerWorkflowCompensationFact,
 			{
 				clientRequestId: "seed-compensation-missing",
 				expectedRevision: 0,
@@ -1467,7 +1467,7 @@ describe("scheduler T7 production Workflow controller", () => {
 				workflowId: workflow.workflowId,
 				policy: "bounded_retry",
 				maxAttempts: 2,
-			} satisfies SchedulerWorkflowPolicyFactV1,
+			} satisfies SchedulerWorkflowPolicyFact,
 			{
 				clientRequestId: "seed-policy-bounded",
 				expectedRevision: 0,

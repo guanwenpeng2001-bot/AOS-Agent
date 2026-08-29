@@ -40,15 +40,15 @@ export const ChildWorktreeRecordV1Schema = Type.Object(
 	{ additionalProperties: false },
 );
 
-export type ChildWorktreeRecordV1 = Static<typeof ChildWorktreeRecordV1Schema>;
+export type ChildWorktreeRecord = Static<typeof ChildWorktreeRecordV1Schema>;
 
-export interface ChildWorktreeIdentityV1 {
+export interface ChildWorktreeIdentity {
 	readonly schemaVersion: 1;
 	readonly childAgentInstanceId: string;
 	readonly attemptId: string;
 }
 
-export type OwnedWorktreeStateV1 =
+export type OwnedWorktreeState =
 	| {
 			readonly schemaVersion: 1;
 			readonly childAgentInstanceId: string;
@@ -67,20 +67,20 @@ export type OwnedWorktreeStateV1 =
 	  };
 
 export interface WorktreeAdapter {
-	createWorktree(identity: ChildWorktreeIdentityV1, baseRef: string): Promise<ResultValue<void, FoundationError>>;
-	resolveOwnedWorktree(identity: ChildWorktreeIdentityV1): Promise<ResultValue<OwnedWorktreeStateV1, FoundationError>>;
+	createWorktree(identity: ChildWorktreeIdentity, baseRef: string): Promise<ResultValue<void, FoundationError>>;
+	resolveOwnedWorktree(identity: ChildWorktreeIdentity): Promise<ResultValue<OwnedWorktreeState, FoundationError>>;
 	applyWorktree(
-		identity: ChildWorktreeIdentityV1,
-		expected: Extract<OwnedWorktreeStateV1, { readonly state: "present" }>,
+		identity: ChildWorktreeIdentity,
+		expected: Extract<OwnedWorktreeState, { readonly state: "present" }>,
 	): Promise<ResultValue<{ readonly status: "applied" | "conflict" | "unknown" }, FoundationError>>;
 	deleteWorktree(
-		identity: ChildWorktreeIdentityV1,
-		expected: Extract<OwnedWorktreeStateV1, { readonly state: "present" }>,
+		identity: ChildWorktreeIdentity,
+		expected: Extract<OwnedWorktreeState, { readonly state: "present" }>,
 	): Promise<ResultValue<void, FoundationError>>;
-	quarantineWorktree(identity: ChildWorktreeIdentityV1): Promise<ResultValue<void, FoundationError>>;
+	quarantineWorktree(identity: ChildWorktreeIdentity): Promise<ResultValue<void, FoundationError>>;
 }
 
-export interface ChildWorktreeHostV1 {
+export interface ChildWorktreeHost {
 	readonly adapter: WorktreeAdapter;
 	readonly ledger: SessionLedger;
 	readonly sessionId: string;
@@ -89,7 +89,7 @@ export interface ChildWorktreeHostV1 {
 }
 
 interface DurableWorktreeRecordV1 {
-	readonly record: ChildWorktreeRecordV1;
+	readonly record: ChildWorktreeRecord;
 	readonly revision: number;
 }
 
@@ -109,13 +109,13 @@ function validBaseRef(value: string): boolean {
 	return BASE_REF_PATTERN.test(value) && !value.includes("..");
 }
 
-function identity(childAgentInstanceId: string, attemptId: string): ResultValue<ChildWorktreeIdentityV1, FoundationError> {
+function identity(childAgentInstanceId: string, attemptId: string): ResultValue<ChildWorktreeIdentity, FoundationError> {
 	return validIdentity(childAgentInstanceId) && validIdentity(attemptId)
 		? Result.ok(cloneDeepFrozen({ schemaVersion: 1 as const, childAgentInstanceId, attemptId }))
 		: conflict("Child worktree identity is invalid");
 }
 
-function objectId(value: ChildWorktreeIdentityV1): string {
+function objectId(value: ChildWorktreeIdentity): string {
 	return fingerprintFoundationValue({
 		schemaVersion: 1,
 		childAgentInstanceId: value.childAgentInstanceId,
@@ -134,7 +134,7 @@ function timestamp(now: () => number): ResultValue<string, FoundationError> {
 	}
 }
 
-function validateOwnedState(value: unknown, expected: ChildWorktreeIdentityV1): ResultValue<OwnedWorktreeStateV1, FoundationError> {
+function validateOwnedState(value: unknown, expected: ChildWorktreeIdentity): ResultValue<OwnedWorktreeState, FoundationError> {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return conflict("Host adapter returned an invalid owned-worktree state");
 	const state = value as Record<string, unknown>;
 	const exactIdentity =
@@ -146,7 +146,7 @@ function validateOwnedState(value: unknown, expected: ChildWorktreeIdentityV1): 
 	}
 	if (state.state === "missing" || state.state === "quarantined") {
 		return Object.keys(state).every((key) => ["schemaVersion", "childAgentInstanceId", "attemptId", "state"].includes(key))
-			? Result.ok(cloneDeepFrozen(state as unknown as OwnedWorktreeStateV1))
+			? Result.ok(cloneDeepFrozen(state as unknown as OwnedWorktreeState))
 			: conflict("Host adapter returned an inexact terminal owned-worktree state");
 	}
 	if (
@@ -160,10 +160,10 @@ function validateOwnedState(value: unknown, expected: ChildWorktreeIdentityV1): 
 		typeof state.currentDigest !== "string" ||
 		!DIGEST_PATTERN.test(state.currentDigest)
 	) return conflict("Host adapter did not prove the owned worktree base, target, and current digests");
-	return Result.ok(cloneDeepFrozen(state as unknown as OwnedWorktreeStateV1));
+	return Result.ok(cloneDeepFrozen(state as unknown as OwnedWorktreeState));
 }
 
-function worktreeFingerprint(state: Extract<OwnedWorktreeStateV1, { readonly state: "present" }>) {
+function worktreeFingerprint(state: Extract<OwnedWorktreeState, { readonly state: "present" }>) {
 	return fingerprintFoundationValue({
 		schemaVersion: 1,
 		childAgentInstanceId: state.childAgentInstanceId,
@@ -174,8 +174,8 @@ function worktreeFingerprint(state: Extract<OwnedWorktreeStateV1, { readonly sta
 	});
 }
 
-function validateRecord(value: unknown): ResultValue<ChildWorktreeRecordV1, FoundationError> {
-	const checked = validateExactShape<ChildWorktreeRecordV1>(ChildWorktreeRecordV1Schema, value, "child_worktree_record");
+function validateRecord(value: unknown): ResultValue<ChildWorktreeRecord, FoundationError> {
+	const checked = validateExactShape<ChildWorktreeRecord>(ChildWorktreeRecordV1Schema, value, "child_worktree_record");
 	if (!checked.ok || !validIdentity(checked.ok ? checked.value.childAgentInstanceId : "") || !validIdentity(checked.ok ? checked.value.attemptId : "") || !validBaseRef(checked.ok ? checked.value.baseRef : "")) {
 		return conflict("Child worktree record has an invalid exact shape or identity", checked.ok ? undefined : checked.error);
 	}
@@ -189,7 +189,7 @@ function validateRecord(value: unknown): ResultValue<ChildWorktreeRecordV1, Foun
 	return Result.ok(cloneDeepFrozen(checked.value));
 }
 
-function eventPayload(record: ChildWorktreeRecordV1): FoundationJsonValue {
+function eventPayload(record: ChildWorktreeRecord): FoundationJsonValue {
 	return {
 		schemaVersion: 1,
 		childAgentInstanceId: record.childAgentInstanceId,
@@ -201,7 +201,7 @@ function eventPayload(record: ChildWorktreeRecordV1): FoundationJsonValue {
 	};
 }
 
-function recordFromEventPayload(value: unknown): ResultValue<ChildWorktreeRecordV1, FoundationError> {
+function recordFromEventPayload(value: unknown): ResultValue<ChildWorktreeRecord, FoundationError> {
 	if (!validateEventPayloadForCategory("subagent.worktree_recorded", value) || value === null || typeof value !== "object" || Array.isArray(value)) {
 		return conflict("Durable child worktree event is invalid");
 	}
@@ -220,8 +220,8 @@ function recordFromEventPayload(value: unknown): ResultValue<ChildWorktreeRecord
 }
 
 async function readDurableRecord(
-	host: ChildWorktreeHostV1,
-	value: ChildWorktreeIdentityV1,
+	host: ChildWorktreeHost,
+	value: ChildWorktreeIdentity,
 ): Promise<ResultValue<DurableWorktreeRecordV1 | undefined, FoundationError>> {
 	try {
 		const stored = await host.ledger.get(WORKTREE_OBJECT_TYPE, objectId(value));
@@ -250,10 +250,10 @@ async function readDurableRecord(
 }
 
 async function persistRecord(
-	host: ChildWorktreeHostV1,
-	record: ChildWorktreeRecordV1,
+	host: ChildWorktreeHost,
+	record: ChildWorktreeRecord,
 	expectedRevision: number,
-): Promise<ResultValue<ChildWorktreeRecordV1, FoundationError>> {
+): Promise<ResultValue<ChildWorktreeRecord, FoundationError>> {
 	const payload = eventPayload(record);
 	if (!validateEventPayloadForCategory("subagent.worktree_recorded", payload)) return conflict("Child worktree durable event projection is invalid");
 	try {
@@ -282,8 +282,8 @@ async function persistRecord(
 }
 
 async function persistQuarantineFact(
-	host: ChildWorktreeHostV1,
-	value: ChildWorktreeIdentityV1,
+	host: ChildWorktreeHost,
+	value: ChildWorktreeIdentity,
 	reason: "create_digest_unknown" | "apply_unknown" | "cleanup_unknown",
 ): Promise<ResultValue<void, FoundationError>> {
 	const quarantineObjectId = `${objectId(value)}:${reason}`;
@@ -349,8 +349,8 @@ async function persistQuarantineFact(
 }
 
 async function quarantine(
-	host: ChildWorktreeHostV1,
-	value: ChildWorktreeIdentityV1,
+	host: ChildWorktreeHost,
+	value: ChildWorktreeIdentity,
 	reason: "create_digest_unknown" | "apply_unknown" | "cleanup_unknown",
 ): Promise<ResultValue<void, FoundationError>> {
 	let quarantined: Awaited<ReturnType<WorktreeAdapter["quarantineWorktree"]>>;
@@ -364,10 +364,10 @@ async function quarantine(
 }
 
 async function resolvePresent(
-	host: ChildWorktreeHostV1,
-	value: ChildWorktreeIdentityV1,
-	record: ChildWorktreeRecordV1,
-): Promise<ResultValue<Extract<OwnedWorktreeStateV1, { readonly state: "present" }>, FoundationError>> {
+	host: ChildWorktreeHost,
+	value: ChildWorktreeIdentity,
+	record: ChildWorktreeRecord,
+): Promise<ResultValue<Extract<OwnedWorktreeState, { readonly state: "present" }>, FoundationError>> {
 	let resolved: Awaited<ReturnType<WorktreeAdapter["resolveOwnedWorktree"]>>;
 	try {
 		resolved = await host.adapter.resolveOwnedWorktree(value);
@@ -386,7 +386,7 @@ async function resolvePresent(
 }
 
 async function requireCanonicalRecord(
-	host: ChildWorktreeHostV1,
+	host: ChildWorktreeHost,
 	value: unknown,
 ): Promise<ResultValue<DurableWorktreeRecordV1, FoundationError>> {
 	const supplied = validateRecord(value);
@@ -401,12 +401,12 @@ async function requireCanonicalRecord(
 	return Result.ok(durable.value);
 }
 
-export async function createChildWorktreeV1(
-	host: ChildWorktreeHostV1,
+export async function createChildWorktree(
+	host: ChildWorktreeHost,
 	childAgentInstanceId: string,
 	attemptId: string,
 	baseRef: string,
-): Promise<ResultValue<ChildWorktreeRecordV1, FoundationError>> {
+): Promise<ResultValue<ChildWorktreeRecord, FoundationError>> {
 	const ownedIdentity = identity(childAgentInstanceId, attemptId);
 	if (!ownedIdentity.ok) return ownedIdentity;
 	if (!validBaseRef(baseRef)) return conflict("Child worktree baseRef is invalid");
@@ -455,21 +455,21 @@ export async function createChildWorktreeV1(
 }
 
 /** Trusted Host recovery of the path-free durable worktree lifecycle record. */
-export async function readChildWorktreeRecordV1(
-	host: ChildWorktreeHostV1,
+export async function readChildWorktreeRecord(
+	host: ChildWorktreeHost,
 	childAgentInstanceId: string,
 	attemptId: string,
-): Promise<ResultValue<ChildWorktreeRecordV1 | undefined, FoundationError>> {
+): Promise<ResultValue<ChildWorktreeRecord | undefined, FoundationError>> {
 	const ownedIdentity = identity(childAgentInstanceId, attemptId);
 	if (!ownedIdentity.ok) return ownedIdentity;
 	const durable = await readDurableRecord(host, ownedIdentity.value);
 	return durable.ok ? Result.ok(durable.value?.record) : durable;
 }
 
-export async function applyChildWorktreeV1(
-	host: ChildWorktreeHostV1,
+export async function applyChildWorktree(
+	host: ChildWorktreeHost,
 	recordValue: unknown,
-): Promise<ResultValue<ChildWorktreeRecordV1, FoundationError>> {
+): Promise<ResultValue<ChildWorktreeRecord, FoundationError>> {
 	const at = timestamp(host.now ?? Date.now);
 	if (!at.ok) return at;
 	const durable = await requireCanonicalRecord(host, recordValue);
@@ -501,10 +501,10 @@ export async function applyChildWorktreeV1(
 	return quarantined.ok ? conflict("Child worktree apply state is unknown and was quarantined", applied.ok ? undefined : applied.error) : quarantined;
 }
 
-export async function cleanupChildWorktreeV1(
-	host: ChildWorktreeHostV1,
+export async function cleanupChildWorktree(
+	host: ChildWorktreeHost,
 	recordValue: unknown,
-): Promise<ResultValue<ChildWorktreeRecordV1, FoundationError>> {
+): Promise<ResultValue<ChildWorktreeRecord, FoundationError>> {
 	const durable = await requireCanonicalRecord(host, recordValue);
 	if (!durable.ok) return durable;
 	const ownedIdentity = identity(durable.value.record.childAgentInstanceId, durable.value.record.attemptId);

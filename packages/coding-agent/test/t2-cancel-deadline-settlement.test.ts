@@ -14,7 +14,7 @@ import {
 } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";
 import { describe, expect, it } from "vitest";
-import { ProductPromptIngressV1 } from "../src/core/product-prompt-ingress.ts";
+import { ProductPromptIngress } from "../src/core/product-prompt-ingress.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const MODEL = getModel("openai", "gpt-4o-mini");
@@ -76,7 +76,7 @@ async function createFixture(mode: "pending" | "error") {
 		const created = await AgentHarness.create({ session, models, model: MODEL, drive: "automatic", streamFunction });
 		return {
 			harness: created.harness,
-			ingress: new ProductPromptIngressV1({
+			ingress: new ProductPromptIngress({
 				session,
 				harness: created.harness,
 				models,

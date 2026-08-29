@@ -34,77 +34,77 @@ import {
 	validateDispatch,
 } from "@aos-agent/agent-core";
 import {
-	SubagentContextIngressV1,
-	renderSubagentNextTurnContextV1,
-	type SafeSubagentNextTurnContextV1,
+	SubagentContextIngress,
+	renderSubagentNextTurnContext,
+	type SafeSubagentNextTurnContext,
 } from "./subagent-context-ingress.ts";
-import { ForkChildAgentProviderV1 } from "./subagent-fork-provider.ts";
-import type { LoadParentContextV1 } from "./subagent-provider-context.ts";
+import { ForkChildAgentProvider } from "./subagent-fork-provider.ts";
+import type { LoadParentContext } from "./subagent-provider-context.ts";
 import {
-	InProcessChildAgentProviderV1,
-	type ChildAgentHarnessCreateInputV1,
+	InProcessChildAgentProvider,
+	type ChildAgentHarnessCreateInput,
 } from "./subagent-inprocess-provider.ts";
 import {
-	SubagentMailboxV1,
-	type ChildMailboxEndpointV1,
-	type ChildMailboxMessageV1,
-	type ConsumeChildMailboxInputV1,
+	SubagentMailbox,
+	type ChildMailboxEndpoint,
+	type ChildMailboxMessage,
+	type ConsumeChildMailboxInput,
 } from "./subagent-mailbox.ts";
 import {
-	persistChildBindingProjectionV1,
-	projectChildBindingV1,
-	type TrustedMcpInheritanceApprovalAuthorityV1,
+	persistChildBindingProjection,
+	projectChildBinding,
+	type TrustedMcpInheritanceApprovalAuthority,
 } from "./subagent-binding.ts";
-import { cleanupChildMemoryScopeV1, createChildMemoryScopeV1 } from "./subagent-memory.ts";
+import { cleanupChildMemoryScope, createChildMemoryScope } from "./subagent-memory.ts";
 import {
 	FORK_PROVIDER,
 	IN_PROCESS_PROVIDER,
-	SubagentProviderRegistryV1,
-	type ExecutableSubagentProviderV1,
-	type SubagentProviderDescriptorV1,
-	type SubagentProviderKindV1,
+	SubagentProviderRegistry,
+	type ExecutableSubagentProvider,
+	type SubagentProviderDescriptor,
+	type SubagentProviderKind,
 } from "./subagent-registry.ts";
 import {
-	projectSafeChildResultV1,
-	settleChildTaskResultV1,
-	type ChildTaskSettlementPolicyV1,
-	type SafeChildResultProjectionV1,
+	projectSafeChildResult,
+	settleChildTaskResult,
+	type ChildTaskSettlementPolicy,
+	type SafeChildResultProjection,
 } from "./subagent-result.ts";
-import { SubagentSupervisorV1, type PlanSubagentSpawnInputV1, type SubagentSpawnPlanV1 } from "./subagent-supervisor.ts";
+import { SubagentSupervisor, type PlanSubagentSpawnInput, type SubagentSpawnPlan } from "./subagent-supervisor.ts";
 import {
-	applyChildWorktreeV1,
-	cleanupChildWorktreeV1,
-	createChildWorktreeV1,
-	readChildWorktreeRecordV1,
-	type ChildWorktreeIdentityV1,
-	type ChildWorktreeRecordV1,
+	applyChildWorktree,
+	cleanupChildWorktree,
+	createChildWorktree,
+	readChildWorktreeRecord,
+	type ChildWorktreeIdentity,
+	type ChildWorktreeRecord,
 	type WorktreeAdapter,
 } from "./subagent-worktree.ts";
-import type { ChildAgentRecordV1, ChildLifecycleStatusV1 } from "./subagent.ts";
+import type { ChildAgentRecord, ChildLifecycleStatus } from "./subagent.ts";
 import type { RunSubagentLifecycleHooks } from "./run-lifecycle.ts";
 import type {
 	PromptTaskCompositionRootOptions,
-	PromptTaskSubagentCompositionInputV1,
-	PromptTaskSubagentSpawnInputV1,
-	PromptTaskSubagentSpawnResultV1,
+	PromptTaskSubagentCompositionInput,
+	PromptTaskSubagentSpawnInput,
+	PromptTaskSubagentSpawnResult,
 } from "./prompt-task-adapter.ts";
 import type {
-	SchedulerNativeAgentBridgeV1,
-	SchedulerNativeAgentResolutionV1,
-	SchedulerNativeAgentResolveInputV1,
-	SchedulerNativeAgentRevalidateInputV1,
+	SchedulerNativeAgentBridge,
+	SchedulerNativeAgentResolution,
+	SchedulerNativeAgentResolveInput,
+	SchedulerNativeAgentRevalidateInput,
 } from "./scheduler-dispatch.ts";
 
 type ExecutableChildProviderV1 = ChildAgentProvider & TaskExecutorProvider & {
 	close(attemptId: string): Promise<ResultValue<void, FoundationError>>;
 };
 
-export interface TrustedSchedulerNativeAgentPlannerV1 {
+export interface TrustedSchedulerNativeAgentPlanner {
 	readonly schemaVersion: 1;
 	plan(
-		input: SchedulerNativeAgentResolveInputV1,
-		descriptor: SubagentProviderDescriptorV1,
-	): Promise<ResultValue<PlanSubagentSpawnInputV1, FoundationError>>;
+		input: SchedulerNativeAgentResolveInput,
+		descriptor: SubagentProviderDescriptor,
+	): Promise<ResultValue<PlanSubagentSpawnInput, FoundationError>>;
 }
 
 /** Trusted product-only lane projection over the canonical parent writer lease. */
@@ -123,7 +123,7 @@ class TrustedChildLaneSessionLedgerWriterV1 extends SessionLedgerWriter {
 	override async releaseLease(): Promise<void> {}
 }
 
-export interface TrustedSubagentCompositionOptionsV1 {
+export interface TrustedSubagentCompositionOptions {
 	readonly schemaVersion: 1;
 	readonly enabled: true;
 	readonly session: Session;
@@ -136,14 +136,14 @@ export interface TrustedSubagentCompositionOptionsV1 {
 	readonly modelGateway: ScopedModelGateway;
 	readonly toolGateway: ToolGateway;
 	readonly artifactStore: ArtifactStoreProvider;
-	readonly createHarness: (input: ChildAgentHarnessCreateInputV1) => Promise<AgentHarness>;
-	readonly loadParentContext: LoadParentContextV1;
+	readonly createHarness: (input: ChildAgentHarnessCreateInput) => Promise<AgentHarness>;
+	readonly loadParentContext: LoadParentContext;
 	readonly parentMemory: { readonly store: ScopedMemoryStore; readonly parentAgentInstanceId: string };
 	readonly parentMemoryForAgent?: (
 		parentAgentInstanceId: string,
 	) => { readonly store: ScopedMemoryStore; readonly parentAgentInstanceId: string };
 	/** Effective Host PolicyBinding plus canonical durable approval ledger for non-empty MCP inheritance. */
-	readonly mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthorityV1;
+	readonly mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthority;
 	/** Explicit trusted Host opt-in for isolated in-process child execution. */
 	readonly worktree?: {
 		readonly schemaVersion: 1;
@@ -151,7 +151,7 @@ export interface TrustedSubagentCompositionOptionsV1 {
 		readonly baseRef: string;
 		readonly adapter: WorktreeAdapter & {
 			resolveExecutionWorkspace(
-				identity: ChildWorktreeIdentityV1,
+				identity: ChildWorktreeIdentity,
 			): Promise<ResultValue<string, FoundationError>>;
 		};
 	};
@@ -160,7 +160,7 @@ export interface TrustedSubagentCompositionOptionsV1 {
 		readonly entrypoint: string;
 		readonly environment?: Readonly<Record<string, string>>;
 	};
-	readonly parentEndpoints?: readonly ChildMailboxEndpointV1[];
+	readonly parentEndpoints?: readonly ChildMailboxEndpoint[];
 	/** Product prompt spawning remains unavailable unless this trusted Host policy is supplied. */
 	readonly productPrompt?: {
 		readonly registry: Pick<RoleRegistry, "get" | "search" | "resolve">;
@@ -174,7 +174,7 @@ export interface TrustedSubagentCompositionOptionsV1 {
 		readonly worktreeRequired: boolean;
 		readonly backgroundRequired: boolean;
 		/** Fixed trusted Host composition; mode and join cannot come from prompt, RPC, or project text. */
-		readonly composition?: TrustedProductPromptCompositionPolicyV1;
+		readonly composition?: TrustedProductPromptCompositionPolicy;
 		readonly childModelProfile?: (
 			roleId: string,
 			parentModelProfile: ModelProfile,
@@ -188,10 +188,10 @@ export interface TrustedSubagentCompositionOptionsV1 {
 		readonly maximumQueueWaitMs: number;
 	};
 	readonly now?: () => string;
-	readonly onReady?: (composition: TrustedSubagentCompositionV1) => void;
+	readonly onReady?: (composition: TrustedSubagentComposition) => void;
 }
 
-export interface SafeSubagentLifecycleProjectionV1 {
+export interface SafeSubagentLifecycleProjection {
 	readonly schemaVersion: 1;
 	readonly source: "subagent.lifecycle";
 	readonly sessionId: string;
@@ -199,8 +199,8 @@ export interface SafeSubagentLifecycleProjectionV1 {
 	readonly childAgentInstanceId: string;
 	readonly parentAgentInstanceId: string;
 	readonly taskId: string;
-	readonly status: ChildLifecycleStatusV1;
-	readonly providerKind: SubagentProviderKindV1;
+	readonly status: ChildLifecycleStatus;
+	readonly providerKind: SubagentProviderKind;
 	readonly safeSummary: string;
 	readonly correlation: {
 		readonly attemptId: string;
@@ -209,21 +209,21 @@ export interface SafeSubagentLifecycleProjectionV1 {
 	readonly digest: ReturnType<typeof fingerprintFoundationValue>;
 }
 
-export interface ExecuteTrustedSubagentPlanInputV1 {
+export interface ExecuteTrustedSubagentPlanInput {
 	readonly schemaVersion: 1;
 	readonly runId: string;
-	readonly plan: SubagentSpawnPlanV1;
+	readonly plan: SubagentSpawnPlan;
 	readonly signal?: AbortSignal;
 }
 
-export interface TrustedSubagentExecutionV1 {
+export interface TrustedSubagentExecution {
 	readonly spawn: ChildSpawnResult;
 	readonly receipt: Awaited<ReturnType<LayeredResultSettlement["executeDispatch"]>> extends ResultValue<infer TValue, FoundationError>
 		? TValue
 		: never;
 }
 
-export interface ResumeTrustedSubagentInputV1 {
+export interface ResumeTrustedSubagentInput {
 	readonly schemaVersion: 1;
 	readonly runId: string;
 	readonly childAgentInstanceId: string;
@@ -232,29 +232,29 @@ export interface ResumeTrustedSubagentInputV1 {
 	readonly signal?: AbortSignal;
 }
 
-export interface TrustedSubagentResumeV1 {
-	readonly lifecycle: SafeSubagentLifecycleProjectionV1;
+export interface TrustedSubagentResume {
+	readonly lifecycle: SafeSubagentLifecycleProjection;
 	readonly receipt: AttemptReceipt;
 }
 
-export type TrustedSubagentChainStepV1 =
+export type TrustedSubagentChainStep =
 	| {
 			readonly input: "root" | "task_package";
-			readonly plan: SubagentSpawnPlanV1;
+			readonly plan: SubagentSpawnPlan;
 	  }
 	| {
 			readonly input: "safe_projection";
 			createPlan(
-				projection: SafeChildResultProjectionV1,
-			): SubagentSpawnPlanV1 | Promise<SubagentSpawnPlanV1>;
+				projection: SafeChildResultProjection,
+			): SubagentSpawnPlan | Promise<SubagentSpawnPlan>;
 	  };
 
-export interface ExecuteTrustedSubagentCompositionInputV1 {
+export interface ExecuteTrustedSubagentCompositionInput {
 	readonly schemaVersion: 1;
 	readonly runId: string;
 	readonly mode: "parallel" | "chain";
-	readonly steps: readonly TrustedSubagentChainStepV1[];
-	readonly join: ChildTaskSettlementPolicyV1;
+	readonly steps: readonly TrustedSubagentChainStep[];
+	readonly join: ChildTaskSettlementPolicy;
 	readonly taskResultId: string;
 	readonly task: TaskEnvelope;
 	readonly summary: string;
@@ -265,29 +265,29 @@ export interface ExecuteTrustedSubagentCompositionInputV1 {
 	readonly signal?: AbortSignal;
 }
 
-export interface TrustedSubagentCompositionExecutionV1 {
-	readonly executions: readonly TrustedSubagentExecutionV1[];
-	readonly projections: readonly SafeChildResultProjectionV1[];
+export interface TrustedSubagentCompositionExecution {
+	readonly executions: readonly TrustedSubagentExecution[];
+	readonly projections: readonly SafeChildResultProjection[];
 	readonly taskResult: TaskResult;
 	/** Exact unique AttemptReceipt ids accepted by the configured Host join. */
 	readonly attemptReceiptIds: readonly string[];
 }
 
-export type TrustedProductPromptCompositionPreparationV1 = Omit<
-	ExecuteTrustedSubagentCompositionInputV1,
+export type TrustedProductPromptCompositionPreparation = Omit<
+	ExecuteTrustedSubagentCompositionInput,
 	"schemaVersion" | "runId" | "mode" | "join" | "signal"
 >;
 
-export interface TrustedProductPromptCompositionPolicyV1 {
+export interface TrustedProductPromptCompositionPolicy {
 	readonly schemaVersion: 1;
 	readonly mode: "parallel" | "chain";
-	readonly join: ChildTaskSettlementPolicyV1;
+	readonly join: ChildTaskSettlementPolicy;
 	prepare(
-		input: PromptTaskSubagentCompositionInputV1,
-	): TrustedProductPromptCompositionPreparationV1 | Promise<TrustedProductPromptCompositionPreparationV1>;
+		input: PromptTaskSubagentCompositionInput,
+	): TrustedProductPromptCompositionPreparation | Promise<TrustedProductPromptCompositionPreparation>;
 }
 
-const ACTIVE_STATUSES = new Set<ChildLifecycleStatusV1>(["spawning", "running", "awaiting_input", "background", "cancelling"]);
+const ACTIVE_STATUSES = new Set<ChildLifecycleStatus>(["spawning", "running", "awaiting_input", "background", "cancelling"]);
 const HOST_PARENT_RUN_KEYS = new Set(["schemaVersion", "sessionId", "runId", "toAgentInstanceId", "byAttemptId"]);
 const HOST_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
@@ -308,22 +308,22 @@ function isHostParentRunInput(value: unknown): value is {
 }
 
 function providerForKind(
-	providers: ReadonlyMap<SubagentProviderKindV1, ExecutableChildProviderV1>,
-	kind: SubagentProviderKindV1,
+	providers: ReadonlyMap<SubagentProviderKind, ExecutableChildProviderV1>,
+	kind: SubagentProviderKind,
 ): ExecutableChildProviderV1 {
 	const provider = providers.get(kind);
 	if (provider === undefined) throw new FoundationError("subagent_provider_unavailable", `Trusted provider ${kind} is unavailable`);
 	return provider;
 }
 
-export class TrustedSubagentCompositionV1 {
+export class TrustedSubagentComposition {
 	readonly services = Object.freeze({
-		projectSafeChildResultV1,
-		createChildWorktreeV1,
-		applyChildWorktreeV1,
-		cleanupChildWorktreeV1,
-		createChildMemoryScopeV1,
-		cleanupChildMemoryScopeV1,
+		projectSafeChildResult,
+		createChildWorktree,
+		applyChildWorktree,
+		cleanupChildWorktree,
+		createChildMemoryScope,
+		cleanupChildMemoryScope,
 	});
 	private readonly sessionId: string;
 	private readonly session: Session;
@@ -331,30 +331,30 @@ export class TrustedSubagentCompositionV1 {
 	private readonly ledgerForLane: (laneId: string) => SessionLedger;
 	private readonly parentLaneId: string;
 	private readonly artifactStore: ArtifactStoreProvider;
-	private readonly worktree: TrustedSubagentCompositionOptionsV1["worktree"];
+	private readonly worktree: TrustedSubagentCompositionOptions["worktree"];
 	private readonly writer: SessionLedgerWriter | undefined;
-	private readonly productPrompt: TrustedSubagentCompositionOptionsV1["productPrompt"];
-	private readonly mcpInheritanceAuthority: TrustedMcpInheritanceApprovalAuthorityV1 | undefined;
-	private readonly productPromptComposition: TrustedProductPromptCompositionPolicyV1 | undefined;
+	private readonly productPrompt: TrustedSubagentCompositionOptions["productPrompt"];
+	private readonly mcpInheritanceAuthority: TrustedMcpInheritanceApprovalAuthority | undefined;
+	private readonly productPromptComposition: TrustedProductPromptCompositionPolicy | undefined;
 	private readonly now: () => string;
-	private readonly registry: SubagentProviderRegistryV1;
-	private readonly supervisor: SubagentSupervisorV1;
-	private readonly mailbox: SubagentMailboxV1;
-	private readonly mailboxIngress: SubagentContextIngressV1;
+	private readonly registry: SubagentProviderRegistry;
+	private readonly supervisor: SubagentSupervisor;
+	private readonly mailbox: SubagentMailbox;
+	private readonly mailboxIngress: SubagentContextIngress;
 	private readonly laneWriters = new Map<string, SessionLedgerWriter>();
 	private readonly laneLedgers = new Map<string, SessionLedger>();
 	private readonly laneSettlements = new Map<string, LayeredResultSettlement>();
-	private readonly providers: ReadonlyMap<SubagentProviderKindV1, ExecutableChildProviderV1>;
+	private readonly providers: ReadonlyMap<SubagentProviderKind, ExecutableChildProviderV1>;
 	private readonly runByChild = new Map<string, string>();
 	private readonly executionWorkspaces = new Map<string, string>();
-	private readonly worktreeRecords = new Map<string, ChildWorktreeRecordV1>();
-	private readonly planByChild = new Map<string, SubagentSpawnPlanV1>();
-	private readonly schedulerPlanByAttempt = new Map<string, SubagentSpawnPlanV1>();
+	private readonly worktreeRecords = new Map<string, ChildWorktreeRecord>();
+	private readonly planByChild = new Map<string, SubagentSpawnPlan>();
+	private readonly schedulerPlanByAttempt = new Map<string, SubagentSpawnPlan>();
 	private readonly parentByRun = new Map<string, { readonly toAgentInstanceId: string; readonly byAttemptId: string }>();
 	private recovery: Promise<ResultValue<void, FoundationError>>;
 	private disposed = false;
 
-	constructor(options: TrustedSubagentCompositionOptionsV1) {
+	constructor(options: TrustedSubagentCompositionOptions) {
 		if (options.schemaVersion !== 1 || options.enabled !== true) {
 			throw new FoundationError("subagent_spawn_invalid", "Subagents require an explicit trusted Host opt-in");
 		}
@@ -411,7 +411,7 @@ export class TrustedSubagentCompositionV1 {
 					prepare: productPromptComposition.prepare.bind(productPromptComposition),
 				});
 		this.now = options.now ?? (() => new Date().toISOString());
-		this.registry = new SubagentProviderRegistryV1();
+		this.registry = new SubagentProviderRegistry();
 		this.registry.register({
 			...IN_PROCESS_PROVIDER,
 			capabilities: {
@@ -423,7 +423,7 @@ export class TrustedSubagentCompositionV1 {
 			...FORK_PROVIDER,
 			capabilities: { ...FORK_PROVIDER.capabilities, worktreeSupported: false },
 		});
-		this.supervisor = new SubagentSupervisorV1({
+		this.supervisor = new SubagentSupervisor({
 			schemaVersion: 1,
 			ledger: options.ledger,
 			ledgerForLane: this.ledgerForLane,
@@ -432,7 +432,7 @@ export class TrustedSubagentCompositionV1 {
 			...options.limits,
 			...(options.now === undefined ? {} : { now: options.now }),
 		});
-		this.mailbox = new SubagentMailboxV1({
+		this.mailbox = new SubagentMailbox({
 			schemaVersion: 1,
 			ledger: options.ledger,
 			ledgerForLane: this.ledgerForLane,
@@ -448,7 +448,7 @@ export class TrustedSubagentCompositionV1 {
 			pollIntervalMs: 25,
 			...(options.now === undefined ? {} : { now: options.now }),
 		});
-		this.mailboxIngress = new SubagentContextIngressV1({
+		this.mailboxIngress = new SubagentContextIngress({
 			schemaVersion: 1,
 			mailbox: this.mailbox,
 			ledger: options.ledger,
@@ -477,7 +477,7 @@ export class TrustedSubagentCompositionV1 {
 				body: message.body,
 			}))));
 		};
-		const inProcess = new InProcessChildAgentProviderV1({
+		const inProcess = new InProcessChildAgentProvider({
 			schemaVersion: 1,
 			providerId: IN_PROCESS_PROVIDER.descriptor.providerId,
 			supervisor: this.supervisor,
@@ -495,7 +495,7 @@ export class TrustedSubagentCompositionV1 {
 			loadTurnBoundaryContext,
 			...(options.now === undefined ? {} : { now: options.now }),
 		});
-		const fork = new ForkChildAgentProviderV1({
+		const fork = new ForkChildAgentProvider({
 			schemaVersion: 1,
 			providerId: FORK_PROVIDER.descriptor.providerId,
 			supervisor: this.supervisor,
@@ -508,7 +508,7 @@ export class TrustedSubagentCompositionV1 {
 			...(options.fork.environment === undefined ? {} : { environment: options.fork.environment }),
 			...(options.now === undefined ? {} : { now: options.now }),
 		});
-		this.providers = new Map<SubagentProviderKindV1, ExecutableChildProviderV1>([
+		this.providers = new Map<SubagentProviderKind, ExecutableChildProviderV1>([
 			["in_process", inProcess],
 			["fork", fork],
 		]);
@@ -517,7 +517,7 @@ export class TrustedSubagentCompositionV1 {
 		this.recovery = this.recoverDurableState();
 	}
 
-	providerDescriptors(): readonly SubagentProviderDescriptorV1[] {
+	providerDescriptors(): readonly SubagentProviderDescriptor[] {
 		return Object.freeze([this.registry.get(IN_PROCESS_PROVIDER.descriptor.providerId), this.registry.get(FORK_PROVIDER.descriptor.providerId)]);
 	}
 
@@ -531,28 +531,28 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	/** Build the explicit default-off Scheduler bridge over this composition's exact Native runtimes. */
-	schedulerNativeAgentBridge(planner: TrustedSchedulerNativeAgentPlannerV1): SchedulerNativeAgentBridgeV1 {
+	schedulerNativeAgentBridge(planner: TrustedSchedulerNativeAgentPlanner): SchedulerNativeAgentBridge {
 		if (planner.schemaVersion !== 1 || typeof planner.plan !== "function") {
 			throw new FoundationError("subagent_spawn_invalid", "Trusted Scheduler Native Agent planner is invalid");
 		}
 		return Object.freeze({
-			resolve: (input: SchedulerNativeAgentResolveInputV1) => this.resolveSchedulerNativeAgent(input, planner),
-			revalidate: (input: SchedulerNativeAgentRevalidateInputV1) =>
+			resolve: (input: SchedulerNativeAgentResolveInput) => this.resolveSchedulerNativeAgent(input, planner),
+			revalidate: (input: SchedulerNativeAgentRevalidateInput) =>
 				this.revalidateSchedulerNativeAgent(input),
 		});
 	}
 
 	private async resolveSchedulerNativeAgent(
-		input: SchedulerNativeAgentResolveInputV1,
-		planner: TrustedSchedulerNativeAgentPlannerV1,
-	): Promise<ResultValue<SchedulerNativeAgentResolutionV1, FoundationError>> {
+		input: SchedulerNativeAgentResolveInput,
+		planner: TrustedSchedulerNativeAgentPlanner,
+	): Promise<ResultValue<SchedulerNativeAgentResolution, FoundationError>> {
 		if (this.disposed) {
 			return Result.err(new FoundationError("subagent_provider_unavailable", "Trusted subagent composition is disposed"));
 		}
 		const recovered = await this.recovery;
 		if (!recovered.ok) return recovered;
-		let provider: ExecutableSubagentProviderV1;
-		let descriptor: SubagentProviderDescriptorV1;
+		let provider: ExecutableSubagentProvider;
+		let descriptor: SubagentProviderDescriptor;
 		try {
 			provider = this.registry.resolveExecutable(input.provider);
 			descriptor = this.registry.resolve(provider.providerId);
@@ -628,14 +628,14 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private async revalidateSchedulerNativeAgent(
-		input: SchedulerNativeAgentRevalidateInputV1,
+		input: SchedulerNativeAgentRevalidateInput,
 	): Promise<ResultValue<void, FoundationError>> {
 		if (this.disposed) {
 			return Result.err(new FoundationError("subagent_provider_unavailable", "Trusted subagent composition is disposed"));
 		}
 		const recovered = await this.recovery;
 		if (!recovered.ok) return recovered;
-		let provider: ExecutableSubagentProviderV1;
+		let provider: ExecutableSubagentProvider;
 		try {
 			provider = this.registry.resolveExecutable(input.provider);
 		} catch (error) {
@@ -720,9 +720,9 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private schedulerResolutionFromPlan(
-		input: SchedulerNativeAgentResolveInputV1,
-		plan: SubagentSpawnPlanV1,
-	): ResultValue<SchedulerNativeAgentResolutionV1, FoundationError> {
+		input: SchedulerNativeAgentResolveInput,
+		plan: SubagentSpawnPlan,
+	): ResultValue<SchedulerNativeAgentResolution, FoundationError> {
 		if (
 			plan.providerId !== input.provider.providerId ||
 			plan.dispatch.dispatchId !== input.dispatchId ||
@@ -757,8 +757,8 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private async loadDurableSchedulerNativeResolution(
-		input: SchedulerNativeAgentResolveInputV1,
-	): Promise<ResultValue<SchedulerNativeAgentResolutionV1 | undefined, FoundationError>> {
+		input: SchedulerNativeAgentResolveInput,
+	): Promise<ResultValue<SchedulerNativeAgentResolution | undefined, FoundationError>> {
 		const [agentRecord, epochRecord, dispatchRecord] = await Promise.all([
 			this.session.getFoundationObject("agent_instance", input.agentInstanceId),
 			this.session.getFoundationObject("binding_epoch", input.bindingEpochId),
@@ -825,7 +825,7 @@ export class TrustedSubagentCompositionV1 {
 
 	private schedulerSpawnMatchesResolution(
 		spawn: ChildSpawnResult,
-		resolution: SchedulerNativeAgentResolutionV1,
+		resolution: SchedulerNativeAgentResolution,
 	): boolean {
 		return (
 			spawn.attempt.attemptId === resolution.initialBindingEpoch.attemptId &&
@@ -850,9 +850,9 @@ export class TrustedSubagentCompositionV1 {
 			registry: this.productPrompt.registry,
 			scope: this.productPrompt.scope,
 			parentLaneId: this.parentLaneId,
-			spawn: (input: PromptTaskSubagentSpawnInputV1) => this.spawnProductPromptChild(input),
+			spawn: (input: PromptTaskSubagentSpawnInput) => this.spawnProductPromptChild(input),
 			...(this.productPromptComposition === undefined ? {} : {
-				compose: (input: PromptTaskSubagentCompositionInputV1) => this.composeProductPromptChildren(input),
+				compose: (input: PromptTaskSubagentCompositionInput) => this.composeProductPromptChildren(input),
 			}),
 		});
 	}
@@ -863,13 +863,13 @@ export class TrustedSubagentCompositionV1 {
 		return this.recovery;
 	}
 
-	async planSpawn(input: PlanSubagentSpawnInputV1) {
+	async planSpawn(input: PlanSubagentSpawnInput) {
 		const recovered = await this.recovery;
 		if (!recovered.ok) return recovered;
 		return this.supervisor.planSpawn(input);
 	}
 
-	async executePlan(input: ExecuteTrustedSubagentPlanInputV1): Promise<ResultValue<TrustedSubagentExecutionV1, FoundationError>> {
+	async executePlan(input: ExecuteTrustedSubagentPlanInput): Promise<ResultValue<TrustedSubagentExecution, FoundationError>> {
 		if (this.disposed) return Result.err(new FoundationError("subagent_provider_unavailable", "Trusted subagent composition is disposed"));
 		const recovered = await this.recovery;
 		if (!recovered.ok) return recovered;
@@ -934,7 +934,7 @@ export class TrustedSubagentCompositionV1 {
 		return Result.ok(cloneDeepFrozen({ spawn: spawn.value, receipt: receipt.value }));
 	}
 
-	async resumeChild(input: ResumeTrustedSubagentInputV1): Promise<ResultValue<TrustedSubagentResumeV1, FoundationError>> {
+	async resumeChild(input: ResumeTrustedSubagentInput): Promise<ResultValue<TrustedSubagentResume, FoundationError>> {
 		if (
 			input.schemaVersion !== 1 ||
 			typeof input.runId !== "string" ||
@@ -1036,8 +1036,8 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	async executeComposition(
-		input: ExecuteTrustedSubagentCompositionInputV1,
-	): Promise<ResultValue<TrustedSubagentCompositionExecutionV1, FoundationError>> {
+		input: ExecuteTrustedSubagentCompositionInput,
+	): Promise<ResultValue<TrustedSubagentCompositionExecution, FoundationError>> {
 		if (
 			input.schemaVersion !== 1 ||
 			(input.mode !== "parallel" && input.mode !== "chain") ||
@@ -1056,12 +1056,12 @@ export class TrustedSubagentCompositionV1 {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent chain must start from a root plan"));
 		}
 
-		const plans: SubagentSpawnPlanV1[] = [];
-		const executions: TrustedSubagentExecutionV1[] = [];
-		const projections: SafeChildResultProjectionV1[] = [];
+		const plans: SubagentSpawnPlan[] = [];
+		const executions: TrustedSubagentExecution[] = [];
+		const projections: SafeChildResultProjection[] = [];
 		const executeStaticStep = async (
-			step: Extract<TrustedSubagentChainStepV1, { readonly input: "root" | "task_package" }>,
-		): Promise<ResultValue<TrustedSubagentExecutionV1, FoundationError>> => {
+			step: Extract<TrustedSubagentChainStep, { readonly input: "root" | "task_package" }>,
+		): Promise<ResultValue<TrustedSubagentExecution, FoundationError>> => {
 			if (step.input === "task_package" && step.plan.request.forkScope !== "task_package") {
 				return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent task_package chain step did not preserve task_package context isolation"));
 			}
@@ -1078,7 +1078,7 @@ export class TrustedSubagentCompositionV1 {
 		};
 
 		if (input.mode === "parallel") {
-			const staticSteps = input.steps as readonly Extract<TrustedSubagentChainStepV1, { readonly input: "root" | "task_package" }>[];
+			const staticSteps = input.steps as readonly Extract<TrustedSubagentChainStep, { readonly input: "root" | "task_package" }>[];
 			const executed = await Promise.all(staticSteps.map(executeStaticStep));
 			const failure = executed.find((result) => !result.ok);
 			if (failure !== undefined && !failure.ok) {
@@ -1091,7 +1091,7 @@ export class TrustedSubagentCompositionV1 {
 		} else {
 			for (let index = 0; index < input.steps.length; index += 1) {
 				const step = input.steps[index]!;
-				let planResult: ResultValue<SubagentSpawnPlanV1, FoundationError>;
+				let planResult: ResultValue<SubagentSpawnPlan, FoundationError>;
 				if (step.input === "safe_projection") {
 					const previous = projections.at(-1);
 					if (previous === undefined) {
@@ -1115,7 +1115,7 @@ export class TrustedSubagentCompositionV1 {
 					: step;
 				if (index > 0 && normalizedStep.input === "root" && step.input !== "safe_projection") {
 					await this.closeCompositionPlans(plans);
-					return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent chain steps must consume SafeChildResultProjectionV1 or task_package"));
+					return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent chain steps must consume SafeChildResultProjection or task_package"));
 				}
 				const executed = await executeStaticStep(normalizedStep);
 				if (!executed.ok) {
@@ -1153,7 +1153,7 @@ export class TrustedSubagentCompositionV1 {
 		}
 		const firstPlan = plans[0]!;
 		const firstReceipt = receipts[0]!;
-		const settled = await settleChildTaskResultV1(this.settlementForLane(this.parentLaneId), {
+		const settled = await settleChildTaskResult(this.settlementForLane(this.parentLaneId), {
 			taskResultId: input.taskResultId,
 			task: input.task,
 			receipts,
@@ -1218,17 +1218,17 @@ export class TrustedSubagentCompositionV1 {
 		}));
 	}
 
-	async consumeParentNextTurn(input: ConsumeChildMailboxInputV1): Promise<ResultValue<{
-		readonly entries: readonly SafeSubagentNextTurnContextV1[];
+	async consumeParentNextTurn(input: ConsumeChildMailboxInput): Promise<ResultValue<{
+		readonly entries: readonly SafeSubagentNextTurnContext[];
 		readonly contextText: string;
 	}, FoundationError>> {
 		const entries = await this.mailboxIngress.consumeNextTurn(input);
 		if (!entries.ok) return entries;
-		return Result.ok(cloneDeepFrozen({ entries: entries.value, contextText: renderSubagentNextTurnContextV1(entries.value) }));
+		return Result.ok(cloneDeepFrozen({ entries: entries.value, contextText: renderSubagentNextTurnContext(entries.value) }));
 	}
 
 	async consumeParentNextTurnForRun(runId: string): Promise<ResultValue<{
-		readonly entries: readonly SafeSubagentNextTurnContextV1[];
+		readonly entries: readonly SafeSubagentNextTurnContext[];
 		readonly contextText: string;
 	}, FoundationError>> {
 		const parent = this.parentByRun.get(runId);
@@ -1257,17 +1257,17 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	/** Trusted child delivery point; exact mailbox shape validation remains authoritative. */
-	deliverChildMailbox(input: unknown): Promise<ResultValue<ChildMailboxMessageV1, FoundationError>> {
+	deliverChildMailbox(input: unknown): Promise<ResultValue<ChildMailboxMessage, FoundationError>> {
 		return this.mailbox.send(input);
 	}
 
-	async get(runId: string, childAgentInstanceId: string): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>> {
+	async get(runId: string, childAgentInstanceId: string): Promise<ResultValue<SafeSubagentLifecycleProjection | undefined, FoundationError>> {
 		if (this.runByChild.get(childAgentInstanceId) !== runId) return Result.ok(undefined);
 		const record = this.supervisor.get(childAgentInstanceId);
 		return Result.ok(record === undefined ? undefined : this.safeProjection(runId, record));
 	}
 
-	async list(runId: string, filter: { readonly parentAgentInstanceId?: string; readonly status?: ChildLifecycleStatusV1; readonly limit: number }): Promise<ResultValue<readonly SafeSubagentLifecycleProjectionV1[], FoundationError>> {
+	async list(runId: string, filter: { readonly parentAgentInstanceId?: string; readonly status?: ChildLifecycleStatus; readonly limit: number }): Promise<ResultValue<readonly SafeSubagentLifecycleProjection[], FoundationError>> {
 		if (!Number.isSafeInteger(filter.limit) || filter.limit < 1 || filter.limit > 100) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Subagent list limit must be between 1 and 100"));
 		}
@@ -1280,7 +1280,7 @@ export class TrustedSubagentCompositionV1 {
 		return Result.ok(Object.freeze(records));
 	}
 
-	async cancel(runId: string, childAgentInstanceId: string): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>> {
+	async cancel(runId: string, childAgentInstanceId: string): Promise<ResultValue<SafeSubagentLifecycleProjection | undefined, FoundationError>> {
 		if (this.runByChild.get(childAgentInstanceId) !== runId) return Result.ok(undefined);
 		const record = this.supervisor.get(childAgentInstanceId);
 		if (record === undefined) return Result.ok(undefined);
@@ -1318,8 +1318,8 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private async spawnProductPromptChild(
-		input: PromptTaskSubagentSpawnInputV1,
-	): Promise<ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>> {
+		input: PromptTaskSubagentSpawnInput,
+	): Promise<ResultValue<PromptTaskSubagentSpawnResult, FoundationError>> {
 		const policy = this.productPrompt;
 		if (policy === undefined) {
 			return Result.err(new FoundationError("subagent_provider_unavailable", "Product prompt Child Agents are disabled"));
@@ -1433,7 +1433,7 @@ export class TrustedSubagentCompositionV1 {
 				now: () => input.timestamp,
 			});
 			if (!resolved.ok) return resolved;
-			const projection = projectChildBindingV1(
+			const projection = projectChildBinding(
 				{
 					schemaVersion: 1,
 					spawnId,
@@ -1450,7 +1450,7 @@ export class TrustedSubagentCompositionV1 {
 				this.mcpInheritanceAuthority,
 			);
 			if (!projection.ok) return projection;
-			const persistedProjection = await persistChildBindingProjectionV1(childLedger, projection.value, {
+			const persistedProjection = await persistChildBindingProjection(childLedger, projection.value, {
 				clientRequestId: `subagent-product:projection:${spawnId}`,
 				correlation: { taskId: childTaskId, attemptId: childAttemptId, agentInstanceId: childAgentInstanceId },
 			});
@@ -1546,7 +1546,7 @@ export class TrustedSubagentCompositionV1 {
 			});
 			if (!executed.ok) return executed;
 			const taskResultId = `task_result_child_${token}`;
-			const taskResult = await settleChildTaskResultV1(parentSettlement, {
+			const taskResult = await settleChildTaskResult(parentSettlement, {
 				taskResultId,
 				task: persistedTask.value,
 				receipts: [executed.value.receipt.receipt],
@@ -1567,7 +1567,7 @@ export class TrustedSubagentCompositionV1 {
 				},
 			});
 			if (!taskResult.ok) return taskResult;
-			const projected = await projectSafeChildResultV1(
+			const projected = await projectSafeChildResult(
 				{
 					artifactStore: this.artifactStore,
 					ledger: this.ledger,
@@ -1632,8 +1632,8 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private async composeProductPromptChildren(
-		input: PromptTaskSubagentCompositionInputV1,
-	): Promise<ResultValue<PromptTaskSubagentSpawnResultV1, FoundationError>> {
+		input: PromptTaskSubagentCompositionInput,
+	): Promise<ResultValue<PromptTaskSubagentSpawnResult, FoundationError>> {
 		const policy = this.productPromptComposition;
 		if (policy === undefined) {
 			return Result.err(new FoundationError("subagent_provider_unavailable", "Product prompt Child Agent composition is disabled"));
@@ -1647,7 +1647,7 @@ export class TrustedSubagentCompositionV1 {
 			attemptId: input.parentBindingEpoch.attemptId,
 		});
 		if (!registeredParent.ok) return registeredParent;
-		let prepared: TrustedProductPromptCompositionPreparationV1;
+		let prepared: TrustedProductPromptCompositionPreparation;
 		try {
 			prepared = await policy.prepare(input);
 		} catch {
@@ -1681,10 +1681,10 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private projectAttemptResult(
-		plan: SubagentSpawnPlanV1,
+		plan: SubagentSpawnPlan,
 		receipt: AttemptReceipt,
-	): Promise<ResultValue<SafeChildResultProjectionV1, FoundationError>> {
-		return projectSafeChildResultV1(
+	): Promise<ResultValue<SafeChildResultProjection, FoundationError>> {
+		return projectSafeChildResult(
 			{
 				artifactStore: this.artifactStore,
 				ledger: this.ledger,
@@ -1704,7 +1704,7 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private async closeCompositionPlans(
-		plans: readonly SubagentSpawnPlanV1[],
+		plans: readonly SubagentSpawnPlan[],
 	): Promise<ResultValue<void, FoundationError>> {
 		for (const plan of plans) {
 			const childAgentInstanceId = plan.agentInstance.agentInstanceId;
@@ -1724,11 +1724,11 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private async prepareExecutionWorktree(
-		plan: SubagentSpawnPlanV1,
+		plan: SubagentSpawnPlan,
 	): Promise<ResultValue<void, FoundationError>> {
 		const configured = this.worktree;
 		if (configured === undefined) return Result.ok(undefined);
-		let negotiated: SubagentProviderDescriptorV1;
+		let negotiated: SubagentProviderDescriptor;
 		try {
 			negotiated = this.registry.resolve(plan.providerId, {
 				providerKind: "in_process",
@@ -1752,7 +1752,7 @@ export class TrustedSubagentCompositionV1 {
 			laneId: plan.childLaneId,
 			now: () => Date.parse(this.now()),
 		};
-		const created = await createChildWorktreeV1(host, childAgentInstanceId, attemptId, configured.baseRef);
+		const created = await createChildWorktree(host, childAgentInstanceId, attemptId, configured.baseRef);
 		if (!created.ok) return created;
 		this.worktreeRecords.set(key, created.value);
 		this.planByChild.set(childAgentInstanceId, plan);
@@ -1777,7 +1777,7 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private async applyExecutionWorktree(
-		plan: SubagentSpawnPlanV1,
+		plan: SubagentSpawnPlan,
 	): Promise<ResultValue<void, FoundationError>> {
 		const configured = this.worktree;
 		if (configured === undefined) return Result.ok(undefined);
@@ -1786,7 +1786,7 @@ export class TrustedSubagentCompositionV1 {
 		if (record === undefined) {
 			return Result.err(new FoundationError("subagent_worktree_conflict", "Successful Child Agent execution has no owned worktree record"));
 		}
-		const applied = await applyChildWorktreeV1({
+		const applied = await applyChildWorktree({
 			adapter: configured.adapter,
 			ledger: this.ledgerForLane(plan.childLaneId),
 			sessionId: this.sessionId,
@@ -1794,7 +1794,7 @@ export class TrustedSubagentCompositionV1 {
 			now: () => Date.parse(this.now()),
 		}, record);
 		if (!applied.ok) {
-			const durable = await readChildWorktreeRecordV1({
+			const durable = await readChildWorktreeRecord({
 				adapter: configured.adapter,
 				ledger: this.ledgerForLane(plan.childLaneId),
 				sessionId: this.sessionId,
@@ -1809,7 +1809,7 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private async cleanupExecutionWorktree(
-		plan: SubagentSpawnPlanV1,
+		plan: SubagentSpawnPlan,
 	): Promise<ResultValue<void, FoundationError>> {
 		const configured = this.worktree;
 		if (configured === undefined) return Result.ok(undefined);
@@ -1817,7 +1817,7 @@ export class TrustedSubagentCompositionV1 {
 		this.executionWorkspaces.delete(key);
 		const record = this.worktreeRecords.get(key);
 		if (record === undefined) return Result.ok(undefined);
-		const cleaned = await cleanupChildWorktreeV1({
+		const cleaned = await cleanupChildWorktree({
 			adapter: configured.adapter,
 			ledger: this.ledgerForLane(plan.childLaneId),
 			sessionId: this.sessionId,
@@ -1866,7 +1866,7 @@ export class TrustedSubagentCompositionV1 {
 	}
 
 	private async lookupProviderHandle(
-		record: ChildAgentRecordV1,
+		record: ChildAgentRecord,
 		provider: ExecutableChildProviderV1,
 		signal?: AbortSignal,
 	): Promise<ChildSpawnResult | undefined> {
@@ -1888,7 +1888,7 @@ export class TrustedSubagentCompositionV1 {
 		}
 	}
 
-	private async markUnrecoverableChild(record: ChildAgentRecordV1): Promise<ResultValue<void, FoundationError>> {
+	private async markUnrecoverableChild(record: ChildAgentRecord): Promise<ResultValue<void, FoundationError>> {
 		const current = this.supervisor.get(record.childAgentInstanceId);
 		if (current !== undefined && ACTIVE_STATUSES.has(current.status)) {
 			const lost = await this.supervisor.markLost(record.childAgentInstanceId);
@@ -1956,7 +1956,7 @@ export class TrustedSubagentCompositionV1 {
 		this.runByChild.delete(childAgentInstanceId);
 	}
 
-	private safeProjection(runId: string, record: ChildAgentRecordV1): SafeSubagentLifecycleProjectionV1 {
+	private safeProjection(runId: string, record: ChildAgentRecord): SafeSubagentLifecycleProjection {
 		const base = {
 			schemaVersion: 1 as const,
 			source: "subagent.lifecycle" as const,
@@ -1974,11 +1974,11 @@ export class TrustedSubagentCompositionV1 {
 	}
 }
 
-export function createTrustedSubagentCompositionV1(
-	options: TrustedSubagentCompositionOptionsV1 | undefined,
-): TrustedSubagentCompositionV1 | undefined {
+export function createTrustedSubagentComposition(
+	options: TrustedSubagentCompositionOptions | undefined,
+): TrustedSubagentComposition | undefined {
 	if (options === undefined) return undefined;
-	const composition = new TrustedSubagentCompositionV1(options);
+	const composition = new TrustedSubagentComposition(options);
 	options.onReady?.(composition);
 	return composition;
 }

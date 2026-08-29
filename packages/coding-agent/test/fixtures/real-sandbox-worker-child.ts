@@ -5,9 +5,9 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ExecutionPolicyProfile } from "../../src/core/execution-policy.ts";
 import { resolveExecutionPolicyProfile } from "../../src/core/execution-policy.ts";
-import { createBuiltinToolPolicy, createSandboxHandleOperationProviderV1 } from "../../src/core/sandbox-host.ts";
+import { createBuiltinToolPolicy, createSandboxHandleOperationProvider } from "../../src/core/sandbox-host.ts";
 import type { SandboxHandle, SandboxOperationRequest, SandboxOperationResult } from "../../src/core/sandbox.ts";
-import { runWorkerEntryV1 } from "../../src/worker-entry.ts";
+import { runOperationWorkerProcess } from "../../src/worker-entry.ts";
 
 const execFileAsync = promisify(execFile);
 const providerId = "sandbox-worker";
@@ -96,7 +96,7 @@ const policy = createBuiltinToolPolicy({
 	sandbox: handle,
 	source: "builtin",
 });
-const operationProvider = createSandboxHandleOperationProviderV1({
+const operationProvider = createSandboxHandleOperationProvider({
 	providerId,
 	policy,
 	correlation: { sessionId: "real-worker-session", laneId: "main" },
@@ -119,4 +119,4 @@ const operationProvider = createSandboxHandleOperationProviderV1({
 	},
 });
 
-await runWorkerEntryV1({ provider: operationProvider });
+await runOperationWorkerProcess({ provider: operationProvider });

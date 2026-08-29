@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	AGENT_RUNTIME_HOST_PROVIDER,
-	type SubagentProviderDescriptorV1,
-	SubagentProviderRegistryV1,
+	type SubagentProviderDescriptor,
+	SubagentProviderRegistry,
 } from "../../../coding-agent/src/core/subagent-registry.ts";
 import {
 	type AttemptReceipt,
@@ -357,8 +357,8 @@ describe("Agent spawn consumer fakes via LayeredResultSettlementV1.executeAgentS
 		};
 	}
 
-	async function executeSpawnTest(descriptor: SubagentProviderDescriptorV1, childTaskId: string) {
-		const registry = new SubagentProviderRegistryV1();
+	async function executeSpawnTest(descriptor: SubagentProviderDescriptor, childTaskId: string) {
+		const registry = new SubagentProviderRegistry();
 		registry.register(descriptor);
 		expect(registry.get(descriptor.descriptor.providerId)).toEqual(descriptor);
 		expect(descriptor.implementedInThisLine).toBe(false);

@@ -3,7 +3,7 @@
  * Workflow state authority. Local Agent/Tool work goes through the sealed
  * Scheduler dispatch, handoff, fan-in, and Host settlement path. External
  * Agent steps stop at awaiting_dispatch and use SchedulerMessageOrchestratorV1
- * submit/wait/reclaim against a second Session. Wakes are SchedulerWakeV1
+ * submit/wait/reclaim against a second Session. Wakes are SchedulerWake
  * facts on the Session ledger and fire at most once.
  */
 import {
@@ -31,22 +31,22 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	SchedulerDispatchController,
-	type SchedulerNativeAgentBridgeV1,
+	type SchedulerNativeAgentBridge,
 } from "./scheduler-dispatch.ts";
 import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
 import { SchedulerFanInController, schedulerNodeJoinId } from "./scheduler-fan-in.ts";
 import { SchedulerHandoffController } from "./scheduler-handoff.ts";
 import {
 	SchedulerMessageOrchestrator,
-	type SchedulerMessageSessionEndpointV1,
+	type SchedulerMessageSessionEndpoint,
 } from "./scheduler-messages.ts";
-import { SchedulerQueueStore, type SchedulerCancelAttemptV1 } from "./scheduler-queue.ts";
+import { SchedulerQueueStore, type SchedulerCancelAttempt } from "./scheduler-queue.ts";
 import type { RunLedgerSession } from "./run-lifecycle.ts";
 import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "./runtime-clock.ts";
 import {
 	ConnectorRetryCircuit,
-	type ConnectorRetryGuaranteeV1,
-	type ConnectorRetryPolicyV1,
+	type ConnectorRetryGuarantee,
+	type ConnectorRetryPolicy,
 } from "./connector-retry-circuit.ts";
 import {
 	applySchedulerWakeFire,
@@ -57,11 +57,11 @@ import {
 	SCHEDULER_DEFAULT_MAX_ATTEMPTS,
 	SchedulerHost,
 	type SchedulerHostTickResult,
-	type SchedulerJoinPlanV1,
-	type SchedulerNodeRefV1,
-	type SchedulerOwnershipTransferV1,
-	type SchedulerQueueEntryV1,
-	type SchedulerWakeV1,
+	type SchedulerJoinPlan,
+	type SchedulerNodeRef,
+	type SchedulerOwnershipTransfer,
+	type SchedulerQueueEntry,
+	type SchedulerWake,
 	serializeSchedulerWake,
 } from "./scheduler.ts";
 import type { TaskGraphStore } from "./task-graph.ts";
@@ -75,12 +75,12 @@ export const SCHEDULER_WORKFLOW_COMPENSATION_OBJECT_TYPE = "scheduler.workflow.c
 const COMPLETED_STEP_STATUSES = new Set<WorkflowStepStatus>(["succeeded", "cancelled", "skipped"]);
 const EXECUTABLE_STEP_TYPES = new Set<WorkflowStep["type"]>(["agent", "tool"]);
 
-export type SchedulerWorkflowCompensationPolicyV1 = "stop" | "bounded_retry" | "compensate";
-export type SchedulerWorkflowCompensationStateV1 = "scheduled" | "settled" | "failed";
+export type SchedulerWorkflowCompensationPolicy = "stop" | "bounded_retry" | "compensate";
+export type SchedulerWorkflowCompensationState = "scheduled" | "settled" | "failed";
 export const SCHEDULER_WORKFLOW_COMPENSATION_STATES = ["scheduled", "settled", "failed"] as const;
 export const SCHEDULER_WORKFLOW_COMPENSATION_POLICIES = ["stop", "bounded_retry", "compensate"] as const;
 
-export interface SchedulerWorkflowExternalIdsV1 {
+export interface SchedulerWorkflowExternalIds {
 	readonly waitId: string;
 	readonly threadId: string;
 	readonly submitMessageId: string;
@@ -89,7 +89,7 @@ export interface SchedulerWorkflowExternalIdsV1 {
 	readonly clientRequestId: string;
 }
 
-export interface SchedulerWorkflowAttemptFactV1 {
+export interface SchedulerWorkflowAttemptFact {
 	readonly schemaVersion: 1;
 	readonly workflowId: string;
 	readonly stepId: string;
@@ -99,14 +99,14 @@ export interface SchedulerWorkflowAttemptFactV1 {
 	readonly lastQueueEntryId?: string;
 }
 
-export interface SchedulerWorkflowPolicyFactV1 {
+export interface SchedulerWorkflowPolicyFact {
 	readonly schemaVersion: 1;
 	readonly workflowId: string;
-	readonly policy: SchedulerWorkflowCompensationPolicyV1;
+	readonly policy: SchedulerWorkflowCompensationPolicy;
 	readonly maxAttempts: number;
 }
 
-export interface SchedulerWorkflowExternalFactV1 {
+export interface SchedulerWorkflowExternalFact {
 	readonly schemaVersion: 1;
 	readonly workflowId: string;
 	readonly stepId: string;
@@ -120,29 +120,29 @@ export interface SchedulerWorkflowExternalFactV1 {
 	readonly submittedAt: string;
 }
 
-export interface SchedulerWorkflowCompensationFactV1 {
+export interface SchedulerWorkflowCompensationFact {
 	readonly schemaVersion: 1;
 	readonly workflowId: string;
 	readonly stepId: string;
 	readonly queueEntryId: string;
 	readonly attempt: number;
 	readonly nodeId: string;
-	readonly state: SchedulerWorkflowCompensationStateV1;
+	readonly state: SchedulerWorkflowCompensationState;
 	readonly scheduledAt: string;
 	readonly settledAt?: string;
 	readonly failedAt?: string;
 }
 
-export interface SchedulerWorkflowConnectorRetryOptionsV1 {
+export interface SchedulerWorkflowConnectorRetryOptions {
 	/** Exact trusted provider/target identity expected from Scheduler selection. */
 	readonly providerId: string;
 	readonly targetId: string;
 	/** Omission is intentional fail-closed evidence that the operation is not retry eligible. */
-	readonly guarantee?: ConnectorRetryGuaranteeV1;
-	readonly policy?: ConnectorRetryPolicyV1;
+	readonly guarantee?: ConnectorRetryGuarantee;
+	readonly policy?: ConnectorRetryPolicy;
 }
 
-export interface SchedulerWorkflowControllerOptionsV1 {
+export interface SchedulerWorkflowControllerOptions {
 	/** Production scheduling is inert unless explicitly enabled. */
 	readonly enabled?: boolean;
 	readonly sourceSession: Session;
@@ -160,15 +160,15 @@ export interface SchedulerWorkflowControllerOptionsV1 {
 	readonly runLifecycleSession?: RunLedgerSession;
 	readonly runLifecycleHookOwnership?: "dispatch" | "host";
 	/** Product-owned Native Subagent bridge; omission keeps agent executors unavailable. */
-	readonly nativeAgentBridge?: SchedulerNativeAgentBridgeV1;
+	readonly nativeAgentBridge?: SchedulerNativeAgentBridge;
 	readonly executorOwnerId?: string;
-	readonly compensationPolicy?: SchedulerWorkflowCompensationPolicyV1;
+	readonly compensationPolicy?: SchedulerWorkflowCompensationPolicy;
 	readonly maxAttempts?: number;
-	readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
+	readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptions;
 	readonly now?: () => string;
 }
 
-export interface SchedulerWorkflowTickErrorV1 {
+export interface SchedulerWorkflowTickError {
 	readonly workflowId: string;
 	readonly stepId?: string;
 	readonly code: string;
@@ -181,7 +181,7 @@ export interface SchedulerWorkflowTickResult {
 	readonly completed: number;
 	readonly stopped: number;
 	readonly wakesFired: number;
-	readonly errors: readonly SchedulerWorkflowTickErrorV1[];
+	readonly errors: readonly SchedulerWorkflowTickError[];
 }
 
 function plusMs(nowIso: string, ttlMs: number): string {
@@ -211,7 +211,7 @@ function stemId(value: unknown): string {
 export function schedulerWorkflowExternalIds(
 	workflowId: string,
 	stepId: string,
-): SchedulerWorkflowExternalIdsV1 {
+): SchedulerWorkflowExternalIds {
 	const stem = stemId({ workflowId, stepId });
 	return {
 		waitId: `wait_${stem}`,
@@ -239,13 +239,13 @@ function connectorRetryOperationId(taskId: string, workflowId: string, stepId: s
 function parsePolicyFact(
 	value: unknown,
 	workflowId: string,
-): ResultValue<SchedulerWorkflowPolicyFactV1, FoundationError> {
+): ResultValue<SchedulerWorkflowPolicyFact, FoundationError> {
 	if (
 		!isRecord(value) ||
 		value.schemaVersion !== 1 ||
 		value.workflowId !== workflowId ||
 		typeof value.policy !== "string" ||
-		!SCHEDULER_WORKFLOW_COMPENSATION_POLICIES.includes(value.policy as SchedulerWorkflowCompensationPolicyV1) ||
+		!SCHEDULER_WORKFLOW_COMPENSATION_POLICIES.includes(value.policy as SchedulerWorkflowCompensationPolicy) ||
 		typeof value.maxAttempts !== "number" ||
 		!Number.isInteger(value.maxAttempts) ||
 		value.maxAttempts < 1
@@ -257,7 +257,7 @@ function parsePolicyFact(
 	return Result.ok({
 		schemaVersion: 1,
 		workflowId,
-		policy: value.policy as SchedulerWorkflowCompensationPolicyV1,
+		policy: value.policy as SchedulerWorkflowCompensationPolicy,
 		maxAttempts: value.maxAttempts,
 	});
 }
@@ -266,7 +266,7 @@ function parseCompensationFact(
 	value: unknown,
 	workflowId: string,
 	stepId: string,
-): ResultValue<SchedulerWorkflowCompensationFactV1, FoundationError> {
+): ResultValue<SchedulerWorkflowCompensationFact, FoundationError> {
 	if (
 		!isRecord(value) ||
 		value.schemaVersion !== 1 ||
@@ -280,21 +280,21 @@ function parseCompensationFact(
 		typeof value.nodeId !== "string" ||
 		value.nodeId.length === 0 ||
 		typeof value.state !== "string" ||
-		!SCHEDULER_WORKFLOW_COMPENSATION_STATES.includes(value.state as SchedulerWorkflowCompensationStateV1) ||
+		!SCHEDULER_WORKFLOW_COMPENSATION_STATES.includes(value.state as SchedulerWorkflowCompensationState) ||
 		typeof value.scheduledAt !== "string"
 	) {
 		return Result.err(
 			new FoundationError("foundation_schema_invalid_shape", "Stored Workflow compensation fact is invalid"),
 		);
 	}
-	const fact: SchedulerWorkflowCompensationFactV1 = {
+	const fact: SchedulerWorkflowCompensationFact = {
 		schemaVersion: 1,
 		workflowId,
 		stepId,
 		queueEntryId: value.queueEntryId,
 		attempt: value.attempt,
 		nodeId: value.nodeId,
-		state: value.state as SchedulerWorkflowCompensationStateV1,
+		state: value.state as SchedulerWorkflowCompensationState,
 		scheduledAt: value.scheduledAt,
 		...(typeof value.settledAt === "string" ? { settledAt: value.settledAt } : {}),
 		...(typeof value.failedAt === "string" ? { failedAt: value.failedAt } : {}),
@@ -355,18 +355,18 @@ export class SchedulerWorkflowController {
 	private readonly executorOwnerId: string | undefined;
 	private readonly task: TaskEnvelope;
 	private readonly binding: AgentBinding;
-	private readonly compensationPolicy: SchedulerWorkflowCompensationPolicyV1;
+	private readonly compensationPolicy: SchedulerWorkflowCompensationPolicy;
 	private readonly maxAttempts: number;
 	private readonly clock: RuntimeClock;
 	private readonly nowFn: () => string;
 	private readonly ledger: SessionLedger;
-	private readonly connectorRetryOptions: SchedulerWorkflowConnectorRetryOptionsV1 | undefined;
+	private readonly connectorRetryOptions: SchedulerWorkflowConnectorRetryOptions | undefined;
 	private readonly connectorRetry: ConnectorRetryCircuit | undefined;
-	private wakes = new Map<string, SchedulerWakeV1>();
+	private wakes = new Map<string, SchedulerWake>();
 	private wakeRevisions = new Map<string, number>();
 	private eventRevisions = new Map<string, number>();
 
-	constructor(options: SchedulerWorkflowControllerOptionsV1) {
+	constructor(options: SchedulerWorkflowControllerOptions) {
 		if (
 			options.writer !== undefined &&
 			(options.writer.session !== options.sourceSession ||
@@ -417,7 +417,7 @@ export class SchedulerWorkflowController {
 						this.clock,
 					),
 				);
-		let queueCancelAttempt: SchedulerCancelAttemptV1 | undefined;
+		let queueCancelAttempt: SchedulerCancelAttempt | undefined;
 		this.queue = new SchedulerQueueStore(
 			withRuntimeClock(
 				{
@@ -470,7 +470,7 @@ export class SchedulerWorkflowController {
 			...(options.writer === undefined ? {} : { writer: options.writer }),
 			now: this.nowFn,
 		});
-		const endpoints: readonly [SchedulerMessageSessionEndpointV1, SchedulerMessageSessionEndpointV1] = [
+		const endpoints: readonly [SchedulerMessageSessionEndpoint, SchedulerMessageSessionEndpoint] = [
 			{ session: options.sourceSession, taskGraph: options.sourceGraph },
 			{ session: options.targetSession, taskGraph: options.targetGraph },
 		];
@@ -521,7 +521,7 @@ export class SchedulerWorkflowController {
 		await this.ledger.release();
 	}
 
-	async reload(): Promise<ResultValue<readonly SchedulerWakeV1[], FoundationError>> {
+	async reload(): Promise<ResultValue<readonly SchedulerWake[], FoundationError>> {
 		try {
 			const records = await this.sourceSession.findFoundationRecords({
 				objectType: SCHEDULER_WORKFLOW_WAKE_OBJECT_TYPE,
@@ -549,7 +549,7 @@ export class SchedulerWorkflowController {
 		}
 	}
 
-	async scheduleWake(wake: unknown): Promise<ResultValue<SchedulerWakeV1, FoundationError>> {
+	async scheduleWake(wake: unknown): Promise<ResultValue<SchedulerWake, FoundationError>> {
 		const parsed = parseSchedulerWake(wake);
 		if (!parsed.ok) return parsed;
 		if (parsed.value.firedAt !== undefined || parsed.value.revision !== 0) {
@@ -578,7 +578,7 @@ export class SchedulerWorkflowController {
 
 	async tick(): Promise<SchedulerWorkflowTickResult> {
 		if (!this.enabled) return emptyTick(false);
-		const errors: SchedulerWorkflowTickErrorV1[] = [];
+		const errors: SchedulerWorkflowTickError[] = [];
 		const woke = await this.fireDueWakes();
 		if (!woke.ok) {
 			return { ...emptyTick(true), errors: [{ workflowId: "scheduler", code: woke.error.code }] };
@@ -630,7 +630,7 @@ export class SchedulerWorkflowController {
 		return Result.ok(fired);
 	}
 
-	private async fireWake(current: SchedulerWakeV1): Promise<ResultValue<SchedulerWakeV1, FoundationError>> {
+	private async fireWake(current: SchedulerWake): Promise<ResultValue<SchedulerWake, FoundationError>> {
 		if (current.firedAt !== undefined) return Result.ok(serializeSchedulerWake(current));
 		const applied = applySchedulerWakeFire(current, this.nowFn());
 		if (!applied.ok) {
@@ -661,9 +661,9 @@ export class SchedulerWorkflowController {
 	}
 
 	private async writeWake(
-		wake: SchedulerWakeV1,
+		wake: SchedulerWake,
 		expectedRevision: number,
-	): Promise<ResultValue<SchedulerWakeV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerWake, FoundationError>> {
 		const serialized = serializeSchedulerWake(wake);
 		try {
 			const written = await this.ledger.appendFact(
@@ -690,7 +690,7 @@ export class SchedulerWorkflowController {
 
 	private async writeWakeEvent(
 		category: "scheduler.wake_scheduled" | "scheduler.wake_fired",
-		wake: SchedulerWakeV1,
+		wake: SchedulerWake,
 	): Promise<ResultValue<void, FoundationError>> {
 		const payload: SchedulerWakeEventPayload = {
 			schemaVersion: 1,
@@ -771,9 +771,9 @@ export class SchedulerWorkflowController {
 		readonly scheduled: number;
 		readonly completed: boolean;
 		readonly stopped: boolean;
-		readonly errors: readonly SchedulerWorkflowTickErrorV1[];
+		readonly errors: readonly SchedulerWorkflowTickError[];
 	}> {
-		const errors: SchedulerWorkflowTickErrorV1[] = [];
+		const errors: SchedulerWorkflowTickError[] = [];
 		let scheduled = 0;
 		const policy = await this.workflowPolicy(workflowId);
 		if (!policy.ok) {
@@ -1103,13 +1103,13 @@ export class SchedulerWorkflowController {
 		});
 		if (!recorded.ok) return recorded;
 		const nodeId = compensation?.nodeId ?? localNodeId(step.stepId, attemptsUsed, false);
-		const nodeRef: SchedulerNodeRefV1 = {
+		const nodeRef: SchedulerNodeRef = {
 			taskId: this.task.taskId,
 			graphRevision: 1,
 			nodeId,
 		};
 		const queueEntryId = compensation?.queueEntryId ?? queueIdentity(workflow.workflowId, nodeId, attemptsUsed);
-		const entry: SchedulerQueueEntryV1 = {
+		const entry: SchedulerQueueEntry = {
 			schemaVersion: 1,
 			queueEntryId,
 			sessionId: this.sourceSessionId,
@@ -1135,7 +1135,7 @@ export class SchedulerWorkflowController {
 		if (!claimed.ok) return claimed;
 		let fencingToken = claimed.value.claim.fencingToken;
 		if (this.executorOwnerId !== undefined && this.executorOwnerId !== this.ownerId) {
-			const transfer: SchedulerOwnershipTransferV1 = {
+			const transfer: SchedulerOwnershipTransfer = {
 				schemaVersion: 1,
 				transferId: transferIdentity(queueEntryId),
 				taskId: this.task.taskId,
@@ -1245,7 +1245,7 @@ export class SchedulerWorkflowController {
 				const other = workflow.steps.find((candidate) => candidate.stepId === dependency);
 				return other !== undefined && EXECUTABLE_STEP_TYPES.has(other.type);
 			}) ?? [];
-		const plan: SchedulerJoinPlanV1 | undefined =
+		const plan: SchedulerJoinPlan | undefined =
 			predecessors.length === 0
 				? undefined
 				: {
@@ -1302,12 +1302,12 @@ export class SchedulerWorkflowController {
 			step.type === "parallel"
 				? step.intents.map((intent) => intent.stepId)
 				: (step.dependsOn ?? []);
-		const nodeRef: SchedulerNodeRefV1 = {
+		const nodeRef: SchedulerNodeRef = {
 			taskId: this.task.taskId,
 			graphRevision: 1,
 			nodeId: step.stepId,
 		};
-		const plan: SchedulerJoinPlanV1 = {
+		const plan: SchedulerJoinPlan = {
 			schemaVersion: 1,
 			joinId: schedulerNodeJoinId(nodeRef),
 			taskId: this.task.taskId,
@@ -1438,7 +1438,7 @@ export class SchedulerWorkflowController {
 		const attempt = (previous?.attemptsUsed ?? 0) + 1;
 		const nodeId = localNodeId(step.stepId, attempt, true);
 		const queueEntryId = queueIdentity(workflow.workflowId, nodeId, attempt);
-		const scheduled: SchedulerWorkflowCompensationFactV1 = {
+		const scheduled: SchedulerWorkflowCompensationFact = {
 			schemaVersion: 1,
 			workflowId: workflow.workflowId,
 			stepId: step.stepId,
@@ -1473,7 +1473,7 @@ export class SchedulerWorkflowController {
 	private async reconcileCompensation(
 		workflow: Workflow,
 		step: WorkflowStep,
-		known?: SchedulerWorkflowCompensationFactV1,
+		known?: SchedulerWorkflowCompensationFact,
 	): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>> {
 		const loaded = known === undefined ? await this.readCompensation(workflow.workflowId, step.stepId) : Result.ok(known);
 		if (!loaded.ok) return loaded;
@@ -1635,13 +1635,13 @@ export class SchedulerWorkflowController {
 
 	private async workflowPolicy(
 		workflowId: string,
-	): Promise<ResultValue<SchedulerWorkflowPolicyFactV1, FoundationError>> {
-		const existing = await this.ledger.getFact<SchedulerWorkflowPolicyFactV1>(
+	): Promise<ResultValue<SchedulerWorkflowPolicyFact, FoundationError>> {
+		const existing = await this.ledger.getFact<SchedulerWorkflowPolicyFact>(
 			SCHEDULER_WORKFLOW_POLICY_OBJECT_TYPE,
 			workflowId,
 		);
 		if (existing !== undefined) return parsePolicyFact(existing.payload, workflowId);
-		const created: SchedulerWorkflowPolicyFactV1 = {
+		const created: SchedulerWorkflowPolicyFact = {
 			schemaVersion: 1,
 			workflowId,
 			policy: this.compensationPolicy,
@@ -1660,7 +1660,7 @@ export class SchedulerWorkflowController {
 			);
 			return parsePolicyFact(written.payload, workflowId);
 		} catch (error) {
-			const replayed = await this.ledger.getFact<SchedulerWorkflowPolicyFactV1>(
+			const replayed = await this.ledger.getFact<SchedulerWorkflowPolicyFact>(
 				SCHEDULER_WORKFLOW_POLICY_OBJECT_TYPE,
 				workflowId,
 			);
@@ -1676,8 +1676,8 @@ export class SchedulerWorkflowController {
 	private async readAttempt(
 		workflowId: string,
 		stepId: string,
-	): Promise<SchedulerWorkflowAttemptFactV1 | undefined> {
-		const stored = await this.ledger.getFact<SchedulerWorkflowAttemptFactV1>(
+	): Promise<SchedulerWorkflowAttemptFact | undefined> {
+		const stored = await this.ledger.getFact<SchedulerWorkflowAttemptFact>(
 			SCHEDULER_WORKFLOW_ATTEMPT_OBJECT_TYPE,
 			`${workflowId}:${stepId}`,
 		);
@@ -1685,10 +1685,10 @@ export class SchedulerWorkflowController {
 	}
 
 	private async writeAttempt(
-		fact: SchedulerWorkflowAttemptFactV1,
+		fact: SchedulerWorkflowAttemptFact,
 	): Promise<ResultValue<void, FoundationError>> {
 		const objectId = `${fact.workflowId}:${fact.stepId}`;
-		const current = await this.ledger.getFact<SchedulerWorkflowAttemptFactV1>(
+		const current = await this.ledger.getFact<SchedulerWorkflowAttemptFact>(
 			SCHEDULER_WORKFLOW_ATTEMPT_OBJECT_TYPE,
 			objectId,
 		);
@@ -1711,8 +1711,8 @@ export class SchedulerWorkflowController {
 	private async readExternal(
 		workflowId: string,
 		stepId: string,
-	): Promise<SchedulerWorkflowExternalFactV1 | undefined> {
-		const stored = await this.ledger.getFact<SchedulerWorkflowExternalFactV1>(
+	): Promise<SchedulerWorkflowExternalFact | undefined> {
+		const stored = await this.ledger.getFact<SchedulerWorkflowExternalFact>(
 			SCHEDULER_WORKFLOW_EXTERNAL_OBJECT_TYPE,
 			`${workflowId}:${stepId}`,
 		);
@@ -1720,7 +1720,7 @@ export class SchedulerWorkflowController {
 	}
 
 	private async writeExternal(
-		fact: SchedulerWorkflowExternalFactV1,
+		fact: SchedulerWorkflowExternalFact,
 	): Promise<ResultValue<void, FoundationError>> {
 		try {
 			await this.ledger.appendFact(
@@ -1746,8 +1746,8 @@ export class SchedulerWorkflowController {
 	private async readCompensation(
 		workflowId: string,
 		stepId: string,
-	): Promise<ResultValue<SchedulerWorkflowCompensationFactV1 | undefined, FoundationError>> {
-		const stored = await this.ledger.getFact<SchedulerWorkflowCompensationFactV1>(
+	): Promise<ResultValue<SchedulerWorkflowCompensationFact | undefined, FoundationError>> {
+		const stored = await this.ledger.getFact<SchedulerWorkflowCompensationFact>(
 			SCHEDULER_WORKFLOW_COMPENSATION_OBJECT_TYPE,
 			`${workflowId}:${stepId}`,
 		);
@@ -1756,10 +1756,10 @@ export class SchedulerWorkflowController {
 	}
 
 	private async writeCompensation(
-		fact: SchedulerWorkflowCompensationFactV1,
-	): Promise<ResultValue<SchedulerWorkflowCompensationFactV1, FoundationError>> {
+		fact: SchedulerWorkflowCompensationFact,
+	): Promise<ResultValue<SchedulerWorkflowCompensationFact, FoundationError>> {
 		const objectId = `${fact.workflowId}:${fact.stepId}`;
-		const current = await this.ledger.getFact<SchedulerWorkflowCompensationFactV1>(
+		const current = await this.ledger.getFact<SchedulerWorkflowCompensationFact>(
 			SCHEDULER_WORKFLOW_COMPENSATION_OBJECT_TYPE,
 			objectId,
 		);

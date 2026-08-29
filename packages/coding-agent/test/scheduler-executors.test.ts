@@ -42,15 +42,15 @@ import { describe, expect, it } from "vitest";
 import { BUILTIN_CODING_AGENT_PROVIDER_ID } from "../src/core/product-prompt-ingress.ts";
 import {
 	parseSchedulerExecutorEntry,
-	type SchedulerExecutorEntryV1,
-	type SchedulerQueueEntryV1,
+	type SchedulerExecutorEntry,
+	type SchedulerQueueEntry,
 	schedulerErrorRetryable,
 	serializeSchedulerSelectionFact,
 } from "../src/core/scheduler.ts";
 import {
-	createSchedulerExecutorRuntimeSnapshotV1,
-	executorPassesHardFiltersV1,
-	projectSchedulerSelectionFactV1,
+	createSchedulerExecutorRuntimeSnapshot,
+	executorPassesHardFilters,
+	projectSchedulerSelectionFact,
 	SCHEDULER_EXECUTOR_SCORE_AFFINITY_SESSION,
 	SCHEDULER_EXECUTOR_SCORE_AFFINITY_WORKSPACE,
 	SCHEDULER_EXECUTOR_SCORE_COST_LOCAL,
@@ -60,13 +60,13 @@ import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SCHEDULER_IN_PROCESS_PROVIDER_ID,
 	SchedulerExecutorRegistry,
-	type SchedulerExecutorRuntimeSnapshotV1,
-	type SchedulerHostAttemptRunnerV1,
+	type SchedulerExecutorRuntimeSnapshot,
+	type SchedulerHostAttemptRunner,
 	SchedulerInProcessTaskExecutorProvider,
-	schedulerBindingRequirementDigestV1,
+	schedulerBindingRequirementDigest,
 	schedulerQuotaOwnerKind,
-	scoreSchedulerExecutorV1,
-	selectSchedulerExecutorV1,
+	scoreSchedulerExecutor,
+	selectSchedulerExecutor,
 } from "../src/core/scheduler-executors.ts";
 import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 
@@ -143,7 +143,7 @@ function hostAttemptRunner(
 	usage: BudgetUsage = { tokens: 3 },
 	onRun?: (receipt: AttemptReceipt) => void,
 	mutate?: (receipt: AttemptReceipt) => AttemptReceipt,
-): SchedulerHostAttemptRunnerV1 {
+): SchedulerHostAttemptRunner {
 	return async (attempt, options) => {
 		const receipt =
 			mutate === undefined ? hostAttemptReceipt(attempt, options) : mutate(hostAttemptReceipt(attempt, options));
@@ -152,7 +152,7 @@ function hostAttemptRunner(
 	};
 }
 
-function queueEntry(overrides: Partial<SchedulerQueueEntryV1> = {}): SchedulerQueueEntryV1 {
+function queueEntry(overrides: Partial<SchedulerQueueEntry> = {}): SchedulerQueueEntry {
 	return {
 		schemaVersion: 1,
 		queueEntryId: "queue_1",
@@ -169,9 +169,9 @@ function queueEntry(overrides: Partial<SchedulerQueueEntryV1> = {}): SchedulerQu
 
 function executorEntry(
 	providerId: string,
-	providerClass: SchedulerExecutorEntryV1["descriptor"]["providerClass"],
-	overrides: Partial<SchedulerExecutorEntryV1> = {},
-): SchedulerExecutorEntryV1 {
+	providerClass: SchedulerExecutorEntry["descriptor"]["providerClass"],
+	overrides: Partial<SchedulerExecutorEntry> = {},
+): SchedulerExecutorEntry {
 	return {
 		schemaVersion: 1,
 		descriptor: { schemaVersion: 1, providerId, providerClass },
@@ -327,9 +327,9 @@ function runtimeSnapshotFor(
 		readonly configRevision?: ReturnType<typeof fingerprintFoundationValue>;
 		readonly expiresAt?: string;
 	} = {},
-): SchedulerExecutorRuntimeSnapshotV1 {
+): SchedulerExecutorRuntimeSnapshot {
 	const bindingValue = options.bindingValue ?? binding();
-	const bindingDigest = schedulerBindingRequirementDigestV1(bindingValue);
+	const bindingDigest = schedulerBindingRequirementDigest(bindingValue);
 	if (!bindingDigest.ok) throw bindingDigest.error;
 	if (bindingValue.policyRevision.fingerprint === undefined) throw new Error("policy fingerprint missing");
 	const capabilitySnapshot = createConnectorCapabilitySnapshot({
@@ -343,7 +343,7 @@ function runtimeSnapshotFor(
 		artifacts: true,
 		images: false,
 	});
-	const created = createSchedulerExecutorRuntimeSnapshotV1({
+	const created = createSchedulerExecutorRuntimeSnapshot({
 		schemaVersion: 1,
 		capabilitySnapshot,
 		configRevision: options.configRevision ?? fingerprintFoundationValue(`config:${providerId}:1`),
@@ -709,23 +709,23 @@ describe("scheduler executor registry and hard filters", () => {
 	});
 
 	it("filters untrusted and capability-mismatched executors and does not fall back to Host", async () => {
-		const untrusted: Parameters<typeof executorPassesHardFiltersV1>[0] = {
+		const untrusted: Parameters<typeof executorPassesHardFilters>[0] = {
 			entry: executorEntry("exec_untrusted", "task_executor"),
 			trusted: false,
 			latencyMs: 0,
 			load: 0,
 			maxConcurrency: 1,
 		};
-		const missingCap: Parameters<typeof executorPassesHardFiltersV1>[0] = {
+		const missingCap: Parameters<typeof executorPassesHardFilters>[0] = {
 			entry: executorEntry("exec_agent", "agent", { capabilities: [AGENT_CAPABILITY] }),
 			trusted: true,
 			latencyMs: 0,
 			load: 0,
 			maxConcurrency: 1,
 		};
-		expect(executorPassesHardFiltersV1(untrusted, [TASK_CAPABILITY])).toBe(false);
-		expect(executorPassesHardFiltersV1(missingCap, [TASK_CAPABILITY])).toBe(false);
-		const selected = selectSchedulerExecutorV1([untrusted, missingCap], {
+		expect(executorPassesHardFilters(untrusted, [TASK_CAPABILITY])).toBe(false);
+		expect(executorPassesHardFilters(missingCap, [TASK_CAPABILITY])).toBe(false);
+		const selected = selectSchedulerExecutor([untrusted, missingCap], {
 			queueEntry: queueEntry(),
 			requiredCapabilities: [TASK_CAPABILITY],
 			decidedAt: NOW,
@@ -736,14 +736,14 @@ describe("scheduler executor registry and hard filters", () => {
 	});
 
 	it("returns scheduler_backpressure when every hard-eligible executor is at capacity", () => {
-		const full: Parameters<typeof selectSchedulerExecutorV1>[0][number] = {
+		const full: Parameters<typeof selectSchedulerExecutor>[0][number] = {
 			entry: executorEntry("exec_full", "task_executor"),
 			trusted: true,
 			latencyMs: 0,
 			load: 1,
 			maxConcurrency: 1,
 		};
-		const selected = selectSchedulerExecutorV1([full], {
+		const selected = selectSchedulerExecutor([full], {
 			queueEntry: queueEntry(),
 			requiredCapabilities: [TASK_CAPABILITY],
 			decidedAt: NOW,
@@ -782,11 +782,11 @@ describe("scheduler executor deterministic scoring and catalog projection", () =
 			load: 0,
 			maxConcurrency: 4,
 		};
-		expect(scoreSchedulerExecutorV1(localIdle, {})).toBe(
+		expect(scoreSchedulerExecutor(localIdle, {})).toBe(
 			SCHEDULER_EXECUTOR_SCORE_COST_LOCAL + SCHEDULER_EXECUTOR_SCORE_LATENCY_MAX + SCHEDULER_EXECUTOR_SCORE_LOAD_MAX,
 		);
 		expect(
-			scoreSchedulerExecutorV1(remoteAffinity, { sessionId: "session_a", workspaceDigest: WORKSPACE_DIGEST }),
+			scoreSchedulerExecutor(remoteAffinity, { sessionId: "session_a", workspaceDigest: WORKSPACE_DIGEST }),
 		).toBe(
 			SCHEDULER_EXECUTOR_SCORE_COST_REMOTE +
 				SCHEDULER_EXECUTOR_SCORE_LATENCY_MAX +
@@ -794,14 +794,14 @@ describe("scheduler executor deterministic scoring and catalog projection", () =
 				SCHEDULER_EXECUTOR_SCORE_AFFINITY_SESSION +
 				SCHEDULER_EXECUTOR_SCORE_AFFINITY_WORKSPACE,
 		);
-		const first = selectSchedulerExecutorV1([localIdle, remoteAffinity, localAffinity], {
+		const first = selectSchedulerExecutor([localIdle, remoteAffinity, localAffinity], {
 			queueEntry: queueEntry(),
 			requiredCapabilities: [TASK_CAPABILITY],
 			sessionId: "session_a",
 			workspaceDigest: WORKSPACE_DIGEST,
 			decidedAt: NOW,
 		});
-		const second = selectSchedulerExecutorV1([localAffinity, remoteAffinity, localIdle], {
+		const second = selectSchedulerExecutor([localAffinity, remoteAffinity, localIdle], {
 			queueEntry: queueEntry(),
 			requiredCapabilities: [TASK_CAPABILITY],
 			sessionId: "session_a",
@@ -815,7 +815,7 @@ describe("scheduler executor deterministic scoring and catalog projection", () =
 		expect(first.value.scores.map((item) => item.providerId)).toEqual(["exec_best", "exec_local", "exec_remote"]);
 		expect(first.value.inputsDigest).toEqual(second.value.inputsDigest);
 		expect(first.value.scores).toEqual(second.value.scores);
-		const projected = projectSchedulerSelectionFactV1(first.value);
+		const projected = projectSchedulerSelectionFact(first.value);
 		expect(projected.ok).toBe(true);
 		if (!projected.ok) return;
 		expect(projected.value).toEqual({
@@ -870,7 +870,7 @@ describe("scheduler executor deterministic scoring and catalog projection", () =
 			load: 0,
 			maxConcurrency: 4,
 		};
-		const selected = selectSchedulerExecutorV1([right, left], {
+		const selected = selectSchedulerExecutor([right, left], {
 			queueEntry: queueEntry(),
 			requiredCapabilities: [TASK_CAPABILITY],
 			decidedAt: NOW,
@@ -879,7 +879,7 @@ describe("scheduler executor deterministic scoring and catalog projection", () =
 		if (!selected.ok) return;
 		expect(selected.value.chosenProviderId).toBe("exec_a");
 		expect(selected.value.chosenProviderId).not.toBe(SCHEDULER_IN_PROCESS_PROVIDER_ID);
-		expect(selectSchedulerExecutorV1([], { queueEntry: queueEntry(), decidedAt: NOW }).ok).toBe(false);
+		expect(selectSchedulerExecutor([], { queueEntry: queueEntry(), decidedAt: NOW }).ok).toBe(false);
 	});
 
 	it("fails closed on duplicate providerIds", () => {
@@ -897,7 +897,7 @@ describe("scheduler executor deterministic scoring and catalog projection", () =
 			load: 0,
 			maxConcurrency: 4,
 		};
-		const selected = selectSchedulerExecutorV1([left, duplicate], {
+		const selected = selectSchedulerExecutor([left, duplicate], {
 			queueEntry: queueEntry(),
 			requiredCapabilities: [TASK_CAPABILITY],
 			decidedAt: NOW,
@@ -1324,7 +1324,7 @@ describe("scheduler durable exact selection", () => {
 		const cases: readonly {
 			readonly name: string;
 			readonly bindingValue: AgentBinding;
-			readonly snapshot: (providerId: string) => SchedulerExecutorRuntimeSnapshotV1;
+			readonly snapshot: (providerId: string) => SchedulerExecutorRuntimeSnapshot;
 			readonly expectedStage: string;
 		}[] = [
 			{

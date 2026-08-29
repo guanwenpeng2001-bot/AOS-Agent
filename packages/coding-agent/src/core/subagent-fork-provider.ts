@@ -48,32 +48,32 @@ import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from 
 import { FORK_PROVIDER } from "./subagent-registry.ts";
 import {
 	CHILD_BINDING_PROJECTION_OBJECT_TYPE,
-	validateChildBindingProjectionV1,
-	type ChildBindingProjectionV1,
+	validateChildBindingProjection,
+	type ChildBindingProjection,
 } from "./subagent-binding.ts";
-import type { ChildContextForkResultV1 } from "./subagent-context-fork.ts";
+import type { ChildContextForkResult } from "./subagent-context-fork.ts";
 import {
-	projectProviderChildContextV1,
-	type LoadParentContextV1,
+	projectProviderChildContext,
+	type LoadParentContext,
 } from "./subagent-provider-context.ts";
 import {
-	childAgentQuotaAttributionV1,
-	type ChildAgentBackgroundAttachV1,
+	childAgentQuotaAttribution,
+	type ChildAgentBackgroundAttach,
 } from "./subagent-inprocess-provider.ts";
 import {
 	CHILD_AGENT_PROTOCOL_FEATURES,
 	CHILD_AGENT_PROTOCOL_MAX_FRAME_BYTES,
 	CHILD_AGENT_PROTOCOL_VERSION,
-	childAgentUsageIsPresentV1,
-	ChildAgentProtocolSessionV1,
-	parseChildAgentFrameV1,
-	serializeChildAgentFrameLineV1,
-	type ChildAgentCancelReasonV1,
-	type ChildAgentInitializeRequestV1,
-	type ChildAgentProtocolFrameV1,
-	type ChildAgentTranscriptRefV1,
+	childAgentUsageIsPresent,
+	ChildAgentProtocolSession,
+	parseChildAgentFrame,
+	serializeChildAgentFrameLine,
+	type ChildAgentCancelReason,
+	type ChildAgentInitializeRequest,
+	type ChildAgentProtocolFrame,
+	type ChildAgentTranscriptRef,
 } from "./subagent-fork-protocol.ts";
-import type { SubagentProviderSpawnPlanV1, SubagentSupervisorV1 } from "./subagent-supervisor.ts";
+import type { SubagentProviderSpawnPlan, SubagentSupervisor } from "./subagent-supervisor.ts";
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_TURN_TIMEOUT_MS = 15_000;
@@ -83,7 +83,7 @@ const SECRET_ENVIRONMENT_KEY = /(auth|cookie|credential|header|key|password|secr
 const SAFE_ENVIRONMENT_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const SESSION_PATH_PATTERN = /(?:^|[\\/])(?:\.aos-agent|sessions?)(?:[\\/]|$)/i;
 
-export interface ChildAgentProcessV1 {
+export interface ChildAgentProcess {
 	readonly stdin: Writable | null;
 	readonly stdout: Readable | null;
 	readonly stderr: Readable | null;
@@ -98,24 +98,24 @@ export interface ChildAgentProcessV1 {
 	removeListener(event: "error", listener: (error: Error) => void): this;
 }
 
-export interface ChildAgentProcessSpawnSpecV1 {
+export interface ChildAgentProcessSpawnSpec {
 	readonly executable: string;
 	readonly entrypoint: string;
 	readonly environment: Readonly<Record<string, string>>;
 	readonly cwd: string;
 }
 
-export interface ForkChildAgentProviderOptionsV1 {
+export interface ForkChildAgentProviderOptions {
 	readonly schemaVersion: 1;
 	readonly providerId: string;
-	readonly supervisor: SubagentSupervisorV1;
+	readonly supervisor: SubagentSupervisor;
 	readonly quota: QuotaProvider;
 	readonly ledger: SessionLedger;
 	readonly executable: string;
 	readonly entrypoint: string;
 	readonly workingDirectory?: string;
 	readonly environment?: Readonly<Record<string, string>>;
-	readonly loadParentContext: LoadParentContextV1;
+	readonly loadParentContext: LoadParentContext;
 	readonly loadTurnBoundaryContext?: (input: {
 		readonly schemaVersion: 1;
 		readonly spawnId: string;
@@ -123,7 +123,7 @@ export interface ForkChildAgentProviderOptionsV1 {
 		readonly childAgentInstanceId: string;
 	}) => Promise<ResultValue<string | undefined, FoundationError>>;
 	readonly onTurnOutput?: (input: { readonly spawnId: string; readonly attemptId: string; readonly output: string }) => void;
-	readonly spawnProcess?: (spec: ChildAgentProcessSpawnSpecV1) => ChildAgentProcessV1;
+	readonly spawnProcess?: (spec: ChildAgentProcessSpawnSpec) => ChildAgentProcess;
 	readonly now?: () => string;
 	readonly readyTimeoutMs?: number;
 	readonly turnTimeoutMs?: number;
@@ -144,12 +144,12 @@ interface ForkChildHandleV1 {
 	readonly request: ChildSpawnRequest;
 	readonly correlation: ExecutionCorrelation;
 	readonly binding: AgentBinding;
-	readonly bindingProjection: ChildBindingProjectionV1;
-	readonly contextFork: ChildContextForkResultV1;
+	readonly bindingProjection: ChildBindingProjection;
+	readonly contextFork: ChildContextForkResult;
 	readonly childLaneId: string;
 	generation: number;
-	child?: ChildAgentProcessV1;
-	protocol: ChildAgentProtocolSessionV1;
+	child?: ChildAgentProcess;
+	protocol: ChildAgentProtocolSession;
 	quotaReservation?: QuotaReservation;
 	turnUsage?: BudgetUsage;
 	detachStdout?: () => void;
@@ -168,7 +168,7 @@ interface ForkChildHandleV1 {
 	closed: boolean;
 	lost: boolean;
 	receipt?: AttemptReceipt;
-	transcriptRef?: ChildAgentTranscriptRefV1;
+	transcriptRef?: ChildAgentTranscriptRef;
 	spawnCount: number;
 	turnCount: number;
 }
@@ -239,21 +239,21 @@ function requestId(prefix: string, spawnId: string, generation: number): string 
 	return `${prefix}:${spawnId}:${generation}`;
 }
 
-export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecutorProvider {
+export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerClass = "agent" as const;
 	readonly providerId: string;
-	private readonly supervisor: SubagentSupervisorV1;
+	private readonly supervisor: SubagentSupervisor;
 	private readonly quota: QuotaProvider;
 	private readonly ledger: SessionLedger;
 	private readonly executable: string;
 	private readonly entrypoint: string;
 	private readonly workingDirectory: string;
 	private readonly environment: Readonly<Record<string, string>>;
-	private readonly loadParentContext: LoadParentContextV1;
-	private readonly loadTurnBoundaryContext: NonNullable<ForkChildAgentProviderOptionsV1["loadTurnBoundaryContext"]>;
-	private readonly onTurnOutput: ForkChildAgentProviderOptionsV1["onTurnOutput"];
-	private readonly spawnProcess: ((spec: ChildAgentProcessSpawnSpecV1) => ChildAgentProcessV1) | undefined;
+	private readonly loadParentContext: LoadParentContext;
+	private readonly loadTurnBoundaryContext: NonNullable<ForkChildAgentProviderOptions["loadTurnBoundaryContext"]>;
+	private readonly onTurnOutput: ForkChildAgentProviderOptions["onTurnOutput"];
+	private readonly spawnProcess: ((spec: ChildAgentProcessSpawnSpec) => ChildAgentProcess) | undefined;
 	private readonly now: () => string;
 	private readonly readyTimeoutMs: number;
 	private readonly turnTimeoutMs: number;
@@ -264,7 +264,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	private readonly byAttemptId = new Map<string, ForkChildHandleV1>();
 	private disposed = false;
 
-	constructor(options: ForkChildAgentProviderOptionsV1) {
+	constructor(options: ForkChildAgentProviderOptions) {
 		const environment = Object.freeze({ ...(options.environment ?? {}) });
 		const workingDirectory = options.workingDirectory ?? dirname(options.entrypoint);
 		if (
@@ -347,19 +347,19 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		}
 		const checkedBinding = validateImmutableAgentBinding(bindingFact.payload);
 		if (!checkedBinding.ok) return checkedBinding;
-		const projectionFact = await this.ledger.getFact<ChildBindingProjectionV1>(
+		const projectionFact = await this.ledger.getFact<ChildBindingProjection>(
 			CHILD_BINDING_PROJECTION_OBJECT_TYPE,
 			request.spawnId,
 		);
 		if (
 			projectionFact === undefined ||
-			!validateChildBindingProjectionV1(projectionFact.payload) ||
+			!validateChildBindingProjection(projectionFact.payload) ||
 			projectionFact.payload.spawnId !== request.spawnId ||
 			projectionFact.payload.childBindingId !== checkedBinding.value.bindingId
 		) {
 			return Result.err(fail("subagent_spawn_invalid", "Child Binding projection proof must be durable before fork spawn"));
 		}
-		const contextFork = await projectProviderChildContextV1({
+		const contextFork = await projectProviderChildContext({
 			schemaVersion: 1,
 			request,
 			childBindingEpochId: created.value.initialBindingEpoch.bindingEpochId,
@@ -376,7 +376,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 			contextFork: contextFork.value,
 			childLaneId: planned.value.childLaneId,
 			generation: 1,
-			protocol: new ChildAgentProtocolSessionV1(),
+			protocol: new ChildAgentProtocolSession(),
 			timers: new Set(),
 			background: false,
 			closed: false,
@@ -489,7 +489,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 			requestId: requestId("cancel", handle.spawnId, handle.generation),
 			spawnId: handle.spawnId,
 			attemptId,
-			reason: "cancel" as ChildAgentCancelReasonV1,
+			reason: "cancel" as ChildAgentCancelReason,
 		};
 		const applied = handle.protocol.receiveHostFrame(cancelFrame);
 		if (!applied.ok) {
@@ -531,7 +531,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		}
 		handle.lost = false;
 		handle.generation = previousGeneration + 1;
-		handle.protocol = new ChildAgentProtocolSessionV1();
+		handle.protocol = new ChildAgentProtocolSession();
 		const started = await this.startProcess(handle, true);
 		if (!started.ok) return started;
 		if (handle.generation === previousGeneration) {
@@ -543,7 +543,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		});
 	}
 
-	async markBackground(attemptId: string): Promise<ResultValue<ChildAgentBackgroundAttachV1, FoundationError>> {
+	async markBackground(attemptId: string): Promise<ResultValue<ChildAgentBackgroundAttach, FoundationError>> {
 		const handle = this.byAttemptId.get(attemptId);
 		if (handle === undefined) return Result.err(fail("subagent_not_found", "Child Agent attempt is not held by this provider"));
 		const background = await this.supervisor.markBackground(handle.spawn.agentInstance.agentInstanceId);
@@ -559,7 +559,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	attachObserver(
 		attemptId: string,
 		cursor?: ObserverCursor,
-	): ResultValue<ChildAgentBackgroundAttachV1, FoundationError> {
+	): ResultValue<ChildAgentBackgroundAttach, FoundationError> {
 		const handle = this.byAttemptId.get(attemptId);
 		if (handle === undefined) return Result.err(fail("subagent_not_found", "Child Agent attempt is not held by this provider"));
 		const observer = handle.observer ?? new FoundationObserver();
@@ -587,7 +587,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 
 	private async createSpawnResult(
 		request: ChildSpawnRequest,
-		plan: SubagentProviderSpawnPlanV1,
+		plan: SubagentProviderSpawnPlan,
 		correlation: ExecutionCorrelation,
 	): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 		if (request.parentAgentInstanceId === undefined) {
@@ -654,13 +654,13 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		if (handle.child !== undefined) {
 			return Result.err(fail("subagent_lost", "Child Agent process handle must not be reused"));
 		}
-		const spec: ChildAgentProcessSpawnSpecV1 = {
+		const spec: ChildAgentProcessSpawnSpec = {
 			executable: this.executable,
 			entrypoint: this.entrypoint,
 			environment: this.environment,
 			cwd: this.workingDirectory,
 		};
-		let child: ChildAgentProcessV1;
+		let child: ChildAgentProcess;
 		try {
 			child = this.spawnProcess === undefined ? this.spawnTrusted(spec) : this.spawnProcess(spec);
 		} catch {
@@ -686,7 +686,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		return timed.value;
 	}
 
-	private spawnTrusted(spec: ChildAgentProcessSpawnSpecV1): ChildAgentProcessV1 {
+	private spawnTrusted(spec: ChildAgentProcessSpawnSpec): ChildAgentProcess {
 		const child: ChildProcessWithoutNullStreams = spawn(spec.executable, [spec.entrypoint], {
 			cwd: spec.cwd,
 			env: { ...spec.environment },
@@ -698,7 +698,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		return child;
 	}
 
-	private initializeFrame(handle: ForkChildHandleV1, resume: boolean): ChildAgentInitializeRequestV1 {
+	private initializeFrame(handle: ForkChildHandleV1, resume: boolean): ChildAgentInitializeRequest {
 		return {
 			type: "initialize",
 			requestId: requestId("initialize", handle.spawnId, handle.generation),
@@ -735,7 +735,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 		};
 	}
 
-	private attachProcess(handle: ForkChildHandleV1, child: ChildAgentProcessV1): void {
+	private attachProcess(handle: ForkChildHandleV1, child: ChildAgentProcess): void {
 		const onExit = (_code: number | null, _signal: NodeJS.Signals | null): void => {
 			handle.exited = true;
 			if (handle.closed && !handle.lost) {
@@ -788,12 +788,12 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	}
 
 	private async receiveLine(handle: ForkChildHandleV1, line: string): Promise<void> {
-		const parsed = parseChildAgentFrameV1(line);
+		const parsed = parseChildAgentFrame(line);
 		if (!parsed.ok) {
 			await this.markLost(handle, parsed.error);
 			return;
 		}
-		const frame = parsed.value as ChildAgentProtocolFrameV1;
+		const frame = parsed.value as ChildAgentProtocolFrame;
 		if (
 			frame.type !== "ready" &&
 			frame.type !== "turn.started" &&
@@ -817,7 +817,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 			return;
 		}
 		if (event.type === "turn.completed") {
-			if (!childAgentUsageIsPresentV1(event.usage)) {
+			if (!childAgentUsageIsPresent(event.usage)) {
 				await this.markLost(handle, fail("subagent_lost", "Child Agent turn completed without usage"));
 				return;
 			}
@@ -867,7 +867,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 				return;
 			}
 			const usage = handle.turnUsage;
-			if (usage === undefined || !childAgentUsageIsPresentV1(usage)) {
+			if (usage === undefined || !childAgentUsageIsPresent(usage)) {
 				await this.markLost(handle, fail("quota_attribution_error", "Child Agent receipt arrived without turn usage"));
 				return;
 			}
@@ -959,7 +959,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 			return Result.err(fail("subagent_lost", "Child Agent stdin pipe is not live"));
 		}
 		try {
-			const line = serializeChildAgentFrameLineV1(frame);
+			const line = serializeChildAgentFrameLine(frame);
 			child.stdin.write(line);
 			return Result.ok(undefined);
 		} catch (error) {
@@ -968,7 +968,7 @@ export class ForkChildAgentProviderV1 implements ChildAgentProvider, TaskExecuto
 	}
 
 	private async reserveQuota(handle: ForkChildHandleV1): Promise<ResultValue<QuotaReservation, FoundationError>> {
-		const attribution = childAgentQuotaAttributionV1({
+		const attribution = childAgentQuotaAttribution({
 			taskId: handle.spawn.attempt.taskId,
 			attemptId: handle.spawn.attempt.attemptId,
 			agentInstanceId: handle.spawn.agentInstance.agentInstanceId,

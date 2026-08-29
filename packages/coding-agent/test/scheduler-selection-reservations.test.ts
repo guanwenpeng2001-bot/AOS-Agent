@@ -18,17 +18,17 @@ import {
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import type { SchedulerExecutorEntryV1, SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
+import type { SchedulerExecutorEntry, SchedulerQueueEntry } from "../src/core/scheduler.ts";
 import {
-	createSchedulerExecutorRuntimeSnapshotV1,
+	createSchedulerExecutorRuntimeSnapshot,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SchedulerExecutorRegistry,
 	SchedulerInProcessTaskExecutorProvider,
-	schedulerBindingRequirementDigestV1,
+	schedulerBindingRequirementDigest,
 } from "../src/core/scheduler-executors.ts";
 import {
 	SchedulerSelectionReservationStore,
-	type SchedulerSelectionSettlementReasonV1,
+	type SchedulerSelectionSettlementReason,
 } from "../src/core/scheduler-selection-reservations.ts";
 
 const NOW = "2026-08-21T12:00:00.000Z";
@@ -104,7 +104,7 @@ function binding(): AgentBinding {
 	return resolved.value;
 }
 
-function queueEntry(queueEntryId: string): SchedulerQueueEntryV1 {
+function queueEntry(queueEntryId: string): SchedulerQueueEntry {
 	return {
 		schemaVersion: 1,
 		queueEntryId,
@@ -119,7 +119,7 @@ function queueEntry(queueEntryId: string): SchedulerQueueEntryV1 {
 	};
 }
 
-function executorEntry(providerId: string): SchedulerExecutorEntryV1 {
+function executorEntry(providerId: string): SchedulerExecutorEntry {
 	return {
 		schemaVersion: 1,
 		descriptor: { schemaVersion: 1, providerId, providerClass: "task_executor" },
@@ -130,10 +130,10 @@ function executorEntry(providerId: string): SchedulerExecutorEntryV1 {
 }
 
 function runtimeSnapshot(providerId: string, bindingValue: AgentBinding) {
-	const bindingDigest = schedulerBindingRequirementDigestV1(bindingValue);
+	const bindingDigest = schedulerBindingRequirementDigest(bindingValue);
 	if (!bindingDigest.ok) throw bindingDigest.error;
 	if (bindingValue.policyRevision.fingerprint === undefined) throw new Error("policy fingerprint missing");
-	const created = createSchedulerExecutorRuntimeSnapshotV1({
+	const created = createSchedulerExecutorRuntimeSnapshot({
 		schemaVersion: 1,
 		capabilitySnapshot: createConnectorCapabilitySnapshot({
 			schemaVersion: 1,
@@ -253,7 +253,7 @@ async function reserve(registry: SchedulerExecutorRegistry, bindingValue: AgentB
 
 describe("Session-backed Scheduler selection reservation lifecycle", () => {
 	it("settles every terminal path exactly once, including repeated settlement", async () => {
-		const reasons: readonly SchedulerSelectionSettlementReasonV1[] = [
+		const reasons: readonly SchedulerSelectionSettlementReason[] = [
 			"succeeded",
 			"failed",
 			"rejected",

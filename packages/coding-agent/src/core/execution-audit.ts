@@ -83,15 +83,15 @@ import {
 } from "./automation-run-projection.ts";
 import {
 	decodeLegacyAutomationRunLedgerEntryV1,
-	reconcileLegacyAutomationRunLedgerV1,
-	type LegacyAutomationRunFinalModelReferenceV1,
-	type LegacyAutomationRunLedgerEntryV1,
-	type LegacyAutomationRunLedgerSourceEntryV1,
-	type LegacyAutomationRunModelAttemptSummaryV1,
-	type LegacyAutomationRunModelBudgetSummaryV1,
-	type LegacyAutomationRunModelReferenceV1,
-	type LegacyAutomationRunReceiptV1,
-	type LegacyAutomationRunRecordV1,
+	reconcileLegacyAutomationRunLedger,
+	type LegacyAutomationRunFinalModelReference,
+	type LegacyAutomationRunLedgerEntry,
+	type LegacyAutomationRunLedgerSourceEntry,
+	type LegacyAutomationRunModelAttemptSummary,
+	type LegacyAutomationRunModelBudgetSummary,
+	type LegacyAutomationRunModelReference,
+	type LegacyAutomationRunReceipt,
+	type LegacyAutomationRunRecord,
 } from "./migrations/automation-run-ledger.ts";
 import {
 	isLegalTaskCredentialTransition,
@@ -138,22 +138,22 @@ import {
 } from "./task-graph.ts";
 import {
 	WORKER_FORBIDDEN_KEYS,
-	workerTransitionAllowedV1,
-	validateWorkerRecordV1,
+	workerTransitionAllowed,
+	validateWorkerRecord,
 	type WorkerLifecycleStatus,
-	type WorkerRecordV1,
+	type WorkerRecord,
 } from "./worker.ts";
-import type { SafeSubagentLifecycleProjectionV1 } from "./subagent-composition.ts";
+import type { SafeSubagentLifecycleProjection } from "./subagent-composition.ts";
 import {
 	CHILD_LIFECYCLE_STATUSES,
 	SUBAGENT_PROVIDER_KINDS,
-	type ChildLifecycleStatusV1,
-	type SubagentProviderKindV1,
+	type ChildLifecycleStatus,
+	type SubagentProviderKind,
 } from "./subagent.ts";
 import {
 	SCHEDULER_DURABLE_EVENT_CATEGORIES,
 	SCHEDULER_FORBIDDEN_PAYLOAD_KEYS,
-	type SchedulerDurableEventCategoryV1,
+	type SchedulerDurableEventCategory,
 } from "./scheduler.ts";
 
 export const AUDIT_SCHEMA_VERSION = 1 as const;
@@ -615,7 +615,7 @@ export interface AuditWorkerReceiptSummary {
 
 /** Public-safe metadata projection of one validated scheduler durable event. */
 export interface AuditSchedulerSummary {
-	readonly category: SchedulerDurableEventCategoryV1;
+	readonly category: SchedulerDurableEventCategory;
 	readonly eventId: string;
 	readonly streamId: string;
 	readonly sequence: number;
@@ -1067,7 +1067,7 @@ function hasForbiddenWorkerValue(value: unknown, seen = new WeakSet<object>()): 
 	return false;
 }
 
-export function projectSubagentAuditSourceV1(value: unknown): SafeSubagentLifecycleProjectionV1 | undefined {
+export function projectSubagentAuditSource(value: unknown): SafeSubagentLifecycleProjection | undefined {
 	if (
 		!isRecord(value) ||
 		!hasOnlyKeys(value, SUBAGENT_AUDIT_KEYS) ||
@@ -1090,8 +1090,8 @@ export function projectSubagentAuditSourceV1(value: unknown): SafeSubagentLifecy
 		!isSafeIdentifier(value.parentAgentInstanceId) ||
 		!isSafeIdentifier(value.taskId) ||
 		!isSafeText(value.safeSummary) ||
-		!CHILD_LIFECYCLE_STATUSES.includes(value.status as ChildLifecycleStatusV1) ||
-		!SUBAGENT_PROVIDER_KINDS.includes(value.providerKind as SubagentProviderKindV1) ||
+		!CHILD_LIFECYCLE_STATUSES.includes(value.status as ChildLifecycleStatus) ||
+		!SUBAGENT_PROVIDER_KINDS.includes(value.providerKind as SubagentProviderKind) ||
 		!isRecord(value.correlation) ||
 		!hasOnlyKeys(value.correlation, SUBAGENT_AUDIT_CORRELATION_KEYS) ||
 		Object.keys(value.correlation).length !== SUBAGENT_AUDIT_CORRELATION_KEYS.size ||
@@ -1108,12 +1108,12 @@ export function projectSubagentAuditSourceV1(value: unknown): SafeSubagentLifecy
 	const { digest, ...base } = value;
 	const expected = fingerprintFoundationValue(base);
 	if (digest.algorithm !== expected.algorithm || digest.value !== expected.value) return undefined;
-	return cloneDeepFrozen(value) as unknown as SafeSubagentLifecycleProjectionV1;
+	return cloneDeepFrozen(value) as unknown as SafeSubagentLifecycleProjection;
 }
 
 /** Replay projection is deliberately read-only and has no spawn/cancel/resume surface. */
-export function replaySubagentAuditSourceV1(value: unknown): SafeSubagentLifecycleProjectionV1 | undefined {
-	return projectSubagentAuditSourceV1(value);
+export function replaySubagentAuditSource(value: unknown): SafeSubagentLifecycleProjection | undefined {
+	return projectSubagentAuditSource(value);
 }
 
 export function hasForbiddenSchedulerAuditValue(value: unknown, seen = new WeakSet<object>()): boolean {
@@ -1579,11 +1579,11 @@ function safeModelReference(value: ModelReference): AuditModelReference {
 	return model;
 }
 
-function safeRunModelReference(value: LegacyAutomationRunModelReferenceV1): AuditRunModelReference {
+function safeRunModelReference(value: LegacyAutomationRunModelReference): AuditRunModelReference {
 	return { provider: value.provider, id: value.id, thinkingLevel: value.thinkingLevel };
 }
 
-function safeFinalModelReference(value: LegacyAutomationRunFinalModelReferenceV1): AuditRunFinalModelReference {
+function safeFinalModelReference(value: LegacyAutomationRunFinalModelReference): AuditRunFinalModelReference {
 	const model = { provider: value.provider } as DeepMutable<AuditRunFinalModelReference>;
 	if (value.id !== undefined) model.id = value.id;
 	if (value.modelId !== undefined) model.modelId = value.modelId;
@@ -1591,7 +1591,7 @@ function safeFinalModelReference(value: LegacyAutomationRunFinalModelReferenceV1
 	return model;
 }
 
-function safeUsage(value: ModelUsage | LegacyAutomationRunModelAttemptSummaryV1["usage"]): AuditModelUsageSummary {
+function safeUsage(value: ModelUsage | LegacyAutomationRunModelAttemptSummary["usage"]): AuditModelUsageSummary {
 	const usage = {} as DeepMutable<AuditModelUsageSummary>;
 	for (const key of [
 		"inputTokens",
@@ -1610,7 +1610,7 @@ function safeUsage(value: ModelUsage | LegacyAutomationRunModelAttemptSummaryV1[
 }
 
 function safeAttempt(
-	value: ModelAttemptLedgerRecord | LegacyAutomationRunModelAttemptSummaryV1,
+	value: ModelAttemptLedgerRecord | LegacyAutomationRunModelAttemptSummary,
 ): AuditModelAttemptSummary | undefined {
 	const candidate = value.candidate;
 	const model: AuditModelReference =
@@ -1635,7 +1635,7 @@ function safeAttempt(
 	return attempt;
 }
 
-function safeBudget(value: ModelBudgetLimit | LegacyAutomationRunModelBudgetSummaryV1): AuditModelBudgetSummary {
+function safeBudget(value: ModelBudgetLimit | LegacyAutomationRunModelBudgetSummary): AuditModelBudgetSummary {
 	const budget = {} as DeepMutable<AuditModelBudgetSummary>;
 	for (const key of [
 		"modelCalls",
@@ -1696,9 +1696,9 @@ function safePolicySummary(
 }
 
 function safeRunSummary(
-	record: LegacyAutomationRunRecordV1,
+	record: LegacyAutomationRunRecord,
 	status: AuditRunEventStatus,
-	receipt?: LegacyAutomationRunReceiptV1,
+	receipt?: LegacyAutomationRunReceipt,
 	endedAt?: string,
 ): AuditRunSummary {
 	const summary = {
@@ -2000,7 +2000,7 @@ function safeSchedulerSummary(value: SchedulerAuditRecord): AuditSchedulerSummar
 		if (typeof item === "string" && isSafeIdentifier(item)) correlation[key] = item;
 	}
 	return {
-		category: event.category as SchedulerDurableEventCategoryV1,
+		category: event.category as SchedulerDurableEventCategory,
 		eventId: event.eventId,
 		streamId: event.streamId,
 		sequence: event.sequence,
@@ -2020,11 +2020,11 @@ interface RunFactBase {
 }
 
 type RunFact =
-	| (RunFactBase & { readonly kind: "accepted"; readonly record: LegacyAutomationRunRecordV1 })
+	| (RunFactBase & { readonly kind: "accepted"; readonly record: LegacyAutomationRunRecord })
 	| (RunFactBase & { readonly kind: "started"; readonly runId: string; readonly startedAt: string })
 	| (RunFactBase & {
 			readonly kind: "terminal";
-			readonly receipt: LegacyAutomationRunReceiptV1;
+			readonly receipt: LegacyAutomationRunReceipt;
 			readonly endedAt: string;
 	  });
 
@@ -2032,14 +2032,14 @@ interface RunState {
 	readonly runId: string;
 	projection?: AutomationRunProjection;
 	canonicalSource?: CanonicalAuditRunSource;
-	accepted: (RunFactBase & { readonly kind: "accepted"; readonly record: LegacyAutomationRunRecordV1 }) | undefined;
+	accepted: (RunFactBase & { readonly kind: "accepted"; readonly record: LegacyAutomationRunRecord }) | undefined;
 	started:
 		| (RunFactBase & { readonly kind: "started"; readonly runId: string; readonly startedAt: string })
 		| undefined;
 	terminal:
 		| (RunFactBase & {
 				readonly kind: "terminal";
-				readonly receipt: LegacyAutomationRunReceiptV1;
+				readonly receipt: LegacyAutomationRunReceipt;
 				readonly endedAt: string;
 		  })
 		| undefined;
@@ -2423,7 +2423,7 @@ function legacyRunId(data: unknown): string | undefined {
 
 function legacyMigrationSource(
 	entries: ReadonlyArray<Extract<SessionEntry, { type: "custom" }>>,
-): ReadonlyArray<LegacyAutomationRunLedgerSourceEntryV1> {
+): ReadonlyArray<LegacyAutomationRunLedgerSourceEntry> {
 	const decoded = entries.map((entry) => ({
 		entry,
 		fact: decodeLegacyAutomationRunLedgerEntryV1(entry.data),
@@ -2443,7 +2443,7 @@ function projectRunSources(sessionId: string, entries: ReadonlyArray<SessionEntr
 			events: canonicalSources.events,
 		});
 		const legacyEntries = legacyRunEntries(entries);
-		const reconciled = reconcileLegacyAutomationRunLedgerV1(
+		const reconciled = reconcileLegacyAutomationRunLedger(
 			sessionId,
 			legacyMigrationSource(legacyEntries),
 			canonical,
@@ -2483,7 +2483,7 @@ interface SourceCandidateBase {
 }
 
 interface WorkerLifecycleAuditRecord {
-	readonly record: WorkerRecordV1;
+	readonly record: WorkerRecord;
 	readonly operationId?: string;
 }
 
@@ -2761,7 +2761,7 @@ interface WorkerAuditOperationState {
 
 interface WorkerAuditFold {
 	readonly lifecycleByRevision: Map<string, WorkerLifecycleAuditRecord>;
-	readonly currentByWorker: Map<string, WorkerRecordV1>;
+	readonly currentByWorker: Map<string, WorkerRecord>;
 	readonly lastLifecycleEnvelopeByWorker: Map<string, { readonly revision: number; readonly timestamp: string }>;
 	readonly operations: Map<string, WorkerAuditOperationState>;
 }
@@ -2816,10 +2816,10 @@ function workerEnvelope(
 	};
 }
 
-function workerLifecyclePayloadRecord(payload: Record<string, unknown>): WorkerRecordV1 | undefined {
+function workerLifecyclePayloadRecord(payload: Record<string, unknown>): WorkerRecord | undefined {
 	const recordValue = { ...payload };
 	delete recordValue.operationId;
-	return validateWorkerRecordV1(recordValue) ? recordValue : undefined;
+	return validateWorkerRecord(recordValue) ? recordValue : undefined;
 }
 
 function parseWorkerFact(
@@ -2967,7 +2967,7 @@ function parseWorkerFact(
 					record.bindingEpochId !== previous.bindingEpochId ||
 					record.attemptId !== previous.attemptId ||
 					record.profileId !== previous.profileId ||
-					!workerTransitionAllowedV1(previous.status, record.status)))
+					!workerTransitionAllowed(previous.status, record.status)))
 		) {
 			internalWarnings.push(warning(sessionId, "malformed_source", entry, eventType, version, undefined, true));
 			return;
@@ -4000,7 +4000,7 @@ function parseRunFact(
 		internalWarnings.push(warning(sessionId, "unsupported_schema", entry, undefined, version, undefined, true));
 		return;
 	}
-	let data: LegacyAutomationRunLedgerEntryV1;
+	let data: LegacyAutomationRunLedgerEntry;
 	try {
 		data = decodeLegacyAutomationRunLedgerEntryV1(entry.data);
 	} catch {

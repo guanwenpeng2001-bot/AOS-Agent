@@ -27,7 +27,7 @@ import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/agen
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { CapabilityError } from "../../core/capability-registry.ts";
 import type { PreparedSessionScopeRebind } from "../../core/current-session-scope.ts";
-import { ExecutionAuditError, projectSubagentAuditSourceV1 } from "../../core/execution-audit.ts";
+import { ExecutionAuditError, projectSubagentAuditSource } from "../../core/execution-audit.ts";
 import { ExecutionAuditQuery } from "../../core/execution-audit-query.ts";
 import type { TaskCredentialGatePreflight } from "../../core/execution-policy.ts";
 import { PolicyError } from "../../core/execution-policy.ts";
@@ -113,8 +113,8 @@ import {
 } from "../../core/run-lifecycle.ts";
 import { loadEntriesFromFile, type SessionEntry } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
-import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatusV1 } from "../../core/subagent.ts";
-import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
+import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatus } from "../../core/subagent.ts";
+import type { SafeSubagentLifecycleProjection } from "../../core/subagent-composition.ts";
 import {
 	isTaskCredentialScope,
 	serializeTaskCredentialDeliveryReceipt,
@@ -138,10 +138,10 @@ import {
 	type TaskGraphStore,
 } from "../../core/task-graph.ts";
 import {
-	validateWorkerRecordV1,
+	validateWorkerRecord,
 	WORKER_LIFECYCLE_STATUSES,
 	type WorkerLifecycleStatus,
-	type WorkerRecordV1,
+	type WorkerRecord,
 } from "../../core/worker.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
@@ -261,28 +261,28 @@ export interface RpcHostControllerOptions {
 
 /** Minimal authoritative Worker registry seam supplied by Host composition. */
 export interface RpcWorkerRegistry {
-	getWorkerRecord(workerId: string): WorkerRecordV1 | undefined;
-	listWorkerRecords(): readonly WorkerRecordV1[];
-	reclaimWorker(workerId: string): Promise<ResultValue<WorkerRecordV1, FoundationError>>;
+	getWorkerRecord(workerId: string): WorkerRecord | undefined;
+	listWorkerRecords(): readonly WorkerRecord[];
+	reclaimWorker(workerId: string): Promise<ResultValue<WorkerRecord, FoundationError>>;
 }
 
 export interface RpcSubagentRegistry {
 	get(
 		runId: string,
 		childAgentInstanceId: string,
-	): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>>;
+	): Promise<ResultValue<SafeSubagentLifecycleProjection | undefined, FoundationError>>;
 	list(
 		runId: string,
 		filter: {
 			readonly parentAgentInstanceId?: string;
-			readonly status?: ChildLifecycleStatusV1;
+			readonly status?: ChildLifecycleStatus;
 			readonly limit: number;
 		},
-	): Promise<ResultValue<readonly SafeSubagentLifecycleProjectionV1[], FoundationError>>;
+	): Promise<ResultValue<readonly SafeSubagentLifecycleProjection[], FoundationError>>;
 	cancel(
 		runId: string,
 		childAgentInstanceId: string,
-	): Promise<ResultValue<SafeSubagentLifecycleProjectionV1 | undefined, FoundationError>>;
+	): Promise<ResultValue<SafeSubagentLifecycleProjection | undefined, FoundationError>>;
 }
 
 type RpcOutputSinkLike = RpcHostOutputSink | RpcOutputSink;
@@ -476,7 +476,7 @@ function isRpcSubagentCommandShapeValid(command: RpcCommand): boolean {
 	);
 }
 
-function isRpcSubagentStatus(value: unknown): value is ChildLifecycleStatusV1 {
+function isRpcSubagentStatus(value: unknown): value is ChildLifecycleStatus {
 	return typeof value === "string" && (CHILD_LIFECYCLE_STATUSES as readonly string[]).includes(value);
 }
 
@@ -517,19 +517,19 @@ function isRpcWorkerStatus(value: unknown): value is WorkerLifecycleStatus {
 	return typeof value === "string" && (WORKER_LIFECYCLE_STATUSES as readonly string[]).includes(value);
 }
 
-function isRpcWorkerRecord(value: unknown): value is WorkerRecordV1 {
+function isRpcWorkerRecord(value: unknown): value is WorkerRecord {
 	try {
-		return validateWorkerRecordV1(value);
+		return validateWorkerRecord(value);
 	} catch {
 		return false;
 	}
 }
 
-function isRpcWorkerRecordList(value: unknown): value is readonly WorkerRecordV1[] {
+function isRpcWorkerRecordList(value: unknown): value is readonly WorkerRecord[] {
 	return Array.isArray(value) && value.every(isRpcWorkerRecord);
 }
 
-function toRpcWorkerRecord(record: WorkerRecordV1): RpcWorkerRecord {
+function toRpcWorkerRecord(record: WorkerRecord): RpcWorkerRecord {
 	return {
 		schemaVersion: record.schemaVersion,
 		workerId: record.workerId,
@@ -3883,7 +3883,7 @@ export class RpcHostController {
 					const result = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
 					if (result === undefined || !result.ok)
 						return rpcSubagentError(id, "subagent.get", "subagent_unavailable");
-					const subagent = projectSubagentAuditSourceV1(result.value);
+					const subagent = projectSubagentAuditSource(result.value);
 					if (
 						subagent === undefined ||
 						subagent.sessionId !== currentBinding.session.sessionId ||
@@ -3928,7 +3928,7 @@ export class RpcHostController {
 						.catch(() => undefined);
 					if (result === undefined || !result.ok)
 						return rpcSubagentError(id, "subagent.list", "subagent_unavailable");
-					const subagents = result.value.map(projectSubagentAuditSourceV1);
+					const subagents = result.value.map(projectSubagentAuditSource);
 					if (
 						subagents.some(
 							(entry) =>
@@ -3945,7 +3945,7 @@ export class RpcHostController {
 						command: "subagent.list",
 						success: true,
 						data: {
-							subagents: subagents as SafeSubagentLifecycleProjectionV1[],
+							subagents: subagents as SafeSubagentLifecycleProjection[],
 							truncated: result.value.length === limit,
 						} satisfies SubagentListData,
 					};
@@ -3965,7 +3965,7 @@ export class RpcHostController {
 					const before = await registry.get(command.runId, command.childAgentInstanceId).catch(() => undefined);
 					if (before === undefined || !before.ok || before.value === undefined)
 						return rpcSubagentError(id, "subagent.cancel", "subagent_not_found");
-					const previous = projectSubagentAuditSourceV1(before.value);
+					const previous = projectSubagentAuditSource(before.value);
 					if (
 						previous === undefined ||
 						previous.sessionId !== currentBinding.session.sessionId ||
@@ -3978,7 +3978,7 @@ export class RpcHostController {
 					const result = await registry.cancel(command.runId, command.childAgentInstanceId).catch(() => undefined);
 					if (result === undefined || !result.ok || result.value === undefined)
 						return rpcSubagentError(id, "subagent.cancel", "subagent_cancel_failed");
-					const subagent = projectSubagentAuditSourceV1(result.value);
+					const subagent = projectSubagentAuditSource(result.value);
 					if (
 						subagent === undefined ||
 						subagent.sessionId !== currentBinding.session.sessionId ||
@@ -4024,7 +4024,7 @@ export class RpcHostController {
 						return rpcWorkerError(id, "worker.get", "worker_unavailable");
 					}
 					if (registry === undefined) return rpcWorkerError(id, "worker.get", "worker_unavailable");
-					let record: WorkerRecordV1 | undefined;
+					let record: WorkerRecord | undefined;
 					try {
 						record = registry.getWorkerRecord(command.workerId);
 					} catch {
@@ -4070,7 +4070,7 @@ export class RpcHostController {
 					if (registry === undefined) {
 						return rpcWorkerError(id, "worker.list", "worker_unavailable");
 					}
-					let records: readonly WorkerRecordV1[];
+					let records: readonly WorkerRecord[];
 					try {
 						records = registry.listWorkerRecords();
 					} catch {
@@ -4126,7 +4126,7 @@ export class RpcHostController {
 						return rpcWorkerError(id, "worker.reclaim", "worker_unavailable");
 					}
 					if (registry === undefined) return rpcWorkerError(id, "worker.reclaim", "worker_unavailable");
-					let existing: WorkerRecordV1 | undefined;
+					let existing: WorkerRecord | undefined;
 					try {
 						existing = registry.getWorkerRecord(command.workerId);
 					} catch {

@@ -13,10 +13,10 @@ export const CONNECTOR_RETRY_DECISION_OBJECT_TYPE = "scheduler.connector.retry_d
 export const CONNECTOR_RETRY_CIRCUIT_OBJECT_TYPE = "scheduler.connector.retry_circuit";
 export const CONNECTOR_RETRY_RESET_OBJECT_TYPE = "scheduler.connector.retry_reset";
 
-export type ConnectorRetryGuaranteeV1 = "idempotent" | "resumable";
-export type ConnectorRetryDecisionKindV1 = "retry" | "stop";
-export type ConnectorCircuitStateV1 = "closed" | "open" | "half_open";
-export type ConnectorCircuitTransitionV1 =
+export type ConnectorRetryGuarantee = "idempotent" | "resumable";
+export type ConnectorRetryDecisionKind = "retry" | "stop";
+export type ConnectorCircuitState = "closed" | "open" | "half_open";
+export type ConnectorCircuitTransition =
 	| "none"
 	| "failure_recorded"
 	| "closed_to_open"
@@ -26,7 +26,7 @@ export type ConnectorCircuitTransitionV1 =
 	| "half_open_to_closed"
 	| "success_recorded"
 	| "operator_reset";
-export type ConnectorRetryReasonV1 =
+export type ConnectorRetryReason =
 	| "eligible"
 	| "missing_operation_eligibility"
 	| "side_effect_unknown"
@@ -35,7 +35,7 @@ export type ConnectorRetryReasonV1 =
 	| "max_attempts_exhausted"
 	| "retry_time_budget_exhausted";
 
-export interface ConnectorRetryPolicyV1 {
+export interface ConnectorRetryPolicy {
 	readonly maxAttempts: number;
 	readonly baseDelayMs: number;
 	readonly maxDelayMs: number;
@@ -46,7 +46,7 @@ export interface ConnectorRetryPolicyV1 {
 	readonly halfOpenProbeTimeoutMs: number;
 }
 
-export const DEFAULT_CONNECTOR_RETRY_POLICY: ConnectorRetryPolicyV1 = Object.freeze({
+export const DEFAULT_CONNECTOR_RETRY_POLICY: ConnectorRetryPolicy = Object.freeze({
 	maxAttempts: 4,
 	baseDelayMs: 1_000,
 	maxDelayMs: 30_000,
@@ -57,14 +57,14 @@ export const DEFAULT_CONNECTOR_RETRY_POLICY: ConnectorRetryPolicyV1 = Object.fre
 	halfOpenProbeTimeoutMs: 15_000,
 });
 
-export interface ConnectorRetryDecisionV1 {
+export interface ConnectorRetryDecision {
 	readonly schemaVersion: 1;
 	readonly operationId: string;
 	readonly targetId: string;
-	readonly decision: ConnectorRetryDecisionKindV1;
-	readonly reasonCode: ConnectorRetryReasonV1;
+	readonly decision: ConnectorRetryDecisionKind;
+	readonly reasonCode: ConnectorRetryReason;
 	readonly attemptCount: number;
-	readonly guarantee?: ConnectorRetryGuaranteeV1;
+	readonly guarantee?: ConnectorRetryGuarantee;
 	readonly sideEffectState: SideEffectState;
 	readonly errorCode?: string;
 	readonly decidedAt: string;
@@ -76,19 +76,19 @@ export interface ConnectorRetryDecisionV1 {
 	readonly jitterMs?: number;
 	readonly delayMs?: number;
 	readonly nextEligibleAt?: string;
-	readonly circuitState: ConnectorCircuitStateV1;
-	readonly circuitTransition: ConnectorCircuitTransitionV1;
-	readonly policy: ConnectorRetryPolicyV1;
+	readonly circuitState: ConnectorCircuitState;
+	readonly circuitTransition: ConnectorCircuitTransition;
+	readonly policy: ConnectorRetryPolicy;
 }
 
-export interface ConnectorCircuitFactV1 {
+export interface ConnectorCircuitFact {
 	readonly schemaVersion: 1;
 	readonly targetId: string;
-	readonly state: ConnectorCircuitStateV1;
+	readonly state: ConnectorCircuitState;
 	readonly failureCount: number;
 	readonly updatedAt: string;
-	readonly transition: ConnectorCircuitTransitionV1;
-	readonly policy: ConnectorRetryPolicyV1;
+	readonly transition: ConnectorCircuitTransition;
+	readonly policy: ConnectorRetryPolicy;
 	readonly nextProbeAt?: string;
 	readonly probeOperationId?: string;
 	readonly probeExpiresAt?: string;
@@ -98,51 +98,51 @@ export interface ConnectorCircuitFactV1 {
 	readonly lastResetId?: string;
 }
 
-export interface ConnectorRetryResetFactV1 {
+export interface ConnectorRetryResetFact {
 	readonly schemaVersion: 1;
 	readonly resetId: string;
 	readonly targetId: string;
 	readonly operatorId: string;
 	readonly reasonCode: string;
 	readonly requestedAt: string;
-	readonly observedState: ConnectorCircuitStateV1;
+	readonly observedState: ConnectorCircuitState;
 }
 
-export interface ConnectorCircuitAdmissionV1 {
+export interface ConnectorCircuitAdmission {
 	readonly targetId: string;
 	readonly operationId: string;
 	readonly state: "closed" | "half_open";
 	readonly probe: boolean;
-	readonly transition: ConnectorCircuitTransitionV1;
+	readonly transition: ConnectorCircuitTransition;
 }
 
-export interface ConnectorRetryFailureInputV1 {
+export interface ConnectorRetryFailureInput {
 	readonly operationId: string;
 	readonly targetId: string;
 	readonly attemptCount: number;
-	readonly guarantee?: ConnectorRetryGuaranteeV1;
+	readonly guarantee?: ConnectorRetryGuarantee;
 	readonly sideEffectState: SideEffectState;
 	readonly error?: PublicExecutionError;
 }
 
-export interface ConnectorRetryCircuitOptionsV1 {
+export interface ConnectorRetryCircuitOptions {
 	readonly ledger: SessionLedger;
 	readonly taskId: string;
-	readonly policy?: ConnectorRetryPolicyV1;
+	readonly policy?: ConnectorRetryPolicy;
 }
 
 interface StoredCircuit {
 	readonly revision: number;
-	readonly fact: ConnectorCircuitFactV1;
+	readonly fact: ConnectorCircuitFact;
 }
 
 interface StoredDecision {
 	readonly revision: number;
-	readonly fact: ConnectorRetryDecisionV1;
+	readonly fact: ConnectorRetryDecision;
 }
 
-const CIRCUIT_STATES: readonly ConnectorCircuitStateV1[] = ["closed", "open", "half_open"];
-const CIRCUIT_TRANSITIONS: readonly ConnectorCircuitTransitionV1[] = [
+const CIRCUIT_STATES: readonly ConnectorCircuitState[] = ["closed", "open", "half_open"];
+const CIRCUIT_TRANSITIONS: readonly ConnectorCircuitTransition[] = [
 	"none",
 	"failure_recorded",
 	"closed_to_open",
@@ -153,7 +153,7 @@ const CIRCUIT_TRANSITIONS: readonly ConnectorCircuitTransitionV1[] = [
 	"success_recorded",
 	"operator_reset",
 ];
-const RETRY_REASONS: readonly ConnectorRetryReasonV1[] = [
+const RETRY_REASONS: readonly ConnectorRetryReason[] = [
 	"eligible",
 	"missing_operation_eligibility",
 	"side_effect_unknown",
@@ -162,7 +162,7 @@ const RETRY_REASONS: readonly ConnectorRetryReasonV1[] = [
 	"max_attempts_exhausted",
 	"retry_time_budget_exhausted",
 ];
-const GUARANTEES: readonly ConnectorRetryGuaranteeV1[] = ["idempotent", "resumable"];
+const GUARANTEES: readonly ConnectorRetryGuarantee[] = ["idempotent", "resumable"];
 const SIDE_EFFECT_STATES: readonly SideEffectState[] = ["none", "unknown", "side_effect_unknown"];
 const NEVER_RETRY_ERROR_CODES = new Set<string>([
 	"side_effect_unknown",
@@ -233,7 +233,7 @@ function requireIdentity(value: string, field: string): void {
 	}
 }
 
-function validatePolicy(value: ConnectorRetryPolicyV1): ConnectorRetryPolicyV1 {
+function validatePolicy(value: ConnectorRetryPolicy): ConnectorRetryPolicy {
 	if (
 		!isSafePositiveInteger(value.maxAttempts) ||
 		value.maxAttempts > 100 ||
@@ -258,7 +258,7 @@ function validatePolicy(value: ConnectorRetryPolicyV1): ConnectorRetryPolicyV1 {
 	return Object.freeze({ ...value });
 }
 
-function parsePolicy(value: unknown): ConnectorRetryPolicyV1 {
+function parsePolicy(value: unknown): ConnectorRetryPolicy {
 	if (!isRecord(value)) {
 		throw new FoundationError("foundation_schema_invalid_shape", "Stored connector retry policy is invalid");
 	}
@@ -278,21 +278,21 @@ function validIso(value: unknown): value is string {
 	return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
-function parseCircuit(value: unknown, targetId: string): ConnectorCircuitFactV1 {
+function parseCircuit(value: unknown, targetId: string): ConnectorCircuitFact {
 	if (
 		!isRecord(value) ||
 		value.schemaVersion !== 1 ||
 		value.targetId !== targetId ||
 		typeof value.state !== "string" ||
-		!CIRCUIT_STATES.includes(value.state as ConnectorCircuitStateV1) ||
+		!CIRCUIT_STATES.includes(value.state as ConnectorCircuitState) ||
 		!isSafeNonNegativeInteger(value.failureCount) ||
 		!validIso(value.updatedAt) ||
 		typeof value.transition !== "string" ||
-		!CIRCUIT_TRANSITIONS.includes(value.transition as ConnectorCircuitTransitionV1)
+		!CIRCUIT_TRANSITIONS.includes(value.transition as ConnectorCircuitTransition)
 	) {
 		throw new FoundationError("foundation_schema_invalid_shape", "Stored connector circuit fact is invalid");
 	}
-	const state = value.state as ConnectorCircuitStateV1;
+	const state = value.state as ConnectorCircuitState;
 	if (state === "open" && !validIso(value.nextProbeAt)) {
 		throw new FoundationError("foundation_schema_invalid_shape", "Open connector circuit is missing its next probe time");
 	}
@@ -308,7 +308,7 @@ function parseCircuit(value: unknown, targetId: string): ConnectorCircuitFactV1 
 		state,
 		failureCount: value.failureCount,
 		updatedAt: value.updatedAt,
-		transition: value.transition as ConnectorCircuitTransitionV1,
+		transition: value.transition as ConnectorCircuitTransition,
 		policy: parsePolicy(value.policy),
 		...(typeof value.nextProbeAt === "string" ? { nextProbeAt: value.nextProbeAt } : {}),
 		...(typeof value.probeOperationId === "string" ? { probeOperationId: value.probeOperationId } : {}),
@@ -320,7 +320,7 @@ function parseCircuit(value: unknown, targetId: string): ConnectorCircuitFactV1 
 	};
 }
 
-function parseDecision(value: unknown, operationId: string): ConnectorRetryDecisionV1 {
+function parseDecision(value: unknown, operationId: string): ConnectorRetryDecision {
 	if (
 		!isRecord(value) ||
 		value.schemaVersion !== 1 ||
@@ -328,7 +328,7 @@ function parseDecision(value: unknown, operationId: string): ConnectorRetryDecis
 		typeof value.targetId !== "string" ||
 		(value.decision !== "retry" && value.decision !== "stop") ||
 		typeof value.reasonCode !== "string" ||
-		!RETRY_REASONS.includes(value.reasonCode as ConnectorRetryReasonV1) ||
+		!RETRY_REASONS.includes(value.reasonCode as ConnectorRetryReason) ||
 		!isSafePositiveInteger(value.attemptCount) ||
 		typeof value.sideEffectState !== "string" ||
 		!SIDE_EFFECT_STATES.includes(value.sideEffectState as SideEffectState) ||
@@ -337,9 +337,9 @@ function parseDecision(value: unknown, operationId: string): ConnectorRetryDecis
 		!validIso(value.retryDeadlineAt) ||
 		!isSafeNonNegativeInteger(value.remainingRetryTimeMs) ||
 		typeof value.circuitState !== "string" ||
-		!CIRCUIT_STATES.includes(value.circuitState as ConnectorCircuitStateV1) ||
+		!CIRCUIT_STATES.includes(value.circuitState as ConnectorCircuitState) ||
 		typeof value.circuitTransition !== "string" ||
-		!CIRCUIT_TRANSITIONS.includes(value.circuitTransition as ConnectorCircuitTransitionV1)
+		!CIRCUIT_TRANSITIONS.includes(value.circuitTransition as ConnectorCircuitTransition)
 	) {
 		throw new FoundationError("foundation_schema_invalid_shape", "Stored connector retry decision is invalid");
 	}
@@ -358,10 +358,10 @@ function parseDecision(value: unknown, operationId: string): ConnectorRetryDecis
 		operationId,
 		targetId: value.targetId,
 		decision: value.decision,
-		reasonCode: value.reasonCode as ConnectorRetryReasonV1,
+		reasonCode: value.reasonCode as ConnectorRetryReason,
 		attemptCount: value.attemptCount,
-		...(typeof value.guarantee === "string" && GUARANTEES.includes(value.guarantee as ConnectorRetryGuaranteeV1)
-			? { guarantee: value.guarantee as ConnectorRetryGuaranteeV1 }
+		...(typeof value.guarantee === "string" && GUARANTEES.includes(value.guarantee as ConnectorRetryGuarantee)
+			? { guarantee: value.guarantee as ConnectorRetryGuarantee }
 			: {}),
 		sideEffectState: value.sideEffectState as SideEffectState,
 		...(typeof value.errorCode === "string" ? { errorCode: value.errorCode } : {}),
@@ -374,13 +374,13 @@ function parseDecision(value: unknown, operationId: string): ConnectorRetryDecis
 		...(typeof value.jitterMs === "number" && Number.isSafeInteger(value.jitterMs) ? { jitterMs: value.jitterMs } : {}),
 		...(isSafePositiveInteger(value.delayMs) ? { delayMs: value.delayMs } : {}),
 		...(typeof value.nextEligibleAt === "string" ? { nextEligibleAt: value.nextEligibleAt } : {}),
-		circuitState: value.circuitState as ConnectorCircuitStateV1,
-		circuitTransition: value.circuitTransition as ConnectorCircuitTransitionV1,
+		circuitState: value.circuitState as ConnectorCircuitState,
+		circuitTransition: value.circuitTransition as ConnectorCircuitTransition,
 		policy: parsePolicy(value.policy),
 	};
 }
 
-function parseReset(value: unknown, resetId: string): ConnectorRetryResetFactV1 {
+function parseReset(value: unknown, resetId: string): ConnectorRetryResetFact {
 	if (
 		!isRecord(value) ||
 		value.schemaVersion !== 1 ||
@@ -390,7 +390,7 @@ function parseReset(value: unknown, resetId: string): ConnectorRetryResetFactV1 
 		typeof value.reasonCode !== "string" ||
 		!validIso(value.requestedAt) ||
 		typeof value.observedState !== "string" ||
-		!CIRCUIT_STATES.includes(value.observedState as ConnectorCircuitStateV1)
+		!CIRCUIT_STATES.includes(value.observedState as ConnectorCircuitState)
 	) {
 		throw new FoundationError("foundation_schema_invalid_shape", "Stored connector retry reset audit is invalid");
 	}
@@ -401,13 +401,13 @@ function parseReset(value: unknown, resetId: string): ConnectorRetryResetFactV1 
 		operatorId: value.operatorId,
 		reasonCode: value.reasonCode,
 		requestedAt: value.requestedAt,
-		observedState: value.observedState as ConnectorCircuitStateV1,
+		observedState: value.observedState as ConnectorCircuitState,
 	};
 }
 
 function withoutCircuitGate(
-	fact: ConnectorCircuitFactV1,
-): Omit<ConnectorCircuitFactV1, "nextProbeAt" | "probeOperationId" | "probeExpiresAt"> {
+	fact: ConnectorCircuitFact,
+): Omit<ConnectorCircuitFact, "nextProbeAt" | "probeOperationId" | "probeExpiresAt"> {
 	return {
 		schemaVersion: 1,
 		targetId: fact.targetId,
@@ -443,7 +443,7 @@ function deterministicJitter(seed: string, maximum: number): number {
 	return hash % (maximum * 2 + 1) - maximum;
 }
 
-function exponentialDelay(policy: ConnectorRetryPolicyV1, attemptCount: number): number {
+function exponentialDelay(policy: ConnectorRetryPolicy, attemptCount: number): number {
 	let delay = policy.baseDelayMs;
 	for (let attempt = 1; attempt < attemptCount; attempt += 1) {
 		delay = Math.min(policy.maxDelayMs, delay * 2);
@@ -451,7 +451,7 @@ function exponentialDelay(policy: ConnectorRetryPolicyV1, attemptCount: number):
 	return delay;
 }
 
-function retryEligibility(input: ConnectorRetryFailureInputV1): ConnectorRetryReasonV1 {
+function retryEligibility(input: ConnectorRetryFailureInput): ConnectorRetryReason {
 	if (input.guarantee === undefined || !GUARANTEES.includes(input.guarantee)) {
 		return "missing_operation_eligibility";
 	}
@@ -476,10 +476,10 @@ function circuitOpenError(): FoundationError {
 export class ConnectorRetryCircuit {
 	private readonly ledger: SessionLedger;
 	private readonly taskId: string;
-	private readonly configuredPolicy: ConnectorRetryPolicyV1;
+	private readonly configuredPolicy: ConnectorRetryPolicy;
 	private readonly clock: RuntimeClock;
 
-	constructor(options: ConnectorRetryCircuitOptionsV1) {
+	constructor(options: ConnectorRetryCircuitOptions) {
 		requireIdentity(options.taskId, "taskId");
 		this.ledger = options.ledger;
 		this.taskId = options.taskId;
@@ -487,7 +487,7 @@ export class ConnectorRetryCircuit {
 		this.clock = runtimeClockFor(options);
 	}
 
-	async decision(operationId: string): Promise<ResultValue<ConnectorRetryDecisionV1 | undefined, FoundationError>> {
+	async decision(operationId: string): Promise<ResultValue<ConnectorRetryDecision | undefined, FoundationError>> {
 		try {
 			const stored = await this.readDecision(operationId);
 			return Result.ok(stored?.fact);
@@ -496,7 +496,7 @@ export class ConnectorRetryCircuit {
 		}
 	}
 
-	async snapshot(targetId: string): Promise<ResultValue<ConnectorCircuitFactV1 | undefined, FoundationError>> {
+	async snapshot(targetId: string): Promise<ResultValue<ConnectorCircuitFact | undefined, FoundationError>> {
 		try {
 			const stored = await this.readCircuit(targetId);
 			return Result.ok(stored?.fact);
@@ -505,10 +505,10 @@ export class ConnectorRetryCircuit {
 		}
 	}
 
-	async resetAudit(resetId: string): Promise<ResultValue<ConnectorRetryResetFactV1 | undefined, FoundationError>> {
+	async resetAudit(resetId: string): Promise<ResultValue<ConnectorRetryResetFact | undefined, FoundationError>> {
 		try {
 			requireIdentity(resetId, "resetId");
-			const stored = await this.ledger.getFact<ConnectorRetryResetFactV1>(
+			const stored = await this.ledger.getFact<ConnectorRetryResetFact>(
 				CONNECTOR_RETRY_RESET_OBJECT_TYPE,
 				objectId("reset", resetId),
 			);
@@ -518,7 +518,7 @@ export class ConnectorRetryCircuit {
 		}
 	}
 
-	async admit(targetId: string, operationId: string): Promise<ResultValue<ConnectorCircuitAdmissionV1, FoundationError>> {
+	async admit(targetId: string, operationId: string): Promise<ResultValue<ConnectorCircuitAdmission, FoundationError>> {
 		try {
 			requireIdentity(targetId, "targetId");
 			requireIdentity(operationId, "operationId");
@@ -531,7 +531,7 @@ export class ConnectorRetryCircuit {
 				const nowIso = toIso(nowMs);
 				if (stored.fact.state === "open") {
 					if (Date.parse(stored.fact.nextProbeAt ?? nowIso) > nowMs) return Result.err(circuitOpenError());
-					const next: ConnectorCircuitFactV1 = {
+					const next: ConnectorCircuitFact = {
 						...withoutCircuitGate(stored.fact),
 						state: "half_open",
 						updatedAt: nowIso,
@@ -550,7 +550,7 @@ export class ConnectorRetryCircuit {
 					return Result.ok({ targetId, operationId, state: "half_open", probe: true, transition: "none" });
 				}
 				if (Date.parse(stored.fact.probeExpiresAt ?? nowIso) > nowMs) return Result.err(circuitOpenError());
-				const reopened: ConnectorCircuitFactV1 = {
+				const reopened: ConnectorCircuitFact = {
 					...withoutCircuitGate(stored.fact),
 					state: "open",
 					updatedAt: nowIso,
@@ -568,7 +568,7 @@ export class ConnectorRetryCircuit {
 		}
 	}
 
-	async recordFailure(input: ConnectorRetryFailureInputV1): Promise<ResultValue<ConnectorRetryDecisionV1, FoundationError>> {
+	async recordFailure(input: ConnectorRetryFailureInput): Promise<ResultValue<ConnectorRetryDecision, FoundationError>> {
 		try {
 			requireIdentity(input.operationId, "operationId");
 			requireIdentity(input.targetId, "targetId");
@@ -586,7 +586,7 @@ export class ConnectorRetryCircuit {
 			const beforeCircuit = await this.readCircuit(input.targetId);
 			const policy = existing?.fact.policy ?? beforeCircuit?.fact.policy ?? this.configuredPolicy;
 			let circuit = beforeCircuit?.fact;
-			let circuitTransition: ConnectorCircuitTransitionV1 = "none";
+			let circuitTransition: ConnectorCircuitTransition = "none";
 			if (eligibility === "eligible") {
 				const updated = await this.recordCircuitFailure(input, policy);
 				if (!updated.ok) return updated;
@@ -624,7 +624,7 @@ export class ConnectorRetryCircuit {
 				reasonCode = "retry_time_budget_exhausted";
 			}
 			const shouldRetry = reasonCode === "eligible";
-			const decision: ConnectorRetryDecisionV1 = {
+			const decision: ConnectorRetryDecision = {
 				schemaVersion: 1,
 				operationId: input.operationId,
 				targetId: input.targetId,
@@ -657,7 +657,7 @@ export class ConnectorRetryCircuit {
 		}
 	}
 
-	async recordSuccess(targetId: string, operationId: string): Promise<ResultValue<ConnectorCircuitFactV1 | undefined, FoundationError>> {
+	async recordSuccess(targetId: string, operationId: string): Promise<ResultValue<ConnectorCircuitFact | undefined, FoundationError>> {
 		try {
 			requireIdentity(targetId, "targetId");
 			requireIdentity(operationId, "operationId");
@@ -674,7 +674,7 @@ export class ConnectorRetryCircuit {
 					stored.fact.state === "half_open" &&
 					Date.parse(stored.fact.probeExpiresAt ?? toIso(nowMs)) <= nowMs
 				) {
-					const expired: ConnectorCircuitFactV1 = {
+					const expired: ConnectorCircuitFact = {
 						...withoutCircuitGate(stored.fact),
 						state: "open",
 						updatedAt: toIso(nowMs),
@@ -685,9 +685,9 @@ export class ConnectorRetryCircuit {
 					if (!written.ok && written.error.code === "session_writer_stale_revision") continue;
 					return written;
 				}
-				const transition: ConnectorCircuitTransitionV1 =
+				const transition: ConnectorCircuitTransition =
 					stored.fact.state === "half_open" ? "half_open_to_closed" : "success_recorded";
-				const next: ConnectorCircuitFactV1 = {
+				const next: ConnectorCircuitFact = {
 					...withoutCircuitGate(stored.fact),
 					state: "closed",
 					failureCount: 0,
@@ -709,19 +709,19 @@ export class ConnectorRetryCircuit {
 		readonly targetId: string;
 		readonly operatorId: string;
 		readonly reasonCode: string;
-	}): Promise<ResultValue<ConnectorCircuitFactV1, FoundationError>> {
+	}): Promise<ResultValue<ConnectorCircuitFact, FoundationError>> {
 		try {
 			requireIdentity(input.resetId, "resetId");
 			requireIdentity(input.targetId, "targetId");
 			requireIdentity(input.operatorId, "operatorId");
 			requireIdentity(input.reasonCode, "reasonCode");
-			let audit = await this.ledger.getFact<ConnectorRetryResetFactV1>(
+			let audit = await this.ledger.getFact<ConnectorRetryResetFact>(
 				CONNECTOR_RETRY_RESET_OBJECT_TYPE,
 				objectId("reset", input.resetId),
 			);
 			const observed = await this.readCircuit(input.targetId);
 			if (audit === undefined) {
-				const fact: ConnectorRetryResetFactV1 = {
+				const fact: ConnectorRetryResetFact = {
 					schemaVersion: 1,
 					resetId: input.resetId,
 					targetId: input.targetId,
@@ -743,7 +743,7 @@ export class ConnectorRetryCircuit {
 					);
 				} catch (error) {
 					if (!isStaleRevision(error)) throw error;
-					audit = await this.ledger.getFact<ConnectorRetryResetFactV1>(
+					audit = await this.ledger.getFact<ConnectorRetryResetFact>(
 						CONNECTOR_RETRY_RESET_OBJECT_TYPE,
 						objectId("reset", input.resetId),
 					);
@@ -763,7 +763,7 @@ export class ConnectorRetryCircuit {
 			for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
 				const current = await this.readCircuit(input.targetId);
 				if (current?.fact.lastResetId === input.resetId) return Result.ok(current.fact);
-				const next: ConnectorCircuitFactV1 = {
+				const next: ConnectorCircuitFact = {
 					schemaVersion: 1,
 					targetId: input.targetId,
 					state: "closed",
@@ -784,9 +784,9 @@ export class ConnectorRetryCircuit {
 	}
 
 	private async recordCircuitFailure(
-		input: ConnectorRetryFailureInputV1,
-		policy: ConnectorRetryPolicyV1,
-	): Promise<ResultValue<ConnectorCircuitFactV1, FoundationError>> {
+		input: ConnectorRetryFailureInput,
+		policy: ConnectorRetryPolicy,
+	): Promise<ResultValue<ConnectorCircuitFact, FoundationError>> {
 		for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
 			const stored = await this.readCircuit(input.targetId);
 			if (
@@ -800,7 +800,7 @@ export class ConnectorRetryCircuit {
 			const failureCount = (stored?.fact.failureCount ?? 0) + 1;
 			const nowMs = this.clock.wallNow();
 			let state = currentState;
-			let transition: ConnectorCircuitTransitionV1 = "failure_recorded";
+			let transition: ConnectorCircuitTransition = "failure_recorded";
 			let nextProbeAt = stored?.fact.nextProbeAt;
 			let probeOperationId = stored?.fact.probeOperationId;
 			let probeExpiresAt = stored?.fact.probeExpiresAt;
@@ -815,7 +815,7 @@ export class ConnectorRetryCircuit {
 				transition = "closed_to_open";
 				nextProbeAt = toIso(nowMs + effectivePolicy.openDurationMs);
 			}
-			const next: ConnectorCircuitFactV1 = {
+			const next: ConnectorCircuitFact = {
 				schemaVersion: 1,
 				targetId: input.targetId,
 				state,
@@ -840,7 +840,7 @@ export class ConnectorRetryCircuit {
 
 	private async readCircuit(targetId: string): Promise<StoredCircuit | undefined> {
 		requireIdentity(targetId, "targetId");
-		const stored = await this.ledger.getFact<ConnectorCircuitFactV1>(
+		const stored = await this.ledger.getFact<ConnectorCircuitFact>(
 			CONNECTOR_RETRY_CIRCUIT_OBJECT_TYPE,
 			objectId("target", targetId),
 		);
@@ -849,7 +849,7 @@ export class ConnectorRetryCircuit {
 
 	private async readDecision(operationId: string): Promise<StoredDecision | undefined> {
 		requireIdentity(operationId, "operationId");
-		const stored = await this.ledger.getFact<ConnectorRetryDecisionV1>(
+		const stored = await this.ledger.getFact<ConnectorRetryDecision>(
 			CONNECTOR_RETRY_DECISION_OBJECT_TYPE,
 			objectId("operation", operationId),
 		);
@@ -857,10 +857,10 @@ export class ConnectorRetryCircuit {
 	}
 
 	private async writeCircuit(
-		fact: ConnectorCircuitFactV1,
+		fact: ConnectorCircuitFact,
 		expectedRevision: number,
 		requestStem: string,
-	): Promise<ResultValue<ConnectorCircuitFactV1, FoundationError>> {
+	): Promise<ResultValue<ConnectorCircuitFact, FoundationError>> {
 		try {
 			const written = await this.ledger.appendFact(
 				CONNECTOR_RETRY_CIRCUIT_OBJECT_TYPE,
@@ -879,9 +879,9 @@ export class ConnectorRetryCircuit {
 	}
 
 	private async writeDecision(
-		fact: ConnectorRetryDecisionV1,
+		fact: ConnectorRetryDecision,
 		expectedRevision: number,
-	): Promise<ResultValue<ConnectorRetryDecisionV1, FoundationError>> {
+	): Promise<ResultValue<ConnectorRetryDecision, FoundationError>> {
 		for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
 			try {
 				const written = await this.ledger.appendFact(

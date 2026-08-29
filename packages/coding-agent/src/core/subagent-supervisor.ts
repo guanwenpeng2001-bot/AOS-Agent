@@ -2,8 +2,8 @@
  * Durable Host-side coordination for Child Agent identities and lifecycle.
  *
  * This module plans the Foundation Task/Dispatch/AgentInstance correlation and
- * delegates provider side effects to LayeredResultSettlementV1. It never
- * settles TaskResultV1 or RunReceiptV1.
+ * delegates provider side effects to LayeredResultSettlement. It never
+ * settles TaskResult or RunReceipt.
  */
 
 import {
@@ -37,19 +37,19 @@ import {
 } from "@aos-agent/agent-core";
 import {
 	SUBAGENT_PROVIDER_KINDS,
-	createChildAgentRecordV1,
-	isChildExecutionTerminalStatusV1,
-	transitionChildAgentRecordV1,
-	validateChildAgentRecordV1,
-	type ChildAgentRecordV1,
-	type ChildLifecycleStatusV1,
+	createChildAgentRecord,
+	isChildExecutionTerminalStatus,
+	transitionChildAgentRecord,
+	validateChildAgentRecord,
+	type ChildAgentRecord,
+	type ChildLifecycleStatus,
 } from "./subagent.ts";
-import type { SubagentProviderDescriptorV1 } from "./subagent-registry.ts";
+import type { SubagentProviderDescriptor } from "./subagent-registry.ts";
 
 export const SUBAGENT_LIFECYCLE_OBJECT_TYPE = "subagent.lifecycle_transitioned";
 export const SUBAGENT_SUPERVISOR_CONTROL_OBJECT_TYPE = "subagent.supervisor_control";
 
-export interface SubagentSupervisorOptionsV1 {
+export interface SubagentSupervisorOptions {
 	readonly schemaVersion: 1;
 	readonly ledger: SessionLedger;
 	readonly sessionId: string;
@@ -64,12 +64,12 @@ export interface SubagentSupervisorOptionsV1 {
 	readonly scheduleQueueTimeout?: (milliseconds: number, onTimeout: () => void) => () => void;
 }
 
-export interface SubagentQueuePolicyV1 {
+export interface SubagentQueuePolicy {
 	readonly mode: "fail" | "queue";
 	readonly timeoutMs?: number;
 }
 
-export interface PlanSubagentSpawnInputV1 {
+export interface PlanSubagentSpawnInput {
 	readonly schemaVersion: 1;
 	readonly request: ChildSpawnRequest;
 	readonly originParentAgentInstance: AgentInstance;
@@ -77,18 +77,18 @@ export interface PlanSubagentSpawnInputV1 {
 	readonly lineageParentAgentInstance?: AgentInstance;
 	readonly childLaneId: string;
 	readonly childBinding: AgentBinding;
-	readonly providerDescriptor: SubagentProviderDescriptorV1;
+	readonly providerDescriptor: SubagentProviderDescriptor;
 	readonly childAgentInstanceId: string;
 	readonly dispatchId: string;
 	readonly attemptId: string;
 	readonly bindingEpochId: string;
 	readonly activatedByCommandId: string;
-	readonly queue: SubagentQueuePolicyV1;
+	readonly queue: SubagentQueuePolicy;
 	readonly maxTurns?: number;
 	readonly parentDeadlineAt?: string;
 }
 
-export interface SubagentSpawnPlanV1 {
+export interface SubagentSpawnPlan {
 	readonly schemaVersion: 1;
 	readonly request: ChildSpawnRequest;
 	readonly childBinding: AgentBinding;
@@ -97,13 +97,13 @@ export interface SubagentSpawnPlanV1 {
 	readonly initialBindingEpoch: BindingEpoch;
 	readonly correlation: ExecutionCorrelation;
 	readonly childLaneId: string;
-	readonly providerKind: SubagentProviderDescriptorV1["providerKind"];
+	readonly providerKind: SubagentProviderDescriptor["providerKind"];
 	readonly providerId: string;
 	readonly maxTurns: number;
 	readonly deadlineAt?: string;
 }
 
-export interface ChildAgentRosterEntryV1 {
+export interface ChildAgentRosterEntry {
 	readonly schemaVersion: 1;
 	readonly sessionId: string;
 	readonly laneId: string;
@@ -114,12 +114,12 @@ export interface ChildAgentRosterEntryV1 {
 	readonly taskId: string;
 	readonly attemptId: string;
 	readonly providerId: string;
-	readonly providerKind: ChildAgentRecordV1["providerKind"];
-	readonly status: ChildLifecycleStatusV1;
+	readonly providerKind: ChildAgentRecord["providerKind"];
+	readonly status: ChildLifecycleStatus;
 	readonly mailboxAddress: string;
 }
 
-export interface SubagentProviderSpawnPlanV1 {
+export interface SubagentProviderSpawnPlan {
 	readonly schemaVersion: 1;
 	readonly spawnId: string;
 	readonly childLaneId: string;
@@ -238,7 +238,7 @@ const PROVIDER_CAPABILITY_KEYS = new Set([
 	"maxDepth",
 ]);
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
-const ACTIVE_STATUSES = new Set<ChildLifecycleStatusV1>([
+const ACTIVE_STATUSES = new Set<ChildLifecycleStatus>([
 	"spawning",
 	"running",
 	"awaiting_input",
@@ -281,7 +281,7 @@ function validateLineage(agent: AgentInstance): boolean {
 	return lineage.parentId !== undefined && ancestors.at(-1) === lineage.parentId && !ancestors.includes(agent.agentInstanceId);
 }
 
-function validateProviderDescriptor(value: unknown): value is SubagentProviderDescriptorV1 {
+function validateProviderDescriptor(value: unknown): value is SubagentProviderDescriptor {
 	if (!isRecord(value) || !exactKeys(value, PROVIDER_DESCRIPTOR_KEYS)) return false;
 	if (
 		value.schemaVersion !== 1 ||
@@ -338,7 +338,7 @@ function validateControl(value: unknown): value is SubagentSupervisorControlV1 {
 	);
 }
 
-function validatePlanInputShape(value: unknown): value is PlanSubagentSpawnInputV1 {
+function validatePlanInputShape(value: unknown): value is PlanSubagentSpawnInput {
 	if (!isRecord(value) || !exactKeys(value, PLAN_INPUT_KEYS) || value.schemaVersion !== 1) return false;
 	if (
 		!isIdentifier(value.childAgentInstanceId) ||
@@ -384,7 +384,7 @@ function childDeadline(request: ChildSpawnRequest, parentDeadlineAt: string | un
 	return Result.ok(requested ?? parentDeadlineAt);
 }
 
-function sameSpawnResultIdentity(plan: SubagentSpawnPlanV1, result: ChildSpawnResult): boolean {
+function sameSpawnResultIdentity(plan: SubagentSpawnPlan, result: ChildSpawnResult): boolean {
 	return (
 		result.attempt.attemptId === plan.initialBindingEpoch.attemptId &&
 		result.attempt.dispatchId === plan.dispatch.dispatchId &&
@@ -404,7 +404,7 @@ function sameSpawnResultIdentity(plan: SubagentSpawnPlanV1, result: ChildSpawnRe
  * Supervisor state is rebuilt exclusively from the Session ledger. In-memory
  * maps contain no provider handle or terminal authority.
  */
-export class SubagentSupervisorV1 {
+export class SubagentSupervisor {
 	private readonly ledger: SessionLedger;
 	private readonly ledgerForLane: (laneId: string) => SessionLedger;
 	private readonly sessionId: string;
@@ -416,7 +416,7 @@ export class SubagentSupervisorV1 {
 	private readonly maximumQueueWaitMs: number;
 	private readonly now: () => string;
 	private readonly scheduleQueueTimeout: (milliseconds: number, onTimeout: () => void) => () => void;
-	private readonly records = new Map<string, ChildAgentRecordV1>();
+	private readonly records = new Map<string, ChildAgentRecord>();
 	private readonly controls = new Map<string, SubagentSupervisorControlV1>();
 	private readonly queue: QueueWaiter[] = [];
 	private readonly spawnReservations = new Set<string>();
@@ -425,7 +425,7 @@ export class SubagentSupervisorV1 {
 	private readonly slotReservations = new Set<string>();
 	private mutationTail: Promise<void> = Promise.resolve();
 
-	constructor(options: SubagentSupervisorOptionsV1) {
+	constructor(options: SubagentSupervisorOptions) {
 		if (
 			options.schemaVersion !== 1 ||
 			!isIdentifier(options.sessionId) ||
@@ -458,7 +458,7 @@ export class SubagentSupervisorV1 {
 			});
 	}
 
-	async reload(): Promise<ResultValue<readonly ChildAgentRecordV1[], FoundationError>> {
+	async reload(): Promise<ResultValue<readonly ChildAgentRecord[], FoundationError>> {
 		return this.serial(async () => {
 			try {
 				const controlFacts = await this.ledger.find({
@@ -512,19 +512,19 @@ export class SubagentSupervisorV1 {
 					objectType: SUBAGENT_LIFECYCLE_OBJECT_TYPE,
 					order: "oldestFirst",
 				});
-				const rebuilt = new Map<string, ChildAgentRecordV1>();
+				const rebuilt = new Map<string, ChildAgentRecord>();
 				const localChildLanes = new Set([...rebuiltControls.values()].map((control) => control.childLaneId));
 				for (const fact of lifecycle) {
 					if (fact.kind !== "fact" || fact.correlation.sessionId !== this.sessionId) {
 						return Result.err(new FoundationError("subagent_persistence_failed", "Durable Child Agent lifecycle is invalid"));
 					}
-					const payloadChildId = validateChildAgentRecordV1(fact.payload)
+					const payloadChildId = validateChildAgentRecord(fact.payload)
 						? fact.payload.childAgentInstanceId
 						: fact.correlation.agentInstanceId;
 					const ownedControl =
 						payloadChildId === undefined ? undefined : rebuiltControls.get(payloadChildId);
 					if (ownedControl === undefined && !localChildLanes.has(fact.correlation.laneId)) continue;
-					if (!validateChildAgentRecordV1(fact.payload)) {
+					if (!validateChildAgentRecord(fact.payload)) {
 						return Result.err(new FoundationError("subagent_persistence_failed", "Durable Child Agent lifecycle is invalid"));
 					}
 					const record = fact.payload;
@@ -588,7 +588,7 @@ export class SubagentSupervisorV1 {
 		});
 	}
 
-	async planSpawn(inputValue: unknown): Promise<ResultValue<SubagentSpawnPlanV1, FoundationError>> {
+	async planSpawn(inputValue: unknown): Promise<ResultValue<SubagentSpawnPlan, FoundationError>> {
 		if (!validatePlanInputShape(inputValue)) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent spawn plan input is invalid"));
 		}
@@ -783,7 +783,7 @@ export class SubagentSupervisorV1 {
 				ancestorIds: createdAgent.value.lineage.ancestorIds,
 				revision: 0,
 			};
-			const record = createChildAgentRecordV1({
+			const record = createChildAgentRecord({
 				schemaVersion: 1,
 				childAgentInstanceId: createdAgent.value.agentInstanceId,
 				parentAgentInstanceId: lineageParent.agentInstanceId,
@@ -855,7 +855,7 @@ export class SubagentSupervisorV1 {
 	}
 
 	async executeSpawn(
-		plan: SubagentSpawnPlanV1,
+		plan: SubagentSpawnPlan,
 		provider: ChildAgentProvider,
 		settlement: LayeredResultSettlement,
 	): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
@@ -980,7 +980,7 @@ export class SubagentSupervisorV1 {
 		return recorded;
 	}
 
-	async decideMaxTurns(inputValue: unknown): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	async decideMaxTurns(inputValue: unknown): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		const keys = new Set(["schemaVersion", "childAgentInstanceId", "expectedTurnCount", "decision", "additionalTurns"]);
 		if (
 			!isRecord(inputValue) ||
@@ -1040,21 +1040,21 @@ export class SubagentSupervisorV1 {
 		);
 	}
 
-	async markAwaitingInput(childAgentInstanceId: string): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	async markAwaitingInput(childAgentInstanceId: string): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		return this.transition(childAgentInstanceId, "awaiting_input");
 	}
 
-	async markBackground(childAgentInstanceId: string): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	async markBackground(childAgentInstanceId: string): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		return this.transition(childAgentInstanceId, "background");
 	}
 
 	async cancel(
 		childAgentInstanceId: string,
 		provider: Pick<ChildAgentProvider, "providerId" | "cancel">,
-	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		const record = this.records.get(childAgentInstanceId);
 		if (record === undefined) return Result.err(new FoundationError("subagent_not_found", "Child Agent was not found"));
-		if (isChildExecutionTerminalStatusV1(record.status) || record.status === "closed") return Result.ok(record);
+		if (isChildExecutionTerminalStatus(record.status) || record.status === "closed") return Result.ok(record);
 		if (provider.providerId !== record.providerId) {
 			return Result.err(new FoundationError("subagent_conflict", "Child Agent cancel provider does not match"));
 		}
@@ -1085,7 +1085,7 @@ export class SubagentSupervisorV1 {
 	async enforceDeadline(
 		childAgentInstanceId: string,
 		provider: Pick<ChildAgentProvider, "providerId" | "cancel">,
-	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		const control = this.controls.get(childAgentInstanceId);
 		if (control === undefined) return Result.err(new FoundationError("subagent_not_found", "Child Agent was not found"));
 		if (control.deadlineAt === undefined || this.now() < control.deadlineAt) {
@@ -1100,7 +1100,7 @@ export class SubagentSupervisorV1 {
 	async settleReceipt(
 		childAgentInstanceId: string,
 		receiptValue: unknown,
-	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		const record = this.records.get(childAgentInstanceId);
 		if (record === undefined) return Result.err(new FoundationError("subagent_not_found", "Child Agent was not found"));
 		const receipt = validateAttemptReceipt(receiptValue, { providerClass: "agent" });
@@ -1188,14 +1188,14 @@ export class SubagentSupervisorV1 {
 		return this.transition(childAgentInstanceId, receipt.value.status, receipt.value.attemptReceiptId);
 	}
 
-	async markLost(childAgentInstanceId: string): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	async markLost(childAgentInstanceId: string): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		return this.transition(childAgentInstanceId, "lost");
 	}
 
 	async resume(
 		childAgentInstanceId: string,
 		provider: Pick<ChildAgentProvider, "providerId" | "resume" | "lookupSpawn">,
-	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		const record = this.records.get(childAgentInstanceId);
 		const control = this.controls.get(childAgentInstanceId);
 		if (record === undefined || control === undefined) {
@@ -1205,7 +1205,7 @@ export class SubagentSupervisorV1 {
 			provider.providerId !== record.providerId ||
 			record.status === "closed" ||
 			record.status === "cancelling" ||
-			isChildExecutionTerminalStatusV1(record.status)
+			isChildExecutionTerminalStatus(record.status)
 		) {
 			return Result.err(new FoundationError("subagent_resume_failed", "Child Agent cannot resume from its current identity or status"));
 		}
@@ -1281,14 +1281,14 @@ export class SubagentSupervisorV1 {
 	async close(
 		childAgentInstanceId: string,
 		cleanupConfirmed: boolean,
-	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		const record = this.records.get(childAgentInstanceId);
 		if (record === undefined) return Result.err(new FoundationError("subagent_not_found", "Child Agent was not found"));
 		if (!cleanupConfirmed) {
 			return Result.err(new FoundationError("subagent_close_unknown", "Child Agent resource closure is unknown"));
 		}
 		if (record.status === "closed") return Result.ok(record);
-		if (!isChildExecutionTerminalStatusV1(record.status)) {
+		if (!isChildExecutionTerminalStatus(record.status)) {
 			return Result.err(new FoundationError("subagent_conflict", "Child Agent must reach an execution terminal before close"));
 		}
 		return this.transition(childAgentInstanceId, "closed");
@@ -1297,22 +1297,22 @@ export class SubagentSupervisorV1 {
 	async forceClose(
 		childAgentInstanceId: string,
 		cleanupConfirmed: boolean,
-	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		const record = this.records.get(childAgentInstanceId);
 		if (record === undefined) return Result.err(new FoundationError("subagent_not_found", "Child Agent was not found"));
-		if (!isChildExecutionTerminalStatusV1(record.status) && record.status !== "closed") {
+		if (!isChildExecutionTerminalStatus(record.status) && record.status !== "closed") {
 			const lost = await this.transition(childAgentInstanceId, "lost");
 			if (!lost.ok) return lost;
 		}
 		return this.close(childAgentInstanceId, cleanupConfirmed);
 	}
 
-	get(childAgentInstanceId: string): ChildAgentRecordV1 | undefined {
+	get(childAgentInstanceId: string): ChildAgentRecord | undefined {
 		const record = this.records.get(childAgentInstanceId);
 		return record === undefined ? undefined : cloneDeepFrozen(record);
 	}
 
-	providerSpawnPlan(inputValue: unknown): ResultValue<SubagentProviderSpawnPlanV1, FoundationError> {
+	providerSpawnPlan(inputValue: unknown): ResultValue<SubagentProviderSpawnPlan, FoundationError> {
 		if (
 			!isRecord(inputValue) ||
 			!exactKeys(inputValue, new Set(["schemaVersion", "spawnId"])) ||
@@ -1338,7 +1338,7 @@ export class SubagentSupervisorV1 {
 		);
 	}
 
-	list(): readonly ChildAgentRecordV1[] {
+	list(): readonly ChildAgentRecord[] {
 		return Object.freeze(
 			[...this.records.values()]
 				.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.childAgentInstanceId.localeCompare(right.childAgentInstanceId))
@@ -1346,7 +1346,7 @@ export class SubagentSupervisorV1 {
 		);
 	}
 
-	roster(): readonly ChildAgentRosterEntryV1[] {
+	roster(): readonly ChildAgentRosterEntry[] {
 		return Object.freeze(
 			this.list().map((record) => {
 				const control = this.controls.get(record.childAgentInstanceId);
@@ -1371,23 +1371,23 @@ export class SubagentSupervisorV1 {
 	}
 
 	private async rejectUntrustedReceipt(
-		record: ChildAgentRecordV1,
+		record: ChildAgentRecord,
 		error: FoundationError,
-	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
-		if (record.status === "closed" || isChildExecutionTerminalStatusV1(record.status)) return Result.err(error);
+	): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
+		if (record.status === "closed" || isChildExecutionTerminalStatus(record.status)) return Result.err(error);
 		const lost = await this.transition(record.childAgentInstanceId, "lost");
 		return lost.ok ? Result.err(error) : lost;
 	}
 
 	private async transition(
 		childAgentInstanceId: string,
-		to: ChildLifecycleStatusV1,
+		to: ChildLifecycleStatus,
 		attemptReceiptId?: string,
-	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		return this.serial(async () => {
 			const current = this.records.get(childAgentInstanceId);
 			if (current === undefined) return Result.err(new FoundationError("subagent_not_found", "Child Agent was not found"));
-			const transitioned = transitionChildAgentRecordV1(current, {
+			const transitioned = transitionChildAgentRecord(current, {
 				schemaVersion: 1,
 				childAgentInstanceId: current.childAgentInstanceId,
 				parentAgentInstanceId: current.parentAgentInstanceId,
@@ -1400,16 +1400,16 @@ export class SubagentSupervisorV1 {
 			if (!transitioned.ok) return transitioned;
 			if (transitioned.value.idempotent) return Result.ok(transitioned.value.record);
 			const persisted = await this.persistLifecycle(transitioned.value.record, transitioned.value.record.revision);
-			if (persisted.ok && (isChildExecutionTerminalStatusV1(to) || to === "closed")) this.drainQueue();
+			if (persisted.ok && (isChildExecutionTerminalStatus(to) || to === "closed")) this.drainQueue();
 			return persisted;
 		});
 	}
 
 	private async persistLifecycle(
-		record: ChildAgentRecordV1,
+		record: ChildAgentRecord,
 		expectedRevision: number,
 		childLaneId = this.controls.get(record.childAgentInstanceId)?.childLaneId,
-	): Promise<ResultValue<ChildAgentRecordV1, FoundationError>> {
+	): Promise<ResultValue<ChildAgentRecord, FoundationError>> {
 		if (!validateEventPayloadForCategory("subagent.lifecycle_transitioned", record)) {
 			return Result.err(new FoundationError("subagent_persistence_failed", "Child Agent lifecycle event is invalid"));
 		}
@@ -1437,7 +1437,7 @@ export class SubagentSupervisorV1 {
 				},
 			);
 			if (
-				!validateChildAgentRecordV1(stored.payload) ||
+				!validateChildAgentRecord(stored.payload) ||
 				stored.record.correlation.sessionId !== this.sessionId ||
 				stored.record.correlation.laneId !== childLaneId ||
 				stored.record.correlation.agentInstanceId !== record.childAgentInstanceId
@@ -1490,7 +1490,7 @@ export class SubagentSupervisorV1 {
 	private acquireSlot(
 		spawnId: string,
 		concurrencyLimit: number,
-		policy: SubagentQueuePolicyV1,
+		policy: SubagentQueuePolicy,
 	): Promise<ResultValue<void, FoundationError>> {
 		if (this.activeCount() < concurrencyLimit && this.queue.length === 0) {
 			this.slotReservations.add(spawnId);

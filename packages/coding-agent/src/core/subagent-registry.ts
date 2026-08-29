@@ -4,13 +4,13 @@ import type {
 	ExecutionProviderDescriptor,
 	TaskExecutorProvider,
 } from "../../../agent/src/harness/foundation/providers.ts";
-import { SUBAGENT_PROVIDER_KINDS, type SubagentProviderKindV1 } from "./subagent.ts";
+import { SUBAGENT_PROVIDER_KINDS, type SubagentProviderKind } from "./subagent.ts";
 
-export type { SubagentProviderKindV1 } from "./subagent.ts";
+export type { SubagentProviderKind } from "./subagent.ts";
 
-export interface SubagentProviderDescriptorV1 {
+export interface SubagentProviderDescriptor {
 	readonly schemaVersion: 1;
-	readonly providerKind: SubagentProviderKindV1;
+	readonly providerKind: SubagentProviderKind;
 	readonly descriptor: Readonly<ExecutionProviderDescriptor>;
 	readonly revision: number;
 	readonly capabilities: {
@@ -23,8 +23,8 @@ export interface SubagentProviderDescriptorV1 {
 	readonly implementedInThisLine: boolean;
 }
 
-export interface SubagentCapabilityRequirementsV1 {
-	readonly providerKind?: SubagentProviderKindV1;
+export interface SubagentCapabilityRequirements {
+	readonly providerKind?: SubagentProviderKind;
 	readonly forkScope?: "none" | "all" | "recent_n" | "task_package";
 	readonly mailboxRequired?: boolean;
 	readonly resumeRequired?: boolean;
@@ -33,18 +33,18 @@ export interface SubagentCapabilityRequirementsV1 {
 	readonly maxDepthRequired?: number;
 }
 
-export type ExecutableSubagentProviderV1 = ChildAgentProvider & TaskExecutorProvider;
+export type ExecutableSubagentProvider = ChildAgentProvider & TaskExecutorProvider;
 
 interface BoundExecutableSubagentProviderV1 {
 	readonly revision: number;
-	readonly provider: ExecutableSubagentProviderV1;
+	readonly provider: ExecutableSubagentProvider;
 }
 
-export class SubagentProviderRegistryV1 {
-	private readonly descriptors = new Map<string, SubagentProviderDescriptorV1[]>();
+export class SubagentProviderRegistry {
+	private readonly descriptors = new Map<string, SubagentProviderDescriptor[]>();
 	private readonly executableProviders = new Map<string, BoundExecutableSubagentProviderV1>();
 
-	register(descriptor: SubagentProviderDescriptorV1): void {
+	register(descriptor: SubagentProviderDescriptor): void {
 		if (
 			!descriptor ||
 			typeof descriptor !== "object" ||
@@ -167,7 +167,7 @@ export class SubagentProviderRegistryV1 {
 	}
 
 	/** Bind one implemented descriptor revision to its exact trusted runtime object. */
-	bindExecutable(provider: ExecutableSubagentProviderV1, revision?: number): void {
+	bindExecutable(provider: ExecutableSubagentProvider, revision?: number): void {
 		const descriptor = this.get(provider.providerId, revision);
 		if (
 			!descriptor.implementedInThisLine ||
@@ -204,7 +204,7 @@ export class SubagentProviderRegistryV1 {
 	}
 
 	/** Resolve only the exact runtime object bound to the current descriptor revision. */
-	resolveExecutable(provider: TaskExecutorProvider): ExecutableSubagentProviderV1 {
+	resolveExecutable(provider: TaskExecutorProvider): ExecutableSubagentProvider {
 		const descriptor = this.resolve(provider.providerId);
 		const executable = this.executableProviders.get(provider.providerId);
 		if (
@@ -221,7 +221,7 @@ export class SubagentProviderRegistryV1 {
 		return executable.provider;
 	}
 
-	get(providerId: string, revision?: number): SubagentProviderDescriptorV1 {
+	get(providerId: string, revision?: number): SubagentProviderDescriptor {
 		if (
 			revision !== undefined &&
 			(typeof revision !== "number" || !Number.isSafeInteger(revision) || revision <= 0)
@@ -247,9 +247,9 @@ export class SubagentProviderRegistryV1 {
 
 	resolve(
 		providerId: string,
-		requirements: SubagentCapabilityRequirementsV1 = {},
+		requirements: SubagentCapabilityRequirements = {},
 		revision?: number,
-	): SubagentProviderDescriptorV1 {
+	): SubagentProviderDescriptor {
 		if (!requirements || typeof requirements !== "object" || Array.isArray(requirements)) {
 			throw new FoundationError("subagent_spawn_invalid", "Requirements must be an object.");
 		}
@@ -354,7 +354,7 @@ export class SubagentProviderRegistryV1 {
 	}
 }
 
-export const IN_PROCESS_PROVIDER: SubagentProviderDescriptorV1 = Object.freeze({
+export const IN_PROCESS_PROVIDER: SubagentProviderDescriptor = Object.freeze({
 	schemaVersion: 1 as const,
 	providerKind: "in_process" as const,
 	descriptor: Object.freeze({
@@ -373,7 +373,7 @@ export const IN_PROCESS_PROVIDER: SubagentProviderDescriptorV1 = Object.freeze({
 	implementedInThisLine: true,
 });
 
-export const FORK_PROVIDER: SubagentProviderDescriptorV1 = Object.freeze({
+export const FORK_PROVIDER: SubagentProviderDescriptor = Object.freeze({
 	schemaVersion: 1 as const,
 	providerKind: "fork" as const,
 	descriptor: Object.freeze({ schemaVersion: 1 as const, providerId: "native.fork", providerClass: "agent" as const }),
@@ -388,7 +388,7 @@ export const FORK_PROVIDER: SubagentProviderDescriptorV1 = Object.freeze({
 	implementedInThisLine: true,
 });
 
-export const AGENT_RUNTIME_HOST_PROVIDER: SubagentProviderDescriptorV1 = Object.freeze({
+export const AGENT_RUNTIME_HOST_PROVIDER: SubagentProviderDescriptor = Object.freeze({
 	schemaVersion: 1 as const,
 	providerKind: "agent_runtime_host" as const,
 	descriptor: Object.freeze({

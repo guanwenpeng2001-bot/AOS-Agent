@@ -20,13 +20,13 @@ import {
 import {
 	CHILD_BINDING_PROJECTION_FIELDS,
 	CHILD_BINDING_PROJECTION_OBJECT_TYPE,
-	createTrustedMcpInheritanceApprovalAuthorityV1,
-	persistChildBindingProjectionV1,
-	projectChildBindingV1,
-	validateChildBindingProjectionV1,
-	type ChildBindingProjectionFieldV1,
-	type ProjectChildBindingInputV1,
-	type TrustedMcpInheritanceApprovalAuthorityV1,
+	createTrustedMcpInheritanceApprovalAuthority,
+	persistChildBindingProjection,
+	projectChildBinding,
+	validateChildBindingProjection,
+	type ChildBindingProjectionField,
+	type ProjectChildBindingInput,
+	type TrustedMcpInheritanceApprovalAuthority,
 } from "../src/core/subagent-binding.ts";
 import {
 	resolveExecutionPolicy,
@@ -91,7 +91,7 @@ function policyAuthority(
 	const session = options.session ?? new MemoryPolicySession();
 	const ledger = createExecutionPolicyLedger(session);
 	const policy = policyResolution(mcpApproval);
-	const authority = createTrustedMcpInheritanceApprovalAuthorityV1({
+	const authority = createTrustedMcpInheritanceApprovalAuthority({
 		schemaVersion: 1,
 		...policy,
 		policyRevision: immutableFact("policy_binding", "policy-1"),
@@ -203,7 +203,7 @@ function parentBinding(parentRole: RoleRevision, profile: ModelProfile, budget?:
 	return result.value;
 }
 
-function input(overrides: Partial<ProjectChildBindingInputV1> = {}): ProjectChildBindingInputV1 {
+function input(overrides: Partial<ProjectChildBindingInput> = {}): ProjectChildBindingInput {
 	const parentRole = overrides.parentRoleRevision ?? role();
 	const profile = overrides.parentModelProfile ?? modelProfile();
 	return {
@@ -231,13 +231,13 @@ function input(overrides: Partial<ProjectChildBindingInputV1> = {}): ProjectChil
 	};
 }
 
-function mustProject(value: ProjectChildBindingInputV1, authority?: TrustedMcpInheritanceApprovalAuthorityV1) {
-	const result = projectChildBindingV1(value, authority);
+function mustProject(value: ProjectChildBindingInput, authority?: TrustedMcpInheritanceApprovalAuthority) {
+	const result = projectChildBinding(value, authority);
 	if (!result.ok) throw result.error;
 	return result.value;
 }
 
-function proof(projection: ReturnType<typeof mustProject>, field: ChildBindingProjectionFieldV1) {
+function proof(projection: ReturnType<typeof mustProject>, field: ChildBindingProjectionField) {
 	return projection.fields.find((entry) => entry.field === field)?.tighteningProof;
 }
 
@@ -253,7 +253,7 @@ const SELECTORS: readonly ResourceSelector[] = [
 describe("child binding projection", () => {
 	it("projects all seven resources with equal proofs when the child inherits the parent", () => {
 		const projection = mustProject(input());
-		expect(validateChildBindingProjectionV1(projection)).toBe(true);
+		expect(validateChildBindingProjection(projection)).toBe(true);
 		expect(Object.isFrozen(projection)).toBe(true);
 		expect(projection.fields.map((field) => field.field)).toEqual([...CHILD_BINDING_PROJECTION_FIELDS]);
 		expect(projection.fields.every((field) => field.tighteningProof === "equal")).toBe(true);
@@ -266,7 +266,7 @@ describe("child binding projection", () => {
 			for (const childSelector of SELECTORS) {
 				const parentRole = role({ skillSelector: parentSelector });
 				const childRole = role({ skillSelector: childSelector });
-				const result = projectChildBindingV1(input({ parentRoleRevision: parentRole, childRoleRevision: childRole }));
+				const result = projectChildBinding(input({ parentRoleRevision: parentRole, childRoleRevision: childRole }));
 				const allowed = selectorsNarrow(parentSelector, childSelector);
 				if (allowed) {
 					expect(result.ok).toBe(true);
@@ -288,7 +288,7 @@ describe("child binding projection", () => {
 			for (const childSelector of SELECTORS) {
 				const parentRole = role({ mcpSelector: parentSelector });
 				const childRole = role({ mcpSelector: childSelector });
-				const result = projectChildBindingV1(input({ parentRoleRevision: parentRole, childRoleRevision: childRole }), authority);
+				const result = projectChildBinding(input({ parentRoleRevision: parentRole, childRoleRevision: childRole }), authority);
 				expect(result.ok).toBe(selectorsNarrow(parentSelector, childSelector));
 			}
 		}
@@ -297,7 +297,7 @@ describe("child binding projection", () => {
 	it("accepts every selectorsNarrow-true git combination and rejects widening", () => {
 		for (const parentSelector of SELECTORS) {
 			for (const childSelector of SELECTORS) {
-				const result = projectChildBindingV1(input({ parentGitSelector: parentSelector, childGitSelector: childSelector }));
+				const result = projectChildBinding(input({ parentGitSelector: parentSelector, childGitSelector: childSelector }));
 				expect(result.ok).toBe(selectorsNarrow(parentSelector, childSelector));
 			}
 		}
@@ -332,7 +332,7 @@ describe("child binding projection", () => {
 		expect(profileMin.fields.find((field) => field.field === "budget")?.childDigest).toEqual(
 			fingerprintFoundationValue({ tokens: 300, concurrency: 3, costUsd: 5 }),
 		);
-		const looserTokens = projectChildBindingV1(
+		const looserTokens = projectChildBinding(
 			input({
 				parentRoleRevision: parentRole,
 				parentModelProfile: profile,
@@ -342,7 +342,7 @@ describe("child binding projection", () => {
 			}),
 		);
 		expect(looserTokens).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
-		const looserConcurrency = projectChildBindingV1(
+		const looserConcurrency = projectChildBinding(
 			input({
 				parentRoleRevision: parentRole,
 				parentModelProfile: profile,
@@ -357,9 +357,9 @@ describe("child binding projection", () => {
 	it("rejects Managed Lock changes even when the child would otherwise narrow", () => {
 		const parentRole = role({ skillSelector: { policy: "all" } });
 		const childRole = role({ skillSelector: { policy: "named", named: ["a"] } });
-		const unlocked = projectChildBindingV1(input({ parentRoleRevision: parentRole, childRoleRevision: childRole }));
+		const unlocked = projectChildBinding(input({ parentRoleRevision: parentRole, childRoleRevision: childRole }));
 		expect(unlocked.ok).toBe(true);
-		const lockedSkills = projectChildBindingV1(
+		const lockedSkills = projectChildBinding(
 			input({ parentRoleRevision: parentRole, childRoleRevision: childRole, managedLocks: ["skills"] }),
 		);
 		expect(lockedSkills).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
@@ -370,9 +370,9 @@ describe("child binding projection", () => {
 	it("rejects dropping or swapping a parent instruction policy reference", () => {
 		const parentPolicy = { schemaVersion: 1 as const, type: "context_policy", id: "policy-a", revision: 1 };
 		const parentRole = role({ contextPolicyRef: parentPolicy });
-		const dropped = projectChildBindingV1(input({ parentRoleRevision: parentRole, childRoleRevision: role() }));
+		const dropped = projectChildBinding(input({ parentRoleRevision: parentRole, childRoleRevision: role() }));
 		expect(dropped).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
-		const swapped = projectChildBindingV1(
+		const swapped = projectChildBinding(
 			input({
 				parentRoleRevision: parentRole,
 				childRoleRevision: role({ contextPolicyRef: { schemaVersion: 1, type: "context_policy", id: "policy-b", revision: 1 } }),
@@ -384,7 +384,7 @@ describe("child binding projection", () => {
 	});
 
 	it("rejects a looser sandbox policy revision without host preflight", () => {
-		const result = projectChildBindingV1(
+		const result = projectChildBinding(
 			input({
 				childPolicyRevision: immutableFact("policy_binding", "policy-1", 2),
 			}),
@@ -417,7 +417,7 @@ describe("child binding projection", () => {
 			}),
 		);
 		expect(proof(projected, "model")).toBe("narrowed");
-		const mismatchedRoute = projectChildBindingV1(
+		const mismatchedRoute = projectChildBinding(
 			input({
 				parentRoleRevision: parentRole,
 				parentModelProfile: parentProfile,
@@ -429,22 +429,22 @@ describe("child binding projection", () => {
 	});
 
 	it("returns a stable Result for malformed unknown input and never throws", () => {
-		expect(() => projectChildBindingV1(null)).not.toThrow();
-		expect(projectChildBindingV1(null)).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
-		expect(projectChildBindingV1({ extra: true })).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
-		expect(projectChildBindingV1(input({ childBudget: { tokens: 1, extra: true } as never }))).toMatchObject({
+		expect(() => projectChildBinding(null)).not.toThrow();
+		expect(projectChildBinding(null)).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
+		expect(projectChildBinding({ extra: true })).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
+		expect(projectChildBinding(input({ childBudget: { tokens: 1, extra: true } as never }))).toMatchObject({
 			ok: false,
 			error: { code: "subagent_binding_projection_invalid" },
 		});
-		expect(projectChildBindingV1(input({ parentGitSelector: { policy: "named" } as never }))).toMatchObject({
+		expect(projectChildBinding(input({ parentGitSelector: { policy: "named" } as never }))).toMatchObject({
 			ok: false,
 			error: { code: "subagent_binding_projection_invalid" },
 		});
-		expect(projectChildBindingV1(input({ childGitSelector: { policy: "all", extra: true } as never }))).toMatchObject({
+		expect(projectChildBinding(input({ childGitSelector: { policy: "all", extra: true } as never }))).toMatchObject({
 			ok: false,
 			error: { code: "subagent_binding_projection_invalid" },
 		});
-		expect(projectChildBindingV1(input({ childPolicyRevision: { schemaVersion: 1, type: "policy_binding", id: "policy-1" } as never }))).toMatchObject({
+		expect(projectChildBinding(input({ childPolicyRevision: { schemaVersion: 1, type: "policy_binding", id: "policy-1" } as never }))).toMatchObject({
 			ok: false,
 			error: { code: "subagent_binding_projection_invalid" },
 		});
@@ -452,15 +452,15 @@ describe("child binding projection", () => {
 
 	it("validates the projection as an exact runtime shape", () => {
 		const projection = mustProject(input());
-		expect(validateChildBindingProjectionV1(projection)).toBe(true);
-		expect(validateChildBindingProjectionV1({ ...projection, extra: true })).toBe(false);
-		expect(validateChildBindingProjectionV1({ ...projection, fields: projection.fields.slice(1) })).toBe(false);
+		expect(validateChildBindingProjection(projection)).toBe(true);
+		expect(validateChildBindingProjection({ ...projection, extra: true })).toBe(false);
+		expect(validateChildBindingProjection({ ...projection, fields: projection.fields.slice(1) })).toBe(false);
 	});
 
 	it("rejects omitted Policy authority and caller-fabricated approval fields for non-empty inheritance", () => {
 		const parentRole = role({ mcpSelector: { policy: "all" } });
 		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
-		expect(projectChildBindingV1(projectionInput)).toMatchObject({
+		expect(projectChildBinding(projectionInput)).toMatchObject({
 			ok: false,
 			error: { code: "subagent_binding_projection_invalid" },
 		});
@@ -474,7 +474,7 @@ describe("child binding projection", () => {
 				},
 			},
 		]) {
-			expect(projectChildBindingV1({ ...projectionInput, ...fabricated })).toMatchObject({
+			expect(projectChildBinding({ ...projectionInput, ...fabricated })).toMatchObject({
 				ok: false,
 				error: { code: "subagent_binding_projection_invalid" },
 			});
@@ -485,11 +485,11 @@ describe("child binding projection", () => {
 		const parentRole = role({ mcpSelector: { policy: "all" } });
 		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
 		const allowed = policyAuthority("allow");
-		const allowedProjection = projectChildBindingV1(projectionInput, allowed.authority);
+		const allowedProjection = projectChildBinding(projectionInput, allowed.authority);
 		expect(allowedProjection.ok).toBe(true);
 		if (allowedProjection.ok) expect(allowedProjection.value.mcpApprovalEvidenceId).toBeUndefined();
 		const denied = policyAuthority("deny");
-		expect(projectChildBindingV1(projectionInput, denied.authority)).toMatchObject({
+		expect(projectChildBinding(projectionInput, denied.authority)).toMatchObject({
 			ok: false,
 			error: { code: "subagent_binding_projection_invalid" },
 		});
@@ -503,16 +503,16 @@ describe("child binding projection", () => {
 			parentRoleRevision: parentRole,
 			childRoleRevision: role({ mcpSelector: { policy: "named", named: ["a"] } }),
 		});
-		expect(projectChildBindingV1(first, authority).ok).toBe(false);
+		expect(projectChildBinding(first, authority).ok).toBe(false);
 		expect(pending).toHaveLength(1);
 		policyLedger.appendApprovalOutcome(pending[0]!, { outcome: "approved", source: "system", resolvedAt: APPROVED_AT });
-		expect(projectChildBindingV1(first, authority).ok).toBe(true);
+		expect(projectChildBinding(first, authority).ok).toBe(true);
 
 		const stale = input({
 			parentRoleRevision: parentRole,
 			childRoleRevision: role({ mcpSelector: { policy: "named", named: ["b"] } }),
 		});
-		expect(projectChildBindingV1(stale, authority)).toMatchObject({
+		expect(projectChildBinding(stale, authority)).toMatchObject({
 			ok: false,
 			error: { code: "subagent_binding_projection_invalid" },
 		});
@@ -524,7 +524,7 @@ describe("child binding projection", () => {
 		const { authority, ledger } = policyAuthority("ask", { pending });
 		const parentRole = role({ mcpSelector: { policy: "all" } });
 		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
-		expect(projectChildBindingV1(projectionInput, authority).ok).toBe(false);
+		expect(projectChildBinding(projectionInput, authority).ok).toBe(false);
 		const wrongScopeDigest = `sha256:${"0".repeat(64)}`;
 		const wrongScope = {
 			...pending[0]!,
@@ -532,7 +532,7 @@ describe("child binding projection", () => {
 			scope: { ...pending[0]!.scope, scopeDigest: wrongScopeDigest },
 		};
 		ledger.appendApprovalOutcome(wrongScope, { outcome: "approved", source: "system", resolvedAt: APPROVED_AT });
-		expect(projectChildBindingV1(projectionInput, authority)).toMatchObject({
+		expect(projectChildBinding(projectionInput, authority)).toMatchObject({
 			ok: false,
 			error: { code: "subagent_binding_projection_invalid" },
 		});
@@ -544,7 +544,7 @@ describe("child binding projection", () => {
 		const first = policyAuthority("ask", { session, pending });
 		const parentRole = role({ mcpSelector: { policy: "all" } });
 		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
-		expect(projectChildBindingV1(projectionInput, first.authority).ok).toBe(false);
+		expect(projectChildBinding(projectionInput, first.authority).ok).toBe(false);
 		first.ledger.appendApprovalOutcome(pending[0]!, { outcome: "approved", source: "system", resolvedAt: APPROVED_AT });
 
 		const restarted = policyAuthority("ask", { session });
@@ -557,18 +557,18 @@ describe("child binding projection", () => {
 		const { authority, ledger } = policyAuthority("ask", { pending });
 		const parentRole = role({ mcpSelector: { policy: "all" } });
 		const projectionInput = input({ parentRoleRevision: parentRole, childRoleRevision: parentRole });
-		expect(projectChildBindingV1(projectionInput, authority).ok).toBe(false);
+		expect(projectChildBinding(projectionInput, authority).ok).toBe(false);
 		ledger.appendApprovalOutcome(pending[0]!, { outcome: "approved", source: "system", resolvedAt: APPROVED_AT });
 		const projection = mustProject(projectionInput, authority);
 		expect(projection.mcpApprovalEvidenceId).toBe("policy-entry-2");
 		const session = new Session(new InMemorySessionStorage({ id: "session-binding", createdAt: 1 }));
 		const foundationLedger = new SessionLedger(session);
-		const fabricated = await persistChildBindingProjectionV1(foundationLedger, { ...projection }, {
+		const fabricated = await persistChildBindingProjection(foundationLedger, { ...projection }, {
 			clientRequestId: "project-fabricated",
 			correlation: { taskId: "task-child" },
 		});
 		expect(fabricated).toMatchObject({ ok: false, error: { code: "subagent_binding_projection_invalid" } });
-		const persisted = await persistChildBindingProjectionV1(foundationLedger, projection, {
+		const persisted = await persistChildBindingProjection(foundationLedger, projection, {
 			clientRequestId: "project-1",
 			correlation: { taskId: "task-child" },
 		});

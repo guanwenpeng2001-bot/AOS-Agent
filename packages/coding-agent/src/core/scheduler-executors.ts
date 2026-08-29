@@ -3,7 +3,7 @@
  *
  * The durable source of truth for an opt-in exact choice is the immutable
  * selection fact owned by `SchedulerSelectionReservationStore`. The legacy,
- * default-off path retains its in-memory `SchedulerSelectionFactV1` journal.
+ * default-off path retains its in-memory `SchedulerSelectionFact` journal.
  * Catalog event `scheduler.executor_selected` is a flattening projection
  * only (digest hex + scoreCount) and is never a second authority. Selection
  * applies hard capability and trust filters, then deterministic
@@ -12,7 +12,7 @@
  * attempt-runner seam; a missing runner fails closed and never mints an
  * empty succeeded receipt. T4 binds that seam. Quota reserve wraps the
  * runner, settles the `BudgetUsage` returned by work, and `runAttempt`
- * propagates the runner's provider-valid `AttemptReceiptV1` after identity
+ * propagates the runner's provider-valid `AttemptReceipt` after identity
  * and schema checks. Cancellation may still mint a local cancelled receipt.
  * This module does not register a production Scheduler, scan Task Graph,
  * tick, or settle TaskResult/RunReceipt.
@@ -56,24 +56,24 @@ import {
 	parseSchedulerSelectionFact,
 	SCHEDULER_PROVIDER_CLASSES,
 	SCHEDULER_SESSION_MAX_ACTIVE_ATTEMPTS,
-	type SchedulerExecutorEntryV1,
-	type SchedulerProviderClassV1,
-	type SchedulerQueueEntryV1,
-	type SchedulerSelectionFactV1,
-	type SchedulerSelectionScoreV1,
+	type SchedulerExecutorEntry,
+	type SchedulerProviderClass,
+	type SchedulerQueueEntry,
+	type SchedulerSelectionFact,
+	type SchedulerSelectionScore,
 	serializeSchedulerExecutorEntry,
 	serializeSchedulerSelectionFact,
 } from "./scheduler.ts";
 import {
-	createSchedulerDurableSelectionFactV1,
-	type SchedulerDurableSelectionFactV1,
-	type SchedulerSelectionBeginSettlementV1,
-	type SchedulerSelectionCandidateDecisionV1,
-	type SchedulerSelectionDecisionInputsV1,
-	type SchedulerSelectionRejectionStageV1,
-	type SchedulerSelectionReservationRecordV1,
+	createSchedulerDurableSelectionFact,
+	type SchedulerDurableSelectionFact,
+	type SchedulerSelectionBeginSettlement,
+	type SchedulerSelectionCandidateDecision,
+	type SchedulerSelectionDecisionInputs,
+	type SchedulerSelectionRejectionStage,
+	type SchedulerSelectionReservationRecord,
 	type SchedulerSelectionReservationStore,
-	type SchedulerSelectionSettlementReasonV1,
+	type SchedulerSelectionSettlementReason,
 } from "./scheduler-selection-reservations.ts";
 
 export const SCHEDULER_IN_PROCESS_PROVIDER_ID = "aos.builtin.in-process";
@@ -87,29 +87,29 @@ export const SCHEDULER_EXECUTOR_SCORE_LOAD_MAX = 4;
 export const SCHEDULER_EXECUTOR_SCORE_AFFINITY_SESSION = 4;
 export const SCHEDULER_EXECUTOR_SCORE_AFFINITY_WORKSPACE = 2;
 
-export interface SchedulerExecutorCandidateV1 {
-	readonly entry: SchedulerExecutorEntryV1;
+export interface SchedulerExecutorCandidate {
+	readonly entry: SchedulerExecutorEntry;
 	readonly trusted: boolean;
 	readonly latencyMs: number;
 	readonly load: number;
 	readonly maxConcurrency: number;
 }
 
-export interface SchedulerExecutorRegistrationV1 {
-	readonly entry: SchedulerExecutorEntryV1;
+export interface SchedulerExecutorRegistration {
+	readonly entry: SchedulerExecutorEntry;
 	readonly provider: TaskExecutorProvider;
 	readonly trusted: boolean;
 	readonly latencyMs: number;
 	readonly load?: number;
 	readonly maxConcurrency?: number;
 	/** Required only when the registry owns durable exact selection. */
-	readonly runtimeSnapshot?: SchedulerExecutorRuntimeSnapshotV1;
+	readonly runtimeSnapshot?: SchedulerExecutorRuntimeSnapshot;
 	/** Durable selection owns this quota reservation; providers must not reserve it again. */
 	readonly quota?: QuotaProvider;
 	readonly budget?: Budget;
 }
 
-export interface SchedulerExecutorRuntimeSnapshotV1 {
+export interface SchedulerExecutorRuntimeSnapshot {
 	readonly schemaVersion: 1;
 	readonly capabilitySnapshot: ConnectorCapabilitySnapshot;
 	readonly configRevision: Fingerprint;
@@ -124,7 +124,7 @@ export interface SchedulerExecutorRuntimeSnapshotV1 {
 	readonly digest: Fingerprint;
 }
 
-export interface SchedulerExactExecutorRequirementsV1 {
+export interface SchedulerExactExecutorRequirements {
 	readonly binding: AgentBinding;
 	readonly attemptId: string;
 	readonly bindingEpochId: string;
@@ -136,32 +136,32 @@ export interface SchedulerExactExecutorRequirementsV1 {
 	readonly sandboxTargetRefs?: readonly string[];
 }
 
-export interface SchedulerExecutorRegistryOptionsV1 {
+export interface SchedulerExecutorRegistryOptions {
 	readonly reservationStore?: SchedulerSelectionReservationStore;
 }
 
-export type SchedulerSelectionSettlementUsageV1 = AttemptReceiptUsage | Readonly<Record<string, never>>;
+export type SchedulerSelectionSettlementUsage = AttemptReceiptUsage | Readonly<Record<string, never>>;
 
-export interface SchedulerExecutorSelectionInputV1 {
-	readonly queueEntry: SchedulerQueueEntryV1;
+export interface SchedulerExecutorSelectionInput {
+	readonly queueEntry: SchedulerQueueEntry;
 	readonly requiredCapabilities?: readonly FoundationProviderCapability[];
 	readonly sessionId?: string;
 	readonly workspaceDigest?: Fingerprint;
 	readonly decidedAt: string;
 	readonly signal?: AbortSignal;
 	/** Enables the durable exact-selection path. Required by a registry with a reservation store. */
-	readonly exactRequirements?: SchedulerExactExecutorRequirementsV1;
+	readonly exactRequirements?: SchedulerExactExecutorRequirements;
 }
 
-export interface SchedulerExecutorSelectionResultV1 {
-	readonly fact: SchedulerSelectionFactV1;
-	readonly entry: SchedulerExecutorEntryV1;
+export interface SchedulerExecutorSelectionResult {
+	readonly fact: SchedulerSelectionFact;
+	readonly entry: SchedulerExecutorEntry;
 	readonly provider: TaskExecutorProvider;
-	readonly catalogPayload: SchedulerExecutorSelectedCatalogPayloadV1;
-	readonly durableFact?: SchedulerDurableSelectionFactV1;
+	readonly catalogPayload: SchedulerExecutorSelectedCatalogPayload;
+	readonly durableFact?: SchedulerDurableSelectionFact;
 }
 
-export interface SchedulerExecutorSelectedCatalogPayloadV1 {
+export interface SchedulerExecutorSelectedCatalogPayload {
 	readonly schemaVersion: 1;
 	readonly queueEntryId: string;
 	readonly taskId: string;
@@ -171,23 +171,23 @@ export interface SchedulerExecutorSelectedCatalogPayloadV1 {
 	readonly scoreCount: number;
 }
 
-export interface SchedulerHostAttemptWorkV1 {
+export interface SchedulerHostAttemptWork {
 	readonly usage: BudgetUsage;
 	readonly receipt: AttemptReceipt;
 }
 
 /** Host attempt-runner seam. T4 binds production work; a missing runner fails closed. */
-export type SchedulerHostAttemptRunnerV1 = (
+export type SchedulerHostAttemptRunner = (
 	attempt: Attempt,
 	options?: FoundationProviderExecutionOptions,
-) => Promise<ResultValue<SchedulerHostAttemptWorkV1, FoundationError>>;
+) => Promise<ResultValue<SchedulerHostAttemptWork, FoundationError>>;
 
-export interface SchedulerInProcessTaskExecutorOptionsV1 {
+export interface SchedulerInProcessTaskExecutorOptions {
 	readonly providerId?: string;
 	readonly quota?: QuotaProvider;
 	readonly now?: () => string;
 	readonly budget?: Budget;
-	readonly hostAttemptRunner?: SchedulerHostAttemptRunnerV1;
+	readonly hostAttemptRunner?: SchedulerHostAttemptRunner;
 }
 
 function schedulerFail<T>(
@@ -286,14 +286,14 @@ function normalizedTargetRefs(
 }
 
 function runtimeSnapshotBase(
-	value: Omit<SchedulerExecutorRuntimeSnapshotV1, "digest">,
-): Omit<SchedulerExecutorRuntimeSnapshotV1, "digest"> {
+	value: Omit<SchedulerExecutorRuntimeSnapshot, "digest">,
+): Omit<SchedulerExecutorRuntimeSnapshot, "digest"> {
 	return value;
 }
 
-export function createSchedulerExecutorRuntimeSnapshotV1(
-	input: Omit<SchedulerExecutorRuntimeSnapshotV1, "digest">,
-): ResultValue<SchedulerExecutorRuntimeSnapshotV1, FoundationError> {
+export function createSchedulerExecutorRuntimeSnapshot(
+	input: Omit<SchedulerExecutorRuntimeSnapshot, "digest">,
+): ResultValue<SchedulerExecutorRuntimeSnapshot, FoundationError> {
 	const capabilitySnapshot = validateConnectorCapabilitySnapshot(input.capabilitySnapshot);
 	if (!capabilitySnapshot.ok) return capabilitySnapshot;
 	if (!isFingerprint(input.configRevision)) {
@@ -342,8 +342,8 @@ export function createSchedulerExecutorRuntimeSnapshotV1(
 }
 
 function validateSchedulerExecutorRuntimeSnapshotV1(
-	value: SchedulerExecutorRuntimeSnapshotV1,
-): ResultValue<SchedulerExecutorRuntimeSnapshotV1, FoundationError> {
+	value: SchedulerExecutorRuntimeSnapshot,
+): ResultValue<SchedulerExecutorRuntimeSnapshot, FoundationError> {
 	if (
 		value === null ||
 		typeof value !== "object" ||
@@ -373,7 +373,7 @@ function validateSchedulerExecutorRuntimeSnapshotV1(
 		);
 	}
 	const { digest: _digest, ...base } = value;
-	const rebuilt = createSchedulerExecutorRuntimeSnapshotV1(runtimeSnapshotBase(base));
+	const rebuilt = createSchedulerExecutorRuntimeSnapshot(runtimeSnapshotBase(base));
 	if (!rebuilt.ok) return rebuilt;
 	if (rebuilt.value.digest.value !== value.digest.value) {
 		return Result.err(
@@ -386,7 +386,7 @@ function validateSchedulerExecutorRuntimeSnapshotV1(
 	return rebuilt;
 }
 
-export function schedulerBindingRequirementDigestV1(value: AgentBinding): ResultValue<Fingerprint, FoundationError> {
+export function schedulerBindingRequirementDigest(value: AgentBinding): ResultValue<Fingerprint, FoundationError> {
 	const binding = validateImmutableAgentBinding(value);
 	if (!binding.ok) return binding;
 	const {
@@ -399,8 +399,8 @@ export function schedulerBindingRequirementDigestV1(value: AgentBinding): Result
 }
 
 function exactDecisionInputs(
-	requirements: SchedulerExactExecutorRequirementsV1,
-): ResultValue<SchedulerSelectionDecisionInputsV1, FoundationError> {
+	requirements: SchedulerExactExecutorRequirements,
+): ResultValue<SchedulerSelectionDecisionInputs, FoundationError> {
 	const binding = validateImmutableAgentBinding(requirements.binding);
 	if (!binding.ok) return binding;
 	if (
@@ -422,7 +422,7 @@ function exactDecisionInputs(
 	if (!credentialTargetRefs.ok) return credentialTargetRefs;
 	const sandboxTargetRefs = normalizedTargetRefs(requirements.sandboxTargetRefs ?? [], "sandbox target refs");
 	if (!sandboxTargetRefs.ok) return sandboxTargetRefs;
-	const bindingRequirementDigest = schedulerBindingRequirementDigestV1(binding.value);
+	const bindingRequirementDigest = schedulerBindingRequirementDigest(binding.value);
 	if (!bindingRequirementDigest.ok) return bindingRequirementDigest;
 	if (!isFingerprint(binding.value.policyRevision.fingerprint)) {
 		return Result.err(
@@ -452,11 +452,11 @@ function includesFingerprint(values: readonly Fingerprint[], required: Fingerpri
 }
 
 function runtimeRejectionStage(
-	registration: SchedulerExecutorRegistrationV1,
-	decisionInputs: SchedulerSelectionDecisionInputsV1,
+	registration: SchedulerExecutorRegistration,
+	decisionInputs: SchedulerSelectionDecisionInputs,
 	requiredCapabilities: readonly FoundationProviderCapability[],
 	decidedAt: string,
-): SchedulerSelectionRejectionStageV1 | undefined {
+): SchedulerSelectionRejectionStage | undefined {
 	const runtime = registration.runtimeSnapshot;
 	if (
 		registration.trusted !== true ||
@@ -494,7 +494,7 @@ function runtimeRejectionStage(
 }
 
 function schedulerSelectionBudgetUsageV1(
-	value: SchedulerSelectionSettlementUsageV1,
+	value: SchedulerSelectionSettlementUsage,
 ): ResultValue<BudgetUsage, FoundationError> {
 	if (Object.keys(value).length === 0) return Result.ok({});
 	const canonical = validateAttemptReceiptUsage(value);
@@ -516,19 +516,19 @@ function schedulerSelectionBudgetUsageV1(
 }
 
 /** Quota ownerKind is fixed by provider class; task_executor is Host-owned. */
-export function schedulerQuotaOwnerKind(providerClass: SchedulerProviderClassV1): QuotaAttribution["ownerKind"] {
+export function schedulerQuotaOwnerKind(providerClass: SchedulerProviderClass): QuotaAttribution["ownerKind"] {
 	if (providerClass === "task_executor" || providerClass === "scheduler") return "host";
 	if (providerClass === "agent") return "agent_executor";
 	return "external_connector";
 }
 
-function isSchedulerProviderClass(value: string): value is SchedulerProviderClassV1 {
+function isSchedulerProviderClass(value: string): value is SchedulerProviderClass {
 	return (SCHEDULER_PROVIDER_CLASSES as readonly string[]).includes(value);
 }
 
-export function scoreSchedulerExecutorV1(
-	candidate: SchedulerExecutorCandidateV1,
-	input: Pick<SchedulerExecutorSelectionInputV1, "sessionId" | "workspaceDigest">,
+export function scoreSchedulerExecutor(
+	candidate: SchedulerExecutorCandidate,
+	input: Pick<SchedulerExecutorSelectionInput, "sessionId" | "workspaceDigest">,
 ): number {
 	const cost =
 		candidate.entry.costClass === "local"
@@ -551,8 +551,8 @@ export function scoreSchedulerExecutorV1(
 	return cost + latency + load + affinity;
 }
 
-export function executorPassesHardFiltersV1(
-	candidate: SchedulerExecutorCandidateV1,
+export function executorPassesHardFilters(
+	candidate: SchedulerExecutorCandidate,
 	requiredCapabilities: readonly FoundationProviderCapability[],
 ): boolean {
 	if (!(SCHEDULER_PROVIDER_CLASSES as readonly string[]).includes(candidate.entry.descriptor.providerClass))
@@ -561,13 +561,13 @@ export function executorPassesHardFiltersV1(
 	return requiredCapabilities.every((required) => capabilitySatisfied(candidate.entry.capabilities, required));
 }
 
-function executorHasCapacity(candidate: SchedulerExecutorCandidateV1): boolean {
+function executorHasCapacity(candidate: SchedulerExecutorCandidate): boolean {
 	return candidate.load < candidate.maxConcurrency;
 }
 
 function selectionInputs(
-	candidates: readonly SchedulerExecutorCandidateV1[],
-	input: SchedulerExecutorSelectionInputV1,
+	candidates: readonly SchedulerExecutorCandidate[],
+	input: SchedulerExecutorSelectionInput,
 	requiredCapabilities: readonly FoundationProviderCapability[],
 ) {
 	return {
@@ -610,16 +610,16 @@ function selectionInputs(
 	};
 }
 
-function compareScores(left: SchedulerSelectionScoreV1, right: SchedulerSelectionScoreV1): number {
+function compareScores(left: SchedulerSelectionScore, right: SchedulerSelectionScore): number {
 	if (left.score !== right.score) return right.score - left.score;
 	return left.providerId < right.providerId ? -1 : left.providerId > right.providerId ? 1 : 0;
 }
 
 /** Pure selection. Empty hard-filter set is `scheduler_no_executor`; capacity exhaustion is backpressure. */
-export function selectSchedulerExecutorV1(
-	candidates: readonly SchedulerExecutorCandidateV1[],
-	input: SchedulerExecutorSelectionInputV1,
-): ResultValue<SchedulerSelectionFactV1, FoundationError> {
+export function selectSchedulerExecutor(
+	candidates: readonly SchedulerExecutorCandidate[],
+	input: SchedulerExecutorSelectionInput,
+): ResultValue<SchedulerSelectionFact, FoundationError> {
 	const parsedQueue = parseSchedulerQueueEntry(input.queueEntry);
 	if (!parsedQueue.ok) return parsedQueue;
 	const seenProviderIds = new Set<string>();
@@ -629,19 +629,19 @@ export function selectSchedulerExecutorV1(
 		seenProviderIds.add(providerId);
 	}
 	const requiredCapabilities = input.requiredCapabilities ?? [];
-	const hardEligible = candidates.filter((candidate) => executorPassesHardFiltersV1(candidate, requiredCapabilities));
+	const hardEligible = candidates.filter((candidate) => executorPassesHardFilters(candidate, requiredCapabilities));
 	if (hardEligible.length === 0) return schedulerFail("scheduler_no_executor");
 	const runnable = hardEligible.filter(executorHasCapacity);
 	if (runnable.length === 0) return schedulerFail("scheduler_backpressure", true);
-	const scores: SchedulerSelectionScoreV1[] = runnable
+	const scores: SchedulerSelectionScore[] = runnable
 		.map((candidate) => ({
 			providerId: candidate.entry.descriptor.providerId,
-			score: scoreSchedulerExecutorV1(candidate, input),
+			score: scoreSchedulerExecutor(candidate, input),
 		}))
 		.sort(compareScores);
 	const chosen = scores[0];
 	if (chosen === undefined) return schedulerFail("scheduler_no_executor");
-	const fact: SchedulerSelectionFactV1 = {
+	const fact: SchedulerSelectionFact = {
 		schemaVersion: 1,
 		queueEntryId: parsedQueue.value.queueEntryId,
 		taskId: parsedQueue.value.taskId,
@@ -654,9 +654,9 @@ export function selectSchedulerExecutorV1(
 }
 
 /** Flatten the durable selection fact into the catalog event payload. Scores stay on the fact. */
-export function projectSchedulerSelectionFactV1(
-	fact: SchedulerSelectionFactV1,
-): ResultValue<SchedulerExecutorSelectedCatalogPayloadV1, FoundationError> {
+export function projectSchedulerSelectionFact(
+	fact: SchedulerSelectionFact,
+): ResultValue<SchedulerExecutorSelectedCatalogPayload, FoundationError> {
 	const parsed = parseSchedulerSelectionFact(fact);
 	if (!parsed.ok) return parsed;
 	return Result.ok({
@@ -671,12 +671,12 @@ export function projectSchedulerSelectionFactV1(
 }
 
 export class SchedulerExecutorRegistry {
-	private readonly byId = new Map<string, SchedulerExecutorRegistrationV1>();
-	private readonly factsByQueueEntryId = new Map<string, SchedulerSelectionFactV1>();
+	private readonly byId = new Map<string, SchedulerExecutorRegistration>();
+	private readonly factsByQueueEntryId = new Map<string, SchedulerSelectionFact>();
 	private readonly reservationStore: SchedulerSelectionReservationStore | undefined;
 	private selectionTail: Promise<void> = Promise.resolve();
 
-	constructor(options: SchedulerExecutorRegistryOptionsV1 = {}) {
+	constructor(options: SchedulerExecutorRegistryOptions = {}) {
 		this.reservationStore = options.reservationStore;
 	}
 
@@ -685,8 +685,8 @@ export class SchedulerExecutorRegistry {
 	}
 
 	async register(
-		registration: SchedulerExecutorRegistrationV1,
-	): Promise<ResultValue<SchedulerExecutorEntryV1, FoundationError>> {
+		registration: SchedulerExecutorRegistration,
+	): Promise<ResultValue<SchedulerExecutorEntry, FoundationError>> {
 		const parsed = parseSchedulerExecutorEntry(registration.entry);
 		if (!parsed.ok) return parsed;
 		if (typeof registration.trusted !== "boolean") {
@@ -749,7 +749,7 @@ export class SchedulerExecutorRegistry {
 				),
 			);
 		}
-		let runtimeSnapshot: SchedulerExecutorRuntimeSnapshotV1 | undefined;
+		let runtimeSnapshot: SchedulerExecutorRuntimeSnapshot | undefined;
 		if (registration.runtimeSnapshot !== undefined) {
 			const checkedRuntime = validateSchedulerExecutorRuntimeSnapshotV1(registration.runtimeSnapshot);
 			if (!checkedRuntime.ok) return checkedRuntime;
@@ -784,7 +784,7 @@ export class SchedulerExecutorRegistry {
 		);
 		if (!liveCoverDeclared) return schedulerFail("scheduler_no_executor");
 		if (this.byId.has(parsed.value.descriptor.providerId)) return schedulerFail("scheduler_queue_conflict");
-		const stored: SchedulerExecutorRegistrationV1 = {
+		const stored: SchedulerExecutorRegistration = {
 			entry: serializeSchedulerExecutorEntry(parsed.value),
 			provider: registration.provider,
 			trusted: registration.trusted,
@@ -799,7 +799,7 @@ export class SchedulerExecutorRegistry {
 		return Result.ok(stored.entry);
 	}
 
-	persistSelectionFact(fact: SchedulerSelectionFactV1): ResultValue<SchedulerSelectionFactV1, FoundationError> {
+	persistSelectionFact(fact: SchedulerSelectionFact): ResultValue<SchedulerSelectionFact, FoundationError> {
 		const parsed = parseSchedulerSelectionFact(serializeSchedulerSelectionFact(fact));
 		if (!parsed.ok) return parsed;
 		const stored = serializeSchedulerSelectionFact(parsed.value);
@@ -814,13 +814,13 @@ export class SchedulerExecutorRegistry {
 		return parseSchedulerSelectionFact(serializeSchedulerSelectionFact(stored));
 	}
 
-	replaySelectionFact(queueEntryId: string): ResultValue<SchedulerSelectionFactV1, FoundationError> {
+	replaySelectionFact(queueEntryId: string): ResultValue<SchedulerSelectionFact, FoundationError> {
 		const stored = this.factsByQueueEntryId.get(queueEntryId);
 		if (stored === undefined) return schedulerFail("scheduler_not_found");
 		return parseSchedulerSelectionFact(serializeSchedulerSelectionFact(stored));
 	}
 
-	get(providerId: string): SchedulerExecutorRegistrationV1 | undefined {
+	get(providerId: string): SchedulerExecutorRegistration | undefined {
 		const found = this.byId.get(providerId);
 		return found === undefined
 			? undefined
@@ -832,11 +832,11 @@ export class SchedulerExecutorRegistry {
 				};
 	}
 
-	list(): readonly SchedulerExecutorEntryV1[] {
+	list(): readonly SchedulerExecutorEntry[] {
 		return [...this.byId.values()].map((item) => serializeSchedulerExecutorEntry(item.entry));
 	}
 
-	candidates(): readonly SchedulerExecutorCandidateV1[] {
+	candidates(): readonly SchedulerExecutorCandidate[] {
 		return [...this.byId.values()].map((item) => ({
 			entry: serializeSchedulerExecutorEntry(item.entry),
 			trusted: item.trusted,
@@ -847,8 +847,8 @@ export class SchedulerExecutorRegistry {
 	}
 
 	async select(
-		input: SchedulerExecutorSelectionInputV1,
-	): Promise<ResultValue<SchedulerExecutorSelectionResultV1, FoundationError>> {
+		input: SchedulerExecutorSelectionInput,
+	): Promise<ResultValue<SchedulerExecutorSelectionResult, FoundationError>> {
 		if (this.reservationStore !== undefined) {
 			return this.serializeSelection(() => this.selectDurable(input, this.reservationStore!));
 		}
@@ -860,7 +860,7 @@ export class SchedulerExecutorRegistry {
 		if (!fact.ok) return fact;
 		const registered = this.byId.get(fact.value.chosenProviderId);
 		if (registered === undefined) return schedulerFail("scheduler_executor_unavailable");
-		const catalogPayload = projectSchedulerSelectionFactV1(fact.value);
+		const catalogPayload = projectSchedulerSelectionFact(fact.value);
 		if (!catalogPayload.ok) return catalogPayload;
 		return Result.ok({
 			fact: fact.value,
@@ -872,15 +872,15 @@ export class SchedulerExecutorRegistry {
 
 	async reservationRecord(
 		queueEntryId: string,
-	): Promise<ResultValue<SchedulerSelectionReservationRecordV1 | undefined, FoundationError>> {
+	): Promise<ResultValue<SchedulerSelectionReservationRecord | undefined, FoundationError>> {
 		if (this.reservationStore === undefined) return Result.ok(undefined);
 		return this.reservationStore.get(queueEntryId);
 	}
 
 	async settleSelection(
 		queueEntryId: string,
-		reason: SchedulerSelectionSettlementReasonV1,
-		usage: SchedulerSelectionSettlementUsageV1 = {},
+		reason: SchedulerSelectionSettlementReason,
+		usage: SchedulerSelectionSettlementUsage = {},
 	): Promise<ResultValue<void, FoundationError>> {
 		if (this.reservationStore === undefined) return Result.ok(undefined);
 		const budgetUsage = schedulerSelectionBudgetUsageV1(usage);
@@ -916,7 +916,7 @@ export class SchedulerExecutorRegistry {
 	}
 
 	private async completeSelectionSettlement(
-		begun: SchedulerSelectionBeginSettlementV1,
+		begun: SchedulerSelectionBeginSettlement,
 	): Promise<ResultValue<void, FoundationError>> {
 		if (this.reservationStore === undefined) return Result.ok(undefined);
 		const registration = this.byId.get(begun.record.fact.chosenProviderId);
@@ -974,9 +974,9 @@ export class SchedulerExecutorRegistry {
 	}
 
 	private async selectDurable(
-		input: SchedulerExecutorSelectionInputV1,
+		input: SchedulerExecutorSelectionInput,
 		store: SchedulerSelectionReservationStore,
-	): Promise<ResultValue<SchedulerExecutorSelectionResultV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerExecutorSelectionResult, FoundationError>> {
 		const queue = parseSchedulerQueueEntry(input.queueEntry);
 		if (!queue.ok) return queue;
 		if (input.exactRequirements === undefined) {
@@ -1017,8 +1017,8 @@ export class SchedulerExecutorRegistry {
 		const registrations = [...this.byId.values()].sort((left, right) =>
 			left.entry.descriptor.providerId.localeCompare(right.entry.descriptor.providerId),
 		);
-		const decisions: SchedulerSelectionCandidateDecisionV1[] = [];
-		const runnable: SchedulerExecutorCandidateV1[] = [];
+		const decisions: SchedulerSelectionCandidateDecision[] = [];
+		const runnable: SchedulerExecutorCandidate[] = [];
 		for (const registration of registrations) {
 			const runtime = registration.runtimeSnapshot;
 			if (runtime === undefined) continue;
@@ -1026,14 +1026,14 @@ export class SchedulerExecutorRegistry {
 			const load = activeCounts.value.get(registration.entry.descriptor.providerId) ?? 0;
 			const maxConcurrency = registration.maxConcurrency ?? SCHEDULER_SESSION_MAX_ACTIVE_ATTEMPTS;
 			const capacityStage = stage === undefined && load >= maxConcurrency ? ("capacity_quota" as const) : stage;
-			const candidate: SchedulerExecutorCandidateV1 = {
+			const candidate: SchedulerExecutorCandidate = {
 				entry: registration.entry,
 				trusted: registration.trusted,
 				latencyMs: registration.latencyMs,
 				load,
 				maxConcurrency,
 			};
-			const score = capacityStage === undefined ? scoreSchedulerExecutorV1(candidate, input) : undefined;
+			const score = capacityStage === undefined ? scoreSchedulerExecutor(candidate, input) : undefined;
 			decisions.push(
 				deepFreeze({
 					providerId: registration.entry.descriptor.providerId,
@@ -1065,10 +1065,10 @@ export class SchedulerExecutorRegistry {
 				),
 			);
 		}
-		const scores: SchedulerSelectionScoreV1[] = runnable
+		const scores: SchedulerSelectionScore[] = runnable
 			.map((candidate) => ({
 				providerId: candidate.entry.descriptor.providerId,
-				score: scoreSchedulerExecutorV1(candidate, input),
+				score: scoreSchedulerExecutor(candidate, input),
 			}))
 			.sort(compareScores);
 		const chosenScore = scores[0];
@@ -1133,7 +1133,7 @@ export class SchedulerExecutorRegistry {
 				attemptId: input.exactRequirements.attemptId,
 			}).value
 		}`;
-		const durableFact = createSchedulerDurableSelectionFactV1({
+		const durableFact = createSchedulerDurableSelectionFact({
 			schemaVersion: 1,
 			queueEntryId: queue.value.queueEntryId,
 			taskId: queue.value.taskId,
@@ -1170,11 +1170,11 @@ export class SchedulerExecutorRegistry {
 	}
 
 	private async replayDurableSelection(
-		queueEntry: SchedulerQueueEntryV1,
+		queueEntry: SchedulerQueueEntry,
 		requestDigest: Fingerprint,
-		record: SchedulerSelectionReservationRecordV1,
+		record: SchedulerSelectionReservationRecord,
 		decidedAt: string,
-	): Promise<ResultValue<SchedulerExecutorSelectionResultV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerExecutorSelectionResult, FoundationError>> {
 		if (record.fact.taskId !== queueEntry.taskId) return schedulerFail("scheduler_queue_conflict");
 		const registration = this.byId.get(record.fact.chosenProviderId);
 		const runtime = registration?.runtimeSnapshot;
@@ -1198,10 +1198,10 @@ export class SchedulerExecutorRegistry {
 	}
 
 	private selectionResultFromDurable(
-		durableFact: SchedulerDurableSelectionFactV1,
-		registration: SchedulerExecutorRegistrationV1,
-	): ResultValue<SchedulerExecutorSelectionResultV1, FoundationError> {
-		const fact: SchedulerSelectionFactV1 = {
+		durableFact: SchedulerDurableSelectionFact,
+		registration: SchedulerExecutorRegistration,
+	): ResultValue<SchedulerExecutorSelectionResult, FoundationError> {
+		const fact: SchedulerSelectionFact = {
 			schemaVersion: 1,
 			queueEntryId: durableFact.queueEntryId,
 			taskId: durableFact.taskId,
@@ -1213,7 +1213,7 @@ export class SchedulerExecutorRegistry {
 		const parsed = parseSchedulerSelectionFact(serializeSchedulerSelectionFact(fact));
 		if (!parsed.ok) return parsed;
 		this.factsByQueueEntryId.set(parsed.value.queueEntryId, serializeSchedulerSelectionFact(parsed.value));
-		const catalogPayload = projectSchedulerSelectionFactV1(parsed.value);
+		const catalogPayload = projectSchedulerSelectionFact(parsed.value);
 		if (!catalogPayload.ok) return catalogPayload;
 		return Result.ok({
 			fact: parsed.value,
@@ -1225,7 +1225,7 @@ export class SchedulerExecutorRegistry {
 	}
 
 	private async releaseUnpersistedQuota(
-		registration: SchedulerExecutorRegistrationV1,
+		registration: SchedulerExecutorRegistration,
 		reservation: QuotaReservation,
 	): Promise<void> {
 		if (registration.quota === undefined) return;
@@ -1237,16 +1237,16 @@ export class SchedulerExecutorRegistry {
 	}
 
 	private persistNewSelection(
-		input: SchedulerExecutorSelectionInputV1,
-	): ResultValue<SchedulerSelectionFactV1, FoundationError> {
-		const selected = selectSchedulerExecutorV1(this.candidates(), input);
+		input: SchedulerExecutorSelectionInput,
+	): ResultValue<SchedulerSelectionFact, FoundationError> {
+		const selected = selectSchedulerExecutor(this.candidates(), input);
 		if (!selected.ok) return selected;
 		return this.persistSelectionFact(selected.value);
 	}
 
 	private replayExistingSelection(
-		queueEntry: SchedulerQueueEntryV1,
-	): ResultValue<SchedulerSelectionFactV1, FoundationError> {
+		queueEntry: SchedulerQueueEntry,
+	): ResultValue<SchedulerSelectionFact, FoundationError> {
 		const replayed = this.replaySelectionFact(queueEntry.queueEntryId);
 		if (!replayed.ok) return replayed;
 		if (replayed.value.taskId !== queueEntry.taskId) return schedulerFail("scheduler_queue_conflict");
@@ -1288,10 +1288,10 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 	private readonly quota: QuotaProvider | undefined;
 	private readonly now: () => string;
 	private readonly budget: Budget;
-	private readonly hostAttemptRunner: SchedulerHostAttemptRunnerV1 | undefined;
+	private readonly hostAttemptRunner: SchedulerHostAttemptRunner | undefined;
 	private readonly cancelled = new Set<string>();
 
-	constructor(options: SchedulerInProcessTaskExecutorOptionsV1 = {}) {
+	constructor(options: SchedulerInProcessTaskExecutorOptions = {}) {
 		this.providerId = options.providerId ?? SCHEDULER_IN_PROCESS_PROVIDER_ID;
 		this.quota = options.quota;
 		this.now = options.now ?? (() => new Date().toISOString());
@@ -1379,10 +1379,10 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 	private async runHostWork(
 		attempt: Attempt,
 		options: FoundationProviderExecutionOptions | undefined,
-	): Promise<ResultValue<SchedulerHostAttemptWorkV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerHostAttemptWork, FoundationError>> {
 		if (this.hostAttemptRunner === undefined) return schedulerFail("scheduler_executor_unavailable");
 		if (this.quota === undefined) {
-			let work: ResultValue<SchedulerHostAttemptWorkV1, FoundationError>;
+			let work: ResultValue<SchedulerHostAttemptWork, FoundationError>;
 			try {
 				work = await this.hostAttemptRunner(attempt, options);
 			} catch (error) {
@@ -1431,7 +1431,7 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 				),
 			);
 		}
-		let work: ResultValue<SchedulerHostAttemptWorkV1, FoundationError>;
+		let work: ResultValue<SchedulerHostAttemptWork, FoundationError>;
 		try {
 			work = await this.hostAttemptRunner(attempt, options);
 		} catch (error) {

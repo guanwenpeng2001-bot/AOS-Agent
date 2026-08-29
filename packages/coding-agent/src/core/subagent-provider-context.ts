@@ -7,29 +7,29 @@ import {
 	type ChildSpawnRequest,
 } from "@aos-agent/agent-core";
 import {
-	forkChildContextV1,
-	type ChildContextForkResultV1,
+	forkChildContext,
+	type ChildContextForkResult,
 } from "./subagent-context-fork.ts";
 
-export interface LoadParentContextInputV1 {
+export interface LoadParentContextInput {
 	readonly schemaVersion: 1;
 	readonly spawnId: string;
 	readonly parentAttemptId: string;
 	readonly parentAgentInstanceId: string;
 }
 
-export type LoadParentContextV1 = (
-	input: LoadParentContextInputV1,
+export type LoadParentContext = (
+	input: LoadParentContextInput,
 ) => Promise<ResultValue<ContextSnapshot, FoundationError>>;
 
-export interface ProjectProviderChildContextInputV1 {
+export interface ProjectProviderChildContextInput {
 	readonly schemaVersion: 1;
 	readonly request: ChildSpawnRequest;
 	readonly childBindingEpochId: string;
-	readonly loadParentContext: LoadParentContextV1;
+	readonly loadParentContext: LoadParentContext;
 }
 
-function isolatedParentSnapshot(input: ProjectProviderChildContextInputV1): ContextSnapshot {
+function isolatedParentSnapshot(input: ProjectProviderChildContextInput): ContextSnapshot {
 	const tokenBudget = input.request.taskEnvelope.budget.tokens ?? 1000;
 	return createContextSnapshot([], {
 		bindingEpochId: input.childBindingEpochId,
@@ -45,9 +45,9 @@ function isolatedParentSnapshot(input: ProjectProviderChildContextInputV1): Cont
  * `all` and `recent_n` must load a live immutable parent snapshot. The modes
  * that intentionally inherit no parent conversation never call that authority.
  */
-export async function projectProviderChildContextV1(
-	input: ProjectProviderChildContextInputV1,
-): Promise<ResultValue<ChildContextForkResultV1, FoundationError>> {
+export async function projectProviderChildContext(
+	input: ProjectProviderChildContextInput,
+): Promise<ResultValue<ChildContextForkResult, FoundationError>> {
 	const tokenBudget = input.request.taskEnvelope.budget.tokens ?? 1000;
 	let parentSnapshot: ContextSnapshot;
 	if (input.request.forkScope === "all" || input.request.forkScope === "recent_n") {
@@ -69,7 +69,7 @@ export async function projectProviderChildContextV1(
 		parentSnapshot = isolatedParentSnapshot(input);
 	}
 
-	return forkChildContextV1({
+	return forkChildContext({
 		schemaVersion: 1,
 		spawnId: input.request.spawnId,
 		forkScope: input.request.forkScope,

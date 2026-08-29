@@ -8,46 +8,46 @@ import type {
 	CanonicalAutomationRunProjection,
 } from "../automation-run-projection.ts";
 import {
-	isLegacyExternalExecutionRefV1 as isExternalExecutionRef,
-	type LegacyExternalExecutionRefV1 as ExternalExecutionRef,
+	isLegacyExternalExecutionRef as isExternalExecutionRef,
+	type LegacyExternalExecutionRef as ExternalExecutionRef,
 } from "./external-agent-ledger.ts";
 import { POLICY_RESOURCE_CATEGORIES, type PublicPolicySummary } from "../execution-policy.ts";
 import {
-	createPrivateMigrationPlanV1,
+	createPrivateMigrationPlan,
 	PrivateMigrationError,
-	type PrivateMigrationPlanV1,
+	type PrivateMigrationPlan,
 } from "./session-entry.ts";
 
-export interface LegacyAutomationRunLedgerSourceEntryV1 {
+export interface LegacyAutomationRunLedgerSourceEntry {
 	readonly sequence: number;
 	readonly entryId: string;
 	readonly data: unknown;
 }
 
-export type LegacyAutomationRunStatusV1 = "accepted" | "running" | "completed" | "failed" | "cancelled";
-export type LegacyAutomationRunTerminalStatusV1 = "completed" | "failed" | "cancelled";
-export type LegacyThinkingLevelV1 = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type LegacyAutomationRunStatus = "accepted" | "running" | "completed" | "failed" | "cancelled";
+export type LegacyAutomationRunTerminalStatus = "completed" | "failed" | "cancelled";
+export type LegacyThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
-export interface LegacyAutomationErrorV1 {
+export interface LegacyAutomationError {
 	readonly code: string;
 	readonly message: string;
 	readonly retryable: boolean;
 }
 
-export interface LegacyAutomationRunModelReferenceV1 {
+export interface LegacyAutomationRunModelReference {
 	readonly provider: string;
 	readonly id: string;
-	readonly thinkingLevel: LegacyThinkingLevelV1;
+	readonly thinkingLevel: LegacyThinkingLevel;
 }
 
-export interface LegacyAutomationRunFinalModelReferenceV1 {
+export interface LegacyAutomationRunFinalModelReference {
 	readonly provider: string;
 	readonly id?: string;
 	readonly modelId?: string;
-	readonly thinkingLevel?: LegacyThinkingLevelV1;
+	readonly thinkingLevel?: LegacyThinkingLevel;
 }
 
-export interface LegacyAutomationRunModelUsageSummaryV1 {
+export interface LegacyAutomationRunModelUsageSummary {
 	readonly input?: number;
 	readonly output?: number;
 	readonly total?: number;
@@ -58,22 +58,22 @@ export interface LegacyAutomationRunModelUsageSummaryV1 {
 	readonly cost?: number;
 }
 
-export interface LegacyAutomationRunModelAttemptSummaryV1 {
+export interface LegacyAutomationRunModelAttemptSummary {
 	readonly attemptId: string;
 	readonly bindingId: string;
-	readonly candidate: LegacyAutomationRunFinalModelReferenceV1;
+	readonly candidate: LegacyAutomationRunFinalModelReference;
 	readonly order: number;
 	readonly status: "started" | "completed" | "failed" | "cancelled";
 	readonly startedAt: string;
 	readonly endedAt?: string;
 	readonly failureCategory?: string;
-	readonly usage?: LegacyAutomationRunModelUsageSummaryV1;
+	readonly usage?: LegacyAutomationRunModelUsageSummary;
 	readonly visibleOutput?: boolean;
 	readonly contextSnapshotId?: string;
 	readonly summary?: string;
 }
 
-export interface LegacyAutomationRunModelBudgetSummaryV1 {
+export interface LegacyAutomationRunModelBudgetSummary {
 	readonly modelCalls?: number;
 	readonly inputTokens?: number;
 	readonly outputTokens?: number;
@@ -87,7 +87,7 @@ export interface LegacyAutomationRunModelBudgetSummaryV1 {
 	readonly exceeded?: boolean;
 }
 
-export interface LegacyAutomationRunAttachmentSummaryV1 {
+export interface LegacyAutomationRunAttachmentSummary {
 	readonly sourceId: string;
 	readonly kind: "resource" | "prompt";
 	readonly descriptorId?: string;
@@ -100,13 +100,13 @@ export interface LegacyAutomationRunAttachmentSummaryV1 {
 	readonly mimeTypes?: readonly string[];
 }
 
-export interface LegacyAutomationRunUsageV1 {
+export interface LegacyAutomationRunUsage {
 	readonly input: number;
 	readonly output: number;
 	readonly total: number;
 }
 
-export interface LegacyAutomationRunRecordV1 {
+export interface LegacyAutomationRunRecord {
 	readonly id: string;
 	readonly sessionId: string;
 	readonly requestScope?: "start" | "resume";
@@ -122,88 +122,88 @@ export interface LegacyAutomationRunRecordV1 {
 	readonly policyBindingId?: string;
 	readonly previousPolicyBindingId?: string;
 	readonly attempt: number;
-	readonly status: LegacyAutomationRunStatusV1;
-	readonly model: LegacyAutomationRunModelReferenceV1;
-	readonly finalModel?: LegacyAutomationRunFinalModelReferenceV1;
-	readonly modelAttempts?: readonly LegacyAutomationRunModelAttemptSummaryV1[];
-	readonly modelBudget?: LegacyAutomationRunModelBudgetSummaryV1;
+	readonly status: LegacyAutomationRunStatus;
+	readonly model: LegacyAutomationRunModelReference;
+	readonly finalModel?: LegacyAutomationRunFinalModelReference;
+	readonly modelAttempts?: readonly LegacyAutomationRunModelAttemptSummary[];
+	readonly modelBudget?: LegacyAutomationRunModelBudgetSummary;
 	readonly policySummary?: PublicPolicySummary;
 	readonly bindingAssociation?: RunBindingAssociation;
 	readonly startedAt?: string;
 	readonly endedAt?: string;
-	readonly terminalError?: LegacyAutomationErrorV1;
+	readonly terminalError?: LegacyAutomationError;
 }
 
-export interface LegacyAutomationRunReceiptV1 {
+export interface LegacyAutomationRunReceipt {
 	readonly runId: string;
 	readonly sessionId: string;
 	readonly external?: ExternalExecutionRef;
 	readonly deadlineAt?: string;
-	readonly status: LegacyAutomationRunTerminalStatusV1;
+	readonly status: LegacyAutomationRunTerminalStatus;
 	readonly finalText?: string;
-	readonly usage: LegacyAutomationRunUsageV1;
+	readonly usage: LegacyAutomationRunUsage;
 	readonly sessionFile?: string;
-	readonly terminalError?: LegacyAutomationErrorV1;
+	readonly terminalError?: LegacyAutomationError;
 	readonly contextSnapshotId?: string;
 	readonly capabilityBindingId?: string;
 	readonly modelBindingId?: string;
 	readonly previousModelBindingId?: string;
 	readonly policyBindingId?: string;
 	readonly previousPolicyBindingId?: string;
-	readonly attachments?: readonly LegacyAutomationRunAttachmentSummaryV1[];
-	readonly finalModel?: LegacyAutomationRunFinalModelReferenceV1;
-	readonly modelAttempts?: readonly LegacyAutomationRunModelAttemptSummaryV1[];
-	readonly modelBudget?: LegacyAutomationRunModelBudgetSummaryV1;
+	readonly attachments?: readonly LegacyAutomationRunAttachmentSummary[];
+	readonly finalModel?: LegacyAutomationRunFinalModelReference;
+	readonly modelAttempts?: readonly LegacyAutomationRunModelAttemptSummary[];
+	readonly modelBudget?: LegacyAutomationRunModelBudgetSummary;
 	readonly policySummary?: PublicPolicySummary;
 	readonly bindingAssociation?: RunBindingAssociation;
 }
 
-export type LegacyAutomationRunLedgerEntryV1 =
-	| { readonly schemaVersion: 1; readonly kind: "accepted"; readonly record: LegacyAutomationRunRecordV1 }
+export type LegacyAutomationRunLedgerEntry =
+	| { readonly schemaVersion: 1; readonly kind: "accepted"; readonly record: LegacyAutomationRunRecord }
 	| { readonly schemaVersion: 1; readonly kind: "started"; readonly runId: string; readonly startedAt: string }
 	| {
 			readonly schemaVersion: 1;
 			readonly kind: "terminal";
-			readonly receipt: LegacyAutomationRunReceiptV1;
+			readonly receipt: LegacyAutomationRunReceipt;
 			readonly endedAt: string;
 	  };
 
-export type HistoricalAutomationRunProjectionV1 = Omit<
-	LegacyAutomationRunRecordV1,
+export type HistoricalAutomationRunProjection = Omit<
+	LegacyAutomationRunRecord,
 	"id" | "status" | "bindingAssociation" | "startedAt" | "endedAt" | "terminalError"
 > & {
 	readonly runId: string;
-	readonly status: LegacyAutomationRunStatusV1;
+	readonly status: LegacyAutomationRunStatus;
 	readonly startedAt?: string;
 	readonly endedAt?: string;
-	readonly terminal?: Omit<LegacyAutomationRunReceiptV1, "bindingAssociation">;
+	readonly terminal?: Omit<LegacyAutomationRunReceipt, "bindingAssociation">;
 	/** Historical handle/association data is retained only as a read view. */
 	readonly bindingAssociationView?: RunBindingAssociation;
 	readonly recovery?: "interrupted";
 };
 
-export interface AutomationRunLedgerMigrationResultV1 {
+export interface AutomationRunLedgerMigrationResult {
 	readonly schemaVersion: 1;
 	readonly sourceKind: "automation.run";
-	readonly runs: readonly HistoricalAutomationRunProjectionV1[];
+	readonly runs: readonly HistoricalAutomationRunProjection[];
 }
 
-export type LegacyAutomationRunReconciliationDispositionV1 =
+export type LegacyAutomationRunReconciliationDisposition =
 	| "canonical_equal"
 	| "canonical_with_incomplete_legacy"
 	| "legacy_migrated"
 	| "legacy_incomplete";
 
-export interface LegacyAutomationRunMigrationEvidenceV1 {
+export interface LegacyAutomationRunMigrationEvidence {
 	readonly runId: string;
-	readonly disposition: LegacyAutomationRunReconciliationDispositionV1;
+	readonly disposition: LegacyAutomationRunReconciliationDisposition;
 }
 
-export interface ReconciledAutomationRunLedgerMigrationResultV1 {
+export interface ReconciledAutomationRunLedgerMigrationResult {
 	readonly schemaVersion: 1;
 	readonly sourceKind: "automation.run";
 	readonly runs: readonly AutomationRunProjection[];
-	readonly evidence: readonly LegacyAutomationRunMigrationEvidenceV1[];
+	readonly evidence: readonly LegacyAutomationRunMigrationEvidence[];
 }
 
 const SOURCE_KEYS = ["sequence", "entryId", "data"] as const;
@@ -493,7 +493,7 @@ function isRunTimestamp(value: unknown): value is string {
 	return Number.isFinite(date.valueOf()) && date.toISOString() === value;
 }
 
-function isThinkingLevel(value: unknown): value is LegacyThinkingLevelV1 {
+function isThinkingLevel(value: unknown): value is LegacyThinkingLevel {
 	return (
 		value === "off" ||
 		value === "minimal" ||
@@ -505,7 +505,7 @@ function isThinkingLevel(value: unknown): value is LegacyThinkingLevelV1 {
 	);
 }
 
-function isTerminalStatus(value: unknown): value is LegacyAutomationRunTerminalStatusV1 {
+function isTerminalStatus(value: unknown): value is LegacyAutomationRunTerminalStatus {
 	return value === "completed" || value === "failed" || value === "cancelled";
 }
 
@@ -540,7 +540,7 @@ function isOpaqueCapabilityDescriptorId(value: unknown): value is string {
 	return match !== null && OPAQUE_CAPABILITY_KINDS.has(match[1]);
 }
 
-function decodeError(value: unknown): LegacyAutomationErrorV1 {
+function decodeError(value: unknown): LegacyAutomationError {
 	if (
 		!isRecord(value) ||
 		!hasExactKeys(value, ["code", "message", "retryable"]) ||
@@ -553,7 +553,7 @@ function decodeError(value: unknown): LegacyAutomationErrorV1 {
 	return { code: value.code, message: value.message, retryable: value.retryable };
 }
 
-function decodeModel(value: unknown): LegacyAutomationRunModelReferenceV1 {
+function decodeModel(value: unknown): LegacyAutomationRunModelReference {
 	if (
 		!isRecord(value) ||
 		!hasExactKeys(value, ["provider", "id", "thinkingLevel"]) ||
@@ -566,7 +566,7 @@ function decodeModel(value: unknown): LegacyAutomationRunModelReferenceV1 {
 	return { provider: value.provider, id: value.id, thinkingLevel: value.thinkingLevel };
 }
 
-function decodeFinalModel(value: unknown): LegacyAutomationRunFinalModelReferenceV1 {
+function decodeFinalModel(value: unknown): LegacyAutomationRunFinalModelReference {
 	if (
 		!isRecord(value) ||
 		!hasExactKeys(value, ["provider"], ["id", "modelId", "thinkingLevel"]) ||
@@ -578,10 +578,10 @@ function decodeFinalModel(value: unknown): LegacyAutomationRunFinalModelReferenc
 	) {
 		throw new PrivateMigrationError("Historical automation final model has an invalid exact shape");
 	}
-	return cloneCanonical(value, "Historical automation final model") as unknown as LegacyAutomationRunFinalModelReferenceV1;
+	return cloneCanonical(value, "Historical automation final model") as unknown as LegacyAutomationRunFinalModelReference;
 }
 
-function decodeModelUsage(value: unknown): LegacyAutomationRunModelUsageSummaryV1 {
+function decodeModelUsage(value: unknown): LegacyAutomationRunModelUsageSummary {
 	if (!isRecord(value) || !hasExactKeys(value, [], MODEL_USAGE_KEYS)) {
 		throw new PrivateMigrationError("Historical automation model usage has an invalid exact shape");
 	}
@@ -590,10 +590,10 @@ function decodeModelUsage(value: unknown): LegacyAutomationRunModelUsageSummaryV
 			throw new PrivateMigrationError("Historical automation model usage contains an invalid value");
 		}
 	}
-	return cloneCanonical(value, "Historical automation model usage") as LegacyAutomationRunModelUsageSummaryV1;
+	return cloneCanonical(value, "Historical automation model usage") as LegacyAutomationRunModelUsageSummary;
 }
 
-function decodeModelAttempt(value: unknown): LegacyAutomationRunModelAttemptSummaryV1 {
+function decodeModelAttempt(value: unknown): LegacyAutomationRunModelAttemptSummary {
 	if (!isRecord(value) || !hasExactKeys(value, MODEL_ATTEMPT_REQUIRED_KEYS, MODEL_ATTEMPT_OPTIONAL_KEYS)) {
 		throw new PrivateMigrationError("Historical automation model attempt has an invalid exact shape");
 	}
@@ -614,17 +614,17 @@ function decodeModelAttempt(value: unknown): LegacyAutomationRunModelAttemptSumm
 	}
 	decodeFinalModel(value.candidate);
 	if (value.usage !== undefined) decodeModelUsage(value.usage);
-	return cloneCanonical(value, "Historical automation model attempt") as unknown as LegacyAutomationRunModelAttemptSummaryV1;
+	return cloneCanonical(value, "Historical automation model attempt") as unknown as LegacyAutomationRunModelAttemptSummary;
 }
 
-function decodeModelAttempts(value: unknown): ReadonlyArray<LegacyAutomationRunModelAttemptSummaryV1> {
+function decodeModelAttempts(value: unknown): ReadonlyArray<LegacyAutomationRunModelAttemptSummary> {
 	if (!Array.isArray(value)) {
 		throw new PrivateMigrationError("Historical automation model attempts are invalid");
 	}
 	return value.map(decodeModelAttempt);
 }
 
-function decodeModelBudget(value: unknown): LegacyAutomationRunModelBudgetSummaryV1 {
+function decodeModelBudget(value: unknown): LegacyAutomationRunModelBudgetSummary {
 	if (!isRecord(value) || !hasExactKeys(value, [], MODEL_BUDGET_KEYS)) {
 		throw new PrivateMigrationError("Historical automation model budget has an invalid exact shape");
 	}
@@ -638,7 +638,7 @@ function decodeModelBudget(value: unknown): LegacyAutomationRunModelBudgetSummar
 			throw new PrivateMigrationError("Historical automation model budget contains an invalid value");
 		}
 	}
-	return cloneCanonical(value, "Historical automation model budget") as LegacyAutomationRunModelBudgetSummaryV1;
+	return cloneCanonical(value, "Historical automation model budget") as LegacyAutomationRunModelBudgetSummary;
 }
 
 function decodePolicySummary(value: unknown): PublicPolicySummary {
@@ -680,7 +680,7 @@ function decodePolicySummary(value: unknown): PublicPolicySummary {
 	return cloneCanonical(value, "Historical automation policy summary") as unknown as PublicPolicySummary;
 }
 
-function decodeAttachment(value: unknown): LegacyAutomationRunAttachmentSummaryV1 {
+function decodeAttachment(value: unknown): LegacyAutomationRunAttachmentSummary {
 	if (!isRecord(value) || !hasExactKeys(value, ATTACHMENT_REQUIRED_KEYS, ATTACHMENT_OPTIONAL_KEYS)) {
 		throw new PrivateMigrationError("Historical automation attachment has an invalid exact shape");
 	}
@@ -705,7 +705,7 @@ function decodeAttachment(value: unknown): LegacyAutomationRunAttachmentSummaryV
 	) {
 		throw new PrivateMigrationError("Historical automation attachment is invalid");
 	}
-	return cloneCanonical(value, "Historical automation attachment") as unknown as LegacyAutomationRunAttachmentSummaryV1;
+	return cloneCanonical(value, "Historical automation attachment") as unknown as LegacyAutomationRunAttachmentSummary;
 }
 
 function decodeAssociation(value: unknown, runId: string): RunBindingAssociation | undefined {
@@ -717,7 +717,7 @@ function decodeAssociation(value: unknown, runId: string): RunBindingAssociation
 	return association;
 }
 
-function decodeRunRecord(value: unknown): LegacyAutomationRunRecordV1 {
+function decodeRunRecord(value: unknown): LegacyAutomationRunRecord {
 	if (!isRecord(value) || !hasExactKeys(value, RECORD_REQUIRED_KEYS, RECORD_OPTIONAL_KEYS)) {
 		throw new PrivateMigrationError("Historical automation accepted record has an invalid exact shape");
 	}
@@ -757,10 +757,10 @@ function decodeRunRecord(value: unknown): LegacyAutomationRunRecordV1 {
 	return cloneCanonical(
 		bindingAssociation === undefined ? value : { ...value, bindingAssociation },
 		"Historical automation accepted record",
-	) as unknown as LegacyAutomationRunRecordV1;
+	) as unknown as LegacyAutomationRunRecord;
 }
 
-function decodeUsage(value: unknown): LegacyAutomationRunUsageV1 {
+function decodeUsage(value: unknown): LegacyAutomationRunUsage {
 	if (!isRecord(value) || !hasExactKeys(value, ["input", "output", "total"])) {
 		throw new PrivateMigrationError("Historical automation usage has an invalid exact shape");
 	}
@@ -772,7 +772,7 @@ function decodeUsage(value: unknown): LegacyAutomationRunUsageV1 {
 	return { input: value.input as number, output: value.output as number, total: value.total as number };
 }
 
-function decodeReceipt(value: unknown): LegacyAutomationRunReceiptV1 {
+function decodeReceipt(value: unknown): LegacyAutomationRunReceipt {
 	if (!isRecord(value) || !hasExactKeys(value, RECEIPT_REQUIRED_KEYS, RECEIPT_OPTIONAL_KEYS)) {
 		throw new PrivateMigrationError("Historical automation terminal receipt has an invalid exact shape");
 	}
@@ -809,10 +809,10 @@ function decodeReceipt(value: unknown): LegacyAutomationRunReceiptV1 {
 	return cloneCanonical(
 		bindingAssociation === undefined ? value : { ...value, bindingAssociation },
 		"Historical automation terminal receipt",
-	) as unknown as LegacyAutomationRunReceiptV1;
+	) as unknown as LegacyAutomationRunReceipt;
 }
 
-export function decodeLegacyAutomationRunLedgerEntryV1(value: unknown): LegacyAutomationRunLedgerEntryV1 {
+export function decodeLegacyAutomationRunLedgerEntryV1(value: unknown): LegacyAutomationRunLedgerEntry {
 	if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.kind !== "string") {
 		throw new PrivateMigrationError("Historical automation.run entry is invalid");
 	}
@@ -835,7 +835,7 @@ export function decodeLegacyAutomationRunLedgerEntryV1(value: unknown): LegacyAu
 	throw new PrivateMigrationError(`Historical automation.run kind ${value.kind} is unsupported`);
 }
 
-function normalizeSourceEntries(source: readonly LegacyAutomationRunLedgerSourceEntryV1[]): LegacyAutomationRunLedgerSourceEntryV1[] {
+function normalizeSourceEntries(source: readonly LegacyAutomationRunLedgerSourceEntry[]): LegacyAutomationRunLedgerSourceEntry[] {
 	const entries = source.map((candidate) => {
 		if (
 			!isRecord(candidate) ||
@@ -861,23 +861,23 @@ function normalizeSourceEntries(source: readonly LegacyAutomationRunLedgerSource
 }
 
 interface MutableRunFold {
-	accepted: LegacyAutomationRunRecordV1;
+	accepted: LegacyAutomationRunRecord;
 	acceptedSequence: number;
 	startedAt?: string;
-	terminal?: LegacyAutomationRunReceiptV1;
+	terminal?: LegacyAutomationRunReceipt;
 	endedAt?: string;
 	bindingAssociationView?: RunBindingAssociation;
 }
 
-function withoutAssociation(receipt: LegacyAutomationRunReceiptV1): Omit<LegacyAutomationRunReceiptV1, "bindingAssociation"> {
+function withoutAssociation(receipt: LegacyAutomationRunReceipt): Omit<LegacyAutomationRunReceipt, "bindingAssociation"> {
 	const { bindingAssociation: _bindingAssociation, ...view } = receipt;
 	return view;
 }
 
-export function migrateLegacyAutomationRunLedgerV1(
+export function migrateLegacyAutomationRunLedger(
 	sessionId: string,
-	source: readonly LegacyAutomationRunLedgerSourceEntryV1[],
-): AutomationRunLedgerMigrationResultV1 {
+	source: readonly LegacyAutomationRunLedgerSourceEntry[],
+): AutomationRunLedgerMigrationResult {
 	if (!isNonEmptyString(sessionId)) throw new PrivateMigrationError("Historical automation.run Session id is invalid");
 	const entries = normalizeSourceEntries(source);
 	const folds = new Map<string, MutableRunFold>();
@@ -939,7 +939,7 @@ export function migrateLegacyAutomationRunLedgerV1(
 
 	const runs = [...folds.values()]
 		.sort((left, right) => left.acceptedSequence - right.acceptedSequence || left.accepted.id.localeCompare(right.accepted.id))
-		.map((fold): HistoricalAutomationRunProjectionV1 => {
+		.map((fold): HistoricalAutomationRunProjection => {
 			const terminal = fold.terminal;
 			const {
 				id: runId,
@@ -967,7 +967,7 @@ export function migrateLegacyAutomationRunLedgerV1(
 }
 
 function legacyErrorEqualsProjection(
-	legacy: LegacyAutomationErrorV1 | undefined,
+	legacy: LegacyAutomationError | undefined,
 	canonical: AutomationRunProjection["terminalError"],
 ): boolean {
 	if (legacy === undefined || canonical === undefined) return legacy === undefined && canonical === undefined;
@@ -979,14 +979,14 @@ function legacyErrorEqualsProjection(
 }
 
 function legacyUsageEqualsProjection(
-	legacy: LegacyAutomationRunReceiptV1["usage"],
+	legacy: LegacyAutomationRunReceipt["usage"],
 	canonical: CanonicalAutomationRunProjection["terminal"]["usage"],
 ): boolean {
 	return legacy.input === canonical.input && legacy.output === canonical.output && legacy.total === canonical.total;
 }
 
 function assertEquivalentCanonicalRun(
-	legacy: HistoricalAutomationRunProjectionV1,
+	legacy: HistoricalAutomationRunProjection,
 	canonical: CanonicalAutomationRunProjection,
 ): void {
 	const terminal = legacy.terminal;
@@ -1008,7 +1008,7 @@ function assertEquivalentCanonicalRun(
 	}
 }
 
-function projectionFromCompleteLegacy(legacy: HistoricalAutomationRunProjectionV1): AutomationRunProjection {
+function projectionFromCompleteLegacy(legacy: HistoricalAutomationRunProjection): AutomationRunProjection {
 	const terminal = legacy.terminal;
 	if (terminal === undefined || legacy.endedAt === undefined) {
 		throw new PrivateMigrationError(`Historical automation.run is incomplete for run ${legacy.runId}`);
@@ -1051,12 +1051,12 @@ function projectionFromCompleteLegacy(legacy: HistoricalAutomationRunProjectionV
  * deliberately a pure decoder: it neither returns automation.run facts nor
  * exposes a persistence callback that could create new legacy terminal facts.
  */
-export function reconcileLegacyAutomationRunLedgerV1(
+export function reconcileLegacyAutomationRunLedger(
 	sessionId: string,
-	source: readonly LegacyAutomationRunLedgerSourceEntryV1[],
+	source: readonly LegacyAutomationRunLedgerSourceEntry[],
 	canonicalRuns: readonly CanonicalAutomationRunProjection[],
-): ReconciledAutomationRunLedgerMigrationResultV1 {
-	const historical = migrateLegacyAutomationRunLedgerV1(sessionId, source);
+): ReconciledAutomationRunLedgerMigrationResult {
+	const historical = migrateLegacyAutomationRunLedger(sessionId, source);
 	const canonicalByRunId = new Map<string, CanonicalAutomationRunProjection>();
 	for (const canonical of canonicalRuns) {
 		if (
@@ -1080,7 +1080,7 @@ export function reconcileLegacyAutomationRunLedgerV1(
 	}
 
 	const runs = new Map<string, AutomationRunProjection>(canonicalByRunId);
-	const evidence: LegacyAutomationRunMigrationEvidenceV1[] = [];
+	const evidence: LegacyAutomationRunMigrationEvidence[] = [];
 	for (const legacy of historical.runs) {
 		const canonical = canonicalByRunId.get(legacy.runId);
 		if (canonical !== undefined) {
@@ -1115,11 +1115,11 @@ export function reconcileLegacyAutomationRunLedgerV1(
 
 export function planLegacyAutomationRunLedgerMigrationV1(
 	sessionId: string,
-	source: readonly LegacyAutomationRunLedgerSourceEntryV1[],
-): PrivateMigrationPlanV1<AutomationRunLedgerMigrationResultV1> {
+	source: readonly LegacyAutomationRunLedgerSourceEntry[],
+): PrivateMigrationPlan<AutomationRunLedgerMigrationResult> {
 	const normalizedSource = normalizeSourceEntries(source);
-	const result = migrateLegacyAutomationRunLedgerV1(sessionId, normalizedSource);
-	return createPrivateMigrationPlanV1({
+	const result = migrateLegacyAutomationRunLedger(sessionId, normalizedSource);
+	return createPrivateMigrationPlan({
 		migrationName: "automation-run-ledger-v1",
 		sourceIdentity: { sessionId },
 		sourceKind: "automation.run",

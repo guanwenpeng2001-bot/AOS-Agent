@@ -3,19 +3,19 @@ import { describe, expect, it } from "vitest";
 import {
 	SUBAGENT_MAILBOX_ACK_OBJECT_TYPE,
 	SUBAGENT_MAILBOX_SENT_OBJECT_TYPE,
-	SubagentMailboxV1,
-	type ChildMailboxEndpointV1,
-	type SendChildMailboxMessageInputV1,
+	SubagentMailbox,
+	type ChildMailboxEndpoint,
+	type SendChildMailboxMessageInput,
 } from "../src/core/subagent-mailbox.ts";
-import type { ChildAgentRosterEntryV1 } from "../src/core/subagent-supervisor.ts";
+import type { ChildAgentRosterEntry } from "../src/core/subagent-supervisor.ts";
 
 const START = Date.parse("2026-01-01T00:00:00.000Z");
 
 function child(
 	id: string,
 	laneId: string,
-	status: ChildAgentRosterEntryV1["status"] = "running",
-): ChildAgentRosterEntryV1 {
+	status: ChildAgentRosterEntry["status"] = "running",
+): ChildAgentRosterEntry {
 	return {
 		schemaVersion: 1,
 		sessionId: "session-mailbox",
@@ -33,7 +33,7 @@ function child(
 	};
 }
 
-const parentEndpoint: ChildMailboxEndpointV1 = {
+const parentEndpoint: ChildMailboxEndpoint = {
 	schemaVersion: 1,
 	sessionId: "session-mailbox",
 	laneId: "parent-lane",
@@ -43,18 +43,18 @@ const parentEndpoint: ChildMailboxEndpointV1 = {
 };
 
 interface Fixture {
-	readonly mailbox: SubagentMailboxV1;
+	readonly mailbox: SubagentMailbox;
 	readonly ledger: SessionLedger;
 	readonly ledgerForLane: (laneId: string) => SessionLedger;
-	readonly roster: ChildAgentRosterEntryV1[];
+	readonly roster: ChildAgentRosterEntry[];
 	readonly delayCalls: number[];
 	readonly setNow: (milliseconds: number) => void;
 }
 
 function fixture(
 		overrides: {
-		roster?: ChildAgentRosterEntryV1[];
-		endpoints?: ChildMailboxEndpointV1[];
+		roster?: ChildAgentRosterEntry[];
+		endpoints?: ChildMailboxEndpoint[];
 		session?: Session;
 		laneId?: string;
 		now?: () => string;
@@ -78,7 +78,7 @@ function fixture(
 	const laneId = overrides.laneId ?? endpoints[0]?.laneId ?? "parent-lane";
 	let milliseconds = START;
 	const delayCalls: number[] = [];
-	const mailbox = new SubagentMailboxV1({
+	const mailbox = new SubagentMailbox({
 		schemaVersion: 1,
 		ledger: ledgerForLane(laneId),
 		ledgerForLane,
@@ -114,8 +114,8 @@ function fixture(
 function sendInput(
 	messageId: string,
 	to = child("child-1", "child-lane-1"),
-	overrides: Partial<SendChildMailboxMessageInputV1> = {},
-): SendChildMailboxMessageInputV1 {
+	overrides: Partial<SendChildMailboxMessageInput> = {},
+): SendChildMailboxMessageInput {
 	return {
 		schemaVersion: 1,
 		messageId,
@@ -135,7 +135,7 @@ function sendInput(
 	};
 }
 
-describe("SubagentMailboxV1", () => {
+describe("SubagentMailbox", () => {
 	it("persists ordered messages and acknowledgements on distinct child lanes across reload", async () => {
 		const value = fixture();
 		expect((await value.mailbox.send(sendInput("message-1"))).ok).toBe(true);
@@ -464,13 +464,13 @@ describe("SubagentMailboxV1", () => {
 
 	it("isolates two mailbox ownership sets sharing one Session", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "session-mailbox", createdAt: 1 }));
-		const parentA: ChildMailboxEndpointV1 = {
+		const parentA: ChildMailboxEndpoint = {
 			...parentEndpoint,
 			laneId: "parent-lane-a",
 			agentInstanceId: "parent-a",
 			attemptId: "attempt-parent-a",
 		};
-		const parentB: ChildMailboxEndpointV1 = {
+		const parentB: ChildMailboxEndpoint = {
 			...parentEndpoint,
 			laneId: "parent-lane-b",
 			agentInstanceId: "parent-b",
@@ -615,8 +615,8 @@ describe("SubagentMailboxV1", () => {
 	});
 });
 
-function fixtureFrom(value: Fixture, now: () => string = () => new Date(START).toISOString()): SubagentMailboxV1 {
-	return new SubagentMailboxV1({
+function fixtureFrom(value: Fixture, now: () => string = () => new Date(START).toISOString()): SubagentMailbox {
+	return new SubagentMailbox({
 		schemaVersion: 1,
 		ledger: value.ledger,
 		ledgerForLane: value.ledgerForLane,

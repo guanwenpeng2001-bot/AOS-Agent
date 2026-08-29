@@ -36,11 +36,11 @@ import {
 	type TaskExecutorProvider,
 } from "@aos-agent/agent-core";
 import {
-	projectSafeChildResultV1,
-	settleChildTaskResultV1,
-	validateSafeChildResultProjectionV1,
-	type ChildResultTransportHostV1,
-	type ChildTaskSettlementAdapterInputV1,
+	projectSafeChildResult,
+	settleChildTaskResult,
+	validateSafeChildResultProjection,
+	type ChildResultTransportHost,
+	type ChildTaskSettlementAdapterInput,
 } from "../src/core/subagent-result.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
@@ -383,9 +383,9 @@ function settlementInput(
 	value: Fixture,
 	receipts: readonly AttemptReceipt[],
 	taskResultId: string,
-	policy: ChildTaskSettlementAdapterInputV1["policy"],
+	policy: ChildTaskSettlementAdapterInput["policy"],
 	summary = `summary for ${taskResultId}`,
-): ChildTaskSettlementAdapterInputV1 {
+): ChildTaskSettlementAdapterInput {
 	const first = receipts[0];
 	if (first === undefined || first.provenance.correlation === undefined) throw new Error("settlement requires a correlated source receipt");
 	return {
@@ -418,9 +418,9 @@ async function projectionFixture(id: string, receiptCount = 1, settledReceiptCou
 	for (let ordinal = 1; ordinal <= receiptCount; ordinal += 1) receipts.push(await executeReceipt(value, ordinal));
 	const taskResultId = `${id}-task-result`;
 	const parent = await openParentHost(value);
-	const settled = await settleChildTaskResultV1(parent.gate, settlementInput(value, receipts.slice(0, settledReceiptCount), taskResultId, { type: "all_succeed" }, summary));
+	const settled = await settleChildTaskResult(parent.gate, settlementInput(value, receipts.slice(0, settledReceiptCount), taskResultId, { type: "all_succeed" }, summary));
 	if (!settled.ok) throw settled.error;
-	const host: ChildResultTransportHostV1 = {
+	const host: ChildResultTransportHost = {
 		artifactStore: value.artifactStore,
 		ledger: parent.ledger,
 		sessionId: value.sessionId,
@@ -451,14 +451,14 @@ describe("Subagent result transport and Host settlement", () => {
 		const setup = await projectionFixture("result-exact-transport");
 		const valid = taskResultTransport(setup);
 		const { taskId: _taskId, ...missingTaskId } = valid;
-		expect(await projectSafeChildResultV1(setup.host, missingTaskId)).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
-		expect(await projectSafeChildResultV1(setup.host, { ...valid, unexpected: true })).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		expect(await projectSafeChildResult(setup.host, missingTaskId)).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		expect(await projectSafeChildResult(setup.host, { ...valid, unexpected: true })).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 		expect(await setup.value.session.findFoundationRecords({ kind: "fact", objectType: "subagent_result_projection" })).toHaveLength(0);
 	});
 
 	it("projects a parent-lane Host TaskResult in declared source order and persists one frozen parent projection", async () => {
 		const setup = await projectionFixture("result-distinct-lanes", 2);
-		const projected = await projectSafeChildResultV1(setup.host, taskResultTransport(setup, [setup.receipts[1]!, setup.receipts[0]!]));
+		const projected = await projectSafeChildResult(setup.host, taskResultTransport(setup, [setup.receipts[1]!, setup.receipts[0]!]));
 		expect(projected).toMatchObject({
 			ok: true,
 			value: {
@@ -471,7 +471,7 @@ describe("Subagent result transport and Host settlement", () => {
 		expect(Object.isFrozen(projected.value)).toBe(true);
 		expect(Object.isFrozen(projected.value.artifacts)).toBe(true);
 		expect(Object.isFrozen(projected.value.artifacts[0])).toBe(true);
-		const replay = await projectSafeChildResultV1(setup.host, taskResultTransport(setup));
+		const replay = await projectSafeChildResult(setup.host, taskResultTransport(setup));
 		expect(replay).toEqual(projected);
 		const records = await setup.value.session.findFoundationRecords({ kind: "fact", objectType: "subagent_result_projection" });
 		expect(records).toHaveLength(1);
@@ -482,7 +482,7 @@ describe("Subagent result transport and Host settlement", () => {
 
 	it("truncates multibyte summaries to the UTF-8 byte bound without splitting a character", async () => {
 		const setup = await projectionFixture("result-multibyte-summary", 1, 1, "界".repeat(6_000));
-		const projected = await projectSafeChildResultV1(setup.host, taskResultTransport(setup));
+		const projected = await projectSafeChildResult(setup.host, taskResultTransport(setup));
 		if (!projected.ok) throw projected.error;
 		expect(new TextEncoder().encode(projected.value.summary).byteLength).toBeLessThanOrEqual(16_384);
 		expect(projected.value.summary.endsWith("\n[TRUNCATED]")).toBe(true);
@@ -492,21 +492,21 @@ describe("Subagent result transport and Host settlement", () => {
 	it("rejects missing and tampered durable AttemptReceipt sources", async () => {
 		const missing = await projectionFixture("result-missing-receipt");
 		await missing.parent.writer.tombstone({ objectType: "attempt_receipt", objectId: missing.receipts[0]!.attemptReceiptId, reason: "negative-test" });
-		expect(await projectSafeChildResultV1(missing.host, taskResultTransport(missing))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		expect(await projectSafeChildResult(missing.host, taskResultTransport(missing))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 
 		const tampered = await projectionFixture("result-tampered-receipt");
 		const changedReceipt: AttemptReceipt = { ...tampered.receipts[0]!, artifacts: [] };
-		expect(await projectSafeChildResultV1(tampered.host, taskResultTransport(tampered, [changedReceipt]))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		expect(await projectSafeChildResult(tampered.host, taskResultTransport(tampered, [changedReceipt]))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 	});
 
 	it("rejects missing and tampered durable parent Host TaskResult facts", async () => {
 		const missing = await projectionFixture("result-missing-task-result");
 		await missing.parent.writer.tombstone({ objectType: "task_result", objectId: missing.taskResult.taskResultId, reason: "negative-test" });
-		expect(await projectSafeChildResultV1(missing.host, taskResultTransport(missing))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		expect(await projectSafeChildResult(missing.host, taskResultTransport(missing))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 
 		const tampered = await projectionFixture("result-tampered-task-result");
 		const changedResult = { ...tampered.taskResult, summary: "caller changed the durable summary" };
-		expect(await projectSafeChildResultV1(tampered.host, taskResultTransport(tampered, tampered.receipts, changedResult))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		expect(await projectSafeChildResult(tampered.host, taskResultTransport(tampered, tampered.receipts, changedResult))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 	});
 
 	it("rejects conflicting durable projection content and metadata", async () => {
@@ -536,21 +536,21 @@ describe("Subagent result transport and Host settlement", () => {
 					taskResultId: setup.taskResult.taskResultId,
 				},
 			});
-			expect(await projectSafeChildResultV1(setup.host, taskResultTransport(setup))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+			expect(await projectSafeChildResult(setup.host, taskResultTransport(setup))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 		}
 	});
 
 	it("uses ArtifactStoreProvider.verify and requires digestValid", async () => {
 		const setup = await projectionFixture("result-artifact-verification");
 		setup.value.artifactStore.validArtifactIds.clear();
-		expect(await projectSafeChildResultV1(setup.host, taskResultTransport(setup))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		expect(await projectSafeChildResult(setup.host, taskResultTransport(setup))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 		expect(setup.value.artifactStore.verifyCalls).toEqual([ARTIFACT.artifactId]);
 	});
 
 	it("returns errors instead of throwing for out-of-range times", async () => {
 		const setup = await projectionFixture("result-extreme-time");
 		const extremeHost = { ...setup.host, now: () => Number.MAX_VALUE };
-		await expect(projectSafeChildResultV1(extremeHost, taskResultTransport(setup))).resolves.toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		await expect(projectSafeChildResult(extremeHost, taskResultTransport(setup))).resolves.toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 		const base = {
 			schemaVersion: 1 as const,
 			childAgentInstanceId: "child-agent",
@@ -560,15 +560,15 @@ describe("Subagent result transport and Host settlement", () => {
 			trust: "untrusted_child_output" as const,
 			producedAt: "+999999-01-01T00:00:00.000Z",
 		};
-		expect(() => validateSafeChildResultProjectionV1({ ...base, digest: fingerprintFoundationValue(base) })).not.toThrow();
-		expect(validateSafeChildResultProjectionV1({ ...base, digest: fingerprintFoundationValue(base) })).toMatchObject({ ok: false });
+		expect(() => validateSafeChildResultProjection({ ...base, digest: fingerprintFoundationValue(base) })).not.toThrow();
+		expect(validateSafeChildResultProjection({ ...base, digest: fingerprintFoundationValue(base) })).toMatchObject({ ok: false });
 	});
 
 	it("replays the original projection time when the Host clock changes or becomes invalid", async () => {
 		const setup = await projectionFixture("result-time-replay");
-		const projected = await projectSafeChildResultV1(setup.host, taskResultTransport(setup));
+		const projected = await projectSafeChildResult(setup.host, taskResultTransport(setup));
 		if (!projected.ok) throw projected.error;
-		const replayed = await projectSafeChildResultV1({ ...setup.host, now: () => Number.MAX_VALUE }, taskResultTransport(setup));
+		const replayed = await projectSafeChildResult({ ...setup.host, now: () => Number.MAX_VALUE }, taskResultTransport(setup));
 		expect(replayed).toEqual(projected);
 		expect(replayed.ok && replayed.value.producedAt).toBe(NOW);
 	});
@@ -578,10 +578,10 @@ describe("Subagent result transport and Host settlement", () => {
 		const succeeded = await executeReceipt(value, 1);
 		const failed = await executeReceipt(value, 2, "failed");
 		const parent = await openParentHost(value);
-		expect(await settleChildTaskResultV1(parent.gate, settlementInput(value, [succeeded, failed], "all-result", { type: "all_succeed" }))).toMatchObject({ ok: false });
-		expect(await settleChildTaskResultV1(parent.gate, settlementInput(value, [succeeded, failed], "quorum-result", { type: "quorum", minimumSucceeded: 1 }))).toMatchObject({ ok: true, value: { sourceAttemptReceiptIds: [succeeded.attemptReceiptId] } });
-		expect(await settleChildTaskResultV1(parent.gate, settlementInput(value, [succeeded, failed], "partial-result", { type: "partial" }))).toMatchObject({ ok: true, value: { sourceAttemptReceiptIds: [succeeded.attemptReceiptId] } });
-		expect(await settleChildTaskResultV1(parent.gate, settlementInput(value, [succeeded, succeeded], "duplicate-result", { type: "partial" }))).toMatchObject({ ok: false });
+		expect(await settleChildTaskResult(parent.gate, settlementInput(value, [succeeded, failed], "all-result", { type: "all_succeed" }))).toMatchObject({ ok: false });
+		expect(await settleChildTaskResult(parent.gate, settlementInput(value, [succeeded, failed], "quorum-result", { type: "quorum", minimumSucceeded: 1 }))).toMatchObject({ ok: true, value: { sourceAttemptReceiptIds: [succeeded.attemptReceiptId] } });
+		expect(await settleChildTaskResult(parent.gate, settlementInput(value, [succeeded, failed], "partial-result", { type: "partial" }))).toMatchObject({ ok: true, value: { sourceAttemptReceiptIds: [succeeded.attemptReceiptId] } });
+		expect(await settleChildTaskResult(parent.gate, settlementInput(value, [succeeded, succeeded], "duplicate-result", { type: "partial" }))).toMatchObject({ ok: false });
 	});
 
 	it("rejects non-Host settlement and incomplete or extra declared TaskResult sources", async () => {
@@ -591,12 +591,12 @@ describe("Subagent result transport and Host settlement", () => {
 		const third = await executeReceipt(value, 3);
 		const parent = await openParentHost(value);
 		const hostInput = settlementInput(value, [first, second], "authority-result", { type: "all_succeed" });
-		const nonHostInput: ChildTaskSettlementAdapterInputV1 = {
+		const nonHostInput: ChildTaskSettlementAdapterInput = {
 			...hostInput,
 			producer: { ...hostInput.producer, producerKind: "agent_executor" },
 		};
-		expect(await settleChildTaskResultV1(parent.gate, nonHostInput)).toMatchObject({ ok: false, error: { code: "task_result_validation_failed" } });
-		const settled = await settleChildTaskResultV1(parent.gate, hostInput);
+		expect(await settleChildTaskResult(parent.gate, nonHostInput)).toMatchObject({ ok: false, error: { code: "task_result_validation_failed" } });
+		const settled = await settleChildTaskResult(parent.gate, hostInput);
 		if (!settled.ok) throw settled.error;
 		const setup = {
 			value,
@@ -610,10 +610,10 @@ describe("Subagent result transport and Host settlement", () => {
 				childLaneId: CHILD_LANE,
 				parentLaneId: PARENT_LANE,
 				now: () => NOW_MS,
-			} satisfies ChildResultTransportHostV1,
+			} satisfies ChildResultTransportHost,
 		};
-		expect(await projectSafeChildResultV1(setup.host, taskResultTransport(setup, [first]))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
-		expect(await projectSafeChildResultV1(setup.host, taskResultTransport(setup, [first, second, third]))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		expect(await projectSafeChildResult(setup.host, taskResultTransport(setup, [first]))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
+		expect(await projectSafeChildResult(setup.host, taskResultTransport(setup, [first, second, third]))).toMatchObject({ ok: false, error: { code: "subagent_result_untrusted" } });
 	});
 
 	it("rejects conflicting real provider receipts that reuse one id", async () => {
@@ -624,6 +624,6 @@ describe("Subagent result transport and Host settlement", () => {
 		expect(first.attemptReceiptId).toBe(second.attemptReceiptId);
 		expect(first.attemptId).not.toBe(second.attemptId);
 		const parent = await openParentHost(value);
-		expect(await settleChildTaskResultV1(parent.gate, settlementInput(value, [first, second], "conflicting-result", { type: "partial" }))).toMatchObject({ ok: false, error: { code: "task_result_validation_failed" } });
+		expect(await settleChildTaskResult(parent.gate, settlementInput(value, [first, second], "conflicting-result", { type: "partial" }))).toMatchObject({ ok: false, error: { code: "task_result_validation_failed" } });
 	});
 });
