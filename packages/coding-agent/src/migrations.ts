@@ -3,15 +3,29 @@
  */
 
 import chalk from "chalk";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "fs";
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentDir, getBinDir } from "./config.ts";
+import {
+	readControlPlaneState,
+	writeControlPlaneState,
+} from "./core/control-plane-atomic-storage.ts";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
 
 const MIGRATION_GUIDE_URL =
 	"(see package docs)";
 const EXTENSIONS_DOC_URL =
 	"(see package docs)";
+
+function validateJsonObject(content: string): void {
+	const parsed: unknown = JSON.parse(content);
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("Expected a JSON object");
+	}
+}
+
+const MIGRATION_STORAGE_OPTIONS = { validate: validateJsonObject } as const;
+const AUTH_MIGRATION_STORAGE_OPTIONS = { ...MIGRATION_STORAGE_OPTIONS, mode: 0o600 } as const;
 
 /**
  * Migrate legacy oauth.json and settings.json apiKeys to auth.json.
@@ -25,7 +39,14 @@ export function migrateAuthToAuthJson(): string[] {
 	const settingsPath = join(agentDir, "settings.json");
 
 	// Skip if auth.json already exists
-	if (existsSync(authPath)) return [];
+	if (existsSync(authPath)) {
+		try {
+			readControlPlaneState(authPath, AUTH_MIGRATION_STORAGE_OPTIONS);
+		} catch {
+			// Leave malformed auth state quarantined for a later migration or explicit recovery.
+		}
+		return [];
+	}
 
 	const migrated: Record<string, unknown> = {};
 	const providers: string[] = [];
@@ -47,17 +68,19 @@ export function migrateAuthToAuthJson(): string[] {
 	// Migrate settings.json apiKeys
 	if (existsSync(settingsPath)) {
 		try {
-			const content = readFileSync(settingsPath, "utf-8");
-			const settings = JSON.parse(content);
-			if (settings.apiKeys && typeof settings.apiKeys === "object") {
-				for (const [provider, key] of Object.entries(settings.apiKeys)) {
-					if (!migrated[provider] && typeof key === "string") {
-						migrated[provider] = { type: "api_key", key };
-						providers.push(provider);
+			const content = readControlPlaneState(settingsPath, MIGRATION_STORAGE_OPTIONS);
+			if (content !== undefined) {
+				const settings = JSON.parse(content);
+				if (settings.apiKeys && typeof settings.apiKeys === "object") {
+					for (const [provider, key] of Object.entries(settings.apiKeys)) {
+						if (!migrated[provider] && typeof key === "string") {
+							migrated[provider] = { type: "api_key", key };
+							providers.push(provider);
+						}
 					}
+					delete settings.apiKeys;
+					writeControlPlaneState(settingsPath, JSON.stringify(settings, null, 2), MIGRATION_STORAGE_OPTIONS);
 				}
-				delete settings.apiKeys;
-				writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 			}
 		} catch {
 			// Skip on error
@@ -66,7 +89,7 @@ export function migrateAuthToAuthJson(): string[] {
 
 	if (Object.keys(migrated).length > 0) {
 		mkdirSync(dirname(authPath), { recursive: true });
-		writeFileSync(authPath, JSON.stringify(migrated, null, 2), { mode: 0o600 });
+		writeControlPlaneState(authPath, JSON.stringify(migrated, null, 2), AUTH_MIGRATION_STORAGE_OPTIONS);
 	}
 
 	return providers;
@@ -159,13 +182,15 @@ function migrateKeybindingsConfigFile(): void {
 	if (!existsSync(configPath)) return;
 
 	try {
-		const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as unknown;
+		const content = readControlPlaneState(configPath, MIGRATION_STORAGE_OPTIONS);
+		if (content === undefined) return;
+		const parsed = JSON.parse(content) as unknown;
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 			return;
 		}
 		const { config, migrated } = migrateKeybindingsConfig(parsed as Record<string, unknown>);
 		if (!migrated) return;
-		writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+		writeControlPlaneState(configPath, `${JSON.stringify(config, null, 2)}\n`, MIGRATION_STORAGE_OPTIONS);
 	} catch {
 		// Ignore malformed files during migration
 	}
