@@ -60,7 +60,7 @@ The Gondolin/QEMU provider is an optional local sandbox adapter. Worker correctn
 
 ## Capability ledger
 
-The machine-checkable ledger is `packages/agent/src/harness/line11-worker-capabilities.ts`.
+The machine-checkable Worker ledger covers:
 
 - Implemented by the Worker: 74–87, 135, 136 (16 capabilities).
 - Uses existing Foundation capabilities: 6, 32, 47, 52, 61 (5 capabilities).

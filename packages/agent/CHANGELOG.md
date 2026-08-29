@@ -21,6 +21,7 @@
 
 ### Changed
 
+- The External Agent Connector contract and the architecture convergence are implemented. Product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) and the final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) are not complete. This checkout does not claim product readiness.
 - Clarified that higher-level connector retry circuits must preserve the terminal `side_effect_unknown` no-replay boundary.
 - Tool Gateway results can carry a bounded JSON-safe structured result separately from their canonical receipt reference.
 - Restricted current Native Subagent lifecycle events and capability metadata to Native provider kinds; external protocols use the separate External Agent Connector contract.
@@ -38,7 +39,7 @@
 - Foundation model calls now durably record route-bound intent/fact pairs and fail closed on unsupported service tiers or pending/unknown restart state without replaying provider side effects.
 - Durable assistant and tool projections now omit undefined transport fields and validate historical tool bindings against their own immutable record correlation.
 - AgentHarness compatibility retry and external-message state now reflects active retry attempts and pending writes instead of fixed false values.
-- Added the canonical `sandbox_capability_insufficient` and `task_credential_target_unavailable` Foundation errors, and preserved validated Worker receipt provenance through `ToolExecutionResult.toolReceiptRef`, closing two sealed-contract omissions without a schema redesign.
+- Added the canonical `sandbox_capability_insufficient` and `task_credential_target_unavailable` Foundation errors, and preserved validated Worker receipt provenance through `ToolExecutionResult.toolReceiptRef`, closing two contract omissions without a schema redesign.
 - Made the Foundation Host terminal gate the replay-stable `RunReceipt` authority, with canonical status/error/usage, fail-closed conflicts, deterministic result lookup, and one `run_receipt.written` projection per durable receipt.
 
 ## [0.84.3] - 2026-08-10

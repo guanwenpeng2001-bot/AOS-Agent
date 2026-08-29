@@ -44,7 +44,7 @@ The installable package is `aos-agent`, and it exposes the `aos` executable. The
 
 This repository contains the source for the published `0.84.3` package set. Hosted services and generated model catalogs remain outside the release boundary.
 
-Product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) and the final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) are not complete. This checkout does not claim product readiness.
+The External Agent Connector contract and the architecture convergence are implemented. Product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) and the final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) are not complete. This checkout does not claim product readiness.
 
 The root `./test.sh` script runs non-e2e product tests.
 
