@@ -52,6 +52,7 @@
 - Task Credential service closes on Session shutdown before tearing down outstanding leases, so a later service cannot issue into a disposed session. The Run lifecycle cancel-requested observer fires at most once per Run on the first explicit cancel intent and writes no Run fact.
 - Product prompt composition now persists and reuses content-addressed Role, ModelProfile, Capability, and Policy revision facts across Runs, and derives detached public binding views only from canonical `AgentBinding` records.
 - Default tests now run only product regressions.
+- Published npm packages no longer include internal architecture and audit documents.
 
 ### Fixed
 

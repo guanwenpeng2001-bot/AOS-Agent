@@ -148,9 +148,7 @@ describe("current public naming", () => {
 		expect(staleNames).toEqual([]);
 		expect(maturityLabels).toEqual([]);
 		expect(legacyPublicSurfaces).toEqual([]);
-		expect(existsSync(join(docsRoot, "architecture-atlas-foundation.md"))).toBe(true);
 		expect(existsSync(join(docsRoot, "architecture-atlas-foundation-v1.md"))).toBe(false);
-		expect(existsSync(join(docsRoot, "foundation-final-audit.md"))).toBe(true);
 		expect(existsSync(join(docsRoot, "foundation-v1-final-audit.md"))).toBe(false);
 	});
 });
