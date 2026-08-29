@@ -4,7 +4,7 @@ import * as AgentPublic from "@aos-agent/agent-core";
 import { parseTaskEnvelope, serializeTaskEnvelope, type TaskEnvelope } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import * as CodingAgentPublic from "../src/index.ts";
-import { LINE13_T0_PUBLIC_ROOTS, line13RepoRoot } from "./support/line13-t0-baseline-inventory.ts";
+import { PUBLIC_ROOTS, repoRoot } from "./support/public-roots.ts";
 import ts from "typescript";
 
 const businessVersionPattern = /_?V\d+(?=[A-Z_]|$)/u;
@@ -20,8 +20,8 @@ const currentPublicSurfaces = new Set(["external_agent_driver_asset_missing"]);
 
 describe("current public naming", () => {
 	it("exposes only unversioned business names from package roots and subpaths", () => {
-		const root = line13RepoRoot();
-		const rootNames = LINE13_T0_PUBLIC_ROOTS.map((entry) => resolve(root, entry.source));
+		const root = repoRoot();
+		const rootNames = PUBLIC_ROOTS.map((entry) => resolve(root, entry.source));
 		const program = ts.createProgram({
 			rootNames,
 			options: {
@@ -37,7 +37,7 @@ describe("current public naming", () => {
 		const versionedExports: string[] = [];
 		const migrationExports: string[] = [];
 		const exportsBySpecifier = new Map<string, ReadonlySet<string>>();
-		for (const publicRoot of LINE13_T0_PUBLIC_ROOTS) {
+		for (const publicRoot of PUBLIC_ROOTS) {
 			const sourceFile = program.getSourceFile(resolve(root, publicRoot.source));
 			if (sourceFile === undefined) throw new Error(`Missing public entrypoint ${publicRoot.source}`);
 			const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
@@ -106,7 +106,7 @@ describe("current public naming", () => {
 	});
 
 	it("keeps user documentation on current product names", () => {
-		const root = line13RepoRoot();
+		const root = repoRoot();
 		const docsRoot = join(root, "packages/coding-agent/docs");
 		const pending = [docsRoot];
 		const documents: string[] = [];

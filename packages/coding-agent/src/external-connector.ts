@@ -48,19 +48,6 @@ export {
 	type PackagedExternalAgentDriverTrace,
 } from "./core/packaged-external-agent-driver.ts";
 export {
-	LINE13_PRODUCT_TRACE_OPERATIONS,
-	runPackagedLine13ProductTrace,
-	type Line13CanonicalClosureSnapshot,
-	type Line13ProductTraceOptions,
-	type Line13ProductTraceResult,
-} from "./core/line13-product-trace.ts";
-export {
-	runPackagedLine13UpgradeMigration,
-	type Line13PackagedUpgradeOptions,
-	type Line13PackagedUpgradeResult,
-	type Line13UpgradeFault,
-} from "./core/line13-packaged-upgrade.ts";
-export {
 	CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS,
 	CANONICAL_EXTERNAL_AGENT_INPUT_SCHEMA_VERSION,
 	ExternalAgentInputError,
