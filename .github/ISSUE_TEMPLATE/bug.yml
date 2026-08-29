@@ -1,0 +1,83 @@
+name: Bug report
+description: Report a reproducible problem in AOS Agent
+title: "[Bug] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep the report short, concrete, and in your own voice. Do not include secrets or security-sensitive details; use the private channels in SECURITY.md for vulnerabilities.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Bug
+      description: State clearly what is wrong.
+      placeholder: AOS Agent does...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest reliable sequence of steps, commands, or input that reproduces the bug.
+      placeholder: |
+        1. Run...
+        2. Enter...
+        3. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe what you expected AOS Agent to do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe what AOS Agent did instead. Include short, relevant logs when useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Why this matters
+      description: Explain the concrete impact of the bug.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the AOS Agent version or commit SHA where you observed the bug.
+      placeholder: vX.Y.Z or commit SHA
+    validations:
+      required: true
+
+  - type: dropdown
+    id: implementation
+    attributes:
+      label: Willing to implement
+      description: Say whether you want to submit a fix.
+      options:
+        - "Yes"
+        - "No"
+        - Unsure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I kept this report concise, reviewed it myself, and searched for an existing issue.
+          required: true

@@ -1,0 +1,62 @@
+name: Feature request
+description: Propose a focused improvement to AOS Agent
+title: "[Feature] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep the request short, concrete, and in your own voice. AOS Agent's core is intentionally minimal, so explain why this belongs in the core rather than an extension.
+
+  - type: textarea
+    id: request
+    attributes:
+      label: Request
+      description: State the feature or behavior you want clearly.
+      placeholder: AOS Agent should...
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why this matters
+      description: Describe the concrete problem this would solve and who it affects.
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Proposed behavior
+      description: Give a small example of how the feature should work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe existing features, extensions, or workarounds you considered.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: implementation
+    attributes:
+      label: Willing to implement
+      description: Say whether you want to submit the change yourself.
+      options:
+        - "Yes"
+        - "No"
+        - Unsure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I kept this request concise, reviewed it myself, and searched for an existing issue.
+          required: true
