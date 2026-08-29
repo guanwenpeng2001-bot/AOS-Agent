@@ -10,7 +10,7 @@ import {
 	Result,
 	Session,
 	SessionLedger,
-	SessionT5Ledger,
+	ContextLedger,
 	sha256HexValue,
 	type AgentBinding,
 	type AgentHarness as AgentHarnessType,
@@ -237,7 +237,7 @@ async function createFixture(options: {
 	const ledgerForLane = (laneId: string): SessionLedger => {
 		const existing = ledgers.get(laneId);
 		if (existing !== undefined) return existing;
-		const ledger = new SessionLedger(session, { writer: created.harness.t5.writer, laneId });
+		const ledger = new SessionLedger(session, { writer: created.harness.ledger.writer, laneId });
 		ledgers.set(laneId, ledger);
 		return ledger;
 	};
@@ -277,7 +277,7 @@ async function createFixture(options: {
 		delete: async () => Result.ok(undefined),
 		dispose: async () => {},
 	} as unknown as ArtifactStoreProvider;
-	const memoryLedger = new SessionT5Ledger(session, {
+	const memoryLedger = new ContextLedger(session, {
 		ownerId: "product-composition-memory",
 		memoryScopeId: "product-composition-parent-memory",
 		memoryOwnerId: "configured-parent",
@@ -324,7 +324,7 @@ async function createFixture(options: {
 		schemaVersion: 1,
 		enabled: true,
 		session,
-		writer: created.harness.t5.writer,
+		writer: created.harness.ledger.writer,
 		ledger: ledgerForLane("main"),
 		ledgerForLane,
 		sessionId: (await session.getMetadata()).id,

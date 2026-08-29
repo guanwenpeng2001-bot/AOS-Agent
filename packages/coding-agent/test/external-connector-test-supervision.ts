@@ -3,7 +3,7 @@ import {
 	Result,
 	Session,
 	SessionLedger,
-	SessionT5Ledger,
+	ContextLedger,
 	type ConnectorCapabilitySnapshot,
 	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
@@ -253,12 +253,12 @@ export function createExternalConnectorTestRuntime(snapshot: ConnectorCapability
 	const session = new Session(
 		new InMemorySessionStorage({ id: `connector-registry-${fixtureId}`, createdAt: fixtureId }),
 	);
-	const t5 = new SessionT5Ledger(session, { ownerId: `connector-registry-${fixtureId}` });
+	const ledger = new ContextLedger(session, { ownerId: `connector-registry-${fixtureId}` });
 	return createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,
 		capability: snapshot,
 		capabilityProbe: async () => Result.ok(snapshot),
-		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
+		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: ledger.writer })),
 		driver: new RegistrationOnlyDriver(),
 		supervision: createExternalConnectorTestSupervision().options,
 		operationNonce: () => `connector-registry-nonce-${fixtureId}`,

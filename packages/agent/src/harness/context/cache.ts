@@ -1,5 +1,5 @@
 import { canonicalFoundationJson, sha256HexValue } from "../foundation/index.ts";
-import type { PromptCacheInvalidationOptions, PromptCacheLookup, PromptCacheRecord, PromptCacheWriteOptions, SessionT5Ledger } from "./ledger.ts";
+import type { PromptCacheInvalidationOptions, PromptCacheLookup, PromptCacheRecord, PromptCacheWriteOptions, ContextLedger } from "./ledger.ts";
 
 export const CONTEXT_CACHE_SCHEMA_VERSION = 1 as const;
 
@@ -62,8 +62,8 @@ export function createContextCacheKey(input: ContextCacheKeyInput): ContextCache
 }
 
 /**
- * Ephemeral performance cache. It is never an authority: T5 durable cache
- * receipts are written through SessionT5Ledger, while this object may be
+ * Ephemeral performance cache. It is never an authority: durable cache
+ * receipts are written through ContextLedger, while this object may be
  * discarded without changing session state.
  */
 export class ContextCache<TValue = unknown> {
@@ -172,9 +172,9 @@ export class ContextCache<TValue = unknown> {
 
 /** Durable cache facade. The in-memory ContextCache above is only a speed layer. */
 export class SessionPromptCache {
-	readonly ledger: SessionT5Ledger;
+	readonly ledger: ContextLedger;
 
-	constructor(ledger: SessionT5Ledger) {
+	constructor(ledger: ContextLedger) {
 		this.ledger = ledger;
 	}
 

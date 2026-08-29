@@ -3,10 +3,10 @@ import type { FileSystem } from "./types.ts";
 import type { Session } from "./session/session.ts";
 import {
 	SessionLedgerWriter,
-	T5_LEDGER_OBJECT_TYPES,
+	LEDGER_OBJECT_TYPES,
 	assertSessionLedgerWriterSession,
 	type SessionLedgerWriterOptions,
-} from "./session/t5.ts";
+} from "./session/ledger-writer.ts";
 
 export type ArtifactId = string;
 export type ArtifactDigest = `sha256:${string}`;
@@ -559,7 +559,7 @@ export class SessionArtifactStore {
 		const manifest = manifestPayload({ id, size: content.byteLength, put: options, now: this.now() });
 		await this.blobs.put(id, content);
 		const accepted = await this.writer.writeFact({
-			objectType: T5_LEDGER_OBJECT_TYPES.artifactManifest,
+			objectType: LEDGER_OBJECT_TYPES.artifactManifest,
 			objectId: id,
 			clientRequestId: options?.clientRequestId ?? `artifact-manifest:${id}`,
 			payload: manifest as unknown as FoundationJsonValue,
@@ -610,16 +610,16 @@ export class SessionArtifactStore {
 		if ((await this.listReferences(id)).length > 0) {
 			throw new ArtifactStoreError("in_use", `Artifact ${id} is still referenced by live Session objects`);
 		}
-		await this.writer.tombstone({ objectType: T5_LEDGER_OBJECT_TYPES.artifactManifest, objectId: id, reason: "artifact_removed" });
+		await this.writer.tombstone({ objectType: LEDGER_OBJECT_TYPES.artifactManifest, objectId: id, reason: "artifact_removed" });
 		await this.blobs.remove(id);
 		return true;
 	}
 
 	async list(): Promise<ArtifactMetadata[]> {
-		const facts = await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.artifactManifest });
+		const facts = await this.writer.listFacts({ objectType: LEDGER_OBJECT_TYPES.artifactManifest });
 		const current = new Map<string, ArtifactMetadata>();
 		for (const fact of facts) {
-			const object = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactManifest, fact.objectId);
+			const object = await this.writer.readFact<FoundationJsonValue>(LEDGER_OBJECT_TYPES.artifactManifest, fact.objectId);
 			if (object !== undefined) {
 				const manifest = validateManifest(object.payload as unknown as ArtifactManifest);
 				if (manifest.artifactId !== fact.objectId) throw new ArtifactStoreError("invalid_manifest", `Artifact manifest ${fact.objectId} has a mismatched identity`);
@@ -639,7 +639,7 @@ export class SessionArtifactStore {
 	}): Promise<ArtifactReferenceRecord> {
 		const manifest = await this.manifest(options.artifactId);
 		if (manifest === undefined) throw new ArtifactStoreError("not_found", `Artifact manifest not found: ${options.artifactId}`);
-		const existing = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactReference, options.referenceId);
+		const existing = await this.writer.readFact<FoundationJsonValue>(LEDGER_OBJECT_TYPES.artifactReference, options.referenceId);
 		if (existing !== undefined) {
 			const stored = validateReference(existing.payload as unknown as ArtifactReferenceRecord);
 			if (
@@ -662,7 +662,7 @@ export class SessionArtifactStore {
 			...(options.expiresAt === undefined ? {} : { expiresAt: options.expiresAt }),
 		};
 		const accepted = await this.writer.writeFact({
-			objectType: T5_LEDGER_OBJECT_TYPES.artifactReference,
+			objectType: LEDGER_OBJECT_TYPES.artifactReference,
 			objectId: options.referenceId,
 			clientRequestId: `artifact-reference:${options.referenceId}`,
 			payload: reference as unknown as FoundationJsonValue,
@@ -672,10 +672,10 @@ export class SessionArtifactStore {
 
 	/** Release one owner reference. The manifest/blob remain while another owner exists. */
 	async releaseReference(referenceId: string): Promise<boolean> {
-		const current = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactReference, referenceId);
+		const current = await this.writer.readFact<FoundationJsonValue>(LEDGER_OBJECT_TYPES.artifactReference, referenceId);
 		if (current === undefined) return false;
 		await this.writer.tombstone({
-			objectType: T5_LEDGER_OBJECT_TYPES.artifactReference,
+			objectType: LEDGER_OBJECT_TYPES.artifactReference,
 			objectId: referenceId,
 			clientRequestId: `artifact-reference-release:${referenceId}`,
 			reason: "artifact_reference_released",
@@ -684,10 +684,10 @@ export class SessionArtifactStore {
 	}
 
 	async listReferences(artifactId?: ArtifactId): Promise<ArtifactReferenceRecord[]> {
-		const facts = await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.artifactReference });
+		const facts = await this.writer.listFacts({ objectType: LEDGER_OBJECT_TYPES.artifactReference });
 		const references: ArtifactReferenceRecord[] = [];
 		for (const fact of facts) {
-			const current = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactReference, fact.objectId);
+			const current = await this.writer.readFact<FoundationJsonValue>(LEDGER_OBJECT_TYPES.artifactReference, fact.objectId);
 			if (current === undefined) continue;
 			const reference = validateReference(current.payload as unknown as ArtifactReferenceRecord);
 			if (reference.referenceId !== fact.objectId) throw new ArtifactStoreError("invalid_manifest", `Artifact reference ${fact.objectId} has a mismatched identity`);
@@ -703,7 +703,7 @@ export class SessionArtifactStore {
 
 	private async manifest(id: ArtifactId): Promise<ArtifactManifest | undefined> {
 		if (!isValidArtifactId(id)) throw new ArtifactStoreError("invalid_id", `Invalid artifact id: ${id}`);
-		const result = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.artifactManifest, id);
+		const result = await this.writer.readFact<FoundationJsonValue>(LEDGER_OBJECT_TYPES.artifactManifest, id);
 		if (result === undefined) return undefined;
 		const manifest = validateManifest(result.payload as unknown as ArtifactManifest);
 		if (manifest.artifactId !== id) throw new ArtifactStoreError("invalid_manifest", `Artifact manifest ${id} has a mismatched identity`);

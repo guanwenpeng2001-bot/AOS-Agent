@@ -17,7 +17,7 @@ import {
 	Session,
 	SessionLedger,
 	SessionLedgerWriter,
-	SessionT5Ledger,
+	ContextLedger,
 	createScopedMemoryStore,
 	type AgentBinding,
 	type AgentInstance,
@@ -120,7 +120,7 @@ function mcpInheritanceAuthority(pending: PolicyApprovalRequest[]) {
 }
 
 function compositionAuthorities(session: Session) {
-	const memoryLedger = new SessionT5Ledger(session, {
+	const memoryLedger = new ContextLedger(session, {
 		ownerId: "composition-parent-memory-writer",
 		memoryScopeId: "composition-parent-memory",
 		memoryOwnerId: "parent-agent",

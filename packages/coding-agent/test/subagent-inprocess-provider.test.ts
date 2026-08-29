@@ -15,7 +15,7 @@ import {
 	Session,
 	SessionLedger,
 	SessionLedgerWriter,
-	SessionT5Ledger,
+	ContextLedger,
 	createScopedMemoryStore,
 	validateAttemptReceiptForProvider,
 	type AgentBinding,
@@ -496,7 +496,7 @@ async function createHarness(input: ChildAgentHarnessCreateInput): Promise<Agent
 			});
 			return stream;
 		},
-		t5Options: { allowInMemory: true, ownerId: `child:${input.agentInstance.agentInstanceId}` },
+		ledgerOptions: { allowInMemory: true, ownerId: `child:${input.agentInstance.agentInstanceId}` },
 	});
 	return created.harness;
 }
@@ -519,7 +519,7 @@ function providerAuthorities(
 		async () => Result.err(new FoundationError("subagent_context_fork_invalid", "no parent context")),
 ) {
 	const memorySession = new Session(new InMemorySessionStorage({ id: "provider-parent-memory", createdAt: 1 }));
-	const memoryLedger = new SessionT5Ledger(memorySession, {
+	const memoryLedger = new ContextLedger(memorySession, {
 		ownerId: "parent-memory-writer",
 		memoryScopeId: "parent-memory-scope",
 		memoryOwnerId: "parent-1",

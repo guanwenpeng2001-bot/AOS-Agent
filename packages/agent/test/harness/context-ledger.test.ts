@@ -6,8 +6,9 @@ import {
 	InMemoryArtifactBlobStore,
 	InMemoryArtifactStore,
 	JsonlSessionRepo,
+	LEDGER_OBJECT_TYPES,
 	Session,
-	SessionT5Ledger,
+	ContextLedger,
 	createContextCacheKey,
 	type ArtifactStoreError,
 	type JsonlSessionMetadata,
@@ -34,10 +35,10 @@ function expectArtifactError(error: unknown, code: ArtifactStoreError["code"]): 
 	expect(error).toMatchObject({ code });
 }
 
-describe("T5 Session ledger recovery", () => {
+describe("Context ledger recovery", () => {
 	it("rejects a conflicting tool-result replay before creating artifacts", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "tool-result-replay", createdAt: 1 }));
-		const ledger = new SessionT5Ledger(session, { ownerId: "tool-result-replay", artifactBlobStore: new InMemoryArtifactBlobStore() });
+		const ledger = new ContextLedger(session, { ownerId: "tool-result-replay", artifactBlobStore: new InMemoryArtifactBlobStore() });
 		const message = {
 			role: "toolResult" as const,
 			toolCallId: "call-1",
@@ -61,12 +62,12 @@ describe("T5 Session ledger recovery", () => {
 
 	it("recovers Context, Memory, Compaction, Checkpoint, Artifact, instruction lock, and cache after reopen", async () => {
 		const root = createTempDir();
-		const { session, env, repo } = await createSession(root, "t5-recovery");
+		const { session, env, repo } = await createSession(root, "context-ledger-recovery");
 		const firstEntryId = await session.appendMessage({ role: "user", content: [{ type: "text", text: "first" }], timestamp: 1 });
 		await session.appendMessage({ role: "user", content: [{ type: "text", text: "second" }], timestamp: 2 });
 		const metadata = await session.getMetadata();
 		const artifactRoot = join(root, "artifact-store");
-		const ledger = new SessionT5Ledger(session, { artifactBlobStore: new FileSystemArtifactBlobStore(env, artifactRoot), ownerId: "t5-ledger" });
+		const ledger = new ContextLedger(session, { artifactBlobStore: new FileSystemArtifactBlobStore(env, artifactRoot), ownerId: "context-ledger-ledger" });
 		const artifacts = ledger.artifacts;
 		const snapshot = await ledger.captureContextSnapshot("main", { id: "snapshot-recovery", bindingEpochId: "binding-epoch-recovery" });
 		const memory = await ledger.putMemory({ id: "memory-recovery", kind: "fact", trust: "user_owned", content: "durable memory", source: "test", scope: "goal", principal: "alice" });
@@ -84,14 +85,14 @@ describe("T5 Session ledger recovery", () => {
 		await ledger.writer.releaseLease();
 
 		const reopened = await repo.open(metadata);
-		const recovered = new SessionT5Ledger(reopened, { artifactBlobStore: new FileSystemArtifactBlobStore(env, artifactRoot), ownerId: "t5-ledger-reopen" });
+		const recovered = new ContextLedger(reopened, { artifactBlobStore: new FileSystemArtifactBlobStore(env, artifactRoot), ownerId: "context-ledger-ledger-reopen" });
 		expect(await recovered.getContextSnapshot(snapshot.snapshotId)).toMatchObject({ snapshotId: snapshot.snapshotId, digest: snapshot.digest });
 		expect((await recovered.loadContextSnapshot(snapshot.snapshotId)).entries()).toHaveLength(2);
 		expect(await recovered.getMemory(memory.id, "alice")).toMatchObject({ id: memory.id, content: "durable memory", scope: "goal", retention: { policy: "goal", purgeOnScopeClose: true } });
 		expect(await recovered.getCompaction(compaction.compactionId)).toMatchObject({ summaryRef: { type: "artifact" } });
 		expect(await recovered.resolveInstructions()).toMatchObject({ locks: [expect.objectContaining({ sourceId: instruction.sourceId, locked: true })] });
 		expect(lock.locked).toBe(true);
-		expect(await reopened.getFoundationObject("t5.checkpoint", checkpoint.checkpointId)).toBeDefined();
+		expect(await reopened.getFoundationObject(LEDGER_OBJECT_TYPES.checkpoint, checkpoint.checkpointId)).toBeDefined();
 		expect(await recovered.lookupPromptCache(cacheRecord.cacheKey)).toMatchObject({ record: { cacheEntryId: cacheRecord.cacheEntryId } });
 		expect(await recovered.invalidatePromptCache(cacheRecord.cacheKey)).toBe(1);
 		expect(await recovered.lookupPromptCache(cacheRecord.cacheKey)).toBeUndefined();
@@ -105,8 +106,8 @@ describe("T5 Session ledger recovery", () => {
 
 		await recovered.applyRewind(plan.planId, workspace);
 		const planAndExecution = await reopened.findFoundationRecords({ order: "oldestFirst" });
-		const planFact = planAndExecution.find((record) => record.kind === "fact" && record.objectType === "t5.rewind_plan");
-		const executionFact = planAndExecution.find((record) => record.kind === "fact" && record.objectType === "t5.rewind_execution");
+		const planFact = planAndExecution.find((record) => record.kind === "fact" && record.objectType === LEDGER_OBJECT_TYPES.rewindPlan);
+		const executionFact = planAndExecution.find((record) => record.kind === "fact" && record.objectType === LEDGER_OBJECT_TYPES.rewindExecution);
 		expect(planFact).toBeDefined();
 		expect(executionFact).toBeDefined();
 		expect((planFact?.seq ?? 0) < (executionFact?.seq ?? 0)).toBe(true);
@@ -114,7 +115,7 @@ describe("T5 Session ledger recovery", () => {
 	});
 });
 
-describe("T5 content addressed artifacts", () => {
+describe("Context ledger content addressed artifacts", () => {
 	it("detects ACL denial, retention expiry, missing blobs, corruption, and digest mismatch", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "artifact-cas", createdAt: 1 }));
 		const artifacts = new InMemoryArtifactStore(session, { ownerId: "artifact-cas" });
@@ -146,7 +147,7 @@ describe("T5 content addressed artifacts", () => {
 	});
 });
 
-describe("T5 cache key and invalidation", () => {
+describe("Context ledger cache key and invalidation", () => {
 	it("includes model, policy, binding epoch, and cache epoch", async () => {
 		const base = { prefixDigest: "prefix", modelId: "model", policyDigest: "policy", bindingEpochId: "binding", cacheEpoch: 1 } as const;
 		const key = createContextCacheKey(base);

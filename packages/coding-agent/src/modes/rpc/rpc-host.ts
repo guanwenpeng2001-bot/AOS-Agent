@@ -2868,7 +2868,7 @@ export class RpcHostController {
 					// capability drift cannot cross the acceptance boundary.
 					externalProductAdmission = await prepareExternalConnectorProductRun({
 						session: getAgentCanonicalSession(runBinding.session),
-						writer: runBinding.session.agentRuntimeComposition.harness.t5.writer,
+						writer: runBinding.session.agentRuntimeComposition.harness.ledger.writer,
 						registry: runBinding.session.getExternalConnectorRegistry()!,
 						selection: externalConnector,
 						runId: proposedRunId,
@@ -5533,7 +5533,7 @@ export class RpcHostController {
 								}
 								const recoveryInput = {
 									session: getAgentCanonicalSession(recoveryBinding.session),
-									writer: recoveryBinding.session.agentRuntimeComposition.harness.t5.writer,
+									writer: recoveryBinding.session.agentRuntimeComposition.harness.ledger.writer,
 									registry,
 									runId: command.sourceRunId,
 									providerId,

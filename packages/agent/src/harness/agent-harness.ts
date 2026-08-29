@@ -137,10 +137,10 @@ import {
 	type LaneReductionResult,
 	reduceLaneState,
 } from "./reducer.ts";
-import { SessionT5Ledger, type SessionT5LedgerOptions } from "./context/ledger.ts";
+import { ContextLedger, type ContextLedgerOptions } from "./context/ledger.ts";
 import type { SessionArtifactStore } from "./artifacts.ts";
 import type { SessionMemoryStore } from "./memory/memory.ts";
-import { SessionLedgerBindingError } from "./session/t5.ts";
+import { SessionLedgerBindingError } from "./session/ledger-writer.ts";
 
 export class LaneBusy extends TaggedError("LaneBusy")<{
 	lane: string;
@@ -528,10 +528,10 @@ export interface AgentHarnessOptions {
 	contextPreparation?: HarnessContextPreparation;
 	streamRequestPreparation?: HarnessStreamRequestPreparation;
 	context?: TelemetryContext;
-	/** Optional T5 authority; omitted harnesses create one bound to this Session. */
-	t5?: SessionT5Ledger;
-	/** Options for the harness-owned T5 authority. */
-	t5Options?: SessionT5LedgerOptions;
+	/** Optional context ledger authority; omitted harnesses create one bound to this Session. */
+	ledger?: ContextLedger;
+	/** Options for the harness-owned context ledger authority. */
+	ledgerOptions?: ContextLedgerOptions;
 	/** Optional explicit product execution graph; omitted prompts remain session-only. */
 	foundationExecution?: AgentHarnessFoundationExecution;
 	/** Trusted provider consumer. Receipts may only be obtained by consuming this provider. */
@@ -636,16 +636,16 @@ interface SessionMetadataWithPath {
 	readonly path?: unknown;
 }
 
-function hasExplicitArtifactBackend(options: SessionT5LedgerOptions | undefined): boolean {
+function hasExplicitArtifactBackend(options: ContextLedgerOptions | undefined): boolean {
 	return options?.artifacts !== undefined || options?.artifactBlobStore !== undefined || options?.artifactRoot !== undefined;
 }
 
-async function composeT5Options(options: AgentHarnessOptions): Promise<AgentHarnessOptions> {
-	if (options.t5 !== undefined || hasExplicitArtifactBackend(options.t5Options) || options.t5Options?.allowInMemory !== undefined) return options;
+async function composeLedgerOptions(options: AgentHarnessOptions): Promise<AgentHarnessOptions> {
+	if (options.ledger !== undefined || hasExplicitArtifactBackend(options.ledgerOptions) || options.ledgerOptions?.allowInMemory !== undefined) return options;
 	const metadata = await options.session.getMetadata();
 	const hasPersistentPath = typeof (metadata as SessionMetadataWithPath).path === "string";
 	if (hasPersistentPath) return options;
-	return { ...options, t5Options: { ...(options.t5Options ?? {}), allowInMemory: true } };
+	return { ...options, ledgerOptions: { ...(options.ledgerOptions ?? {}), allowInMemory: true } };
 }
 
 function sessionStopReason(message: AssistantMessage): SessionStopReason {
@@ -1112,9 +1112,9 @@ function isHarnessInfrastructureFault(error: unknown): boolean {
 export class AgentHarness implements AgentLane {
 	readonly name = "main";
 	readonly session: SessionTree;
-	readonly t5: SessionT5Ledger;
-	/** Context operations are served by the same T5 authority as memory and artifacts. */
-	readonly context: SessionT5Ledger;
+	readonly ledger: ContextLedger;
+	/** Context operations are served by the same ledger authority as memory and artifacts. */
+	readonly context: ContextLedger;
 	readonly memory: SessionMemoryStore;
 	readonly artifacts: SessionArtifactStore;
 	readonly hooks: Hooks;
@@ -1125,7 +1125,7 @@ export class AgentHarness implements AgentLane {
 	private readonly defaultThinkingLevel: ThinkingLevel;
 	private readonly defaultActiveToolNames: string[];
 	private modelAvailable = true;
-	private readonly ownsT5: boolean;
+	private readonly ownsLedger: boolean;
 	private tools: HarnessTool[];
 	private resources: Resources;
 	private streamOptions: StreamOptions;
@@ -1197,23 +1197,23 @@ export class AgentHarness implements AgentLane {
 	private constructor(options: AgentHarnessOptions) {
 		this.durableSession = options.session;
 		this.session = options.session;
-		if (options.t5 !== undefined && options.t5.session !== options.session) {
-			throw new SessionLedgerBindingError("AgentHarness T5 authority must use the supplied Session");
+		if (options.ledger !== undefined && options.ledger.session !== options.session) {
+			throw new SessionLedgerBindingError("AgentHarness ledger authority must use the supplied Session");
 		}
 		const foundationOwnerId =
 			options.foundationExecution === undefined && options.foundationProvider === undefined
 				? undefined
-				: options.t5Options?.ownerId ?? `agent-harness:${options.session.idGenerator.next()}`;
+				: options.ledgerOptions?.ownerId ?? `agent-harness:${options.session.idGenerator.next()}`;
 		this.foundationOwnerId = foundationOwnerId;
-		const t5Options =
-			foundationOwnerId === undefined || options.t5Options?.ownerId !== undefined
-				? options.t5Options
-				: { ...(options.t5Options ?? {}), ownerId: foundationOwnerId };
-		this.t5 = options.t5 ?? new SessionT5Ledger(options.session, t5Options);
-		this.context = this.t5;
-		this.memory = this.t5.memory;
-		this.artifacts = this.t5.artifacts;
-		this.ownsT5 = options.t5 === undefined;
+		const ledgerOptions =
+			foundationOwnerId === undefined || options.ledgerOptions?.ownerId !== undefined
+				? options.ledgerOptions
+				: { ...(options.ledgerOptions ?? {}), ownerId: foundationOwnerId };
+		this.ledger = options.ledger ?? new ContextLedger(options.session, ledgerOptions);
+		this.context = this.ledger;
+		this.memory = this.ledger.memory;
+		this.artifacts = this.ledger.artifacts;
+		this.ownsLedger = options.ledger === undefined;
 		this.models = options.models;
 		this.defaultModel = options.model;
 		this.defaultThinkingLevel = options.thinkingLevel ?? "off";
@@ -1264,13 +1264,13 @@ export class AgentHarness implements AgentLane {
 	static async create(
 		options: AgentHarnessOptions,
 	): Promise<{ harness: AgentHarness; suspended: SuspendedOperation[] }> {
-		const harness = new AgentHarness(await composeT5Options(options));
+		const harness = new AgentHarness(await composeLedgerOptions(options));
 		try {
 			await harness.initializeFoundationExecution();
 			const suspended = await harness.restore();
 			return { harness, suspended };
 		} catch (error) {
-			await harness.releaseOwnedT5Lease();
+			await harness.releaseOwnedLedgerLease();
 			throw error;
 		}
 	}
@@ -1596,7 +1596,7 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined) return;
 		const checkedTask = validateTaskEnvelope(execution.task);
 		if (!checkedTask.ok) throw new HarnessFault("Foundation execution task is not an established TaskEnvelope", checkedTask.error);
-		const persistedTask = await persistTaskEnvelopeBeforeResolver(this.durableSession, checkedTask.value, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const persistedTask = await persistTaskEnvelopeBeforeResolver(this.durableSession, checkedTask.value, { ownerId: this.foundationOwnerId, writer: this.ledger.writer });
 		if (!persistedTask.ok) throw new HarnessFault("Foundation execution TaskEnvelope could not be durably established before binding resolution", persistedTask.error);
 		const checkedDispatch = validateDispatch(execution.dispatch);
 		if (!checkedDispatch.ok) throw new HarnessFault("Foundation execution dispatch is not an established Dispatch", checkedDispatch.error);
@@ -1658,7 +1658,7 @@ export class AgentHarness implements AgentLane {
 		const metadata = await this.durableSession.getMetadata();
 		this.foundationSessionId = metadata.id;
 		try {
-			await this.t5.writer.ensureLease();
+			await this.ledger.writer.ensureLease();
 		} catch (error) {
 			throw new HarnessFault("Failed to acquire the Foundation session writer lease", error);
 		}
@@ -1668,7 +1668,7 @@ export class AgentHarness implements AgentLane {
 				ledger: this.durableSession,
 				laneId: "main",
 				correlationFor: (_kind, value) => this.toolCorrelation(value),
-				fencingToken: async () => (await this.t5.writer.ensureLease()).fencingToken,
+				fencingToken: async () => (await this.ledger.writer.ensureLease()).fencingToken,
 			});
 			const pipelineOptions = this.toolPipelineOptions ?? {};
 			const quotaAccount = pipelineOptions.quotaAccount ?? new FoundationToolQuotaAccount({
@@ -1740,8 +1740,8 @@ export class AgentHarness implements AgentLane {
 		}
 	}
 
-	private async releaseOwnedT5Lease(): Promise<void> {
-		if (this.ownsT5) await this.t5.writer.releaseLease();
+	private async releaseOwnedLedgerLease(): Promise<void> {
+		if (this.ownsLedger) await this.ledger.writer.releaseLease();
 	}
 
 	private foundationCorrelation(lane: string, runId: string, fields: Partial<ExecutionCorrelation> = {}): ExecutionCorrelation | undefined {
@@ -2024,7 +2024,7 @@ export class AgentHarness implements AgentLane {
 			objectId: invocation.invocationId,
 			clientRequestId: `model-invocation:fact:${invocation.invocationId}`,
 			expectedRevision,
-			fencingToken: (await this.t5.writer.ensureLease()).fencingToken,
+			fencingToken: (await this.ledger.writer.ensureLease()).fencingToken,
 			correlation: invocation.correlation,
 			payload,
 		});
@@ -2204,7 +2204,7 @@ export class AgentHarness implements AgentLane {
 
 	private async appendFoundation(record: ProvisionedFoundationRecord): Promise<FoundationRecord> {
 		if (this.foundationExecution === undefined) throw new HarnessFault("Foundation execution is not initialized", undefined);
-		const result = await this.t5.writer.appendFoundationRecord(record);
+		const result = await this.ledger.writer.appendFoundationRecord(record);
 		return result.record;
 	}
 
@@ -2272,7 +2272,7 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined || provider === undefined) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while starting Foundation Attempt", undefined);
-		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.ledger.writer });
 		const started = await settlement.startDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!started.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt start: ${started.error.message}`, started.error);
 	}
@@ -2284,7 +2284,7 @@ export class AgentHarness implements AgentLane {
 		if (await this.foundationModelInvocationBlocksSettlement(lane, runId)) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while resuming Foundation Attempt", undefined);
-		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.ledger.writer });
 		const resumed = await settlement.resumeDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!resumed.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt resume: ${resumed.error.message}`, resumed.error);
 	}
@@ -2295,7 +2295,7 @@ export class AgentHarness implements AgentLane {
 		if (execution === undefined || provider === undefined) return;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation while cancelling Foundation Attempt", undefined);
-		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.ledger.writer });
 		const cancelled = await settlement.cancelAttempt({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!cancelled.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Attempt cancellation: ${cancelled.error.message}`, cancelled.error);
 	}
@@ -2313,7 +2313,7 @@ export class AgentHarness implements AgentLane {
 		if (this.compatibilityWriter === undefined && await this.foundationModelInvocationBlocksSettlement(lane, runId)) return undefined;
 		const correlation = this.foundationCorrelation(lane, runId, { attemptId: execution.initialBindingEpoch.attemptId });
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation for provider consumption", undefined);
-		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.t5.writer });
+		const settlement = new LayeredResultSettlement(this.durableSession, { ownerId: this.foundationOwnerId, writer: this.ledger.writer });
 		const executed = await settlement.executeDispatch({ provider, dispatch: execution.dispatch, binding: execution.binding, initialBindingEpoch: execution.initialBindingEpoch, ...(execution.agentInstance === undefined ? {} : { agentInstance: execution.agentInstance }), correlation });
 		if (!executed.ok) throw new HarnessFault(`Trusted provider consumer rejected Foundation Dispatch: ${executed.error.message}`, executed.error);
 		const attemptReceipt = executed.value.receipt;
@@ -2852,14 +2852,14 @@ export class AgentHarness implements AgentLane {
 	private async contextMessages(lane: string, laneEntries: Entry[]): Promise<AgentMessage[]> {
 		const context = await buildSessionContextAsync(laneEntries, {
 			entryProjectors: this.projectorMap(lane),
-			messageProjector: (entry) => this.projectT5ToolResultEntry(entry),
+			messageProjector: (entry) => this.projectLedgerToolResultEntry(entry),
 		});
 		return context.messages;
 	}
 
-	private async projectT5ToolResultEntry(entry: MessageEntry): Promise<readonly AgentMessage[] | undefined> {
+	private async projectLedgerToolResultEntry(entry: MessageEntry): Promise<readonly AgentMessage[] | undefined> {
 		if (entry.message.role !== "toolResult") return undefined;
-		const materialized = await this.t5.materializeToolResult(entry.id);
+		const materialized = await this.ledger.materializeToolResult(entry.id);
 		return materialized === undefined ? undefined : [materialized];
 	}
 
@@ -3592,9 +3592,9 @@ export class AgentHarness implements AgentLane {
 					isError: true,
 					timestamp: started.timestamp,
 				};
-		let persisted: Awaited<ReturnType<SessionT5Ledger["persistToolResult"]>> | undefined;
+		let persisted: Awaited<ReturnType<ContextLedger["persistToolResult"]>> | undefined;
 		if (!useCanonicalReceipt && (receiptFailureMessage === undefined || this.compatibilityWriter === undefined)) {
-			persisted = await this.t5.persistToolResult(receiptFailureMessage ?? message, {
+			persisted = await this.ledger.persistToolResult(receiptFailureMessage ?? message, {
 				lane,
 				runId,
 				resultEntryId: started.resultEntryId,
@@ -5238,7 +5238,7 @@ export class AgentHarness implements AgentLane {
 				failure ??= error;
 			} finally {
 				try {
-					await this.releaseOwnedT5Lease();
+					await this.releaseOwnedLedgerLease();
 				} catch (error) {
 					failure ??= error;
 				}

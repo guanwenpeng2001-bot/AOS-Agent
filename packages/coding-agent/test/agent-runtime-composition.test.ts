@@ -18,7 +18,7 @@ import {
 	Result,
 	Session,
 	SessionLedger,
-	SessionT5Ledger,
+	ContextLedger,
 	type AgentBinding,
 	type AgentHarness,
 	type AgentInstance,
@@ -309,8 +309,8 @@ function createSubagents(
 	toolGateway: ToolGateway,
 	createHarness: NonNullable<SubagentCompositionOptions["createHarness"]> = async () => context.harness,
 ): SubagentCompositionOptions {
-	const memoryLedger = new SessionT5Ledger(context.session, {
-		writer: context.harness.t5.writer,
+	const memoryLedger = new ContextLedger(context.session, {
+		writer: context.harness.ledger.writer,
 		memoryScopeId: `composition-memory-scope-${context.sessionId}`,
 		memoryOwnerId: `composition-parent-${context.sessionId}`,
 		artifactBlobStore: new InMemoryArtifactBlobStore(),
@@ -363,14 +363,14 @@ function createSubagents(
 		dispose: async () => {},
 	};
 	const ledgerForLane = (laneId: string) => new SessionLedger(context.session, {
-		writer: context.harness.t5.writer,
+		writer: context.harness.ledger.writer,
 		laneId,
 	});
 	return {
 		schemaVersion: 1,
 		enabled: true,
 		session: context.session,
-		writer: context.harness.t5.writer,
+		writer: context.harness.ledger.writer,
 		ledger: ledgerForLane("main"),
 		ledgerForLane,
 		sessionId: context.sessionId,
@@ -881,7 +881,7 @@ describe("AgentRuntimeComposition", () => {
 			expect(captures.externalRegistries[0]?.list()).toHaveLength(1);
 			expect(composition.subagents?.session).toBe(composition.session);
 			expect(composition.subagents?.toolGateway).toBe(composition.toolGateway);
-			expect(composition.subagents?.writer).toBe(composition.harness.t5.writer);
+			expect(composition.subagents?.writer).toBe(composition.harness.ledger.writer);
 			expect(composition.scheduler?.sourceSession).toBe(composition.session);
 			expect(composition.scheduler?.gateLookup).toBe(schedulerAdmissionGate);
 			expect(composition.scheduler?.settleRunAtHost).toBe(settleRunAtHost);
@@ -1029,7 +1029,7 @@ describe("AgentRuntimeComposition", () => {
 		let schedulerWake: (() => void) | undefined;
 		let schedulerRegistry: SchedulerExecutorRegistry | undefined;
 		let compositionGateway: ToolGateway | undefined;
-		let canonicalWriter: AgentHarness["t5"]["writer"] | undefined;
+		let canonicalWriter: AgentHarness["ledger"]["writer"] | undefined;
 		const factory = createAgentRuntimeCompositionFactory({
 			toolGateway: (context) => {
 				compositionGateway = createGateway(context.sessionId);
@@ -1038,7 +1038,7 @@ describe("AgentRuntimeComposition", () => {
 			subagents: (context) => {
 				const gateway = compositionGateway;
 				if (gateway === undefined) throw new Error("Native Scheduler Tool Gateway is missing");
-				canonicalWriter = context.harness.t5.writer;
+				canonicalWriter = context.harness.ledger.writer;
 				return createSubagents(context, gateway, async (input) => ({
 					promptOnLane: async () => Result.ok({
 						runId: `native-run-${input.agentInstance.agentInstanceId}`,
@@ -1769,7 +1769,7 @@ describe("AgentRuntimeComposition", () => {
 				expect(composition.externalConnectorRegistry).toBeDefined();
 				expect(composition.taskCredentialProvider).toBeDefined();
 				expect(composition.subagents?.session).toBe(composition.session);
-				expect(composition.subagents?.writer).toBe(composition.harness.t5.writer);
+				expect(composition.subagents?.writer).toBe(composition.harness.ledger.writer);
 				expect(composition.scheduler?.sourceSession).toBe(composition.session);
 			}
 		} finally {
@@ -1953,7 +1953,7 @@ describe("AgentRuntimeComposition", () => {
 		expect(captures.credentialProviders).toHaveLength(3);
 		for (const registry of captures.externalRegistries.slice(0, -1)) expect(registry.list()).toHaveLength(0);
 		expect(captures.externalRegistries.at(-1)?.list()).toHaveLength(1);
-		expect(secondReplacement.subagents?.writer).toBe(secondReplacement.harness.t5.writer);
+		expect(secondReplacement.subagents?.writer).toBe(secondReplacement.harness.ledger.writer);
 		expect(secondReplacement.subagents?.session).toBe(secondReplacement.session);
 		expect(secondReplacement.subagents?.toolGateway).toBe(secondReplacement.toolGateway);
 		expect(secondReplacement.scheduler?.sourceSession).toBe(secondReplacement.session);

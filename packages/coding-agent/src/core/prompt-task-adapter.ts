@@ -518,7 +518,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 	if (options.runtimeHarness !== undefined && options.runtimeHarness.session !== options.harness.session) {
 		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task runtime Harness must use the composition Session");
 	}
-	if (options.runtimeHarness !== undefined && options.writer !== options.runtimeHarness.t5.writer) {
+	if (options.runtimeHarness !== undefined && options.writer !== options.runtimeHarness.ledger.writer) {
 		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task runtime Harness must share its Session ledger writer with the composition root");
 	}
 	return {
@@ -605,7 +605,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				parentCorrelationForSettlement = parentCorrelation;
 				const settlement = new LayeredResultSettlement(options.harness.session, {
 					ownerId: options.ownerId ?? `prompt-task:${binding.bindingId}`,
-					writer: options.writer ?? created.harness.t5.writer,
+					writer: options.writer ?? created.harness.ledger.writer,
 				});
 				try {
 					const started = await settlement.startDispatch({
@@ -700,7 +700,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				};
 				const settlement = new LayeredResultSettlement(options.harness.session, {
 					ownerId: options.ownerId ?? `prompt-task:${binding.bindingId}`,
-					writer: options.writer ?? created.harness.t5.writer,
+					writer: options.writer ?? created.harness.ledger.writer,
 				});
 				let attemptReceipt: AttemptReceipt;
 				let taskResult: TaskResult;

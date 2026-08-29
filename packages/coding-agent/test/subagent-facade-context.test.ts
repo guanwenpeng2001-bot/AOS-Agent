@@ -9,7 +9,7 @@ import {
 	FoundationError,
 	InMemoryArtifactBlobStore,
 	Result,
-	SessionT5Ledger,
+	ContextLedger,
 	SessionLedger,
 	type ArtifactStoreProvider,
 	type QuotaProvider,
@@ -139,7 +139,7 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 			resourceLoader: resources(),
 		}, createAgentRuntimeCompositionFactory({
 			subagents: ({ session, sessionId, harness }) => {
-			const writer = harness.t5.writer;
+			const writer = harness.ledger.writer;
 			const ledgers = new Map<string, SessionLedger>();
 			const ledgerForLane = (laneId: string): SessionLedger => {
 				let ledger = ledgers.get(laneId);
@@ -185,7 +185,7 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 				delete: async () => Result.ok(undefined),
 				dispose: async () => {},
 			} as unknown as ArtifactStoreProvider;
-			const memoryLedger = new SessionT5Ledger(session, {
+			const memoryLedger = new ContextLedger(session, {
 				ownerId: "facade-parent-memory-writer",
 				memoryScopeId: "facade-parent-memory",
 				memoryOwnerId: "parent-agent",

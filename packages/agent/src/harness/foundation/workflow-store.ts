@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import type { FoundationRecord } from "../session/durable/types.ts";
 import type { Session } from "../session/session.ts";
-import type { SessionLedgerWriter, SessionLedgerWriterOptions } from "../session/t5.ts";
+import type { SessionLedgerWriter, SessionLedgerWriterOptions } from "../session/ledger-writer.ts";
 import {
 	type BudgetUsage,
 	type Budget,

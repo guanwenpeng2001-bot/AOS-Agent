@@ -403,7 +403,7 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		compatibilityWriter: createHarnessCompatibilityWriter(canonicalSession, canonicalStorage),
 		...(options.sessionManager.isPersisted()
 			? {}
-			: { t5Options: { artifactBlobStore: new InMemoryArtifactBlobStore() } }),
+			: { ledgerOptions: { artifactBlobStore: new InMemoryArtifactBlobStore() } }),
 	});
 	return {
 		harness,

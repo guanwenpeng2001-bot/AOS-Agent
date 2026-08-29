@@ -6,6 +6,7 @@
 
 - Public and internal agent business names no longer use the false `V1` suffix. Update source imports and references to the unversioned names.
 - Capability manifests are no longer part of the `@aos-agent/agent-core` public exports.
+- The session context ledger is now exposed as `ContextLedger` through `harness.ledger`, with domain object tags and the `session/ledger-writer.ts` source path. Existing `t5.*` object tags remain readable.
 
 ### Added
 

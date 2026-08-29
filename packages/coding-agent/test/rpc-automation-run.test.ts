@@ -719,7 +719,7 @@ async function installRpcExternalConnector(
 	});
 	const canonicalStore = new SessionExternalConnectorDurableStore(
 		new SessionLedger(getAgentCanonicalSession(runtimeHost.session), {
-			writer: runtimeHost.session.agentRuntimeComposition.harness.t5.writer,
+			writer: runtimeHost.session.agentRuntimeComposition.harness.ledger.writer,
 		}),
 	);
 	const store: ExternalConnectorDurableStore = {
@@ -822,7 +822,7 @@ async function seedRpcExternalRecovery(
 	} = {},
 ): Promise<void> {
 	const session = getAgentCanonicalSession(runtimeHost.session);
-	const writer = runtimeHost.session.agentRuntimeComposition.harness.t5.writer;
+	const writer = runtimeHost.session.agentRuntimeComposition.harness.ledger.writer;
 	const policyBinding = runtimeHost.session.getActiveExecutionPolicyBinding();
 	if (policyBinding === undefined || policyBinding.runId !== runId) {
 		await runtimeHost.session.whenCapabilitiesReady(runId);
@@ -3695,7 +3695,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				originalArguments: { path: "docs/second.txt", mode: "metadata" },
 			};
 			const recoveryLedger = new SessionLedger(getAgentCanonicalSession(harness.runtimeHost.session), {
-				writer: harness.runtimeHost.session.agentRuntimeComposition.harness.t5.writer,
+				writer: harness.runtimeHost.session.agentRuntimeComposition.harness.ledger.writer,
 			});
 			try {
 				const recoveryStore = new SessionExternalConnectorDurableStore(recoveryLedger);

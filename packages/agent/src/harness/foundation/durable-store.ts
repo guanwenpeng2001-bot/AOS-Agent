@@ -1,6 +1,6 @@
 import type { FoundationRecord } from "../session/durable/types.ts";
 import type { Session } from "../session/session.ts";
-import { SessionLedgerWriter, type SessionLedgerWriterOptions } from "../session/t5.ts";
+import { SessionLedgerWriter, type SessionLedgerWriterOptions } from "../session/ledger-writer.ts";
 import { FOUNDATION_ERROR_CODES, FoundationError, type FoundationErrorCode } from "./errors.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
 import { canonicalFoundationJson } from "./identity.ts";

@@ -13,7 +13,7 @@ import {
 	Result,
 	Session,
 	SessionLedger,
-	SessionT5Ledger,
+	ContextLedger,
 	type AgentBinding,
 	type ArtifactStoreProvider,
 	type ModelProfile,
@@ -177,8 +177,8 @@ function schedulerBinding(task: TaskEnvelope, sessionId: string): AgentBinding {
 function createSubagents(context: AgentRuntimeCompositionContext): SubagentCompositionOptions {
 	const toolGateway = canonicalToolGateway;
 	if (toolGateway === undefined) throw new Error("main RPC Tool Gateway was not composed before Subagent");
-	const memoryLedger = new SessionT5Ledger(context.session, {
-		writer: context.harness.t5.writer,
+	const memoryLedger = new ContextLedger(context.session, {
+		writer: context.harness.ledger.writer,
 		memoryScopeId: `main-rpc-memory-scope-${context.sessionId}`,
 		memoryOwnerId: `main-rpc-parent-${context.sessionId}`,
 		artifactBlobStore: new InMemoryArtifactBlobStore(),
@@ -238,7 +238,7 @@ function createSubagents(context: AgentRuntimeCompositionContext): SubagentCompo
 		schemaVersion: 1,
 		enabled: true,
 		session: context.session,
-		writer: context.harness.t5.writer,
+		writer: context.harness.ledger.writer,
 		ledger: ledgerForLane("main"),
 		ledgerForLane,
 		sessionId: context.sessionId,
@@ -442,7 +442,7 @@ function createConnectorRegistry(context: AgentRuntimeCompositionContext, toolGa
 					capability: snapshot,
 					capabilityProbe: async () => Result.ok(snapshot),
 					store: new SessionExternalConnectorDurableStore(
-						new SessionLedger(context.session, { writer: context.harness.t5.writer }),
+						new SessionLedger(context.session, { writer: context.harness.ledger.writer }),
 					),
 					driver: new MainRpcExternalDriver(),
 					supervision: {
@@ -504,7 +504,7 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 		if (
 			subagents.session !== canonicalContext?.session ||
 			subagents.toolGateway !== canonicalToolGateway ||
-			subagents.writer !== canonicalContext.harness.t5.writer
+			subagents.writer !== canonicalContext.harness.ledger.writer
 		) {
 			throw new Error("main RPC Subagent did not share the canonical Session, Tool Gateway, and Harness writer");
 		}

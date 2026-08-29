@@ -21,7 +21,7 @@ import {
 	InMemorySessionStorage,
 	Session,
 	SessionLedger,
-	SessionT5Ledger,
+	ContextLedger,
 	TOOL_EXECUTION_RESULT_MAX_BYTES,
 	createConnectorCapabilitySnapshot,
 	validateToolExecutionResult,
@@ -825,12 +825,12 @@ describe("private ACP stable-v1 connector driver", () => {
 			transportOpens += 1;
 		});
 		const session = new Session(new InMemorySessionStorage({ id: "acp-composition", createdAt: 1 }));
-		const t5 = new SessionT5Ledger(session, { ownerId: "acp-composition" });
+		const ledger = new ContextLedger(session, { ownerId: "acp-composition" });
 		const supervision = createExternalConnectorTestSupervision();
 		const connector = createPrivateAcpExternalAgentConnector({
 			providerId,
 			capability,
-			store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
+			store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: ledger.writer })),
 			supervision: supervision.options,
 			transportFactory: factory,
 			cwd,

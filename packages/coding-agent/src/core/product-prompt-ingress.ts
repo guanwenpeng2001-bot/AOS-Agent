@@ -458,7 +458,7 @@ export class ProductPromptIngress {
 	): Promise<ProductPromptIngressFactV1> {
 		const id = `product_prompt_${promptToken(runId)}`;
 		const digest = inputDigest(prompt, images, surface);
-		const existing = await this.options.harness.t5.writer.readFact<ProductPromptIngressFactV1>(
+		const existing = await this.options.harness.ledger.writer.readFact<ProductPromptIngressFactV1>(
 			PRODUCT_PROMPT_INGRESS_OBJECT_TYPE,
 			id,
 		);
@@ -491,7 +491,7 @@ export class ProductPromptIngress {
 			inputDigest: digest,
 			submittedAt,
 		};
-		const written = await this.options.harness.t5.writer.writeFact<ProductPromptIngressFactV1>({
+		const written = await this.options.harness.ledger.writer.writeFact<ProductPromptIngressFactV1>({
 			objectType: PRODUCT_PROMPT_INGRESS_OBJECT_TYPE,
 			objectId: id,
 			payload: fact,
@@ -512,7 +512,7 @@ export class ProductPromptIngress {
 		const ingress = await this.establishIngressFact(runId, input.prompt, input.images, input.surface);
 		const token = promptToken(runId);
 		const metadata = await this.options.session.getMetadata();
-		const goalStore = createGoalStore(this.options.session, { writer: this.options.harness.t5.writer });
+		const goalStore = createGoalStore(this.options.session, { writer: this.options.harness.ledger.writer });
 		const goal = await goalStore.create({
 			sessionId: metadata.id,
 			title: "AOS Coding Agent session",
@@ -543,7 +543,7 @@ export class ProductPromptIngress {
 				model,
 			},
 			runtimeHarness: this.options.harness,
-			writer: this.options.harness.t5.writer,
+			writer: this.options.harness.ledger.writer,
 			ownerId: `product-prompt:${metadata.id}`,
 			...(subagentRoles === undefined ? {} : { subagentRoles }),
 		});

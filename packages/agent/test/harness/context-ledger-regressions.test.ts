@@ -8,9 +8,9 @@ import {
 	SessionLedgerBindingError,
 	SessionLedgerWriter,
 	SessionMemoryStore,
-	SessionT5Ledger,
+	ContextLedger,
 	JsonlSessionRepo,
-	T5_LEDGER_OBJECT_TYPES,
+	LEDGER_OBJECT_TYPES,
 	canonicalFoundationJson,
 	sha256HexValue,
 	type SessionRewindPlan,
@@ -31,25 +31,25 @@ afterEach(async () => {
 	while (environments.length > 0) await environments.pop()!.cleanup();
 });
 
-describe("T5 authority and CAS regressions", () => {
+describe("Context ledger authority and CAS regressions", () => {
 	it("rejects cross-Session injection and keeps one writer across projections", () => {
-		const first = new Session(new InMemorySessionStorage({ id: "t5-authority-a", createdAt: 1 }));
-		const second = new Session(new InMemorySessionStorage({ id: "t5-authority-b", createdAt: 1 }));
+		const first = new Session(new InMemorySessionStorage({ id: "context-ledger-authority-a", createdAt: 1 }));
+		const second = new Session(new InMemorySessionStorage({ id: "context-ledger-authority-b", createdAt: 1 }));
 		const writer = new SessionLedgerWriter(first, { ownerId: "authority" });
 		const artifacts = new InMemoryArtifactStore(first, { writer });
 
 		expect(() => new SessionArtifactStore(second, { writer })).toThrow(SessionLedgerBindingError);
 		expect(() => new SessionMemoryStore(second, artifacts, { writer })).toThrow(SessionLedgerBindingError);
-		expect(() => new SessionT5Ledger(second, { writer, artifacts })).toThrow(SessionLedgerBindingError);
+		expect(() => new ContextLedger(second, { writer, artifacts })).toThrow(SessionLedgerBindingError);
 
-		const ledger = new SessionT5Ledger(first, { writer, artifacts });
+		const ledger = new ContextLedger(first, { writer, artifacts });
 		expect(ledger.artifacts.writer).toBe(ledger.writer);
 		expect(ledger.memory.writer).toBe(ledger.writer);
 	});
 
 	it("preserves shared CAS content until the final memory reference is released", async () => {
-		const session = new Session(new InMemorySessionStorage({ id: "t5-shared-cas", createdAt: 1 }));
-		const ledger = new SessionT5Ledger(session, {
+		const session = new Session(new InMemorySessionStorage({ id: "context-ledger-shared-cas", createdAt: 1 }));
+		const ledger = new ContextLedger(session, {
 			ownerId: "shared-cas",
 			artifactBlobStore: new InMemoryArtifactBlobStore(),
 		});
@@ -67,13 +67,13 @@ describe("T5 authority and CAS regressions", () => {
 	});
 
 	it("replays immutable requests across legal revisions and fences stale writers", async () => {
-		const session = new Session(new InMemorySessionStorage({ id: "t5-writer-fence", createdAt: 1 }));
+		const session = new Session(new InMemorySessionStorage({ id: "context-ledger-writer-fence", createdAt: 1 }));
 		const first = new SessionLedgerWriter(session, { ownerId: "writer-a" });
 		const second = new SessionLedgerWriter(session, { ownerId: "writer-b" });
-		const fact = { objectType: "t5.immutable", objectId: "object", clientRequestId: "immutable-request", payload: { value: "fixed" } as const };
+		const fact = { objectType: "ledger.immutable", objectId: "object", clientRequestId: "immutable-request", payload: { value: "fixed" } as const };
 		const accepted = await first.writeFact(fact);
 		await first.releaseLease();
-		await second.writeFact({ objectType: "t5.other", objectId: "other", clientRequestId: "other-request", payload: { value: "legal" } });
+		await second.writeFact({ objectType: "ledger.other", objectId: "other", clientRequestId: "other-request", payload: { value: "legal" } });
 		await second.releaseLease();
 		const replay = await first.writeFact(fact);
 		expect(accepted.replayed).toBe(false);
@@ -81,14 +81,14 @@ describe("T5 authority and CAS regressions", () => {
 		expect(replay.record.revision).toBe(1);
 
 		await first.releaseLease();
-		await second.writeFact({ objectType: "t5.fenced", objectId: "fenced", clientRequestId: "fenced-request", payload: { value: "new" } });
-		await expect(first.writeFact({ objectType: "t5.stale", objectId: "stale", clientRequestId: "stale-request", payload: { value: "old" } })).rejects.toMatchObject({ code: "session_writer_busy" });
+		await second.writeFact({ objectType: "ledger.fenced", objectId: "fenced", clientRequestId: "fenced-request", payload: { value: "new" } });
+		await expect(first.writeFact({ objectType: "ledger.stale", objectId: "stale", clientRequestId: "stale-request", payload: { value: "old" } })).rejects.toMatchObject({ code: "session_writer_busy" });
 	});
 
-	it("replays immutable T5 projections when generated timestamps move", async () => {
-		const session = new Session(new InMemorySessionStorage({ id: "t5-timestamp-replay", createdAt: 1 }));
+	it("replays immutable context ledger projections when generated timestamps move", async () => {
+		const session = new Session(new InMemorySessionStorage({ id: "context-ledger-timestamp-replay", createdAt: 1 }));
 		await session.appendMessage({ role: "user", content: [{ type: "text", text: "timestamp replay" }], timestamp: 1 });
-		const ledger = new SessionT5Ledger(session, { ownerId: "timestamp-replay", artifactBlobStore: new InMemoryArtifactBlobStore() });
+		const ledger = new ContextLedger(session, { ownerId: "timestamp-replay", artifactBlobStore: new InMemoryArtifactBlobStore() });
 		const instruction = await ledger.putInstructionSource({ sourceId: "instruction-replay", scope: "session", trust: "user", content: "fixed instruction" });
 		expect(await ledger.putInstructionSource({ sourceId: instruction.sourceId, scope: "session", trust: "user", content: "fixed instruction" })).toEqual(instruction);
 		const lock = await ledger.lockInstruction(instruction.sourceId, { reason: "fixed", lockedBy: "test" });
@@ -104,8 +104,8 @@ describe("T5 authority and CAS regressions", () => {
 	});
 
 	it("resolves inherited instructions executablely and records every decision", async () => {
-		const session = new Session(new InMemorySessionStorage({ id: "t5-instruction-inheritance", createdAt: 1 }));
-		const ledger = new SessionT5Ledger(session, { ownerId: "instruction-inheritance", artifactBlobStore: new InMemoryArtifactBlobStore() });
+		const session = new Session(new InMemorySessionStorage({ id: "context-ledger-instruction-inheritance", createdAt: 1 }));
+		const ledger = new ContextLedger(session, { ownerId: "instruction-inheritance", artifactBlobStore: new InMemoryArtifactBlobStore() });
 		const parent = await ledger.putInstructionSource({ sourceId: "parent", scope: "project", trust: "user", path: "/repo/AGENTS.md", content: "parent", priority: 1 });
 		const child = await ledger.putInstructionSource({ sourceId: "child", scope: "task", trust: "user", parentSourceId: parent.sourceId, inherited: true, content: "child", priority: 10 });
 		const managed = await ledger.putInstructionSource({ sourceId: "managed-disabled", scope: "managed", trust: "builtin", path: "/repo/locked.md", enabled: false, content: "managed", priority: 0 });
@@ -135,19 +135,19 @@ describe("T5 authority and CAS regressions", () => {
 
 		const reversed = resolveInstructionSources(
 			[child, parent, managed, excludedChild, excludedParent],
-			(await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.instructionLock })).filter((record): record is Extract<typeof record, { kind: "fact" }> => record.kind === "fact").map((record) => record.payload as unknown as InstructionLock),
+			(await session.findFoundationRecords({ kind: "fact", objectType: LEDGER_OBJECT_TYPES.instructionLock })).filter((record): record is Extract<typeof record, { kind: "fact" }> => record.kind === "fact").map((record) => record.payload as unknown as InstructionLock),
 			{ path: "/repo/project/file.ts" },
 		);
 		expect(reversed.digest).toBe(resolution.digest);
 
-		const records = await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.instructionResolution });
+		const records = await session.findFoundationRecords({ kind: "fact", objectType: LEDGER_OBJECT_TYPES.instructionResolution });
 		expect(records).toHaveLength(1);
-		expect(records[0]).toMatchObject({ objectType: T5_LEDGER_OBJECT_TYPES.instructionResolution, payload: { selectedSourceIds: [managed.sourceId, parent.sourceId, child.sourceId] } });
+		expect(records[0]).toMatchObject({ objectType: LEDGER_OBJECT_TYPES.instructionResolution, payload: { selectedSourceIds: [managed.sourceId, parent.sourceId, child.sourceId] } });
 	});
 
 	it("keeps memory child scopes independent across owners, parents, and provenance", async () => {
-		const session = new Session(new InMemorySessionStorage({ id: "t5-memory-scope", createdAt: 1 }));
-		const ledger = new SessionT5Ledger(session, {
+		const session = new Session(new InMemorySessionStorage({ id: "context-ledger-memory-scope", createdAt: 1 }));
+		const ledger = new ContextLedger(session, {
 			ownerId: "memory-scope",
 			memoryScopeId: "root-scope",
 			memoryOwnerId: "root-owner",
@@ -171,11 +171,11 @@ describe("T5 authority and CAS regressions", () => {
 	});
 });
 
-describe("T5 durable reopen and recovery regressions", () => {
+describe("Context ledger durable reopen and recovery regressions", () => {
 	it("fails closed for unknown or incomplete workspace evidence at both plan and apply", async () => {
-		const session = new Session(new InMemorySessionStorage({ id: "t5-workspace-evidence", createdAt: 1 }));
+		const session = new Session(new InMemorySessionStorage({ id: "context-ledger-workspace-evidence", createdAt: 1 }));
 		const entryId = await session.appendMessage({ role: "user", content: [{ type: "text", text: "workspace evidence" }], timestamp: 1 });
-		const ledger = new SessionT5Ledger(session, { ownerId: "workspace-evidence", artifactBlobStore: new InMemoryArtifactBlobStore() });
+		const ledger = new ContextLedger(session, { ownerId: "workspace-evidence", artifactBlobStore: new InMemoryArtifactBlobStore() });
 		const snapshot = await ledger.captureContextSnapshot("main", { bindingEpochId: "epoch-workspace" });
 		const workspace = { known: true, digest: "workspace-evidence", readFiles: [], modifiedFiles: [], pendingFiles: [], unknownFiles: [] } as const;
 		const checkpoint = await ledger.createCheckpoint(snapshot.snapshotId, "main", "checkpoint-workspace", workspace);
@@ -208,15 +208,15 @@ describe("T5 durable reopen and recovery regressions", () => {
 	});
 
 	it("reopens memory with a new lease writer while preserving child boundaries", async () => {
-		const session = new Session(new InMemorySessionStorage({ id: "t5-memory-reopen", createdAt: 1 }));
+		const session = new Session(new InMemorySessionStorage({ id: "context-ledger-memory-reopen", createdAt: 1 }));
 		const blobStore = new InMemoryArtifactBlobStore();
-		const first = new SessionT5Ledger(session, { ownerId: "lease-first", artifactBlobStore: blobStore });
+		const first = new ContextLedger(session, { ownerId: "lease-first", artifactBlobStore: blobStore });
 		const root = await first.putMemory({ id: "root-reopen", kind: "fact", trust: "user_owned", content: "root", source: "root-source", principal: "system" });
 		const childStore = first.memory.fork({ scope: "child", scopeId: "child-reopen", ownerId: "child-owner", provenance: { sourceId: "child-reopen-source" } });
 		const child = await childStore.put({ id: "child-reopen", kind: "fact", trust: "user_owned", content: "child", source: "child-source", provenance: { sourceId: "child-reopen-source" }, principal: "system" });
 		await first.writer.releaseLease();
 
-		const reopened = new SessionT5Ledger(session, { ownerId: "lease-second", artifactBlobStore: blobStore });
+		const reopened = new ContextLedger(session, { ownerId: "lease-second", artifactBlobStore: blobStore });
 		expect(await reopened.getMemory(root.id, "system")).toMatchObject({ id: root.id, content: "root" });
 		expect(await reopened.memory.get(child.id, "system")).toBeUndefined();
 		const reopenedChild = reopened.memory.fork({ scope: "child", scopeId: "child-reopen", ownerId: "child-owner", provenance: { sourceId: "child-reopen-source" } });
@@ -229,19 +229,19 @@ describe("T5 durable reopen and recovery regressions", () => {
 		const env = new NodeExecutionEnv({ cwd: root });
 		environments.push(env);
 		const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: root });
-		const session = await repo.create({ id: "t5-default-persistent", cwd: root });
-		const ledger = new SessionT5Ledger(session, { ownerId: "persistent" });
+		const session = await repo.create({ id: "context-ledger-default-persistent", cwd: root });
+		const ledger = new ContextLedger(session, { ownerId: "persistent" });
 		const reference = await ledger.artifacts.putAttachment(new TextEncoder().encode("persistent-content"));
 		const metadata = await session.getMetadata();
 		await ledger.writer.releaseLease();
 		const reopened = await repo.open(metadata);
-		const recovered = new SessionT5Ledger(reopened, { ownerId: "persistent-reopen" });
+		const recovered = new ContextLedger(reopened, { ownerId: "persistent-reopen" });
 		expect(new TextDecoder().decode((await recovered.artifacts.get(reference.artifactId)).content)).toBe("persistent-content");
 	});
 
 	it("persists only redacted snapshot/build/package facts and recovers them", async () => {
-		const session = new Session(new InMemorySessionStorage({ id: "t5-facts", createdAt: 1 }));
-		const ledger = new SessionT5Ledger(session, { ownerId: "facts", artifactBlobStore: new InMemoryArtifactBlobStore() });
+		const session = new Session(new InMemorySessionStorage({ id: "context-ledger-facts", createdAt: 1 }));
+		const ledger = new ContextLedger(session, { ownerId: "facts", artifactBlobStore: new InMemoryArtifactBlobStore() });
 		await session.appendMessage({ role: "user", content: [{ type: "text", text: "secret transcript" }], timestamp: 1 });
 		const snapshot = await ledger.captureContextSnapshot("main", {
 			bindingEpochId: "epoch-facts",
@@ -256,10 +256,10 @@ describe("T5 durable reopen and recovery regressions", () => {
 	});
 
 	it("recovers a rewind after a crash between lane movement and applied receipt", async () => {
-		const session = new Session(new InMemorySessionStorage({ id: "t5-rewind-crash", createdAt: 1 }));
+		const session = new Session(new InMemorySessionStorage({ id: "context-ledger-rewind-crash", createdAt: 1 }));
 		const firstEntryId = await session.appendMessage({ role: "user", content: [{ type: "text", text: "first" }], timestamp: 1 });
 		await session.appendMessage({ role: "user", content: [{ type: "text", text: "second" }], timestamp: 2 });
-		const ledger = new SessionT5Ledger(session, { ownerId: "rewind-crash", artifactBlobStore: new InMemoryArtifactBlobStore() });
+		const ledger = new ContextLedger(session, { ownerId: "rewind-crash", artifactBlobStore: new InMemoryArtifactBlobStore() });
 		const snapshot = await ledger.captureContextSnapshot("main", { bindingEpochId: "epoch-rewind" });
 		const workspace = { known: true, digest: "workspace-crash", readFiles: [], modifiedFiles: [], pendingFiles: [], unknownFiles: [] } as const;
 		const checkpoint = await ledger.createCheckpoint(snapshot.snapshotId, "main", "checkpoint-crash", workspace);

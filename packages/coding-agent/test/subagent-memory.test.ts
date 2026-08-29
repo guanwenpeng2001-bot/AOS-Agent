@@ -5,7 +5,7 @@ import {
 	MemoryError,
 	ScopedMemoryStore,
 	Session,
-	SessionT5Ledger,
+	ContextLedger,
 	createScopedMemoryStore,
 } from "@aos-agent/agent-core";
 import {
@@ -15,7 +15,7 @@ import {
 
 function memoryFixture(id: string) {
 	const session = new Session(new InMemorySessionStorage({ id, createdAt: 1 }));
-	const ledger = new SessionT5Ledger(session, {
+	const ledger = new ContextLedger(session, {
 		ownerId: `${id}-writer`,
 		memoryScopeId: "parent-scope",
 		memoryOwnerId: "parent-agent",

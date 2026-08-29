@@ -13,7 +13,7 @@ import {
 import { InMemoryArtifactBlobStore } from "../../src/harness/artifacts.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
 import { createAttempt, createEmptyMcpSelection, createHostTerminalGateAuthority, fingerprintFoundationValue, FoundationError, SessionLedger, type AgentBinding, type AgentInstance, type AttemptReceipt, type Attempt, type Budget, type Dispatch, type ExecutionCorrelation, type FoundationJsonValue, type FoundationProviderCapability, type FoundationProviderExecutionOptions, type ModelProfile, type ModelRoute, type RoleRevision, type SideEffectState, type TaskExecutorAttemptContext, type TaskExecutorProvider } from "../../src/harness/foundation/index.ts";
-import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, T5_LEDGER_OBJECT_TYPES, type FoundationRecord, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
+import { DurableLedgerError, InMemorySessionStorage, Session, SessionError, LEDGER_OBJECT_TYPES, type FoundationRecord, type NewRecord, type OperationStartedRecord } from "../../src/harness/session/index.ts";
 import type { AgentMessage } from "../../src/types.ts";
 
 function createSession(id = "session"): Session {
@@ -294,9 +294,9 @@ describe("AgentHarness runtime", () => {
 		const session = createSession();
 		const { models, model } = createModelsWithResponse();
 		const { harness } = await createFoundationHarness({ session, models, model, foundationExecution: createFoundationExecution() });
-		expect(harness.context).toBe(harness.t5);
-		expect(harness.memory).toBe(harness.t5.memory);
-		expect(harness.artifacts).toBe(harness.t5.artifacts);
+		expect(harness.context).toBe(harness.ledger);
+		expect(harness.memory).toBe(harness.ledger.memory);
+		expect(harness.artifacts).toBe(harness.ledger.artifacts);
 
 		const result = await harness.prompt("hello");
 		expect(result.ok).toBe(true);
@@ -311,15 +311,15 @@ describe("AgentHarness runtime", () => {
 		await harness.close();
 	});
 
-	it("shares one Session writer across public T5 memory, Foundation settlement, and reopen", async () => {
+	it("shares one Session writer across public ledger memory, Foundation settlement, and reopen", async () => {
 		const session = createSession("shared-public-writer");
 		const blobStore = new InMemoryArtifactBlobStore();
 		const execution = createFoundationExecution();
-		const options = { t5Options: { ownerId: "shared-public-writer", artifactBlobStore: blobStore } } as const;
+		const options = { ledgerOptions: { ownerId: "shared-public-writer", artifactBlobStore: blobStore } } as const;
 		const first = await createFoundationHarness({ session, ...createModelsWithResponse(), foundationExecution: execution, ...options });
-		expect(first.harness.t5.writer).toBe(first.harness.context.writer);
-		expect(first.harness.t5.writer).toBe(first.harness.memory.writer);
-		expect(first.harness.t5.writer).toBe(first.harness.artifacts.writer);
+		expect(first.harness.ledger.writer).toBe(first.harness.context.writer);
+		expect(first.harness.ledger.writer).toBe(first.harness.memory.writer);
+		expect(first.harness.ledger.writer).toBe(first.harness.artifacts.writer);
 
 		const firstMemory = await first.harness.memory.put({ id: "public-memory-first", kind: "fact", trust: "user_owned", content: "first", source: "public-test", principal: "system" });
 		const firstLease = await session.getWriterLease();
@@ -422,7 +422,7 @@ describe("AgentHarness runtime", () => {
 				details: { structured: `secret-structured-output-${"y".repeat(1024)}` },
 			}),
 		};
-		const { harness } = await AgentHarness.create({ session, models, model: runtime.model, tools: [tool], t5Options: { artifactBlobStore: blobStore } });
+		const { harness } = await AgentHarness.create({ session, models, model: runtime.model, tools: [tool], ledgerOptions: { artifactBlobStore: blobStore } });
 		const result = await harness.prompt("artifact conversion");
 		expect(result.ok).toBe(true);
 		const entries = await session.findEntries({ type: "message", order: "oldestFirst" });
@@ -432,7 +432,7 @@ describe("AgentHarness runtime", () => {
 		expect(persisted).not.toContain("large-secret-output");
 		expect(persisted).not.toContain("secret-structured-output");
 		expect(persisted).not.toContain("AQID");
-		const facts = (await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.toolResult, order: "oldestFirst" })).filter((record) => record.kind === "fact");
+		const facts = (await session.findFoundationRecords({ kind: "fact", objectType: LEDGER_OBJECT_TYPES.toolResult, order: "oldestFirst" })).filter((record) => record.kind === "fact");
 		expect(facts).toHaveLength(1);
 		expect(facts[0]?.payload).toMatchObject({ validation: { state: "verified" }, provenance: { runId: expect.any(String), toolCallId: "artifact-call" } });
 		const fact = facts[0]?.payload as { content: Array<{ reference: { artifactId: string } }>; detailsRef: { artifactId: string } };
@@ -440,9 +440,9 @@ describe("AgentHarness runtime", () => {
 		expect(await harness.artifacts.verify(fact.content[1]!.reference.artifactId)).toBe("verified");
 		expect(await harness.artifacts.verify(fact.detailsRef.artifactId)).toBe("verified");
 		await harness.close();
-		const reopened = await AgentHarness.create({ session, ...createModelsWithResponse(), t5Options: { artifactBlobStore: blobStore } });
+		const reopened = await AgentHarness.create({ session, ...createModelsWithResponse(), ledgerOptions: { artifactBlobStore: blobStore } });
 		expect(await reopened.harness.artifacts.verify(fact.content[1]!.reference.artifactId)).toBe("verified");
-		expect(await reopened.harness.t5.writer.readFact(T5_LEDGER_OBJECT_TYPES.toolResult, toolEntry!.id)).toBeDefined();
+		expect(await reopened.harness.ledger.writer.readFact(LEDGER_OBJECT_TYPES.toolResult, toolEntry!.id)).toBeDefined();
 		await reopened.harness.close();
 	});
 
@@ -672,7 +672,7 @@ describe("AgentHarness runtime", () => {
 			revision: 0,
 		});
 		const pendingPayload = { schemaVersion: 1, invocationId, status: "pending", turnId, bindingDigest: foundation.binding.fingerprint.value, route: foundation.binding.modelRoute, correlation } as unknown as FoundationJsonValue;
-		await first.harness.t5.writer.appendFoundationRecord({
+		await first.harness.ledger.writer.appendFoundationRecord({
 			schemaVersion: 1,
 			kind: "intent",
 			id: `model_invocation_intent:${invocationId}`,

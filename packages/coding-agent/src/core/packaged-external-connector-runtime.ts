@@ -35,7 +35,7 @@ class SessionBoundExternalConnectorStore implements ExternalConnectorDurableStor
 		if (this.#delegate !== undefined) throw new TypeError("Packaged External Connector store is already bound");
 		this.#ledger = new SessionLedger(context.session, {
 			ownerId: `settings-external-connector:${context.sessionId}`,
-			writer: context.harness.t5.writer,
+			writer: context.harness.ledger.writer,
 		});
 		this.#delegate = new SessionExternalConnectorDurableStore(this.#ledger);
 	}

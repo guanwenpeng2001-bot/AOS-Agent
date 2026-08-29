@@ -5,7 +5,7 @@ import {
 	Result,
 	Session,
 	SessionLedger,
-	SessionT5Ledger,
+	ContextLedger,
 	createConnectorCapabilitySnapshot,
 	createFoundationToolGatewayAuthority,
 	createFoundationToolGateway,
@@ -317,7 +317,7 @@ interface SupportedConnectorFixture {
 	readonly session: Session;
 	readonly snapshot: ConnectorCapabilitySnapshot;
 	readonly supervision: ReturnType<typeof createExternalConnectorTestSupervision>;
-	readonly t5: SessionT5Ledger;
+	readonly ledger: ContextLedger;
 }
 
 function createSupportedConnector(
@@ -346,7 +346,7 @@ function createSupportedConnector(
 			createdAt: fixtureId,
 		}),
 	);
-	const t5 = new SessionT5Ledger(session, { ownerId: `supervised-zeta-${fixtureId}` });
+	const ledger = new ContextLedger(session, { ownerId: `supervised-zeta-${fixtureId}` });
 	const supervision = createExternalConnectorTestSupervision();
 	const driver = options.driver ?? new ThirdPartyZetaDriver();
 	const capabilityProbe =
@@ -367,13 +367,13 @@ function createSupportedConnector(
 		capability: snapshot,
 		capabilityProbe: (probeOptions?: FoundationProviderExecutionOptions) =>
 			capabilityProbe(snapshot, probeOptions),
-		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer })),
+		store: new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: ledger.writer })),
 		driver,
 		supervision: supervisionOptions,
 		now: () => NOW,
 		operationNonce: () => `zeta-nonce-${fixtureId}`,
 	});
-	return { connector, driver, session, snapshot, supervision, t5 };
+	return { connector, driver, session, snapshot, supervision, ledger };
 }
 
 function registration(fixture: SupportedConnectorFixture): ExternalConnectorRegistration {
@@ -438,7 +438,7 @@ function productInput(
 		: undefined;
 	return {
 		session: fixture.session,
-		writer: fixture.t5.writer,
+		writer: fixture.ledger.writer,
 		registry,
 		selection: {
 			providerId: fixture.snapshot.providerId,
@@ -494,7 +494,7 @@ async function createPersistedProductAttempt(
 	const prepared = await persistExternalConnectorProductRunAfterAcceptance(admission);
 	const settlement = new LayeredResultSettlement(fixture.session, {
 		ownerId: `external-connector-registry:${runId}`,
-		writer: fixture.t5.writer,
+		writer: fixture.ledger.writer,
 	});
 	const started = await settlement.startDispatch({
 		provider: prepared.selected.connector,
@@ -732,7 +732,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		await expect(
 			preflightExternalConnectorProductRecovery({
 				session: fixture.session,
-				writer: fixture.t5.writer,
+				writer: fixture.ledger.writer,
 				registry,
 				runId,
 				providerId: fixture.snapshot.providerId,

@@ -4,7 +4,7 @@ import {
 	Result,
 	Session,
 	SessionLedger,
-	SessionT5Ledger,
+	ContextLedger,
 	fingerprintFoundationValue,
 	validateAttempt,
 	type ArtifactRef,
@@ -221,8 +221,8 @@ async function fixture(options: {
 	};
 } = {}) {
 	const session = new Session(new InMemorySessionStorage({ id: "external-product-session", createdAt: 1 }));
-	const t5 = new SessionT5Ledger(session, { ownerId: "external-product-test" });
-	const store = new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: t5.writer }));
+	const ledger = new ContextLedger(session, { ownerId: "external-product-test" });
+	const store = new SessionExternalConnectorDurableStore(new SessionLedger(session, { writer: ledger.writer }));
 	const driver = new FixtureDriver(
 		options.modelAccess === "aos_gateway" ? exactModelSupportMatrix(options.unsupportedModelField) : undefined,
 		options.throwOnModelMatrixRead,
@@ -256,7 +256,7 @@ async function fixture(options: {
 		connector,
 	});
 	if (!registered.ok) throw registered.error;
-	return { session, t5, driver, connector, registry, descriptor, supervision };
+	return { session, ledger, driver, connector, registry, descriptor, supervision };
 }
 
 describe("T4 final acceptance: External Connector product integration", () => {
@@ -269,7 +269,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		};
 		const execution = await executeExternalConnectorProductRun({
 			session: current.session,
-			writer: current.t5.writer,
+			writer: current.ledger.writer,
 			registry: current.registry,
 			selection: {
 				providerId: current.descriptor.providerId,
@@ -352,7 +352,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		};
 		const execution = await executeExternalConnectorProductRun({
 			session: current.session,
-			writer: current.t5.writer,
+			writer: current.ledger.writer,
 			registry: current.registry,
 			selection: {
 				providerId: current.descriptor.providerId,
@@ -497,7 +497,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			};
 			const execution = await executeExternalConnectorProductRun({
 				session: current.session,
-				writer: current.t5.writer,
+				writer: current.ledger.writer,
 				registry: current.registry,
 				selection: {
 					providerId: current.descriptor.providerId,
@@ -542,7 +542,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		};
 		const execution = await executeExternalConnectorProductRun({
 			session: current.session,
-			writer: current.t5.writer,
+			writer: current.ledger.writer,
 			registry: current.registry,
 			selection: {
 				providerId: current.descriptor.providerId,
@@ -567,7 +567,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			providerId: PROVIDER_ID,
 			capability: capability(),
 			capabilityProbe: async () => Result.ok(capability()),
-			store: new SessionExternalConnectorDurableStore(new SessionLedger(current.session, { writer: current.t5.writer })),
+			store: new SessionExternalConnectorDurableStore(new SessionLedger(current.session, { writer: current.ledger.writer })),
 			driver: restartedDriver,
 			supervision: restartedSupervision.options,
 			now: () => NOW,
@@ -590,7 +590,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		};
 		const execution = await executeExternalConnectorProductRun({
 			session: current.session,
-			writer: current.t5.writer,
+			writer: current.ledger.writer,
 			registry: current.registry,
 			selection: {
 				providerId: current.descriptor.providerId,
@@ -628,7 +628,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		};
 		await executeExternalConnectorProductRun({
 			session: current.session,
-			writer: current.t5.writer,
+			writer: current.ledger.writer,
 			registry: current.registry,
 			selection: {
 				providerId: current.descriptor.providerId,
@@ -730,7 +730,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			const canonicalInput = testCase.input as CanonicalExternalAgentInput;
 			await expect(executeExternalConnectorProductRun({
 				session: current.session,
-				writer: current.t5.writer,
+				writer: current.ledger.writer,
 				registry: current.registry,
 				selection: {
 					providerId: current.descriptor.providerId,
@@ -772,7 +772,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const bindingDigest = fingerprintFoundationValue({ bindingId: "rpc-local-model-binding" });
 		const execution = await executeExternalConnectorProductRun({
 			session: current.session,
-			writer: current.t5.writer,
+			writer: current.ledger.writer,
 			registry: current.registry,
 			selection: {
 				providerId: current.descriptor.providerId,
@@ -839,7 +839,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const bindingDigest = fingerprintFoundationValue({ bindingId: "rpc-fallback-model-binding" });
 		const execution = await executeExternalConnectorProductRun({
 			session: current.session,
-			writer: current.t5.writer,
+			writer: current.ledger.writer,
 			registry: current.registry,
 			selection: {
 				providerId: current.descriptor.providerId,
@@ -897,7 +897,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		};
 		await expect(executeExternalConnectorProductRun({
 			session: current.session,
-			writer: current.t5.writer,
+			writer: current.ledger.writer,
 			registry: current.registry,
 			selection: {
 				providerId: current.descriptor.providerId,
@@ -935,7 +935,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		};
 		const execution = await executeExternalConnectorProductRun({
 			session: current.session,
-			writer: current.t5.writer,
+			writer: current.ledger.writer,
 			registry: current.registry,
 			selection: {
 				providerId: current.descriptor.providerId,

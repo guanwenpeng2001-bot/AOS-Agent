@@ -32,7 +32,7 @@ import { validateLineage } from "./schema.ts";
 import { SessionLedger } from "./session-ledger.ts";
 import { createDurableEvent, type DurableEventEnvelope, type EventCorrelationRef, type FoundationJsonValue, type RunReceiptEventPayload } from "./event-catalog.ts";
 import type { FoundationFactRecord, FoundationIntentRecord } from "../session/durable/types.ts";
-import type { SessionLedgerWriter } from "../session/t5.ts";
+import type { SessionLedgerWriter } from "../session/ledger-writer.ts";
 
 export interface FoundationTaskPersistenceOptions {
 	readonly ownerId?: string;

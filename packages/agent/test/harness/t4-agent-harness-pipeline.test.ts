@@ -6,7 +6,7 @@ import { canonicalFoundationJson, createAttempt, createEmptyMcpSelection, create
 import { FoundationToolGuard, FoundationToolPipeline, SessionToolPipelineStorage, finalizeToolReceipt, validateToolIntent, validateToolReceipt, type ToolDefinitionRegistry, type ToolPipelineContext } from "../../src/harness/tool-pipeline.ts";
 import { createExecutionCorrelation } from "../../src/harness/foundation/identity.ts";
 import { Result } from "../../src/harness/result.ts";
-import { InMemorySessionStorage, Session, T5_LEDGER_OBJECT_TYPES } from "../../src/harness/session/index.ts";
+import { InMemorySessionStorage, Session, LEDGER_OBJECT_TYPES } from "../../src/harness/session/index.ts";
 import type { AgentContext } from "../../src/types.ts";
 
 type ArtifactReadFailure = "none" | "missing" | "malformed" | "get_throw" | "verify_false" | "verify_throw" | "wrong_bytes" | "wrong_size";
@@ -414,8 +414,8 @@ describe("T4 public AgentHarness tool consumer", () => {
 		const records = await session.findRecords({ order: "oldestFirst" });
 		const foundationRecords = await session.findFoundationRecords({ order: "oldestFirst", includePruned: true });
 		for (const ledgerPart of [entries, records, foundationRecords]) expect(JSON.stringify(ledgerPart)).not.toContain("plaintext-secret");
-		const t5ToolResults = foundationRecords.filter((record) => record.kind === "fact" && record.objectType === T5_LEDGER_OBJECT_TYPES.toolResult);
-		expect(t5ToolResults).toHaveLength(1);
+		const ledgerToolResults = foundationRecords.filter((record) => record.kind === "fact" && record.objectType === LEDGER_OBJECT_TYPES.toolResult);
+		expect(ledgerToolResults).toHaveLength(1);
 		for (const artifact of await harness.artifacts.list()) {
 			const stored = await harness.artifacts.get(artifact.artifactId);
 			expect(new TextDecoder().decode(stored.content)).not.toContain("plaintext-secret");
@@ -475,8 +475,8 @@ describe("T4 public AgentHarness tool consumer", () => {
 		expect(JSON.stringify(toolResultEntries)).not.toContain("AQID");
 		const receipts = await session.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", order: "oldestFirst" });
 		expect(JSON.stringify(receipts)).not.toContain("AQID");
-		const t5ToolResultFacts = await session.findFoundationRecords({ kind: "fact", objectType: T5_LEDGER_OBJECT_TYPES.toolResult, order: "oldestFirst" });
-		expect(t5ToolResultFacts).toHaveLength(0);
+		const ledgerToolResultFacts = await session.findFoundationRecords({ kind: "fact", objectType: LEDGER_OBJECT_TYPES.toolResult, order: "oldestFirst" });
+		expect(ledgerToolResultFacts).toHaveLength(0);
 		await first.harness.close();
 		const restarted = await createFoundationHarness({ session, models, model, tools: [imageTool], foundationExecution: foundation, artifactStore: artifacts.store, entryProjectors: { "foundation.tool_result": () => [{ role: "user" as const, content: [{ type: "text" as const, text: "caller override" }], timestamp: Date.now() }] }, toolPipelineOptions: { guard: allowAllGuards() } });
 		await restarted.harness.resume();

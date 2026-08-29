@@ -1,7 +1,7 @@
 import { newFoundationId, sha256HexValue, type FoundationJsonValue } from "../foundation/index.ts";
 import type { ArtifactReference, SessionArtifactStore } from "../artifacts.ts";
 import type { Session } from "../session/session.ts";
-import { SessionLedgerBindingError, type SessionLedgerWriter, T5_LEDGER_OBJECT_TYPES, assertSessionLedgerWriterSession, type SessionLedgerWriterOptions } from "../session/t5.ts";
+import { SessionLedgerBindingError, type SessionLedgerWriter, LEDGER_OBJECT_TYPES, assertSessionLedgerWriterSession, type SessionLedgerWriterOptions } from "../session/ledger-writer.ts";
 
 export const MEMORY_SCHEMA_VERSION = 1 as const;
 export type MemoryScopeKind = "session" | "project" | "goal" | "child";
@@ -389,7 +389,7 @@ export class SessionMemoryStore implements MemoryStore {
 		const createdBy = requestedProvenance.createdBy ?? this.provenanceBoundary.createdBy ?? "explicit";
 		if (createdBy !== "explicit" && entry.principal !== "system") throw new MemoryError("policy_denied", "Only the system principal may assert imported or system provenance");
 		const id = entry.id ?? newFoundationId("memory");
-		const existingFact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.memory, id);
+		const existingFact = await this.writer.readFact<FoundationJsonValue>(LEDGER_OBJECT_TYPES.memory, id);
 		if (existingFact !== undefined) {
 			const existing = existingFact.payload as unknown as MemoryRecord;
 			const contentDigest = `sha256:${sha256HexValue(new TextEncoder().encode(redacted.text))}`;
@@ -423,7 +423,7 @@ export class SessionMemoryStore implements MemoryStore {
 		await this.artifacts.retainReference({
 			artifactId: contentRef.artifactId,
 			referenceId: `memory:${id}`,
-			consumerType: T5_LEDGER_OBJECT_TYPES.memory,
+			consumerType: LEDGER_OBJECT_TYPES.memory,
 			consumerId: id,
 			...(retentionExpiry(retention) === undefined ? {} : { expiresAt: retentionExpiry(retention) }),
 		});
@@ -457,7 +457,7 @@ export class SessionMemoryStore implements MemoryStore {
 			createdAt: this.now(),
 		};
 		const accepted = await this.writer.writeFact({
-			objectType: T5_LEDGER_OBJECT_TYPES.memory,
+			objectType: LEDGER_OBJECT_TYPES.memory,
 			objectId: id,
 			clientRequestId: entry.clientRequestId ?? `memory:${id}`,
 			payload: record as unknown as FoundationJsonValue,
@@ -467,7 +467,7 @@ export class SessionMemoryStore implements MemoryStore {
 	}
 
 	async get(id: string, principal = "system"): Promise<MemoryEntry | undefined> {
-		const fact = await this.writer.readFact<FoundationJsonValue>(T5_LEDGER_OBJECT_TYPES.memory, id);
+		const fact = await this.writer.readFact<FoundationJsonValue>(LEDGER_OBJECT_TYPES.memory, id);
 		if (fact === undefined) return undefined;
 		const record = fact.payload as unknown as MemoryRecord;
 		const contentRef = record?.contentRef;
@@ -505,7 +505,7 @@ export class SessionMemoryStore implements MemoryStore {
 
 	async list(query: MemoryQuery = {}, principal = "system"): Promise<MemoryEntry[]> {
 		if (query.limit !== undefined && (!Number.isInteger(query.limit) || query.limit <= 0)) throw new MemoryError("invalid_query", "Memory limit must be a positive integer");
-		const records = await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.memory });
+		const records = await this.writer.listFacts({ objectType: LEDGER_OBJECT_TYPES.memory });
 		const result: MemoryEntry[] = [];
 		for (const fact of records) {
 			const record = fact.payload as unknown as MemoryRecord;
@@ -529,7 +529,7 @@ export class SessionMemoryStore implements MemoryStore {
 	async delete(id: string, principal = "system"): Promise<boolean> {
 		const entry = await this.get(id, principal);
 		if (entry === undefined) return false;
-		await this.writer.tombstone({ objectType: T5_LEDGER_OBJECT_TYPES.memory, objectId: id, reason: "memory_deleted" });
+		await this.writer.tombstone({ objectType: LEDGER_OBJECT_TYPES.memory, objectId: id, reason: "memory_deleted" });
 		await this.artifacts.releaseReference(`memory:${id}`);
 		return true;
 	}
@@ -539,7 +539,7 @@ export class SessionMemoryStore implements MemoryStore {
 	}
 
 	async purgeExpired(now = this.now()): Promise<number> {
-		const records = await this.writer.listFacts({ objectType: T5_LEDGER_OBJECT_TYPES.memory });
+		const records = await this.writer.listFacts({ objectType: LEDGER_OBJECT_TYPES.memory });
 		let removed = 0;
 		for (const fact of records) {
 			const record = fact.payload as unknown as MemoryRecord;
@@ -549,7 +549,7 @@ export class SessionMemoryStore implements MemoryStore {
 				(this.enforcedScope === undefined || record.scope === this.enforcedScope) &&
 				retentionExpired(record.retention, now)
 			) {
-				await this.writer.tombstone({ objectType: T5_LEDGER_OBJECT_TYPES.memory, objectId: record.id, reason: "memory_expired" });
+				await this.writer.tombstone({ objectType: LEDGER_OBJECT_TYPES.memory, objectId: record.id, reason: "memory_expired" });
 				await this.artifacts.releaseReference(`memory:${record.id}`);
 				removed += 1;
 			}

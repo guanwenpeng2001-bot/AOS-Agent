@@ -478,7 +478,7 @@ async function createCodingAgentHarnessInternal(options: InternalCreateCodingAge
 				...(receipt.error === undefined ? {} : { error: receipt.error }),
 			};
 			try {
-				await persistWorkerToolExecution(options.session, workerSandbox.provider.providerId, request, runId, getHarness().t5.writer, receipt, result);
+				await persistWorkerToolExecution(options.session, workerSandbox.provider.providerId, request, runId, getHarness().ledger.writer, receipt, result);
 			} catch (error) {
 				if (error instanceof FoundationError) return Result.err(error);
 				return Result.err(new FoundationError("worker_persistence_failed", "Sandbox WorkerReceipt persistence failed"));

@@ -152,7 +152,7 @@ describe("ProductPromptIngress", () => {
 		const ledgerForLane = (laneId: string): SessionLedger => {
 			let ledger = ledgers.get(laneId);
 			if (ledger === undefined) {
-				ledger = new SessionLedger(session, { writer: created.harness.t5.writer, laneId });
+				ledger = new SessionLedger(session, { writer: created.harness.ledger.writer, laneId });
 				ledgers.set(laneId, ledger);
 			}
 			return ledger;
@@ -216,7 +216,7 @@ describe("ProductPromptIngress", () => {
 		} as unknown as ArtifactStoreProvider;
 		const parentMemory = (parentAgentInstanceId: string) => ({
 			store: createScopedMemoryStore(
-				created.harness.t5.memory,
+				created.harness.ledger.memory,
 				"session",
 				{ ownerId: parentAgentInstanceId, scopeId: `parent:${parentAgentInstanceId}`, createdBy: "system" },
 				{ ownerId: parentAgentInstanceId, scopeId: `parent:${parentAgentInstanceId}` },
@@ -231,7 +231,7 @@ describe("ProductPromptIngress", () => {
 			schemaVersion: 1,
 			enabled: true,
 			session,
-			writer: created.harness.t5.writer,
+			writer: created.harness.ledger.writer,
 			ledger: ledgerForLane("main"),
 			ledgerForLane,
 			sessionId: "product-native-child",
@@ -365,7 +365,7 @@ describe("ProductPromptIngress", () => {
 			if (replacementFencingToken !== undefined) {
 				await session.releaseWriterLease({ fencingToken: replacementFencingToken });
 			}
-			await created.harness.t5.writer.ensureLease(true);
+			await created.harness.ledger.writer.ensureLease(true);
 			await created.harness.close();
 		}
 	});
@@ -638,7 +638,7 @@ describe("ProductPromptIngress", () => {
 			const forgedAttemptId = `attempt_coding_agent_${forgedToken}`;
 			const forgedAgentInstanceId = `agent_instance_coding_agent_${forgedToken}`;
 			const forgedOperationId = `sandbox-operation-${forgedToken}`;
-			const ledger = new SessionLedger(session, { writer: created.harness.t5.writer });
+			const ledger = new SessionLedger(session, { writer: created.harness.ledger.writer });
 			await ledger.appendFact("worker_receipt", "bad-receipt", {
 				schemaVersion: 1,
 				workerReceiptId: "bad-receipt",

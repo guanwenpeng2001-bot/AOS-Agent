@@ -364,8 +364,8 @@ async function createCanonicalReviewFixture(): Promise<CanonicalReviewFixture> {
 		throw new Error("canonical AgentSession did not materialize the review policy binding");
 	}
 	const canonicalSession = getAgentCanonicalSession(created.session);
-	expect(canonicalSession).toBe(created.runtimeComposition.harness.t5.session);
-	const ledger = new SessionLedger(canonicalSession, { writer: created.runtimeComposition.harness.t5.writer });
+	expect(canonicalSession).toBe(created.runtimeComposition.harness.ledger.session);
+	const ledger = new SessionLedger(canonicalSession, { writer: created.runtimeComposition.harness.ledger.writer });
 	const facts = createGatewayFoundationFacts(policyBinding);
 	const correlation = {
 		operationId: policyBinding.runId,

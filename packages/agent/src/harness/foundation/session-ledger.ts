@@ -13,7 +13,7 @@ import type {
 	LedgerWriterLease,
 	ProvisionedFoundationRecord,
 } from "../session/durable/types.ts";
-import { assertSessionLedgerWriterSession, type SessionLedgerWriter } from "../session/t5.ts";
+import { assertSessionLedgerWriterSession, type SessionLedgerWriter } from "../session/ledger-writer.ts";
 
 /** The only state retained by a Foundation facade is a lease token; objects live in Session. */
 export interface SessionLedgerOptions {
