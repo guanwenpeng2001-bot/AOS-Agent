@@ -353,6 +353,29 @@ Safety:
 - `streamable-http` URLs must be absolute `http(s)` and must not contain userinfo (`user:pass@`) or credential-bearing query parameters.
 - Global `mcp.servers` are trusted. Project `mcp.servers` are trusted only when the project is trusted; an untrusted project server is surfaced but denied and never connected. Project `capabilities` (profiles and `defaultProfile`) merge only when the project is trusted.
 
+## External Connectors
+
+`externalConnectors` registers trusted local connector targets for standard CLI,
+RPC, and SDK Sessions. The global object contains `schemaVersion: 1`, `targets`,
+and an optional selected `targetId`. Each target pins `targetId`, `providerId`,
+absolute `executablePath`, absolute `modulePath`, absolute `cwd`, `version`,
+`executableIdentity`, `moduleIdentity`, and `capabilityCeiling`. An optional
+`accountReference` contains only `{schemaVersion, namespace, accountId}`.
+
+Project settings cannot define targets. A trusted project may provide
+`{schemaVersion: 1, targetId?, capabilityCeiling?, role?}` to select a global
+target and narrow its ceiling. Project and `role` selections are rejected when
+the project is untrusted. A narrowing can disable `resume`, `toolGateway`,
+`artifacts`, or `images`, and can reduce `modelAccess`; it cannot widen the
+global ceiling.
+
+Settings are used only when the embedding Host omits `runtimeComposition`. A
+Host-explicit composition wins as one authority graph; settings fields are not
+merged into it. Settings may populate only the External Connector slice and
+never enable Scheduler, Worker, or Subagent composition. See
+[external-agent-connector.md](external-agent-connector.md#settings-registration)
+for the complete example and current packaged-driver boundary.
+
 ## Example
 
 ```json

@@ -54,6 +54,7 @@ function hasSessionWithId(root: string, sessionId: string): boolean {
 
 interface CliDirs {
 	agentDir: string;
+	homeDir: string;
 	projectDir: string;
 	sessionDir: string;
 }
@@ -61,14 +62,16 @@ interface CliDirs {
 async function runCli(
 	args: string[] | ((dirs: CliDirs) => string[]),
 	setup?: (dirs: CliDirs) => void,
-): Promise<{ code: number | null; agentDir: string; stderr: string }> {
+): Promise<{ code: number | null; agentDir: string; projectDir: string; stderr: string }> {
 	const tempRoot = createTempDir();
 	const dirs: CliDirs = {
 		agentDir: join(tempRoot, "agent"),
+		homeDir: join(tempRoot, "home"),
 		projectDir: join(tempRoot, "project"),
 		sessionDir: join(tempRoot, "sessions"),
 	};
 	mkdirSync(dirs.agentDir, { recursive: true });
+	mkdirSync(dirs.homeDir, { recursive: true });
 	mkdirSync(dirs.projectDir, { recursive: true });
 	setup?.(dirs);
 	const resolvedArgs = typeof args === "function" ? args(dirs) : args;
@@ -77,7 +80,13 @@ async function runCli(
 	const code = await new Promise<number | null>((resolvePromise, reject) => {
 		const child = spawn(process.execPath, sourceProcessArgs(cliPath, resolvedArgs), {
 			cwd: dirs.projectDir,
-			env: { ...sourceProcessEnv(), [ENV_AGENT_DIR]: dirs.agentDir, AOS_AGENT_OFFLINE: "1" },
+			env: {
+				...sourceProcessEnv(),
+				[ENV_AGENT_DIR]: dirs.agentDir,
+				AOS_AGENT_OFFLINE: "1",
+				HOME: dirs.homeDir,
+				USERPROFILE: dirs.homeDir,
+			},
 			stdio: ["ignore", "ignore", "pipe"],
 		});
 		child.stderr.on("data", (chunk) => {
@@ -87,7 +96,18 @@ async function runCli(
 		child.on("close", resolvePromise);
 	});
 
-	return { code, agentDir: dirs.agentDir, stderr };
+	return { code, agentDir: dirs.agentDir, projectDir: dirs.projectDir, stderr };
+}
+
+function installMetadataSideEffectSentinel(dirs: CliDirs): string {
+	const sentinel = join(dirs.projectDir, "extension-loaded.txt");
+	const extension = join(dirs.projectDir, "metadata-extension.mjs");
+	writeFileSync(
+		extension,
+		`import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(sentinel)}, "loaded");\n`,
+	);
+	writeFileSync(join(dirs.agentDir, "settings.json"), JSON.stringify({ extensions: [extension] }));
+	return sentinel;
 }
 
 function writeSession(sessionDir: string, cwd: string, id: string): void {
@@ -118,6 +138,38 @@ describe("--session-id read-only commands", () => {
 		expect(result.code).toBe(0);
 		expect(hasSessionWithId(join(result.agentDir, "sessions"), "read-only-models")).toBe(false);
 	});
+
+	it(
+		"runs --help without migrations, runtime files, or extension execution",
+		{ timeout: CLI_TEST_TIMEOUT_MS },
+		async () => {
+			let sentinel = "";
+			const result = await runCli(["--help"], (dirs) => {
+				sentinel = installMetadataSideEffectSentinel(dirs);
+			});
+
+			expect(result.code).toBe(0);
+			expect(existsSync(sentinel)).toBe(false);
+			expect(readdirSync(result.agentDir).sort()).toEqual(["settings.json"]);
+			expect(readdirSync(result.projectDir).sort()).toEqual(["metadata-extension.mjs"]);
+		},
+	);
+
+	it(
+		"runs --list-models with read-only catalog stores and no extension execution",
+		{ timeout: CLI_TEST_TIMEOUT_MS },
+		async () => {
+			let sentinel = "";
+			const result = await runCli(["--list-models"], (dirs) => {
+				sentinel = installMetadataSideEffectSentinel(dirs);
+			});
+
+			expect(result.code).toBe(0);
+			expect(existsSync(sentinel)).toBe(false);
+			expect(readdirSync(result.agentDir).sort()).toEqual(["settings.json"]);
+			expect(readdirSync(result.projectDir).sort()).toEqual(["metadata-extension.mjs"]);
+		},
+	);
 
 	it("warns when a missing --session-id creates a new session", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const result = await runCli((dirs) => [
@@ -175,13 +227,17 @@ describe("--session-id read-only commands", () => {
 });
 
 describe("--session-id validation", () => {
-	it("rejects ids invalid under SessionManager rules without stack traces", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
-		for (const id of ["-bad", "bad id"]) {
-			const result = await runCli(["--session-id", id, "-p", "hi"]);
+	it(
+		"rejects ids invalid under SessionManager rules without stack traces",
+		{ timeout: CLI_TEST_TIMEOUT_MS },
+		async () => {
+			for (const id of ["-bad", "bad id"]) {
+				const result = await runCli(["--session-id", id, "-p", "hi"]);
 
-			expect(result.code).toBe(1);
-			expect(result.stderr).toContain("Session id must be non-empty");
-			expect(result.stderr).not.toContain("SessionManager.create");
-		}
-	});
+				expect(result.code).toBe(1);
+				expect(result.stderr).toContain("Session id must be non-empty");
+				expect(result.stderr).not.toContain("SessionManager.create");
+			}
+		},
+	);
 });

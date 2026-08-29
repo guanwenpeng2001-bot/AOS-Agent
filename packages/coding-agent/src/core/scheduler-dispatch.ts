@@ -17,14 +17,15 @@
  * Task Graph, write TaskResult/RunReceipt, or register a production Scheduler.
  */
 import {
-	type AgentInstance,
 	type AgentBinding,
+	type AgentInstance,
 	type Attempt,
 	type AttemptReceipt,
 	type BindingEpoch,
 	type Budget,
 	type ConnectorCapabilitySnapshot,
 	createBindingEpoch,
+	createConnectorCapabilitySnapshot,
 	createExecutionCorrelation,
 	type Dispatch,
 	type DispatchExecutionResult,
@@ -71,7 +72,9 @@ import {
 	type SchedulerSelectionFactV1,
 } from "./scheduler.ts";
 import {
+	createSchedulerExecutorRuntimeSnapshotV1,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
+	SCHEDULER_IN_PROCESS_PROVIDER_ID,
 	type SchedulerExecutorRegistry,
 	type SchedulerExecutorRuntimeSnapshotV1,
 	type SchedulerHostAttemptRunnerV1,
@@ -239,6 +242,8 @@ export interface SchedulerDispatchOutcomeV1 {
 
 export interface SchedulerInProcessHostBindingOptionsV1 {
 	readonly hostAttemptRunner: SchedulerHostAttemptRunnerV1;
+	/** Register an inert durable candidate when no exact runtime snapshot exists. */
+	readonly allowFailClosedRegistration?: boolean;
 	readonly quota?: QuotaProvider;
 	readonly now?: () => string;
 	readonly budget?: Budget;
@@ -314,6 +319,38 @@ function isSchedulerErrorCode(value: string): value is SchedulerErrorCodeV1 {
 
 function inProcessCapability(): FoundationProviderCapability {
 	return { schemaVersion: 1, id: SCHEDULER_IN_PROCESS_CAPABILITY_ID, version: 1 };
+}
+
+function failClosedInProcessRuntimeSnapshot(
+	nowIso: string,
+): ResultValue<SchedulerExecutorRuntimeSnapshotV1, FoundationError> {
+	const observedAt = Date.parse(nowIso);
+	if (!Number.isFinite(observedAt)) {
+		return Result.err(new FoundationError("foundation_schema_invalid_shape", "Scheduler clock is invalid."));
+	}
+	return createSchedulerExecutorRuntimeSnapshotV1({
+		schemaVersion: 1,
+		capabilitySnapshot: createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId: SCHEDULER_IN_PROCESS_PROVIDER_ID,
+			revision: 1,
+			protocol: { name: "aos-scheduler-in-process", version: "1" },
+			modelAccess: "none",
+			resume: false,
+			toolGateway: false,
+			artifacts: false,
+			images: false,
+		}),
+		configRevision: fingerprintFoundationValue("aos-scheduler-in-process:fail-closed"),
+		bindingRequirementDigests: [],
+		toolSelectionDigests: [],
+		policyRevisionDigests: [],
+		reviewRevisionDigests: [],
+		credentialTargetRefs: [],
+		sandboxTargetRefs: [],
+		observedAt: nowIso,
+		expiresAt: new Date(observedAt + 24 * 60 * 60 * 1_000).toISOString(),
+	});
 }
 
 /** True when the selected provider exposes the settlement resume surface. */
@@ -655,13 +692,19 @@ function schedulerSelectionOutcomeReasonV1(receipt: AttemptReceipt): SchedulerSe
 	return "failed";
 }
 
-/** Bind the real in-process TaskExecutor Host runner seam. A missing runner is a type error; registration still fails closed if the provider cannot run. */
+/** Bind the in-process TaskExecutor seam. Without a trusted runner, execution remains fail-closed. */
 export async function bindSchedulerInProcessTaskExecutorV1(
 	registry: SchedulerExecutorRegistry,
 	options: SchedulerInProcessHostBindingOptionsV1,
 ): Promise<ResultValue<SchedulerExecutorEntryV1, FoundationError>> {
 	const nowIso = (options.now ?? (() => new Date().toISOString()))();
 	const durableSelection = registry.durableSelectionsEnabled();
+	let runtimeSnapshot = options.runtimeSnapshot;
+	if (durableSelection && runtimeSnapshot === undefined && options.allowFailClosedRegistration === true) {
+		const created = failClosedInProcessRuntimeSnapshot(nowIso);
+		if (!created.ok) return created;
+		runtimeSnapshot = created.value;
+	}
 	const provider = new SchedulerInProcessTaskExecutorProvider({
 		hostAttemptRunner: options.hostAttemptRunner,
 		...(options.quota === undefined || durableSelection ? {} : { quota: options.quota }),
@@ -691,7 +734,7 @@ export async function bindSchedulerInProcessTaskExecutorV1(
 		provider,
 		trusted: options.trusted ?? true,
 		latencyMs: options.latencyMs ?? 0,
-		...(options.runtimeSnapshot === undefined ? {} : { runtimeSnapshot: options.runtimeSnapshot }),
+		...(runtimeSnapshot === undefined ? {} : { runtimeSnapshot }),
 		...(durableSelection && options.quota !== undefined ? { quota: options.quota } : {}),
 		...(durableSelection && options.quota !== undefined && options.budget !== undefined
 			? { budget: options.budget }
@@ -1326,9 +1369,7 @@ export class SchedulerDispatchController {
 			binding,
 			initialBindingEpoch: prepared.assembly.initialBindingEpoch,
 			correlation: prepared.assembly.correlation,
-			...(prepared.assembly.agentInstance === undefined
-				? {}
-				: { agentInstance: prepared.assembly.agentInstance }),
+			...(prepared.assembly.agentInstance === undefined ? {} : { agentInstance: prepared.assembly.agentInstance }),
 		});
 	}
 
@@ -1345,7 +1386,7 @@ export class SchedulerDispatchController {
 					"agent_instance_required_for_agent_provider",
 					"Scheduler agent execution requires its captured Native Subagent bridge identity",
 					{ details: { providerId: prepared.selection.providerId } },
-			),
+				),
 			);
 		}
 		return bridge.revalidate({
@@ -1628,31 +1669,30 @@ export class SchedulerDispatchController {
 			this.sessionId,
 			queueDispatch.providerClass === "agent" ? identity.laneId : this.laneId,
 			{
-			revision: 1,
-			roleRevisionId: checkedBinding.value.roleRevision.id,
-			modelProfileId: checkedBinding.value.modelProfileRevision.id,
-			modelProfileRevisionId: checkedBinding.value.modelProfileRevision.id,
-			taskId: checkedAttempt.value.taskId,
-			dispatchId: checkedAttempt.value.dispatchId,
-			attemptId: checkedAttempt.value.attemptId,
-			bindingId: checkedAttempt.value.bindingId,
-			bindingEpochId: epochId,
-			providerId: checkedAttempt.value.providerId,
-			...(agentInstance === undefined
-				? {}
-				: {
-						agentInstanceId: agentInstance.agentInstanceId,
-						...(agentInstance.lineage.parentId === undefined
-							? {}
-							: { parentId: agentInstance.lineage.parentId }),
-						...(agentInstance.lineage.ancestorIds === undefined
-							? {}
-							: { ancestorIds: agentInstance.lineage.ancestorIds }),
-					}
-			),
-			...(queueEntry.goalId === undefined && checkedBinding.value.goalId === undefined
-				? {}
-				: { goalId: queueEntry.goalId ?? checkedBinding.value.goalId }),
+				revision: 1,
+				roleRevisionId: checkedBinding.value.roleRevision.id,
+				modelProfileId: checkedBinding.value.modelProfileRevision.id,
+				modelProfileRevisionId: checkedBinding.value.modelProfileRevision.id,
+				taskId: checkedAttempt.value.taskId,
+				dispatchId: checkedAttempt.value.dispatchId,
+				attemptId: checkedAttempt.value.attemptId,
+				bindingId: checkedAttempt.value.bindingId,
+				bindingEpochId: epochId,
+				providerId: checkedAttempt.value.providerId,
+				...(agentInstance === undefined
+					? {}
+					: {
+							agentInstanceId: agentInstance.agentInstanceId,
+							...(agentInstance.lineage.parentId === undefined
+								? {}
+								: { parentId: agentInstance.lineage.parentId }),
+							...(agentInstance.lineage.ancestorIds === undefined
+								? {}
+								: { ancestorIds: agentInstance.lineage.ancestorIds }),
+						}),
+				...(queueEntry.goalId === undefined && checkedBinding.value.goalId === undefined
+					? {}
+					: { goalId: queueEntry.goalId ?? checkedBinding.value.goalId }),
 			},
 		);
 		return Result.ok({

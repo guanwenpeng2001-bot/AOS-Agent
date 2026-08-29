@@ -2,7 +2,7 @@
 
 ## Status
 
-The External Agent Connector contract and the architecture convergence are implemented. Product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) and the final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) are not complete. This checkout does not claim product readiness.
+The External Agent Connector contract, architecture convergence, and settings-based product entry composition are implemented. The final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) is not complete. This checkout does not claim product readiness.
 
 `ExternalAgentConnector` is the only public execution contract for an external
 agent. It implements the shared `TaskExecutorProvider` boundary and therefore
@@ -35,6 +35,60 @@ Trust is derived from Host composition: the Host creates the registry, construct
 the connector instance, and supplies that registry to the runtime composition.
 Registration has no caller-controlled trust flag, so a connector cannot
 self-attest as trusted.
+
+Standard CLI, RPC, and SDK Session creation also accepts an `externalConnectors`
+settings catalog. This is a narrow fallback authority: when a trusted Host passes
+`runtimeComposition`, that composition wins as a whole and no settings field is
+merged into it. When the Host omits the composition, settings may populate only
+the External Connector target and registry slice. Settings never enable the
+Scheduler, Worker, Subagent, Tool Gateway, or credential authorities.
+
+## Settings registration
+
+Define targets in user settings and select one with `targetId`:
+
+```json
+{
+  "externalConnectors": {
+    "schemaVersion": 1,
+    "targetId": "packaged-fake",
+    "targets": [
+      {
+        "schemaVersion": 1,
+        "targetId": "packaged-fake",
+        "providerId": "line13.fake-connector",
+        "executablePath": "/absolute/path/to/node",
+        "modulePath": "/absolute/path/to/fake-connector-process.mjs",
+        "cwd": "/absolute/trusted/workspace",
+        "version": "1",
+        "executableIdentity": "sha256:<hex>",
+        "moduleIdentity": "sha256:<hex>",
+        "capabilityCeiling": {
+          "modelAccess": ["none"],
+          "resume": true,
+          "toolGateway": false,
+          "artifacts": false,
+          "images": false
+        }
+      }
+    ]
+  }
+}
+```
+
+Global settings own target definitions. A trusted project may select a global
+`targetId` and narrow `capabilityCeiling`; its optional `role` selection may
+narrow again. Project and Role values are rejected unless the existing project
+trust decision is true. `accountReference`, when present, is an opaque account
+identity; credentials, environment values, headers, and tokens are never stored
+in this schema.
+
+This release activates only the provenance-matched fake driver shipped with the
+package. Other declared targets remain fail-closed with
+`external_connector_unavailable`; settings do not dynamically import a module or
+choose a private vendor driver. The selected packaged target is still constructed
+through production provenance checks, process containment, supervision, and the
+durable connector runtime.
 
 The descriptor pins `providerId`, `providerClass: "external_connector"`,
 `revision`, and the capability snapshot digest. A selection must repeat those

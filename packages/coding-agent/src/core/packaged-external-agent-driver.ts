@@ -21,12 +21,7 @@ import type {
 
 export const PACKAGED_EXTERNAL_AGENT_DRIVER_NAMES = Object.freeze(["fake-connector"] as const);
 export type PackagedExternalAgentDriverName = (typeof PACKAGED_EXTERNAL_AGENT_DRIVER_NAMES)[number];
-export type PackagedExternalAgentDriverOperationKind =
-	| "capabilities"
-	| "start"
-	| "tool"
-	| "resume"
-	| "cancel";
+export type PackagedExternalAgentDriverOperationKind = "capabilities" | "start" | "tool" | "resume" | "cancel";
 
 export interface PackagedExternalAgentDriverOperation {
 	readonly sequence: number;
@@ -119,7 +114,10 @@ function fingerprint(value: unknown): Fingerprint {
 	};
 }
 
-function operationInput(fixture: PackagedExternalAgentDriver, kind: Exclude<PackagedExternalAgentDriverOperationKind, "capabilities">): string {
+function operationInput(
+	fixture: PackagedExternalAgentDriver,
+	kind: Exclude<PackagedExternalAgentDriverOperationKind, "capabilities">,
+): string {
 	const operation = fixture.operations.find((candidate) => candidate.kind === kind);
 	if (operation === undefined) {
 		throw new PackagedExternalAgentDriverAssetError(
@@ -421,11 +419,14 @@ class PackagedFakeExternalAgentConnector implements ExternalAgentConnector {
 			}),
 			sideEffectState: "none" as const,
 		});
-		this.#attempts.set(attempt.attemptId, Object.freeze({
-			...attempt,
-			status: status === "suspended" ? "suspended" : status,
-			...(status === "suspended" ? {} : { completedAt: PACKAGED_NOW }),
-		}));
+		this.#attempts.set(
+			attempt.attemptId,
+			Object.freeze({
+				...attempt,
+				status: status === "suspended" ? "suspended" : status,
+				...(status === "suspended" ? {} : { completedAt: PACKAGED_NOW }),
+			}),
+		);
 		return receipt;
 	}
 }
@@ -440,7 +441,8 @@ function hasExactKeys(value: Record<string, unknown>, keys: ReadonlySet<string>)
 }
 
 function isOperation(value: unknown, sequence: number): value is PackagedExternalAgentDriverOperation {
-	return isRecord(value) &&
+	return (
+		isRecord(value) &&
 		hasExactKeys(value, EXACT_OPERATION_KEYS) &&
 		value.sequence === sequence &&
 		typeof value.kind === "string" &&
@@ -448,7 +450,8 @@ function isOperation(value: unknown, sequence: number): value is PackagedExterna
 		typeof value.input === "string" &&
 		value.input.length > 0 &&
 		typeof value.output === "string" &&
-		value.output.length > 0;
+		value.output.length > 0
+	);
 }
 
 function parseDriver(value: unknown): PackagedExternalAgentDriver {
@@ -489,6 +492,17 @@ function packagedAssetDirectory(): string {
 	return compiled
 		? join(dirname(process.execPath), "external-connector-assets")
 		: join(dirname(fileURLToPath(import.meta.url)), "external-connector-assets");
+}
+
+/** Exact packaged process module admitted by settings-based product composition. */
+export function packagedExternalAgentDriverProcessModulePath(name: PackagedExternalAgentDriverName): string {
+	if (name !== "fake-connector") {
+		throw new PackagedExternalAgentDriverAssetError(
+			"external_agent_driver_asset_missing",
+			"The requested packaged External Agent driver fixture is unavailable.",
+		);
+	}
+	return join(packagedAssetDirectory(), "fake-connector-process.mjs");
 }
 
 /** Load an allowlisted packaged fixture without enabling a production Connector. */
@@ -534,13 +548,14 @@ export interface PackagedExternalAgentDriverTrace {
 }
 
 function packagedBinding(taskId: string): AgentBinding {
-	const immutableReference = (type: string, id: string) => Object.freeze({
-		schemaVersion: 1 as const,
-		type,
-		id,
-		revision: 1,
-		fingerprint: fingerprint({ type, id, revision: 1 }),
-	});
+	const immutableReference = (type: string, id: string) =>
+		Object.freeze({
+			schemaVersion: 1 as const,
+			type,
+			id,
+			revision: 1,
+			fingerprint: fingerprint({ type, id, revision: 1 }),
+		});
 	const capabilityRevision = immutableReference("capability_binding", "line13-capability-binding");
 	const mcpSelectionBase = {
 		schemaVersion: 1 as const,
