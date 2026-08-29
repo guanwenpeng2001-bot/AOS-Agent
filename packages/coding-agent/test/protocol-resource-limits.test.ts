@@ -6,7 +6,7 @@ import {
 	BoundedProtocolWriter,
 	type BoundedProtocolError,
 } from "../src/core/bounded-protocol.ts";
-import { withRuntimeClock } from "../src/core/runtime-clock.ts";
+import { withRuntimeClock } from "../src/core/runtime/clock.ts";
 import {
 	attachJsonlLineReader,
 	createJsonlLineWriter,

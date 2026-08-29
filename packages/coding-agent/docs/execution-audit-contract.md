@@ -67,7 +67,7 @@ The source files that establish these facts are:
   serializers;
 - `src/core/session/context-engine.ts` for metadata-only snapshots;
 - `src/core/policy/capability-registry.ts` for opaque capability identifiers;
-- `src/core/model-broker-ledger.ts` and `src/core/model-broker.ts` for model
+- `src/core/runtime/model-broker-ledger.ts` and `src/core/runtime/model-broker.ts` for model
   binding, attempt, and fallback facts;
 - `src/core/policy/execution.ts` and `src/core/policy/execution-ledger.ts`
   for policy and Sandbox facts;

@@ -10,7 +10,7 @@ import {
 	createAgentSessionServices,
 } from "../../../src/core/session/runtime.ts";
 import { AuthStorage } from "../../../src/core/policy/auth-storage.ts";
-import { ModelRuntime } from "../../../src/core/model-runtime.ts";
+import { ModelRuntime } from "../../../src/core/runtime/model-runtime.ts";
 
 describe("issue #2753 reload stale resource settings", () => {
 	const cleanups: Array<() => void> = [];

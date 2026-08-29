@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExternalConnectorTargetDefinition } from "../src/core/connector/target-config.ts";
-import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
+import { InMemorySettingsStorage, SettingsManager } from "../src/core/runtime/settings-manager.ts";
 
 const directories: string[] = [];
 const identity = `sha256:${"0".repeat(64)}`;

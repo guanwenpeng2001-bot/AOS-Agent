@@ -10,8 +10,8 @@ import type { AssistantMessage, ImageContent } from "@aos-agent/ai";
 import type { AgentSession, ExtensionBindings } from "../core/session/agent-session.ts";
 import type { AgentSessionRuntime } from "../core/session/runtime.ts";
 import type { PreparedSessionScopeRebind } from "../core/session/current-scope.ts";
-import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
-import { ShutdownCoordinator } from "../core/shutdown-coordinator.ts";
+import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/runtime/output-guard.ts";
+import { ShutdownCoordinator } from "../core/runtime/shutdown-coordinator.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 

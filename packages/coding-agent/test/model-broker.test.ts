@@ -7,7 +7,7 @@ import {
 	preflightBudget,
 	resolveModel,
 	settleBudget,
-} from "../src/core/model-broker.ts";
+} from "../src/core/runtime/model-broker.ts";
 
 describe("model-broker", () => {
 	it("normalizes safe references and rejects credential-bearing references", () => {

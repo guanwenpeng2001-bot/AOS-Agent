@@ -1,8 +1,8 @@
 import { complete, resetApiProviders } from "@aos-agent/ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ModelRegistry } from "../src/core/runtime/model-registry.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
 
 const openAIState = vi.hoisted(() => ({ clientOptions: undefined as unknown }));
 

@@ -16,7 +16,7 @@ import {
 	type ExternalConnectorProcessHandle,
 	type ExternalConnectorProcessLaunchRequest,
 } from "../src/core/connector/supervisor.ts";
-import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock } from "../src/core/runtime-clock.ts";
+import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock } from "../src/core/runtime/clock.ts";
 
 function request(operationNonce = "production-nonce"): ExternalConnectorProcessLaunchRequest {
 	return {

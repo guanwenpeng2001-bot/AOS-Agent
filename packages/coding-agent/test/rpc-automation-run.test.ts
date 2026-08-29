@@ -23,7 +23,7 @@ import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Mo
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { AgentSession } from "../src/core/session/agent-session.ts";
-import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
+import { createAgentRuntimeCompositionFactory } from "../src/core/runtime/composition.ts";
 import {
 	getAgentCanonicalSession,
 	getAgentSessionLedger,
@@ -57,12 +57,12 @@ import {
 import { cloneCanonicalExternalConnectorMapping } from "../src/core/connector/session-mapping.ts";
 import type { ExternalModelSupportMatrix } from "../src/core/connector/model-projection.ts";
 import type { Extension, ExtensionContext, ToolDefinition } from "../src/core/extensions/index.ts";
-import type { ModelRuntime } from "../src/core/model-runtime.ts";
-import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { encodeRuntimeLimitsOperationNonce } from "../src/core/runtime-limits.ts";
+import type { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
+import type { ResourceLoader } from "../src/core/runtime/resource-loader.ts";
+import { encodeRuntimeLimitsOperationNonce } from "../src/core/runtime/limits.ts";
 import { RUN_LEDGER_CUSTOM_TYPE } from "../src/core/session/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { RpcClient, type RpcRunStreamEvent } from "../src/modes/rpc/rpc-client.ts";
 import {
 	RpcHostController,
@@ -75,7 +75,7 @@ import { createRpcTransport, type RpcTransportConnection, type RpcTransport } fr
 import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
 import type { RpcCommand, RpcExtensionUIResponse } from "../src/modes/rpc/rpc-types.ts";
 import type { TcpRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
-import type { Skill } from "../src/core/skills.ts";
+import type { Skill } from "../src/core/runtime/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { writeCanonicalRunResult } from "./support/canonical-run-terminal.ts";
 import type {
@@ -155,7 +155,7 @@ function createTestJsonlLineWriter(stream: NodeJS.ReadableStream): TestJsonlWrit
 	};
 }
 
-vi.mock("../src/core/output-guard.js", () => ({
+vi.mock("../src/core/runtime/output-guard.js", () => ({
 	flushRawStdout: vi.fn(async () => {}),
 	takeOverStdout: vi.fn(),
 	waitForRawStdoutBackpressure: vi.fn(async () => {}),

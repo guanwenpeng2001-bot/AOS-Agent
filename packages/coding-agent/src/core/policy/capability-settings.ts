@@ -11,7 +11,7 @@ import type {
 	MCPPromptSummary,
 	MCPResourceSummary,
 	MCPResourceTemplateSummary,
-} from "../mcp-types.ts";
+} from "../runtime/mcp-types.ts";
 import { createSyntheticSourceInfo, type SourceInfo, type SourceScope } from "../source-info.ts";
 
 /**

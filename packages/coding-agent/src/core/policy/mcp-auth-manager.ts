@@ -39,7 +39,7 @@ import {
 	type MCPStoredTokens,
 	type MCPTokenResponse,
 } from "./mcp-auth-storage.ts";
-import type { MCPServerConfig } from "../mcp-types.ts";
+import type { MCPServerConfig } from "../runtime/mcp-types.ts";
 
 export interface MCPAuthManagerOptions {
 	/** CredentialStore backing the MCP credential namespace (AuthStorage). */

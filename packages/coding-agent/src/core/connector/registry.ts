@@ -65,7 +65,7 @@ import {
 	type ConnectorRuntimeStatus,
 	type ConnectorRuntimeStatusSource,
 } from "./runtime-status.ts";
-import type { RuntimeClock } from "../runtime-clock.ts";
+import type { RuntimeClock } from "../runtime/clock.ts";
 
 /** The only current provider class admitted by the open connector registry. */
 export const EXTERNAL_CONNECTOR_PROVIDER_CLASSES = Object.freeze(["external_connector"] as const);

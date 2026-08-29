@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
-import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
+import type { ResourceLoader } from "../src/core/runtime/resource-loader.ts";
+import { createAgentSession } from "../src/core/runtime/sdk.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 

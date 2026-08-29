@@ -7,7 +7,7 @@ import {
 	SESSION_BOUNDARY_CUSTOM_TYPE,
 } from "../src/core/index.ts";
 import * as core from "../src/core/index.ts";
-import { classifyFallbackEligibility } from "../src/core/model-broker.ts";
+import { classifyFallbackEligibility } from "../src/core/runtime/model-broker.ts";
 import { createOperationBoundary } from "../src/core/operation-boundary.ts";
 import { type SandboxHandle, type SandboxProvider, SandboxSession } from "../src/core/policy/sandbox.ts";
 import { SessionManager } from "../src/core/session/manager.ts";

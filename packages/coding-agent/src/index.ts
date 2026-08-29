@@ -18,7 +18,7 @@ export {
 	type PromptTaskIdentity,
 	type PromptTaskInput,
 	type PromptTaskSettlement,
-} from "./core/prompt-task-adapter.ts";
+} from "./core/runtime/prompt-task-adapter.ts";
 
 // Config paths
 export {
@@ -44,7 +44,7 @@ export {
 	SchedulerComposition,
 	type SchedulerSafeStatus,
 	type SchedulerCompositionOptions,
-} from "./core/foundation-control-plane.ts";
+} from "./core/runtime/control-plane.ts";
 export { SchedulerHost, type SchedulerHostOptions, type SchedulerHostTickResult } from "./core/scheduler/host.ts";
 export { SchedulerQueueStore } from "./core/scheduler/queue.ts";
 export { SchedulerExecutorRegistry, SchedulerInProcessTaskExecutorProvider } from "./core/scheduler/executors.ts";
@@ -504,7 +504,7 @@ export {
 	toPublicModelReference,
 	type VisibleSideEffect,
 	type VisibleSideEffectsInput,
-} from "./core/model-broker.ts";
+} from "./core/runtime/model-broker.ts";
 export {
 	foldModelAttemptEntries,
 	foldModelBindingEntries,
@@ -542,7 +542,7 @@ export {
 	serializePublicModelBinding,
 	serializePublicModelBrokerLedgerEntry,
 	toModelLedgerBindingHandle,
-} from "./core/model-broker-ledger.ts";
+} from "./core/runtime/model-broker-ledger.ts";
 export {
 	SandboxCapabilityError,
 	SandboxCredentialChannel,
@@ -618,7 +618,7 @@ export {
 	type RemoteOperationTaskLeaseVerifier,
 	type TaskLeaseReference,
 	type TaskLeaseVerificationResult,
-} from "./core/remote-operation.ts";
+} from "./core/runtime/remote-operation.ts";
 // The single current External Connector contract and trusted registry.
 export type { ExternalAgentConnector } from "@aos-agent/agent-core";
 export {
@@ -719,8 +719,8 @@ export {
 	parseModelBrokerSettings,
 	resolveModelBrokerSettings,
 	validateModelBrokerSettings,
-} from "./core/model-broker-settings.ts";
-export { ModelRegistry } from "./core/model-registry.ts";
+} from "./core/runtime/model-broker-settings.ts";
+export { ModelRegistry } from "./core/runtime/model-registry.ts";
 export {
 	type ModelScopeDiagnostic,
 	type ResolveCliModelResult,
@@ -728,7 +728,7 @@ export {
 	resolveCliModel,
 	resolveModelScopeWithDiagnostics,
 	type ScopedModel,
-} from "./core/model-resolver.ts";
+} from "./core/runtime/model-resolver.ts";
 export {
 	type CreateModelRuntimeOptions,
 	CredentialSynchronizationError,
@@ -736,7 +736,7 @@ export {
 	createModelBroker,
 	ModelRuntime,
 	type ModelRuntimeAuthOverrides,
-} from "./core/model-runtime.ts";
+} from "./core/runtime/model-runtime.ts";
 export {
 	createOperationBoundary,
 	type OperationBoundary,
@@ -749,10 +749,10 @@ export type {
 	ProgressEvent,
 	ResolvedPaths,
 	ResolvedResource,
-} from "./core/package-manager.ts";
-export { DefaultPackageManager } from "./core/package-manager.ts";
-export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
-export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
+} from "./core/runtime/package-manager.ts";
+export { DefaultPackageManager } from "./core/runtime/package-manager.ts";
+export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/runtime/resource-loader.ts";
+export { DefaultResourceLoader, loadProjectContextFiles } from "./core/runtime/resource-loader.ts";
 // SDK for programmatic usage
 export {
 	AgentSessionRuntime,
@@ -804,14 +804,14 @@ export {
 	type MCPAuthStartOptions,
 	type MCPAuthStartResult,
 	type PromptTemplate,
-} from "./core/sdk.ts";
+} from "./core/runtime/sdk.ts";
 export {
 	RUNTIME_SESSION_SURFACES,
 	createRuntimeSessionSurfaceAdapter,
 	isRuntimeSessionSurface,
 	type RuntimeSessionSurfaceAdapter,
 	type RuntimeSessionSurface,
-} from "./core/runtime-session-surface.ts";
+} from "./core/runtime/session-surface.ts";
 export {
 	createSessionBranchBoundary,
 	createSessionCheckpoint,
@@ -869,7 +869,7 @@ export {
 	SettingsManager,
 	type SettingsManagerCreateOptions,
 	type TuiMode,
-} from "./core/settings-manager.ts";
+} from "./core/runtime/settings-manager.ts";
 // Skills
 export {
 	formatSkillsForPrompt,
@@ -879,7 +879,7 @@ export {
 	loadSkillsFromDir,
 	type Skill,
 	type SkillFrontmatter,
-} from "./core/skills.ts";
+} from "./core/runtime/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
 // Tools

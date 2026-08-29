@@ -19,8 +19,8 @@ import {
 	validateMCPPromptArguments,
 	validateMCPPromptName,
 	validateMCPResourceUri,
-} from "../src/core/mcp-content.ts";
-import { DEFAULT_MCP_CONTENT_LIMITS, type MCPContentLimits } from "../src/core/mcp-types.ts";
+} from "../src/core/runtime/mcp-content.ts";
+import { DEFAULT_MCP_CONTENT_LIMITS, type MCPContentLimits } from "../src/core/runtime/mcp-types.ts";
 
 const SERVER = "docs";
 const limits: MCPContentLimits = DEFAULT_MCP_CONTENT_LIMITS;

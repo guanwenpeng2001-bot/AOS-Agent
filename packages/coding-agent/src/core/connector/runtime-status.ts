@@ -17,7 +17,7 @@ import {
 import {
 	validateRuntimeLimitsSnapshot,
 	type RuntimeLimitsSnapshot,
-} from "../runtime-limits.ts";
+} from "../runtime/limits.ts";
 
 export const CONNECTOR_RUNTIME_STATUS_MAX_COUNT = 2_147_483_647;
 export const CONNECTOR_RUNTIME_STATUS_MAX_TIME_MS = Number.MAX_SAFE_INTEGER;

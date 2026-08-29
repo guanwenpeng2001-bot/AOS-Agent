@@ -26,11 +26,11 @@ import { AgentSession } from "../src/core/session/agent-session.ts";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { CapabilityPublicIdentity } from "../src/core/policy/capability-public-identity.ts";
 import { CapabilityRegistry } from "../src/core/policy/capability-registry.ts";
-import { MCPContentError } from "../src/core/mcp-content.ts";
+import { MCPContentError } from "../src/core/runtime/mcp-content.ts";
 import { PolicyError } from "../src/core/policy/execution.ts";
 import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../src/core/session/context-engine.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 

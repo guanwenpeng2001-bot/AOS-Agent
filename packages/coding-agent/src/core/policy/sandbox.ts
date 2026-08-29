@@ -41,7 +41,7 @@ import {
 	type BindingHandle,
 	type PublicBindingSummary,
 } from "../binding-handles.ts";
-import type { MCPServerConfig } from "../mcp-types.ts";
+import type { MCPServerConfig } from "../runtime/mcp-types.ts";
 
 export interface SandboxOperationRequest {
 	readonly bindingId: string;

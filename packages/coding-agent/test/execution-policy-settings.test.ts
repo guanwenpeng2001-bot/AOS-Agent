@@ -5,7 +5,7 @@ import {
 	DEFAULT_REGISTERED_SANDBOX_PROVIDER_IDS,
 } from "../src/core/policy/execution-settings.ts";
 import { resolveExecutionPolicy } from "../src/core/policy/execution.ts";
-import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
+import { InMemorySettingsStorage, SettingsManager } from "../src/core/runtime/settings-manager.ts";
 
 const hostProfile = {
 	id: "host-safe",

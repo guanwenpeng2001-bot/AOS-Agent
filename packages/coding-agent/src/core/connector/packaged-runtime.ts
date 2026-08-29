@@ -11,7 +11,7 @@ import {
 import type {
 	AgentRuntimeCompositionContext,
 	ExternalConnectorRegistryFactory,
-} from "../agent-runtime-composition.ts";
+} from "../runtime/composition.ts";
 import {
 	type ExternalConnectorDurableStore,
 	SessionExternalConnectorDurableStore,

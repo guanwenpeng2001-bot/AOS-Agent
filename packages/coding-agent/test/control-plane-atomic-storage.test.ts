@@ -21,7 +21,7 @@ import {
 	type ControlPlaneStorageOptions,
 	writeControlPlaneState,
 } from "../src/core/control-plane-atomic-storage.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { ProjectTrustStore } from "../src/core/policy/trust-manager.ts";
 
 function validateObject(content: string): void {

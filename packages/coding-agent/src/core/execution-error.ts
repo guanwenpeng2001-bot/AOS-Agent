@@ -1,7 +1,7 @@
 /** Typed classification shared by provider fallback and AgentSession retry. */
 
 import type { AssistantMessage } from "@aos-agent/ai/compat";
-import type { ModelFallbackReason, ProviderFailureCategory } from "./model-broker.ts";
+import type { ModelFallbackReason, ProviderFailureCategory } from "./runtime/model-broker.ts";
 
 export type ExecutionErrorKind =
 	| "cancelled"

@@ -6,25 +6,25 @@ import { resolvePath } from "../../utils/paths.ts";
 import {
 	type AgentRuntimeCompositionFactory,
 	createAgentRuntimeCompositionFactory,
-} from "../agent-runtime-composition.ts";
+} from "../runtime/composition.ts";
 import { CapabilityPublicIdentity } from "../policy/capability-public-identity.ts";
 import { CapabilityRegistry } from "../policy/capability-registry.ts";
 import type { SessionStartEvent, ToolDefinition } from "../extensions/index.ts";
 import { createDefaultMCPAuthManagerOptions, type MCPAuthManagerOptions } from "../policy/mcp-auth-manager.ts";
-import type { MCPAuthProviderResolver, MCPTransportFactory } from "../mcp-types.ts";
-import type { ModelBroker } from "../model-broker.ts";
-import { createModelBroker, ModelRuntime } from "../model-runtime.ts";
+import type { MCPAuthProviderResolver, MCPTransportFactory } from "../runtime/mcp-types.ts";
+import type { ModelBroker } from "../runtime/model-broker.ts";
+import { createModelBroker, ModelRuntime } from "../runtime/model-runtime.ts";
 import { createPackagedExternalConnectorRegistryFactory } from "../connector/packaged-runtime.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
 	type ResourceLoader,
 	type ResourceLoaderReloadOptions,
-} from "../resource-loader.ts";
+} from "../runtime/resource-loader.ts";
 import type { SandboxProvider } from "../policy/sandbox.ts";
-import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "../sdk.ts";
+import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "../runtime/sdk.ts";
 import type { SessionManager } from "./manager.ts";
-import { SettingsManager } from "../settings-manager.ts";
+import { SettingsManager } from "../runtime/settings-manager.ts";
 
 /**
  * Non-fatal issues collected while creating services or sessions.

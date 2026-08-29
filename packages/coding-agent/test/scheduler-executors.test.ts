@@ -39,7 +39,7 @@ import {
 	type WorkerReceiptRef,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import { BUILTIN_CODING_AGENT_PROVIDER_ID } from "../src/core/product-prompt-ingress.ts";
+import { BUILTIN_CODING_AGENT_PROVIDER_ID } from "../src/core/runtime/prompt-ingress.ts";
 import {
 	parseSchedulerExecutorEntry,
 	type SchedulerExecutorEntry,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mcpAuthErrorPublicCode, mcpContentErrorPublicCode } from "../src/core/mcp-error-codes.ts";
+import { mcpAuthErrorPublicCode, mcpContentErrorPublicCode } from "../src/core/runtime/mcp-error-codes.ts";
 
 /**
  * PR error contract (section 8): the Automation Host wire carries the stable

@@ -8,7 +8,7 @@
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/session/agent-session.ts";
-import type { BashResult } from "../../core/bash-executor.ts";
+import type { BashResult } from "../../core/runtime/bash-executor.ts";
 import type { RunBindingAssociation } from "../../core/binding-handles.ts";
 import type { CapabilityCatalogView } from "../../core/policy/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
@@ -26,15 +26,15 @@ import type {
 	ExternalConnectorReadinessStatus,
 	ExternalConnectorSelection,
 } from "../../core/connector/registry.ts";
-import type { SchedulerSafeStatus } from "../../core/foundation-control-plane.ts";
-import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/mcp-content.ts";
-import type { MCPContentPublicErrorCode } from "../../core/mcp-error-codes.ts";
+import type { SchedulerSafeStatus } from "../../core/runtime/control-plane.ts";
+import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/runtime/mcp-content.ts";
+import type { MCPContentPublicErrorCode } from "../../core/runtime/mcp-error-codes.ts";
 import type {
 	MCPPromptListResult,
 	MCPResourceListResult,
 	MCPResourceTemplateListResult,
-} from "../../core/mcp-types.ts";
-import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
+} from "../../core/runtime/mcp-types.ts";
+import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/runtime/model-broker.ts";
 import type {
 	AutomationError,
 	PublicCapabilityBindingLedgerRecord,
@@ -1329,14 +1329,14 @@ export type {
 	MCPContentProvenance,
 	MCPNormalizedContentBlock,
 	MCPNormalizedPromptMessage,
-} from "../../core/mcp-content.ts";
+} from "../../core/runtime/mcp-content.ts";
 export type {
 	MCPPromptArgumentSummary,
 	MCPPromptListResult,
 	MCPPromptSummary,
 	MCPResourceListResult,
 	MCPResourceSummary,
-} from "../../core/mcp-types.ts";
+} from "../../core/runtime/mcp-types.ts";
 // Re-export the core Automation Host types for consumers.
 export type {
 	AutomationError,

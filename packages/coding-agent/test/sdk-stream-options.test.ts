@@ -10,9 +10,9 @@ import {
 } from "@aos-agent/ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
+import { createAgentSession } from "../src/core/runtime/sdk.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { type Settings, SettingsManager } from "../src/core/settings-manager.ts";
+import { type Settings, SettingsManager } from "../src/core/runtime/settings-manager.ts";
 
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 

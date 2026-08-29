@@ -18,7 +18,7 @@ import { CapabilityPublicIdentity } from "../src/core/policy/capability-public-i
 import { CapabilityRegistry } from "../src/core/policy/capability-registry.ts";
 import { MCPAuthStorage } from "../src/core/policy/mcp-auth-storage.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputSink, type RpcWireRecord } from "../src/modes/rpc/rpc-host.ts";
 import type {
 	RpcExtensionUIRequest,

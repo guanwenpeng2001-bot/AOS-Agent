@@ -1,6 +1,6 @@
 import type { Api, CredentialInfo, Model } from "@aos-agent/ai";
-import { resolveCliModel } from "../core/model-resolver.ts";
-import type { ModelRuntime } from "../core/model-runtime.ts";
+import { resolveCliModel } from "../core/runtime/model-resolver.ts";
+import type { ModelRuntime } from "../core/runtime/model-runtime.ts";
 import type { Args } from "./args.ts";
 import { AuthCommandError, type AuthCommandKind, getAuthCredential, validateAuthCommandArgs } from "./auth-command.ts";
 

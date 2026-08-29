@@ -35,8 +35,8 @@ import {
 	createAgentRuntimeCompositionFactoryFromTrustedProviders,
 	materializeAgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
-} from "../core/agent-runtime-composition.ts";
-import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
+} from "../core/runtime/composition.ts";
+import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/runtime/system-prompt.ts";
 import { bashToolSystemPromptContribution } from "../core/tools/bash.ts";
 import { editToolSystemPromptContribution } from "../core/tools/edit.ts";
 import { readToolSystemPromptContribution } from "../core/tools/read.ts";

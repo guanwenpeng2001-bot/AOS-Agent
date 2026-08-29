@@ -44,7 +44,7 @@ import type {
 	ModelBudgetLimit,
 	ModelReference,
 	ModelUsage,
-} from "../model-broker-ledger.ts";
+} from "../runtime/model-broker-ledger.ts";
 import type {
 	PolicyApprovalLedgerRecord,
 	PolicyBindingLedgerRecord,
@@ -110,7 +110,7 @@ import {
 	type TaskCredentialPersistedAction,
 	type TaskCredentialTransition,
 } from "../policy/task-credential-store.ts";
-import { isRemoteOperationReceipt, type RemoteOperationReceipt } from "../remote-operation.ts";
+import { isRemoteOperationReceipt, type RemoteOperationReceipt } from "../runtime/remote-operation.ts";
 import {
 	isTaskGateTransition,
 	taskGateCommandType,

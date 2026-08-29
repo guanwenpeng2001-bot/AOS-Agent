@@ -1,7 +1,7 @@
 import { type AuthType, type CredentialStore, InMemoryCredentialStore } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
 
 function authOptions(runtime: ModelRuntime, type?: AuthType) {
 	return runtime

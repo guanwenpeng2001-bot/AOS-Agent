@@ -15,7 +15,7 @@ import {
 	type ExternalConnectorProcessTerminationResult,
 	type ExternalConnectorProcessTerminationOptions,
 } from "./supervisor.ts";
-import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock } from "../runtime-clock.ts";
+import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock } from "../runtime/clock.ts";
 
 const ACTIVATION_TIMEOUT_MS = 10_000;
 const PROTOCOL_LIMIT_BYTES = 4_096;

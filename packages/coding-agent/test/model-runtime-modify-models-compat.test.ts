@@ -11,8 +11,8 @@ import {
 } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ModelRegistry } from "../src/core/runtime/model-registry.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
 
 function model(id: string): Model<"openai-completions"> {
 	return {

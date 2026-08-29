@@ -3,8 +3,8 @@ import { homedir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CapabilitySettingsError } from "../src/core/policy/capability-settings.ts";
-import { DEFAULT_HTTP_IDLE_TIMEOUT_MS } from "../src/core/http-dispatcher.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { DEFAULT_HTTP_IDLE_TIMEOUT_MS } from "../src/core/runtime/http-dispatcher.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 
 describe("SettingsManager", () => {
 	const testDir = join(process.cwd(), "test-settings-tmp");

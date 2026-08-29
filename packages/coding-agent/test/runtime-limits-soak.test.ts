@@ -10,7 +10,7 @@ import {
 	validateRuntimeLimitsSnapshot,
 	type RuntimeLimitsResolutionInput,
 	type RuntimeLimitsSource,
-} from "../src/core/runtime-limits.ts";
+} from "../src/core/runtime/limits.ts";
 
 describe("RuntimeLimits", () => {
 	it("provides finite immutable safe-integer defaults under trusted ceilings", () => {

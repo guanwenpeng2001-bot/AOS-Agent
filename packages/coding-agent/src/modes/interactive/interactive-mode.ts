@@ -84,25 +84,25 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/session/footer-data-provider.ts";
-import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
-import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
+import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/runtime/http-dispatcher.ts";
+import { type AppKeybinding, KeybindingsManager } from "../../core/runtime/keybindings.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
 	resolveModelScopeFromModels,
-} from "../../core/model-resolver.ts";
-import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
-import { DefaultPackageManager } from "../../core/package-manager.ts";
-import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
+} from "../../core/runtime/model-resolver.ts";
+import { CredentialSynchronizationError } from "../../core/runtime/model-runtime.ts";
+import { DefaultPackageManager } from "../../core/runtime/package-manager.ts";
+import type { ResourceDiagnostic } from "../../core/runtime/resource-loader.ts";
 import { serializePublicContextDrift, serializePublicContextSnapshot } from "../../core/session/run-lifecycle.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session/cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session/manager.ts";
 import { createSessionManagerStorage } from "../../core/session/manager-storage.ts";
-import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
-import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
+import type { FullscreenExitOutput, TuiMode } from "../../core/runtime/settings-manager.ts";
+import { BUILTIN_SLASH_COMMANDS } from "../../core/runtime/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
-import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+import { isInstallTelemetryEnabled } from "../../core/runtime/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/policy/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/session/usage-totals.ts";

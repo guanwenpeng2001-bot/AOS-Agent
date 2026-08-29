@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createWorkspaceIdentity, type PolicyBinding, type SandboxCapabilities } from "../src/core/policy/execution.ts";
 import { SandboxHandleDisposedError, type SandboxHandle } from "../src/core/policy/sandbox.ts";
-import { executeBashWithOperations } from "../src/core/bash-executor.ts";
-import { toRemoteOperationErrorInfo } from "../src/core/remote-operation.ts";
+import { executeBashWithOperations } from "../src/core/runtime/bash-executor.ts";
+import { toRemoteOperationErrorInfo } from "../src/core/runtime/remote-operation.ts";
 import {
 	createGondolinSandboxProvider,
 	GONDOLIN_SANDBOX_CAPABILITIES,

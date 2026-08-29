@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type AgentRuntimeComposition,
 	createAgentRuntimeCompositionFactory,
-} from "../src/core/agent-runtime-composition.ts";
+} from "../src/core/runtime/composition.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -17,7 +17,7 @@ import type { AgentSession, ExtensionBindings } from "../src/core/session/agent-
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { CurrentSessionScope } from "../src/core/session/current-scope.ts";
 import { createExternalConnectorRegistry } from "../src/core/connector/registry.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import type {
 	ExtensionFactory,

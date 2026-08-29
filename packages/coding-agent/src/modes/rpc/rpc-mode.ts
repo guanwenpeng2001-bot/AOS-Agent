@@ -9,13 +9,13 @@ import {
 	takeOverStdout,
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
-} from "../../core/output-guard.ts";
+} from "../../core/runtime/output-guard.ts";
 import { redactErrorText } from "../../core/session/run-lifecycle.ts";
 import {
 	ShutdownCoordinator,
 	type ShutdownFailure,
 	type ShutdownRequest,
-} from "../../core/shutdown-coordinator.ts";
+} from "../../core/runtime/shutdown-coordinator.ts";
 import { formatRpcTransportAddress, type RpcTransportAddress } from "./rpc-transport-address.ts";
 import { createRpcTransport, RpcTransportError } from "./rpc-transport.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";

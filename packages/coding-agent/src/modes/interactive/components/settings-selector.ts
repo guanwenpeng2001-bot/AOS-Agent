@@ -13,14 +13,14 @@ import {
 	Spacer,
 	Text,
 } from "@aos-agent/tui";
-import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
+import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/runtime/http-dispatcher.ts";
 import type {
 	DefaultProjectTrust,
 	FullscreenExitOutput,
 	MermaidRenderingMode,
 	TuiMode,
 	WarningSettings,
-} from "../../../core/settings-manager.ts";
+} from "../../../core/runtime/settings-manager.ts";
 import {
 	getSelectListTheme,
 	getSettingsListTheme,

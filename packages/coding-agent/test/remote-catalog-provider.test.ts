@@ -9,7 +9,7 @@ import {
 } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VERSION } from "../src/config.ts";
-import { withRemoteCatalog } from "../src/core/remote-catalog-provider.ts";
+import { withRemoteCatalog } from "../src/core/runtime/remote-catalog-provider.ts";
 
 const neverAbortedSignal = new AbortController().signal;
 

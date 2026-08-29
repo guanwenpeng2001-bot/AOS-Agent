@@ -16,9 +16,9 @@ import type {
 	ExtensionUIContext,
 	ProviderConfig,
 } from "../src/core/extensions/types.ts";
-import { KeybindingsManager, type KeyId } from "../src/core/keybindings.ts";
-import type { ModelRegistry } from "../src/core/model-registry.ts";
-import type { ScopedModel } from "../src/core/model-resolver.ts";
+import { KeybindingsManager, type KeyId } from "../src/core/runtime/keybindings.ts";
+import type { ModelRegistry } from "../src/core/runtime/model-registry.ts";
+import type { ScopedModel } from "../src/core/runtime/model-resolver.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 
 describe("ExtensionRunner", () => {

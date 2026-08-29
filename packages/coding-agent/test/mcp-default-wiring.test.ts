@@ -26,7 +26,7 @@ import {
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { createDefaultMCPAuthManagerOptions } from "../src/core/policy/mcp-auth-manager.ts";
 import { MCPAuthStorage } from "../src/core/policy/mcp-auth-storage.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 
 const HTTP_SERVER_URL = "https://mcp.example.invalid/mcp";

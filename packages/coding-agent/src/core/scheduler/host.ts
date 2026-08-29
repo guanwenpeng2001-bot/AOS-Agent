@@ -32,7 +32,7 @@ import {
 	type TaskEnvelope,
 	type TaskResult,
 } from "@aos-agent/agent-core";
-import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "../runtime-clock.ts";
+import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "../runtime/clock.ts";
 import type {
 	SchedulerDispatchExecutorRequirements,
 	SchedulerDispatchOutcome,

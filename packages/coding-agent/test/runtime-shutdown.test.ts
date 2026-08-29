@@ -4,7 +4,7 @@ import {
 	type ShutdownSignalHandlers,
 	type TerminationSignal,
 	terminationSignalExitCode,
-} from "../src/core/shutdown-coordinator.ts";
+} from "../src/core/runtime/shutdown-coordinator.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 class FakeSignalHandlers implements ShutdownSignalHandlers {

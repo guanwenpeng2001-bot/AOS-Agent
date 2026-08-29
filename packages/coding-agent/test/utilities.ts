@@ -20,9 +20,9 @@ import type {
 	LoadExtensionsResult,
 } from "../src/core/extensions/index.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
-import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import type { ResourceLoader } from "../src/core/runtime/resource-loader.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { createCodingTools } from "../src/index.ts";
 
 /**

@@ -14,7 +14,7 @@ import {
 	type AgentBinding,
 	type Fingerprint,
 } from "@aos-agent/agent-core";
-import type { ModelFallbackReason } from "../model-broker.ts";
+import type { ModelFallbackReason } from "../runtime/model-broker.ts";
 
 export const EXTERNAL_MODEL_PROJECTION_SCHEMA_VERSION = 1 as const;
 export const EXTERNAL_CAPABILITY_TRUTH_SCHEMA_VERSION = 1 as const;

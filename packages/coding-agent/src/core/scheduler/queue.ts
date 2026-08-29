@@ -21,7 +21,7 @@ import {
 	Result,
 	type ResultValue,
 } from "@aos-agent/agent-core";
-import { runtimeClockFor, type RuntimeClock } from "../runtime-clock.ts";
+import { runtimeClockFor, type RuntimeClock } from "../runtime/clock.ts";
 import {
 	applySchedulerClaimAcquire,
 	applySchedulerClaimRenew,

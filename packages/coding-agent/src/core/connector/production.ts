@@ -29,7 +29,7 @@ import {
 	type ExternalConnectorSupervisorDeadlineOverrides,
 	type ExternalConnectorSupervisorLimits,
 } from "./supervisor.ts";
-import type { RuntimeClock } from "../runtime-clock.ts";
+import type { RuntimeClock } from "../runtime/clock.ts";
 import {
 	resolveRuntimeLimitsSource,
 	runtimeLimitsFromSupervisorOptions,
@@ -38,7 +38,7 @@ import {
 	runtimeLimitsSupervisorDeadlines,
 	runtimeLimitsSupervisorLimits,
 	type RuntimeLimitsSource,
-} from "../runtime-limits.ts";
+} from "../runtime/limits.ts";
 import type { ExternalConnectorVendorDriver } from "./vendor/types.ts";
 
 export interface ProductionExternalConnectorSupervisionOptions {

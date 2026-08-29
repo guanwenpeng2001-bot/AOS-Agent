@@ -30,8 +30,8 @@ import { createAssistantMessageEventStream } from "@aos-agent/ai";
 import { AgentSession, type AgentSessionEvent } from "../src/core/session/agent-session.ts";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import type { Settings } from "../src/core/settings-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import type { Settings } from "../src/core/runtime/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import type { InlineExtension, ResourceLoader } from "../src/index.ts";
 import {
 	type CreateTestExtensionsResultInput,

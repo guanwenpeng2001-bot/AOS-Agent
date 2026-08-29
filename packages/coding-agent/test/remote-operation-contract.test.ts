@@ -18,7 +18,7 @@ import {
 	type RemoteOperationRequest,
 	type RemoteOperationTaskLeaseVerifier,
 	type TaskLeaseReference,
-} from "../src/core/remote-operation.ts";
+} from "../src/core/runtime/remote-operation.ts";
 import { ExecutionAuditQuery } from "../src/core/session/execution-audit-query.ts";
 import { SessionManager, type SessionEntry } from "../src/core/session/manager.ts";
 import {

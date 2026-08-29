@@ -24,7 +24,7 @@ import {
 } from "@aos-agent/agent-core";
 import { AgentSession } from "../src/core/session/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/session/facade.ts";
-import { createAgentRuntimeCompositionFactory } from "../src/core/agent-runtime-composition.ts";
+import { createAgentRuntimeCompositionFactory } from "../src/core/runtime/composition.ts";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/session/services.ts";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { buildCapabilitySettings } from "../src/core/policy/capability-settings.ts";
@@ -45,12 +45,12 @@ import { buildExecutionPolicySettings, ExecutionPolicySettingsError } from "../s
 import {
 	FoundationControlPlane,
 	type FoundationControlPlaneOptions,
-} from "../src/core/foundation-control-plane.ts";
+} from "../src/core/runtime/control-plane.ts";
 import { resolveHostPathForPolicy } from "../src/core/policy/filesystem.ts";
 import { classifyExternalToolPolicyOperation } from "../src/core/connector/tool-policy.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { fakeModel } from "./test-harness.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 

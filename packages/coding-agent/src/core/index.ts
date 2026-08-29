@@ -30,7 +30,7 @@ export {
 	type WorkerSandboxComposition,
 	type WorkerSandboxFactory,
 	type WorkerSandboxCompositionOptions,
-} from "./agent-runtime-composition.ts";
+} from "./runtime/composition.ts";
 export {
 	EXTERNAL_CONNECTOR_TARGET_CONFIG_SCHEMA_VERSION,
 	ExternalConnectorTargetConfigError,
@@ -63,7 +63,7 @@ export {
 	isRuntimeSessionSurface,
 	type RuntimeSessionSurfaceAdapter,
 	type RuntimeSessionSurface,
-} from "./runtime-session-surface.ts";
+} from "./runtime/session-surface.ts";
 export {
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
@@ -72,7 +72,7 @@ export {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./session/services.ts";
-export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
+export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./runtime/bash-executor.ts";
 export {
 	classifyExternalToolPolicyOperation,
 	type ExternalToolPolicyOperationInput,
@@ -189,7 +189,7 @@ export {
 	type RemoteOperationTaskLeaseVerifier,
 	type TaskLeaseReference,
 	type TaskLeaseVerificationResult,
-} from "./remote-operation.ts";
+} from "./runtime/remote-operation.ts";
 // Task Credential / Lease core contract (safe public records only; no
 // material-bearing types or handles are exported).
 export {
@@ -332,4 +332,4 @@ export {
 	type PromptTaskIdentity,
 	type PromptTaskInput,
 	type PromptTaskSettlement,
-} from "./prompt-task-adapter.ts";
+} from "./runtime/prompt-task-adapter.ts";

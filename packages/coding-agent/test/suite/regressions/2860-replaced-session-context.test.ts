@@ -11,7 +11,7 @@ import {
 	createAgentSessionServices,
 } from "../../../src/core/session/runtime.ts";
 import { AuthStorage } from "../../../src/core/policy/auth-storage.ts";
-import { ModelRuntime } from "../../../src/core/model-runtime.ts";
+import { ModelRuntime } from "../../../src/core/runtime/model-runtime.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionFactory } from "../../../src/index.ts";
 
 function getText(message: AgentSession["messages"][number]): string {

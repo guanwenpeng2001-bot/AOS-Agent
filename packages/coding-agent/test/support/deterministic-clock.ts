@@ -1,4 +1,4 @@
-import type { RuntimeClock, RuntimeTimerHandle } from "../../src/core/runtime-clock.ts";
+import type { RuntimeClock, RuntimeTimerHandle } from "../../src/core/runtime/clock.ts";
 
 interface ScheduledTimer {
 	readonly id: number;

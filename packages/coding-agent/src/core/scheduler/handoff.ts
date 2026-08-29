@@ -22,7 +22,7 @@ import {
 	type ResultValue,
 	type SchedulerHandoffEventPayload,
 } from "@aos-agent/agent-core";
-import { runtimeClockFor, type RuntimeClock } from "../runtime-clock.ts";
+import { runtimeClockFor, type RuntimeClock } from "../runtime/clock.ts";
 import {
 	applySchedulerHandoffTransition,
 	isSchedulerDispatchTerminal,

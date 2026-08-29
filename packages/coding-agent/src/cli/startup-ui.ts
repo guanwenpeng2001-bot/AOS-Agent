@@ -2,9 +2,9 @@ import { ProcessTerminal, setKeybindings, type TUI, TuiMainScreen } from "@aos-a
 import { existsSync } from "fs";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_CODING_AGENT_DIR, getAgentDir, getSettingsPath, PACKAGE_NAME } from "../config.ts";
 import { areExperimentalFeaturesEnabled } from "../core/experimental.ts";
-import { KeybindingsManager } from "../core/keybindings.ts";
-import { DefaultPackageManager, type ResolvedResource } from "../core/package-manager.ts";
-import { SettingsManager } from "../core/settings-manager.ts";
+import { KeybindingsManager } from "../core/runtime/keybindings.ts";
+import { DefaultPackageManager, type ResolvedResource } from "../core/runtime/package-manager.ts";
+import { SettingsManager } from "../core/runtime/settings-manager.ts";
 import { ExtensionInputComponent } from "../modes/interactive/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "../modes/interactive/components/extension-selector.ts";
 import {

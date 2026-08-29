@@ -13,7 +13,7 @@ import {
 	visibleWidth,
 } from "@aos-agent/tui";
 import type { ExtensionCommandContext } from "../../core/extensions/types.ts";
-import type { KeybindingsManager } from "../../core/keybindings.ts";
+import type { KeybindingsManager } from "../../core/runtime/keybindings.ts";
 import { DynamicBorder } from "../../modes/interactive/components/dynamic-border.ts";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";

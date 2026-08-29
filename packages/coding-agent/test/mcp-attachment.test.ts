@@ -5,7 +5,7 @@ import {
 	wrapMcpPromptAttachment,
 	wrapMcpResourceAttachment,
 	type McpAttachment,
-} from "../src/core/mcp-attachment.ts";
+} from "../src/core/runtime/mcp-attachment.ts";
 import {
 	mcpDigestHex,
 	mcpDigestId,
@@ -13,7 +13,7 @@ import {
 	mcpResourceId,
 	type MCPNormalizedContentBlock,
 	type MCPNormalizedPromptMessage,
-} from "../src/core/mcp-content.ts";
+} from "../src/core/runtime/mcp-content.ts";
 import {
 	assertSnapshotMetadataOnly,
 	digestContextContent,

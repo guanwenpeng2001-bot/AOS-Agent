@@ -1,6 +1,6 @@
 import { setKeybindings } from "@aos-agent/tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { KeybindingsManager } from "../src/core/runtime/keybindings.ts";
 import {
 	type SettingsCallbacks,
 	type SettingsConfig,

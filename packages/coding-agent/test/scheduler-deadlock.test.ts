@@ -10,7 +10,7 @@ import {
 import { SchedulerHandoffController } from "../src/core/scheduler/handoff.ts";
 import { SchedulerMessageOrchestrator } from "../src/core/scheduler/messages.ts";
 import { SchedulerQueueStore } from "../src/core/scheduler/queue.ts";
-import { withRuntimeClock } from "../src/core/runtime-clock.ts";
+import { withRuntimeClock } from "../src/core/runtime/clock.ts";
 import type { SchedulerOwnershipTransfer, SchedulerQueueEntry } from "../src/core/scheduler/host.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import { createSessionManagerStorage } from "../src/core/session/manager-storage.ts";

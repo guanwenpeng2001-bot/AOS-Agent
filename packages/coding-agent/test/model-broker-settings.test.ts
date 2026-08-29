@@ -3,8 +3,8 @@ import {
 	buildModelBrokerSettings,
 	ModelBrokerSettingsError,
 	parseModelBrokerSettings,
-} from "../src/core/model-broker-settings.ts";
-import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
+} from "../src/core/runtime/model-broker-settings.ts";
+import { InMemorySettingsStorage, SettingsManager } from "../src/core/runtime/settings-manager.ts";
 
 const COST = { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.2 };
 const MODELS = [

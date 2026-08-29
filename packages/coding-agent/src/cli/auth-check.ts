@@ -1,6 +1,6 @@
 import type { CredentialStore } from "@aos-agent/ai";
-import { resolveCliModel } from "../core/model-resolver.ts";
-import { ModelRuntime } from "../core/model-runtime.ts";
+import { resolveCliModel } from "../core/runtime/model-resolver.ts";
+import { ModelRuntime } from "../core/runtime/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../core/session/models-store.ts";
 import type { Args } from "./args.ts";
 import { AuthCommandError, getAuthCredential, validateAuthCommandArgs } from "./auth-command.ts";

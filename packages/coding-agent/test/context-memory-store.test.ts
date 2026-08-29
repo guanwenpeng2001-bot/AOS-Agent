@@ -8,7 +8,7 @@ import {
 	memoryReceiptMeta,
 	memoryToContextSourceInputs,
 } from "../src/core/session/context-memory-store.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 
 describe("context-memory-store", () => {
 	const dirs: string[] = [];

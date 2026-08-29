@@ -100,7 +100,7 @@ import {
 	type ExternalConnectorSupervisorReference,
 	type ExternalConnectorSupervisorPrivateStateStore,
 } from "./supervisor.ts";
-import type { RuntimeClock } from "../runtime-clock.ts";
+import type { RuntimeClock } from "../runtime/clock.ts";
 import {
 	decodeRuntimeLimitsOperationNonce,
 	encodeRuntimeLimitsOperationNonce,
@@ -112,7 +112,7 @@ import {
 	type RuntimeLimitsOperationNonce,
 	type RuntimeLimitsSnapshot,
 	type RuntimeLimitsSource,
-} from "../runtime-limits.ts";
+} from "../runtime/limits.ts";
 import {
 	translateExternalModelProjection,
 	type ExternalModelTranslationResult,

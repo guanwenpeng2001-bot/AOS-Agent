@@ -9,12 +9,12 @@ import { createConnection, type Socket } from "node:net";
 import type { Writable } from "node:stream";
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
-import type { BashResult } from "../../core/bash-executor.ts";
+import type { BashResult } from "../../core/runtime/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
-import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/mcp-types.ts";
+import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/runtime/mcp-types.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/policy/mcp-auth.ts";
-import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-broker.ts";
+import type { ModelRoleSelection, ModelRouteSelection } from "../../core/runtime/model-broker.ts";
 import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/session/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import {

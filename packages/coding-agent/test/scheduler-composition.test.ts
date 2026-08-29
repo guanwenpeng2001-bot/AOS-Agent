@@ -26,7 +26,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	SchedulerComposition,
 	type SchedulerCompositionOptions,
-} from "../src/core/foundation-control-plane.ts";
+} from "../src/core/runtime/control-plane.ts";
 import { SchedulerDeadlockController } from "../src/core/scheduler/deadlock.ts";
 import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
@@ -46,7 +46,7 @@ import { SchedulerHost, type SchedulerQueueEntry } from "../src/core/scheduler/h
 import { SessionManager } from "../src/core/session/manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { TaskGraphStore } from "../src/core/scheduler/task-graph.ts";
-import { withRuntimeClock } from "../src/core/runtime-clock.ts";
+import { withRuntimeClock } from "../src/core/runtime/clock.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 const NOW = "2026-08-22T00:00:00.000Z";

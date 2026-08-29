@@ -13,7 +13,7 @@ import {
 	Text,
 	type TUI,
 } from "@aos-agent/tui";
-import type { KeybindingsManager } from "../../../core/keybindings.ts";
+import type { KeybindingsManager } from "../../../core/runtime/keybindings.ts";
 import { editInExternalEditor } from "../external-editor.ts";
 import { getEditorTheme, theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";

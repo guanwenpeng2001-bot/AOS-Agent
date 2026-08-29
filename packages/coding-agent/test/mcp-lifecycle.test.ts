@@ -19,7 +19,7 @@ import {
 	createMCPStdioTransport,
 	MCPLifecycleManager,
 	MCPServerLifecycle,
-} from "../src/core/mcp-lifecycle.ts";
+} from "../src/core/runtime/mcp-lifecycle.ts";
 import {
 	createMCPServerConfigView,
 	MCPError,
@@ -30,7 +30,7 @@ import {
 	mcpStateToAvailability,
 	redactMCPUrl,
 	validateMCPServerConfig,
-} from "../src/core/mcp-types.ts";
+} from "../src/core/runtime/mcp-types.ts";
 
 const STDIO_CONFIG: MCPServerConfig = { id: "docs", transport: "stdio", command: "node" };
 

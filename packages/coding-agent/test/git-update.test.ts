@@ -11,8 +11,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DefaultPackageManager } from "../src/core/package-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { DefaultPackageManager } from "../src/core/runtime/package-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { allowNetwork } from "./test-network-env.ts";
 
 // Helper to run git commands in a directory

@@ -1,4 +1,4 @@
-import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
+import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "./runtime/clock.ts";
 
 const MAX_PROTOCOL_LIMIT = 0xffff_ffff;
 

@@ -1,6 +1,6 @@
 import type { CredentialStore } from "@aos-agent/ai";
-import { ModelRegistry } from "../src/core/model-registry.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ModelRegistry } from "../src/core/runtime/model-registry.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../src/core/session/models-store.ts";
 
 const runtimes = new WeakMap<ModelRegistry, ModelRuntime>();

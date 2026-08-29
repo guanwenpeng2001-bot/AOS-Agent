@@ -10,10 +10,10 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/session/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
-import type { ModelRuntime } from "../src/core/model-runtime.ts";
-import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import type { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
+import type { ResourceLoader } from "../src/core/runtime/resource-loader.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
 import type { TcpRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
@@ -88,7 +88,7 @@ function createTestJsonlLineWriter(stream: NodeJS.ReadableStream): TestJsonlWrit
 	};
 }
 
-vi.mock("../src/core/output-guard.js", () => ({
+vi.mock("../src/core/runtime/output-guard.js", () => ({
 	flushRawStdout: vi.fn(async () => {}),
 	takeOverStdout: vi.fn(),
 	waitForRawStdoutBackpressure: vi.fn(async () => {}),

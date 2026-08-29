@@ -50,7 +50,7 @@ import {
 	type MCPErrorKind,
 	type MCPErrorView,
 	validateMCPServerConfig,
-} from "../mcp-types.ts";
+} from "../runtime/mcp-types.ts";
 
 /** Overall interactive flow deadline in milliseconds. */
 export const MCP_OAUTH_DEFAULT_TIMEOUT_MS = 180_000;

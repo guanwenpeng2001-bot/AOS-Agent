@@ -9,8 +9,8 @@ import {
 	Text,
 	type TUI,
 } from "@aos-agent/tui";
-import type { ModelRuntime } from "../../../core/model-runtime.ts";
-import type { SettingsManager } from "../../../core/settings-manager.ts";
+import type { ModelRuntime } from "../../../core/runtime/model-runtime.ts";
+import type { SettingsManager } from "../../../core/runtime/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";

@@ -1,7 +1,7 @@
 import type { CredentialStore } from "@aos-agent/ai";
 import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
-import { RuntimeCredentials } from "../src/core/runtime-credentials.ts";
+import { RuntimeCredentials } from "../src/core/runtime/credentials.ts";
 
 describe("RuntimeCredentials", () => {
 	test("runtime overrides mask stored credentials without persisting", async () => {

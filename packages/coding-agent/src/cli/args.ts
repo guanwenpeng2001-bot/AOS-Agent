@@ -6,7 +6,7 @@ import type { ThinkingLevel } from "@aos-agent/agent-core";
 import chalk from "chalk";
 import { APP_NAME, APP_TITLE, CONFIG_DIR_NAME, ENV_CODING_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
-import type { TuiMode } from "../core/settings-manager.ts";
+import type { TuiMode } from "../core/runtime/settings-manager.ts";
 import { parseRpcTransportAddress, type RpcTransportAddress } from "../modes/rpc/rpc-transport-address.ts";
 
 export type Mode = "text" | "json" | "rpc";

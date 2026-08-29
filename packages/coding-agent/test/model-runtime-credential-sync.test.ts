@@ -1,7 +1,7 @@
 import type { ApiKeyCredential, Credential, CredentialStore, Model, Provider } from "@aos-agent/ai";
 import { describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
-import { CredentialSynchronizationError, ModelRuntime } from "../src/core/model-runtime.ts";
+import { CredentialSynchronizationError, ModelRuntime } from "../src/core/runtime/model-runtime.ts";
 
 function model(provider: string): Model<"openai-completions"> {
 	return {

@@ -60,19 +60,19 @@ import {
 	recoverExternalConnectorProductRun,
 } from "../../core/connector/product-run.ts";
 import type { ExternalModelFallbackDecision } from "../../core/connector/model-projection.ts";
-import type { McpAttachment } from "../../core/mcp-attachment.ts";
+import type { McpAttachment } from "../../core/runtime/mcp-attachment.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS, MCPAuthError } from "../../core/policy/mcp-auth.ts";
 import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/policy/mcp-auth-storage.ts";
-import type { MCPGetPromptResult, MCPNormalizedContentBlock, MCPReadResourceResult } from "../../core/mcp-content.ts";
-import { MCPContentError } from "../../core/mcp-content.ts";
-import { mcpAuthErrorPublicCode, mcpContentErrorPublicCode } from "../../core/mcp-error-codes.ts";
-import { MCPError, type MCPServerConfigView } from "../../core/mcp-types.ts";
+import type { MCPGetPromptResult, MCPNormalizedContentBlock, MCPReadResourceResult } from "../../core/runtime/mcp-content.ts";
+import { MCPContentError } from "../../core/runtime/mcp-content.ts";
+import { mcpAuthErrorPublicCode, mcpContentErrorPublicCode } from "../../core/runtime/mcp-error-codes.ts";
+import { MCPError, type MCPServerConfigView } from "../../core/runtime/mcp-types.ts";
 import type {
 	ModelResolution as BrokerModelResolution,
 	ModelRoleSelection,
 	ModelRouteSelection,
-} from "../../core/model-broker.ts";
-import { foldModelBrokerLedger, type ModelBindingLedgerRecord } from "../../core/model-broker-ledger.ts";
+} from "../../core/runtime/model-broker.ts";
+import { foldModelBrokerLedger, type ModelBindingLedgerRecord } from "../../core/runtime/model-broker-ledger.ts";
 import type {
 	AutomationError,
 	PublicRunStreamEvent,

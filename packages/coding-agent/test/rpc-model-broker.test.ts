@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ModelBroker } from "../src/core/model-broker.ts";
+import { ModelBroker } from "../src/core/runtime/model-broker.ts";
 import type { GetModelRoutesData } from "../src/modes/rpc/rpc-types.ts";
 
 describe("RPC ModelBroker public contract", () => {

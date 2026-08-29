@@ -4,7 +4,7 @@ import {
 	BoundedProtocolWriter,
 	DEFAULT_BOUNDED_PROTOCOL_LIMITS,
 } from "../../core/bounded-protocol.ts";
-import { runtimeClockFor } from "../../core/runtime-clock.ts";
+import { runtimeClockFor } from "../../core/runtime/clock.ts";
 
 const MAX_UINT32 = 0xffff_ffff;
 

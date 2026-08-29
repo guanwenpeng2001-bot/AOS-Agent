@@ -55,7 +55,7 @@ import {
 	type RuntimeLimitsResolutionInput,
 	type RuntimeLimitsSnapshot,
 	type RuntimeLimitsSource,
-} from "../src/core/runtime-limits.ts";
+} from "../src/core/runtime/limits.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,

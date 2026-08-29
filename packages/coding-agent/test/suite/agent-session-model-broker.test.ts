@@ -2,12 +2,12 @@ import type { AgentTool } from "@aos-agent/agent-core";
 import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { Type } from "typebox";
-import { ModelBroker } from "../../src/core/model-broker.ts";
+import { ModelBroker } from "../../src/core/runtime/model-broker.ts";
 import {
 	foldModelAttemptEntries,
 	MODEL_BINDING_CUSTOM_TYPE,
 	parseModelBindingEntry,
-} from "../../src/core/model-broker-ledger.ts";
+} from "../../src/core/runtime/model-broker-ledger.ts";
 import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/session/context-engine.ts";
 import type { SessionEntry } from "../../src/core/session/manager.ts";
 import { createHarness, type Harness } from "./harness.ts";

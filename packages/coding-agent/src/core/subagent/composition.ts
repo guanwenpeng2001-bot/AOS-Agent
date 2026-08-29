@@ -87,7 +87,7 @@ import type {
 	PromptTaskSubagentCompositionInput,
 	PromptTaskSubagentSpawnInput,
 	PromptTaskSubagentSpawnResult,
-} from "../prompt-task-adapter.ts";
+} from "../runtime/prompt-task-adapter.ts";
 import type {
 	SchedulerNativeAgentBridge,
 	SchedulerNativeAgentResolution,

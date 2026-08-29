@@ -25,10 +25,10 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { AgentSession } from "../../src/core/session/agent-session.ts";
 import { createExtensionRuntime } from "../../src/core/extensions/loader.ts";
-import type { ModelRuntime } from "../../src/core/model-runtime.ts";
-import type { ResourceLoader } from "../../src/core/resource-loader.ts";
+import type { ModelRuntime } from "../../src/core/runtime/model-runtime.ts";
+import type { ResourceLoader } from "../../src/core/runtime/resource-loader.ts";
 import { SessionManager } from "../../src/core/session/manager.ts";
-import { SettingsManager } from "../../src/core/settings-manager.ts";
+import { SettingsManager } from "../../src/core/runtime/settings-manager.ts";
 
 const BASE_MODELS = createModels();
 const MODEL = getModel("openai", "gpt-4o-mini");

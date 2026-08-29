@@ -23,16 +23,16 @@ import {
 	createCapabilityId,
 } from "../src/core/policy/capability-registry.ts";
 import { assertSnapshotMetadataOnly } from "../src/core/session/context-engine.ts";
-import { DefaultResourceLoader, type ResourceLoader } from "../src/core/resource-loader.ts";
+import { DefaultResourceLoader, type ResourceLoader } from "../src/core/runtime/resource-loader.ts";
 import type { ExecutionPolicyProfile } from "../src/core/policy/execution.ts";
 import type { SandboxHandle, SandboxProvider } from "../src/core/policy/sandbox.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
+import { createAgentSession } from "../src/core/runtime/sdk.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { Skill } from "../src/core/skills.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
+import type { Skill } from "../src/core/runtime/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import type { ExtensionFactory, LoadExtensionsResult, ToolDefinition } from "../src/core/extensions/index.ts";
-import type { MCPEnvResolver, MCPServerConfig } from "../src/core/mcp-types.ts";
+import type { MCPEnvResolver, MCPServerConfig } from "../src/core/runtime/mcp-types.ts";
 import { createFakeSandboxProvider } from "./fixtures/fake-sandbox-provider.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";

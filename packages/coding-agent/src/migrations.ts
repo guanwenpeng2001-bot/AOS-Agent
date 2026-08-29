@@ -10,7 +10,7 @@ import {
 	readControlPlaneState,
 	writeControlPlaneState,
 } from "./core/control-plane-atomic-storage.ts";
-import { migrateKeybindingsConfig } from "./core/keybindings.ts";
+import { migrateKeybindingsConfig } from "./core/runtime/keybindings.ts";
 
 const MIGRATION_GUIDE_URL =
 	"(see package docs)";

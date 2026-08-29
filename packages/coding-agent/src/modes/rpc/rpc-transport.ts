@@ -5,7 +5,7 @@ import {
 	resolveBoundedProtocolLimits,
 	type BoundedProtocolLimits,
 } from "../../core/bounded-protocol.ts";
-import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "../../core/runtime-clock.ts";
+import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "../../core/runtime/clock.ts";
 import {
 	attachJsonlLineReader,
 	createJsonlLineWriter,

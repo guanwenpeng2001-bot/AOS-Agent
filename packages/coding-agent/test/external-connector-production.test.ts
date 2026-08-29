@@ -33,7 +33,7 @@ import {
 import {
 	DEFAULT_RUNTIME_LIMITS,
 	encodeRuntimeLimitsOperationNonce,
-} from "../src/core/runtime-limits.ts";
+} from "../src/core/runtime/limits.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 import * as CodingAgent from "../src/index.ts";
 import {

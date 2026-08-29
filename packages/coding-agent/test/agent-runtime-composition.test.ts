@@ -68,13 +68,13 @@ import { createExternalConnectorRegistry } from "../src/core/connector/registry.
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { AgentSession } from "../src/core/session/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/session/facade.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
 import { createRunLifecycleCoordinator, type RunHandle } from "../src/core/session/run-lifecycle.ts";
 import type { SchedulerNativeAgentResolveInput } from "../src/core/scheduler/dispatch.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import { createSessionManagerStorage } from "../src/core/session/manager-storage.ts";
 import type { SchedulerSelectionReservationStore } from "../src/core/scheduler/selection-reservations.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import type {
 	SubagentCompositionOptions,
 } from "../src/core/subagent/composition.ts";

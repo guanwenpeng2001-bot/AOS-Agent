@@ -14,11 +14,11 @@ import { AgentSession, type AgentSessionEvent } from "../../src/core/session/age
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
-import type { ModelBroker } from "../../src/core/model-broker.ts";
+import type { ModelBroker } from "../../src/core/runtime/model-broker.ts";
 import type { SandboxProvider } from "../../src/core/policy/sandbox.ts";
 import { SessionManager } from "../../src/core/session/manager.ts";
-import type { Settings } from "../../src/core/settings-manager.ts";
-import { SettingsManager } from "../../src/core/settings-manager.ts";
+import type { Settings } from "../../src/core/runtime/settings-manager.ts";
+import { SettingsManager } from "../../src/core/runtime/settings-manager.ts";
 import type { InlineExtension, ResourceLoader } from "../../src/index.ts";
 import {
 	type CreateTestExtensionsResultInput,

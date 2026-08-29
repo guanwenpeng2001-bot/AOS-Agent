@@ -20,9 +20,9 @@ import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../src/core/session/facade.ts";
 import type { AgentSession } from "../src/core/session/agent-session.ts";
 import { ExecutionAuditQuery } from "../src/core/session/execution-audit-query.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
+import { DefaultResourceLoader } from "../src/core/runtime/resource-loader.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 
 function settledResponse(text: string): AssistantMessage {
 	const {

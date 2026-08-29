@@ -5,7 +5,7 @@ remote provider. It is transport- and provider-agnostic: the current fixture
 uses an in-process transport, and no TCP, WebSocket, worker, container, VM, or
 credential implementation is implied.
 
-The source contract is `src/core/remote-operation.ts`. The fixture is
+The source contract is `src/core/runtime/remote-operation.ts`. The fixture is
 `test/fixtures/fake-remote-provider.ts`, and
 `test/remote-operation-contract.test.ts` runs the same cases through a local
 adapter and the fake transport.

@@ -23,7 +23,7 @@ import {
 	createExternalConnectorReadinessSnapshot,
 } from "../src/core/connector/readiness.ts";
 import { createExternalConnectorRegistry } from "../src/core/connector/registry.ts";
-import { DEFAULT_RUNTIME_LIMITS } from "../src/core/runtime-limits.ts";
+import { DEFAULT_RUNTIME_LIMITS } from "../src/core/runtime/limits.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 const NOW_MS = Date.parse("2026-08-28T00:00:00.000Z");

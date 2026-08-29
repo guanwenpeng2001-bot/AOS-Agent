@@ -46,17 +46,17 @@ import type {
 } from "@aos-agent/tui";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
-import type { BashResult } from "../bash-executor.ts";
+import type { BashResult } from "../runtime/bash-executor.ts";
 import type { AgentSession } from "../session/agent-session.ts";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
 import type { ContextExtensionContribution } from "../session/context-engine.ts";
 import type { EventBus } from "../event-bus.ts";
-import type { ExecOptions, ExecResult } from "../exec.ts";
+import type { ExecOptions, ExecResult } from "../runtime/exec.ts";
 import type { ReadonlyFooterDataProvider } from "../session/footer-data-provider.ts";
-import type { KeybindingsManager } from "../keybindings.ts";
+import type { KeybindingsManager } from "../runtime/keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
-import type { ModelRegistry } from "../model-registry.ts";
-import type { ScopedModel } from "../model-resolver.ts";
+import type { ModelRegistry } from "../runtime/model-registry.ts";
+import type { ScopedModel } from "../runtime/model-resolver.ts";
 import type { AgentSessionReadProjection } from "../session/read-projection.ts";
 import type {
 	BranchSummaryEntry,
@@ -64,9 +64,9 @@ import type {
 	CustomEntry,
 	SessionEntry,
 } from "../session/manager.ts";
-import type { SlashCommandInfo } from "../slash-commands.ts";
+import type { SlashCommandInfo } from "../runtime/slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
-import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { BuildSystemPromptOptions } from "../runtime/system-prompt.ts";
 import type { BashOperations } from "../tools/bash.ts";
 import type { EditToolDetails } from "../tools/edit.ts";
 import type {
@@ -84,10 +84,10 @@ import type {
 	WriteToolInput,
 } from "../tools/index.ts";
 
-export type { ExecOptions, ExecResult } from "../exec.ts";
-export type { BuildSystemPromptOptions } from "../system-prompt.ts";
+export type { ExecOptions, ExecResult } from "../runtime/exec.ts";
+export type { BuildSystemPromptOptions } from "../runtime/system-prompt.ts";
 export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
-export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
+export type { AppKeybinding, KeybindingsManager } from "../runtime/keybindings.ts";
 export type {
 	ContextExtensionContribution,
 	ContextExtensionContributionReceipt,

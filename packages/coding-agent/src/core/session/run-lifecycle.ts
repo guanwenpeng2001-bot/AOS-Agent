@@ -80,19 +80,19 @@ import {
 	type SandboxLifecycleLedgerRecord,
 } from "../policy/execution-ledger.ts";
 import { type ExternalConnectorSelection, serializeExternalConnectorSelection } from "../connector/registry.ts";
-import type { McpAttachment } from "../mcp-attachment.ts";
+import type { McpAttachment } from "../runtime/mcp-attachment.ts";
 import {
 	type LegacyAutomationRunLedgerSourceEntry,
 	reconcileLegacyAutomationRunLedger,
 } from "../migrations/automation-run-ledger.ts";
-import type { ModelRoleSelection, ModelRouteSelection } from "../model-broker.ts";
+import type { ModelRoleSelection, ModelRouteSelection } from "../runtime/model-broker.ts";
 import {
 	MODEL_ATTEMPT_CUSTOM_TYPE,
 	MODEL_BINDING_CUSTOM_TYPE,
 	type PublicModelAttemptLedgerRecord,
 	type PublicModelBindingLedgerRecord,
 	serializePublicModelBrokerLedgerEntry,
-} from "../model-broker-ledger.ts";
+} from "../runtime/model-broker-ledger.ts";
 import type { SessionEntry, SessionTreeNode } from "./manager.ts";
 
 export type SessionId = string;

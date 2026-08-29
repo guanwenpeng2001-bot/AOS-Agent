@@ -1648,7 +1648,7 @@ For providers with non-standard auth (AWS, Google Vertex), create a utility like
 
 #### 6. Coding Agent Integration (`../coding-agent/`)
 
-Update `src/core/model-resolver.ts`:
+Update `src/core/runtime/model-resolver.ts`:
 
 - Add a default model ID for the provider in `DEFAULT_MODELS`
 

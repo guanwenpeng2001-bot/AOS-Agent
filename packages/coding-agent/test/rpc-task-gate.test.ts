@@ -8,12 +8,12 @@ import { AgentSession } from "../src/core/session/agent-session.ts";
 import { getAgentSessionLedger } from "../src/core/session/facade.ts";
 import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
-import type { ModelRuntime } from "../src/core/model-runtime.ts";
-import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import type { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
+import type { ResourceLoader } from "../src/core/runtime/resource-loader.ts";
 import { appendPolicyApprovalEntry, POLICY_APPROVAL_CUSTOM_TYPE } from "../src/core/policy/execution-ledger.ts";
 import type { PolicyApprovalRequest } from "../src/core/policy/execution.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { RpcHostController, type RpcHostOutputRecord, type RpcHostOutputSink } from "../src/modes/rpc/rpc-host.ts";
 import type {
 	GetExecutionPolicyData,

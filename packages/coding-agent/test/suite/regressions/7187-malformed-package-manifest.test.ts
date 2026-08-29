@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DefaultPackageManager } from "../../../src/core/package-manager.ts";
-import { SettingsManager } from "../../../src/core/settings-manager.ts";
+import { DefaultPackageManager } from "../../../src/core/runtime/package-manager.ts";
+import { SettingsManager } from "../../../src/core/runtime/settings-manager.ts";
 import { createHarness } from "../harness.ts";
 
 describe("issue #7187 malformed package manifest", () => {

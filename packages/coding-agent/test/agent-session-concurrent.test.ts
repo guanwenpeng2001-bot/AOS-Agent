@@ -20,8 +20,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/session/agent-session.ts";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { BuildSystemPromptOptions } from "../src/core/system-prompt.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
+import type { BuildSystemPromptOptions } from "../src/core/runtime/system-prompt.ts";
 import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 // Mock stream that mimics AssistantMessageEventStream

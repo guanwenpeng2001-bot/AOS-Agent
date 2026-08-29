@@ -9,7 +9,7 @@ import {
 	createAgentSessionForkTarget,
 	getAgentCanonicalSession,
 } from "../src/core/session/facade.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
+import { createAgentSession } from "../src/core/runtime/sdk.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
 import {
 	createHarnessCompatibilityWriter,

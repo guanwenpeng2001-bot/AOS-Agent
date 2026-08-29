@@ -32,8 +32,8 @@ import {
 import { getModel } from "@aos-agent/ai/compat";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { PromptTaskSubagentCompositionInput } from "../src/core/prompt-task-adapter.ts";
-import { ProductPromptIngress } from "../src/core/product-prompt-ingress.ts";
+import type { PromptTaskSubagentCompositionInput } from "../src/core/runtime/prompt-task-adapter.ts";
+import { ProductPromptIngress } from "../src/core/runtime/prompt-ingress.ts";
 import {
 	SubagentComposition,
 	type ProductPromptCompositionPolicy,

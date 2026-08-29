@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
-import { SettingsManager } from "../../../src/core/settings-manager.ts";
+import { DefaultResourceLoader } from "../../../src/core/runtime/resource-loader.ts";
+import { SettingsManager } from "../../../src/core/runtime/settings-manager.ts";
 
 describe("regression #3616: in-memory settings survive reload", () => {
 	let tempDir: string;

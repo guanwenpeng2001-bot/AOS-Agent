@@ -5,8 +5,8 @@
 import type { Api, Model } from "@aos-agent/ai";
 import { fuzzyFilter } from "@aos-agent/tui";
 import chalk from "chalk";
-import { formatNoModelsAvailableMessage } from "../core/auth-guidance.ts";
-import type { ModelRuntime } from "../core/model-runtime.ts";
+import { formatNoModelsAvailableMessage } from "../core/runtime/auth-guidance.ts";
+import type { ModelRuntime } from "../core/runtime/model-runtime.ts";
 
 /**
  * Format a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M")

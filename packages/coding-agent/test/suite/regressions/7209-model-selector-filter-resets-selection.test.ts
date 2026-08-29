@@ -1,6 +1,6 @@
 import { setKeybindings, type TUI } from "@aos-agent/tui";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { KeybindingsManager } from "../../../src/core/keybindings.ts";
+import { KeybindingsManager } from "../../../src/core/runtime/keybindings.ts";
 import { ModelSelectorComponent } from "../../../src/modes/interactive/components/model-selector.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";

@@ -122,10 +122,10 @@ describe("T3 AgentBinding authority", () => {
 	});
 
 	it("keeps association writers and execution inputs out of the T3 call graph", () => {
-		const ingress = source("../src/core/product-prompt-ingress.ts");
+		const ingress = source("../src/core/runtime/prompt-ingress.ts");
 		const runLifecycle = source("../src/core/session/run-lifecycle.ts");
 		const externalConnector = source("../src/core/connector/durable-connector.ts");
-		const remoteOperation = source("../src/core/remote-operation.ts");
+		const remoteOperation = source("../src/core/runtime/remote-operation.ts");
 		const rpcHost = source("../src/modes/rpc/rpc-host.ts");
 		const association = source("../src/core/execution-association.ts");
 		const providers = source("../../agent/src/harness/foundation/providers.ts");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InMemorySettingsStorage, SettingsManager } from "../../../src/core/settings-manager.ts";
+import { InMemorySettingsStorage, SettingsManager } from "../../../src/core/runtime/settings-manager.ts";
 
 describe("regression #7572: nested provider retry settings merge", () => {
 	it("preserves global provider settings not overridden by the project", () => {

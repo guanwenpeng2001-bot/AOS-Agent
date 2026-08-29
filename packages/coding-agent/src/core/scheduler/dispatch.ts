@@ -56,7 +56,7 @@ import {
 	type RunSchedulerLifecycleHooks,
 	registerRunSchedulerLifecycleHooks,
 } from "../session/run-lifecycle.ts";
-import { type RuntimeClock, type RuntimeTimerHandle, runtimeClockFor } from "../runtime-clock.ts";
+import { type RuntimeClock, type RuntimeTimerHandle, runtimeClockFor } from "../runtime/clock.ts";
 import {
 	assertSchedulerFencingToken,
 	parseSchedulerClaim,

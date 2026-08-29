@@ -31,8 +31,8 @@ import {
 import { getModel } from "@aos-agent/ai/compat";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { deriveProductPromptModelProfileId } from "../src/core/product-prompt-binding-authority.ts";
-import { ProductPromptIngress } from "../src/core/product-prompt-ingress.ts";
+import { deriveProductPromptModelProfileId } from "../src/core/runtime/prompt-binding-authority.ts";
+import { ProductPromptIngress } from "../src/core/runtime/prompt-ingress.ts";
 import { SubagentComposition } from "../src/core/subagent/composition.ts";
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 

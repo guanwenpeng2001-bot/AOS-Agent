@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
+import { DefaultResourceLoader } from "../../../src/core/runtime/resource-loader.ts";
 import type { ExtensionAPI } from "../../../src/index.ts";
 
 const noop: (agent: ExtensionAPI) => void = () => {};

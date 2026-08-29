@@ -21,9 +21,9 @@ import {
 	type CapabilityCatalog,
 	type CapabilityCatalogInput,
 } from "../src/core/policy/capability-registry.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
+import { createAgentSession } from "../src/core/runtime/sdk.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 

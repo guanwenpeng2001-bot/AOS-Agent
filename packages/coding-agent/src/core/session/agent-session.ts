@@ -7,7 +7,7 @@ import type {
 } from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model } from "@aos-agent/ai";
 import type { CompactionResult } from "../compaction/index.ts";
-import type { AgentRuntimeCompositionFactory } from "../agent-runtime-composition.ts";
+import type { AgentRuntimeCompositionFactory } from "../runtime/composition.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -21,15 +21,15 @@ import type {
 	ToolDefinition,
 } from "../extensions/index.ts";
 import type { CapabilityRegistry } from "../policy/capability-registry.ts";
-import type { MCPAuthProviderResolver, MCPTransportFactory } from "../mcp-types.ts";
+import type { MCPAuthProviderResolver, MCPTransportFactory } from "../runtime/mcp-types.ts";
 import type { MCPAuthManagerOptions } from "../policy/mcp-auth-manager.ts";
-import type { ModelBroker } from "../model-broker.ts";
-import type { ModelRuntime } from "../model-runtime.ts";
-import type { ResourceLoader } from "../resource-loader.ts";
-import type { RuntimeSessionSurface } from "../runtime-session-surface.ts";
+import type { ModelBroker } from "../runtime/model-broker.ts";
+import type { ModelRuntime } from "../runtime/model-runtime.ts";
+import type { ResourceLoader } from "../runtime/resource-loader.ts";
+import type { RuntimeSessionSurface } from "../runtime/session-surface.ts";
 import type { SandboxProvider } from "../policy/sandbox.ts";
 import type { SessionEntry, SessionManager } from "./manager.ts";
-import type { SettingsManager } from "../settings-manager.ts";
+import type { SettingsManager } from "../runtime/settings-manager.ts";
 import type { TaskCredentialProviderAvailability } from "../policy/task-credential-provider.ts";
 
 /** Parsed skill block from a user message. */

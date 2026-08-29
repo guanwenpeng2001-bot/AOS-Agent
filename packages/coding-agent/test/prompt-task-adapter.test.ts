@@ -32,7 +32,7 @@ import {
 	type PromptTaskCompositionDependencies,
 	type PromptTaskDependencyName,
 	type PromptTaskInput,
-} from "../src/core/prompt-task-adapter.ts";
+} from "../src/core/runtime/prompt-task-adapter.ts";
 
 const NOW = "2026-08-19T00:00:00.000Z";
 const PROVIDER_CAPABILITY: FoundationProviderCapability = { schemaVersion: 1, id: "foundation.prompt-task", version: 1 };

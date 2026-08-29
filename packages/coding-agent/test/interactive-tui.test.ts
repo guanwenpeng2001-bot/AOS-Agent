@@ -5,7 +5,7 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { CapabilityError, type CapabilityBinding, type CapabilityCatalogView } from "../src/core/policy/capability-registry.ts";
 import type { ContextSnapshot, ContextSourceDrift } from "../src/core/session/context-engine.ts";
 import type { PolicyApprovalRequest, PublicPolicySummary } from "../src/core/policy/execution.ts";
-import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
+import type { FullscreenExitOutput, TuiMode } from "../src/core/runtime/settings-manager.ts";
 import {
 	formatCapabilitiesError,
 	formatCapabilitiesUsage,

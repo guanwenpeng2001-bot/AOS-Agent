@@ -10,7 +10,7 @@ import {
 } from "../src/core/binding-handles.ts";
 import { toCapabilityBindingHandle, type CapabilityBinding } from "../src/core/policy/capability-registry.ts";
 import { resolveExecutionPolicyProfile, toPolicyBindingHandle } from "../src/core/policy/execution.ts";
-import { ModelBroker, toModelBindingHandle } from "../src/core/model-broker.ts";
+import { ModelBroker, toModelBindingHandle } from "../src/core/runtime/model-broker.ts";
 import { toSandboxBindingHandle } from "../src/core/policy/sandbox.ts";
 
 const CAPABILITY_BINDING: CapabilityBinding = {

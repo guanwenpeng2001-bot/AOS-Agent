@@ -19,7 +19,7 @@ import {
 	type ExternalConnectorSupervisorLimits,
 	type ExternalConnectorSupervisorSegment,
 } from "../src/core/connector/supervisor.ts";
-import type { RuntimeClock } from "../src/core/runtime-clock.ts";
+import type { RuntimeClock } from "../src/core/runtime/clock.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 class ControlledHandle implements ExternalConnectorProcessHandle {

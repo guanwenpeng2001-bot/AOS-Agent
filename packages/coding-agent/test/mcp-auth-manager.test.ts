@@ -6,7 +6,7 @@ import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { MCPAuthManager, type MCPAuthStartResult } from "../src/core/policy/mcp-auth-manager.ts";
 import { MCPAuthStorage } from "../src/core/policy/mcp-auth-storage.ts";
-import type { MCPServerConfig } from "../src/core/mcp-types.ts";
+import type { MCPServerConfig } from "../src/core/runtime/mcp-types.ts";
 
 const INSTALLATION_ID = "a".repeat(64);
 const ISSUER_URL = "https://auth.example.com";

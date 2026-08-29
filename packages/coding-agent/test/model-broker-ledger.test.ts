@@ -17,7 +17,7 @@ import {
 	type ModelBindingLedgerRecord,
 	type ModelBrokerLedgerEntry,
 	type ModelBrokerLedgerSession,
-} from "../src/core/model-broker-ledger.ts";
+} from "../src/core/runtime/model-broker-ledger.ts";
 
 class MemoryLedgerSession implements ModelBrokerLedgerSession {
 	private readonly entries: ModelBrokerLedgerEntry[] = [];

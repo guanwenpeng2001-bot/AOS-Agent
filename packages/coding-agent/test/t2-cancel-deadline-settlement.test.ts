@@ -14,7 +14,7 @@ import {
 } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";
 import { describe, expect, it } from "vitest";
-import { ProductPromptIngress } from "../src/core/product-prompt-ingress.ts";
+import { ProductPromptIngress } from "../src/core/runtime/prompt-ingress.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const MODEL = getModel("openai", "gpt-4o-mini");

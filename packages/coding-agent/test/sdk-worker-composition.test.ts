@@ -13,10 +13,10 @@ import {
 	type AgentRuntimeCompositionFactory,
 } from "../src/index.ts";
 import { AuthStorage } from "../src/core/policy/auth-storage.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
+import { DefaultResourceLoader } from "../src/core/runtime/resource-loader.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import { RpcHostController } from "../src/modes/rpc/rpc-host.ts";
 

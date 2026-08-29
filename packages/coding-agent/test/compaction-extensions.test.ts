@@ -19,7 +19,7 @@ import {
 	type SessionEvent,
 } from "../src/core/extensions/index.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { createCodingTools } from "../src/index.ts";
 import { createTestResourceLoader } from "./utilities.ts";

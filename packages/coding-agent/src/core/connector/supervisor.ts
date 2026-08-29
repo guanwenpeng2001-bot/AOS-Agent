@@ -4,7 +4,7 @@ import { Buffer } from "node:buffer";
 import { EXTERNAL_ERROR_MESSAGES, FoundationError } from "@aos-agent/agent-core";
 import { LockedAtomicFileStorage } from "../control-plane-atomic-storage.ts";
 import { isExternalConnectorMappingIdentifier } from "./session-mapping.ts";
-import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "../runtime-clock.ts";
+import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "../runtime/clock.ts";
 import {
 	isExternalConnectorDriverEvent,
 	isExternalConnectorTerminalEvidence,

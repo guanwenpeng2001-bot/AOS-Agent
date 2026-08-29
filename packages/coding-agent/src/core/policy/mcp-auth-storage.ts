@@ -31,7 +31,7 @@
 import { createHash } from "node:crypto";
 import type { AuthOperationOptions, Credential, CredentialStore, OAuthCredential } from "@aos-agent/ai";
 import { CapabilityPublicIdentity } from "./capability-public-identity.ts";
-import { mcpNamespaceSegmentError } from "../mcp-types.ts";
+import { mcpNamespaceSegmentError } from "../runtime/mcp-types.ts";
 
 export const MCP_AUTH_NAMESPACE = "mcp";
 const MCP_AUTH_NAMESPACE_SEPARATOR = "__";

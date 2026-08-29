@@ -7,10 +7,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/session/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
-import type { ModelRuntime } from "../src/core/model-runtime.ts";
-import type { ResourceLoader } from "../src/core/resource-loader.ts";
+import type { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
+import type { ResourceLoader } from "../src/core/runtime/resource-loader.ts";
 import { SessionManager } from "../src/core/session/manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import type { SafeSubagentLifecycleProjection } from "../src/core/subagent/composition.ts";
 import { RpcHostController, type RpcSubagentRegistry } from "../src/modes/rpc/rpc-host.ts";
 

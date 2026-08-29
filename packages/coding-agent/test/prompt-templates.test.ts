@@ -18,7 +18,7 @@ import {
 	loadPromptTemplates,
 	parseCommandArgs,
 	substituteArgs,
-} from "../src/core/prompt-templates.ts";
+} from "../src/core/runtime/prompt-templates.ts";
 
 // ============================================================================
 // substituteArgs

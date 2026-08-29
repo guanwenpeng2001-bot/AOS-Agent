@@ -19,15 +19,15 @@ import {
 	createMCPHttpTransport,
 	MCPLifecycleManager,
 	MCPServerLifecycle,
-} from "../src/core/mcp-lifecycle.ts";
-import { MCPContentError, mcpPromptId, mcpResourceId } from "../src/core/mcp-content.ts";
+} from "../src/core/runtime/mcp-lifecycle.ts";
+import { MCPContentError, mcpPromptId, mcpResourceId } from "../src/core/runtime/mcp-content.ts";
 import {
 	DEFAULT_MCP_CONTENT_LIMITS,
 	type MCPAuthProviderResolver,
 	type MCPContentLimits,
 	type MCPServerConfig,
 	MCPError,
-} from "../src/core/mcp-types.ts";
+} from "../src/core/runtime/mcp-types.ts";
 
 const PNG_1PX =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

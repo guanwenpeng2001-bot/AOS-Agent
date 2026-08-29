@@ -25,7 +25,7 @@ import {
 	type SchedulerDispatchEventPayload,
 	type SchedulerQueueEventPayload,
 } from "@aos-agent/agent-core";
-import { runtimeClockFor, type RuntimeClock } from "../runtime-clock.ts";
+import { runtimeClockFor, type RuntimeClock } from "../runtime/clock.ts";
 import { SCHEDULER_MESSAGE_OBJECT_TYPES, type SchedulerAskWaitFact } from "./messages.ts";
 import type { SchedulerHandoffController } from "./handoff.ts";
 import { SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE, type SchedulerQueueSnapshot } from "./queue.ts";

@@ -11,7 +11,7 @@ import {
 	type ConnectorRetryFailureInput,
 	type ConnectorRetryPolicy,
 } from "../src/core/connector/retry-circuit.ts";
-import { withRuntimeClock } from "../src/core/runtime-clock.ts";
+import { withRuntimeClock } from "../src/core/runtime/clock.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 const START_MS = Date.parse("2026-08-28T00:00:00.000Z");

@@ -1,7 +1,7 @@
 import type { Api, Model, Provider } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../../src/core/policy/auth-storage.ts";
-import { ModelRuntime } from "../../../src/core/model-runtime.ts";
+import { ModelRuntime } from "../../../src/core/runtime/model-runtime.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { createHarness, type Harness } from "../harness.ts";
 

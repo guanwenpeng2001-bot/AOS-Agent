@@ -60,23 +60,23 @@ import {
 	materializeAgentRuntimeComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
-} from "../agent-runtime-composition.ts";
+} from "../runtime/composition.ts";
 import type { CapabilityBinding, CapabilityCatalogView } from "../policy/capability-registry.ts";
 import { ExtensionRunner, type ContextUsage, type ReplacedSessionContext, type SessionStartEvent, type ToolDefinition, type ToolInfo } from "../extensions/index.ts";
 import { emitSessionShutdownEvent } from "../extensions/runner.ts";
 import { wrapRegisteredTools } from "../extensions/wrapper.ts";
 import { wrapToolDefinitions } from "../tools/tool-definition-wrapper.ts";
-import { ModelRegistry } from "../model-registry.ts";
-import { ModelBroker, type ModelResolution, type NormalizedModelReference } from "../model-broker.ts";
+import { ModelRegistry } from "../runtime/model-registry.ts";
+import { ModelBroker, type ModelResolution, type NormalizedModelReference } from "../runtime/model-broker.ts";
 import {
 	persistModelAttempt,
 	persistModelBinding,
 	type ModelAttemptLedgerRecord,
 	type ModelBindingLedgerRecord,
-} from "../model-broker-ledger.ts";
+} from "../runtime/model-broker-ledger.ts";
 import { classifyProviderFailure } from "../execution-error.ts";
-import type { ModelRuntime } from "../model-runtime.ts";
-import type { ResourceLoader } from "../resource-loader.ts";
+import type { ModelRuntime } from "../runtime/model-runtime.ts";
+import type { ResourceLoader } from "../runtime/resource-loader.ts";
 import type {
 	ExternalConnectorRegistry,
 } from "../connector/registry.ts";
@@ -93,8 +93,8 @@ import {
 	normalizeSessionName,
 	SessionManagerStorage,
 } from "./manager-storage.ts";
-import type { SettingsManager } from "../settings-manager.ts";
-import type { BashResult } from "../bash-executor.ts";
+import type { SettingsManager } from "../runtime/settings-manager.ts";
+import type { BashResult } from "../runtime/bash-executor.ts";
 import {
 	ContextMemoryStore,
 	CONTEXT_MEMORY_CUSTOM_TYPE,
@@ -121,8 +121,8 @@ import type {
 	MCPResourceTemplateListResult,
 	MCPServerConfigView,
 	MCPConnectionStatus,
-} from "../mcp-types.ts";
-import { MCPError } from "../mcp-types.ts";
+} from "../runtime/mcp-types.ts";
+import { MCPError } from "../runtime/mcp-types.ts";
 import type { MCPAuthManager, MCPAuthStartOptions, MCPAuthStartResult } from "../policy/mcp-auth-manager.ts";
 import type { MCPCredentialStatus } from "../policy/mcp-auth-storage.ts";
 import {
@@ -130,7 +130,7 @@ import {
 	mapMCPNormalizedBlocksToAgentContent,
 	type MCPGetPromptResult,
 	type MCPReadResourceResult,
-} from "../mcp-content.ts";
+} from "../runtime/mcp-content.ts";
 import {
 	McpAttachmentRegistry,
 	MCP_ATTACHMENT_CUSTOM_TYPE,
@@ -142,7 +142,7 @@ import {
 	wrapMcpPromptAttachment,
 	wrapMcpResourceAttachment,
 	type McpAttachment,
-} from "../mcp-attachment.ts";
+} from "../runtime/mcp-attachment.ts";
 import type {
 	PolicyApprovalRequest,
 	PolicyApprovalSource,
@@ -159,24 +159,24 @@ import type { BashOperations } from "../tools/bash.ts";
 import { exportSessionToHtml } from "../export-html/index.ts";
 import type { BashExecutionMessage, CustomMessage } from "../messages.ts";
 import { calculateContextTokens, estimateContextTokens, shouldCompact, type CompactionPreparation as LegacyCompactionPreparation, type CompactionResult } from "../compaction/index.ts";
-import { expandPromptTemplate } from "../prompt-templates.ts";
-import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "../auth-guidance.ts";
+import { expandPromptTemplate } from "../runtime/prompt-templates.ts";
+import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "../runtime/auth-guidance.ts";
 import { stripFrontmatter } from "../../utils/frontmatter.ts";
 import {
 	FoundationControlPlane,
 	type SchedulerSafeStatus,
-} from "../foundation-control-plane.ts";
+} from "../runtime/control-plane.ts";
 import type { WorkerSandboxProvider } from "../worker/sandbox-provider.ts";
 import { createAllTools } from "../tools/index.ts";
 import { normalizeToolResultImages } from "../../utils/tool-result-images.ts";
-import { buildSystemPrompt, type BuildSystemPromptOptions } from "../system-prompt.ts";
+import { buildSystemPrompt, type BuildSystemPromptOptions } from "../runtime/system-prompt.ts";
 import {
 	BUILTIN_CODING_AGENT_PROVIDER_ID,
 	ProductPromptIngress,
 	type ProductPromptDependencySnapshotContext,
-} from "../product-prompt-ingress.ts";
-import type { PromptTaskDependencyName } from "../prompt-task-adapter.ts";
-import type { RuntimeSessionSurface } from "../runtime-session-surface.ts";
+} from "../runtime/prompt-ingress.ts";
+import type { PromptTaskDependencyName } from "../runtime/prompt-task-adapter.ts";
+import type { RuntimeSessionSurface } from "../runtime/session-surface.ts";
 import type {
 	SubagentComposition,
 } from "../subagent/composition.ts";

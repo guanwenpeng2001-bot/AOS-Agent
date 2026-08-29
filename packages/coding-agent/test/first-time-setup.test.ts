@@ -4,7 +4,7 @@ import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { shouldRunFirstTimeSetup } from "../src/cli/startup-ui.ts";
 import { ENV_CODING_AGENT_DIR } from "../src/config.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 
 describe("shouldRunFirstTimeSetup", () => {
 	const originalExperimental = process.env.AOS_AGENT_EXPERIMENTAL;

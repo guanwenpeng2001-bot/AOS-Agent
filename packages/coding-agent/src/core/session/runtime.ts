@@ -6,7 +6,7 @@ import type { AgentSession } from "./agent-session.ts";
 import type {
 	AgentRuntimeComposition,
 	AgentRuntimeCompositionFactory,
-} from "../agent-runtime-composition.ts";
+} from "../runtime/composition.ts";
 import {
 	CurrentSessionScope,
 	type PreparedSessionScopeRebind,
@@ -29,7 +29,7 @@ import type {
 	SessionStartEvent,
 } from "../extensions/index.ts";
 import { emitSessionShutdownEvent } from "../extensions/runner.ts";
-import type { CreateAgentSessionResult } from "../sdk.ts";
+import type { CreateAgentSessionResult } from "../runtime/sdk.ts";
 import { assertSessionCwdExists } from "./cwd.ts";
 import { createSessionManagerForOptions, type SessionCreationOptions } from "./creation.ts";
 import { SessionManager } from "./manager.ts";

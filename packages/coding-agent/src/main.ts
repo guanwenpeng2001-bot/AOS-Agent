@@ -35,7 +35,7 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
 import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
-import type { AgentRuntimeCompositionFactory } from "./core/agent-runtime-composition.ts";
+import type { AgentRuntimeCompositionFactory } from "./core/runtime/composition.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntimeFromManager,
@@ -45,17 +45,17 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 } from "./core/session/services.ts";
-import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
+import { formatNoModelsAvailableMessage } from "./core/runtime/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/policy/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
-import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
-import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
-import { ModelRuntime } from "./core/model-runtime.ts";
+import { applyHttpProxySettings, configureHttpDispatcher } from "./core/runtime/http-dispatcher.ts";
+import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/runtime/model-resolver.ts";
+import { ModelRuntime } from "./core/runtime/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "./core/session/models-store.ts";
-import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
+import { restoreStdout, takeOverStdout } from "./core/runtime/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/policy/project-trust.ts";
-import type { CreateAgentSessionOptions } from "./core/sdk.ts";
+import type { CreateAgentSessionOptions } from "./core/runtime/sdk.ts";
 import {
 	formatMissingSessionCwdPrompt,
 	getMissingSessionCwdIssue,
@@ -64,8 +64,8 @@ import {
 } from "./core/session/cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session/manager.ts";
 import { createSessionManagerStorage } from "./core/session/manager-storage.ts";
-import { SettingsManager } from "./core/settings-manager.ts";
-import { printTimings, resetTimings, time } from "./core/timings.ts";
+import { SettingsManager } from "./core/runtime/settings-manager.ts";
+import { printTimings, resetTimings, time } from "./core/runtime/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/policy/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";

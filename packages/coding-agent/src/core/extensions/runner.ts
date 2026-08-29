@@ -9,11 +9,11 @@ import type { KeyId } from "@aos-agent/tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import { validateContextExtensionContribution } from "../session/context-engine.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
-import type { KeybindingsConfig } from "../keybindings.ts";
-import type { ModelRegistry } from "../model-registry.ts";
-import type { ScopedModel } from "../model-resolver.ts";
+import type { KeybindingsConfig } from "../runtime/keybindings.ts";
+import type { ModelRegistry } from "../runtime/model-registry.ts";
+import type { ScopedModel } from "../runtime/model-resolver.ts";
 import type { AgentSessionReadProjection } from "../session/read-projection.ts";
-import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { BuildSystemPromptOptions } from "../runtime/system-prompt.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartCombinedResult,
