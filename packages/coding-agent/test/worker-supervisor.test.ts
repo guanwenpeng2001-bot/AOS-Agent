@@ -352,11 +352,18 @@ describe("Operation Worker supervisor", () => {
 	});
 
 	it("rejects a late deadline receipt and never rewrites the terminal outcome", async () => {
+		const activationDeadlineAt = Date.now() + 10_000;
+		let clockOffsetMs = 0;
 		const current = create("deadline_late", {
-			binding: { deadlineAt: Date.now() + 300 },
-			config: { heartbeatTimeoutMs: 500 },
+			binding: { deadlineAt: activationDeadlineAt },
+			config: {
+				heartbeatTimeoutMs: 500,
+				now: () => new Date(Date.now() + clockOffsetMs),
+			},
 		});
 		await activate(current.supervisor, current.workerBinding);
+		// Give activation the suite-load budget, then place the ready worker near its deadline.
+		clockOffsetMs = activationDeadlineAt - Date.now() - 300;
 		const outcome = await current.supervisor.execute(request(current.workerBinding));
 		expect(outcome).toMatchObject({ ok: false, error: { code: "worker_deadline_exceeded" } });
 		expect(current.supervisor.snapshot.record?.status).toBe("lost");
