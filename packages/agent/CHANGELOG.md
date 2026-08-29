@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - Renamed current public business models, schemas, providers, events, classes, and functions to their unversioned names and removed the transitional version-suffixed and alias exports. Use `scripts/migrate-versioned-names.mjs` to migrate source references.
+- Capability manifests are no longer part of the `@aos-agent/agent-core` public exports.
 
 ### Added
 

@@ -86,7 +86,6 @@ export {
 export * from "./harness/agent-harness.ts";
 // Foundation modular public contracts are the single identity/event/protocol authority.
 export * from "./harness/foundation/index.ts";
-export * from "./harness/foundation-capabilities.ts";
 export * from "./harness/artifacts.ts";
 export * from "./harness/context/index.ts";
 export * from "./harness/memory/index.ts";

@@ -148,7 +148,7 @@ raw-receipt command.
 
 ## Capability ownership
 
-The machine-readable capability ledger in the agent package is authoritative.
+The retired machine-readable capability ledger is preserved in the out-of-repository capability-ledger archive. It records:
 
 - Implemented: `90-97`, `99-118` (28 capabilities).
 - Consumed by direct reference to Foundation closures:
@@ -157,5 +157,5 @@ The machine-readable capability ledger in the agent package is authoritative.
   `134`, `137`, `139`, `141-144`, `147-150`.
 - Capability `140` remains on the extension track and is excluded.
 
-This capability ledger does not change the Foundation manifest or extension
+The archived capability ledger does not change the Foundation manifest or extension
 closure semantics.

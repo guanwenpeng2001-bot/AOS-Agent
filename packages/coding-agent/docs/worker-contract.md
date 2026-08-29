@@ -60,7 +60,7 @@ The Gondolin/QEMU provider is an optional local sandbox adapter. Worker correctn
 
 ## Capability ledger
 
-The machine-checkable Worker ledger covers:
+The retired machine-checkable Worker ledger is preserved in the out-of-repository capability-ledger archive. It records:
 
 - Implemented by the Worker: 74–87, 135, 136 (16 capabilities).
 - Uses existing Foundation capabilities: 6, 32, 47, 52, 61 (5 capabilities).
