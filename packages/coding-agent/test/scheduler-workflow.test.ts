@@ -1,6 +1,7 @@
 import {
 	type AgentBinding,
 	createAttempt,
+	createConnectorCapabilitySnapshot,
 	createModelProfileRevision,
 	createRoleRevision,
 	fingerprintFoundationValue,
@@ -25,15 +26,22 @@ import {
 	type TaskResult,
 	validateAttemptReceiptForProvider,
 	type WorkflowStep,
+	type Workflow,
 	type WorkflowStore,
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
-import { SCHEDULER_IN_PROCESS_CAPABILITY_ID, SchedulerExecutorRegistry } from "../src/core/scheduler-executors.ts";
+import {
+	createSchedulerExecutorRuntimeSnapshotV1,
+	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
+	SchedulerExecutorRegistry,
+	schedulerBindingRequirementDigestV1,
+} from "../src/core/scheduler-executors.ts";
 import { SchedulerDispatchController } from "../src/core/scheduler-dispatch.ts";
 import { SchedulerFanInController } from "../src/core/scheduler-fan-in.ts";
 import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
 import { SchedulerMessageOrchestrator } from "../src/core/scheduler-messages.ts";
+import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import {
 	CONNECTOR_RETRY_DECISION_OBJECT_TYPE,
 	type ConnectorRetryPolicyV1,
@@ -232,6 +240,37 @@ function bindingFor(task: TaskEnvelope): AgentBinding {
 	return resolved.value;
 }
 
+function runtimeSnapshot(providerId: string, binding: AgentBinding) {
+	const bindingDigest = schedulerBindingRequirementDigestV1(binding);
+	if (!bindingDigest.ok) throw bindingDigest.error;
+	if (binding.policyRevision.fingerprint === undefined) throw new Error("policy fingerprint missing");
+	const snapshot = createSchedulerExecutorRuntimeSnapshotV1({
+		schemaVersion: 1,
+		capabilitySnapshot: createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId,
+			revision: 1,
+			protocol: { name: "scheduler-workflow-test", version: "1" },
+			modelAccess: "aos_gateway",
+			resume: true,
+			toolGateway: true,
+			artifacts: true,
+			images: false,
+		}),
+		configRevision: fingerprintFoundationValue(`config:${providerId}`),
+		bindingRequirementDigests: [bindingDigest.value],
+		toolSelectionDigests: [binding.mcpSelection.digest],
+		policyRevisionDigests: [binding.policyRevision.fingerprint],
+		reviewRevisionDigests: [],
+		credentialTargetRefs: [],
+		sandboxTargetRefs: [],
+		observedAt: T0,
+		expiresAt: "2026-08-22T14:00:00.000Z",
+	});
+	if (!snapshot.ok) throw snapshot.error;
+	return snapshot.value;
+}
+
 async function seedBindingFacts(session: Session, task: TaskEnvelope, value: AgentBinding): Promise<void> {
 	const ledger = new SessionLedger(session, { ownerId: `${OWNER_ID}_seed` });
 	await ledger.appendFact("task", value.taskId, task, {
@@ -419,6 +458,7 @@ interface WorkflowHarness {
 	readonly controller: SchedulerWorkflowController;
 	readonly provider: ScriptedTaskExecutor;
 	readonly task: TaskEnvelope;
+	readonly selectionStore?: SchedulerSelectionReservationStore;
 	readonly now: () => string;
 	setNow: (iso: string) => void;
 }
@@ -452,6 +492,7 @@ async function createHarness(
 		readonly providerClass?: "task_executor" | "external_connector";
 		readonly connectorRetry?: SchedulerWorkflowConnectorRetryOptionsV1;
 		readonly clock?: RuntimeClock;
+		readonly durableSelections?: boolean;
 	} = {},
 ): Promise<WorkflowHarness> {
 	harnessOrdinal += 1;
@@ -471,7 +512,12 @@ async function createHarness(
 	const sourceGraph = graphStore(sourceManager, sourceRuns, now);
 	const targetGraph = graphStore(targetManager, targetRuns, now);
 	const provider = new ScriptedTaskExecutor(options.providerClass);
-	const registry = new SchedulerExecutorRegistry();
+	const selectionStore = options.durableSelections === true
+		? new SchedulerSelectionReservationStore(sourceSession, { ownerId: OWNER_ID, now })
+		: undefined;
+	const registry = new SchedulerExecutorRegistry(
+		selectionStore === undefined ? {} : { reservationStore: selectionStore },
+	);
 	const registered = await registry.register({
 		entry: {
 			schemaVersion: 1,
@@ -483,6 +529,9 @@ async function createHarness(
 		provider,
 		trusted: true,
 		latencyMs: 0,
+		...(selectionStore === undefined
+			? {}
+			: { maxConcurrency: 1, runtimeSnapshot: runtimeSnapshot(provider.providerId, binding) }),
 	});
 	if (!registered.ok) throw registered.error;
 	const controllerOptions = {
@@ -519,6 +568,7 @@ async function createHarness(
 		controller,
 		provider,
 		task,
+		...(selectionStore === undefined ? {} : { selectionStore }),
 		now,
 		setNow(iso) {
 			nowIso = iso;
@@ -732,6 +782,49 @@ describe("scheduler T7 production Workflow controller", () => {
 		expect(submit).not.toHaveBeenCalled();
 		expect(harness.provider.runCount).toBe(0);
 		await harness.controller.dispose();
+	});
+
+	it("dispatches a local step through the durable registry with exact binding requirements", async () => {
+		const harness = await createHarness({ enabled: true, durableSelections: true });
+		const step = { ...toolStep("durable-tool", 0), status: "running" as const };
+		const workflow: Workflow = {
+			schemaVersion: 1,
+			dslVersion: 1,
+			sessionId: harness.sourceSessionId,
+			workflowId: "workflow-durable-direct",
+			revision: 1,
+			status: "active",
+			goalId: harness.task.goalId,
+			steps: [step],
+			createdAt: T0,
+			updatedAt: T0,
+		};
+		const transition = vi.spyOn(harness.store, "transitionStep").mockResolvedValue({
+			...workflow,
+			revision: 2,
+			steps: [{ ...step, status: "succeeded", revision: 2 }],
+		});
+		const dispatched = vi.spyOn(harness.controller.dispatch, "dispatchClaimed");
+		const result = await (harness.controller as unknown as {
+			executeLocal(
+				workflow: Workflow,
+				step: WorkflowStep,
+			): Promise<ResultValue<{ readonly progressed: boolean; readonly scheduled: boolean }, FoundationError>>;
+		}).executeLocal(workflow, step);
+
+		expect(result).toMatchObject({ ok: true, value: { progressed: true } });
+		expect(dispatched).toHaveBeenCalledWith(expect.objectContaining({
+			binding: expect.objectContaining({ bindingId: "binding_workflow" }),
+			executorRequirements: { requireResume: true, modelAccess: "aos_gateway" },
+		}));
+		expect(harness.provider.runCount).toBe(1);
+		expect(transition).toHaveBeenCalledWith(
+			workflow.workflowId,
+			{ stepId: step.stepId, status: "succeeded" },
+			expect.objectContaining({ expectedRevision: workflow.revision }),
+		);
+		await harness.controller.dispose();
+		await harness.selectionStore?.release();
 	});
 
 	it("schedules local agent and tool steps in dependency order through dispatch and fan-in", async () => {

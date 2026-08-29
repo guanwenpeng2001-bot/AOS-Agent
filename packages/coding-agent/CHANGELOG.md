@@ -56,6 +56,7 @@
 
 ### Fixed
 
+- Scheduler restarts now reclaim interrupted capacity and quota reservations before dispatching new work.
 - Updated External Connector coverage to exercise current package, product-composition, runtime-limit, runtime-status, and durable retry behavior; the final promotion evidence gate remains outstanding, so this checkout does not claim product readiness.
 - External Connector capability checks and lifecycle rechecks now honor host hard and idle deadlines and cancellation. Cancellation remains tied to the same Attempt, and registry shutdown waits for confirmed process cleanup or fails closed.
 - External Connector supervision starts configured companion processes only after crash-safe private identity persistence, contains them in non-detached Linux process groups or Windows Job Objects, and verifies the operation nonce and full live process identity before termination.
