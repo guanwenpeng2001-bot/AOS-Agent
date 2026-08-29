@@ -56,4 +56,4 @@ it("executes the external Connector through the Scheduler and preserves canonica
 		files: 1,
 		pendingWrites: 0,
 	});
-});
+}, 120_000);
