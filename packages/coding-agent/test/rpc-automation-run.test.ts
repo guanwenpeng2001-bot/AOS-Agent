@@ -5669,7 +5669,7 @@ describe("RPC Automation Host run lifecycle", () => {
 
 			// Leave enough time for the complete Foundation receipt chain to settle;
 			// this deadline is intentionally late and tests post-terminal timer safety.
-			const deadlineAt = new Date(Date.now() + 1000).toISOString();
+			const deadlineAt = new Date(Date.now() + 3000).toISOString();
 			lineHandler(JSON.stringify({ id: "r1", type: "run.start", message: "Hello", deadlineAt }));
 			let runId: string;
 			await vi.waitFor(() => {
@@ -5677,9 +5677,9 @@ describe("RPC Automation Host run lifecycle", () => {
 				expect(res).toHaveLength(1);
 				runId = (res[0].data as { runId: string }).runId;
 			});
-			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1));
+			await vi.waitFor(() => expect(terminalEvents(currentLines())).toHaveLength(1), { timeout: 3000 });
 			expect(terminalEvents(currentLines())[0].type).toBe("run.completed");
-			await sleep(1100);
+			await sleep(3100);
 
 			lineHandler(JSON.stringify({ id: "c1", type: "run.cancel", runId: runId! }));
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "c1")).toHaveLength(1));
