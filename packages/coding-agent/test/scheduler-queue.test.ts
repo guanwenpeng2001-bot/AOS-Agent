@@ -66,7 +66,7 @@ import {
 	schedulerQueueBusinessKey,
 	serializeSchedulerClaim,
 	serializeSchedulerQueueEntry,
-} from "../src/core/scheduler.ts";
+} from "../src/core/scheduler/host.ts";
 import {
 	isSchedulerQueueLedgerObjectType,
 	SCHEDULER_ATTEMPT_POLICY_OBJECT_TYPE,
@@ -78,7 +78,7 @@ import {
 	SCHEDULER_QUEUE_LEDGER_OBJECT_TYPES,
 	type SchedulerCancelAttempt,
 	SchedulerQueueStore,
-} from "../src/core/scheduler-queue.ts";
+} from "../src/core/scheduler/queue.ts";
 
 const NOW = "2026-08-21T12:00:00.000Z";
 const LATER = "2026-08-21T12:00:30.000Z";

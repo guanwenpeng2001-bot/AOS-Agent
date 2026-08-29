@@ -34,19 +34,19 @@ import {
 	type SchedulerJoinPlan,
 	type SchedulerNodeRef,
 	type SchedulerQueueEntry,
-} from "../src/core/scheduler.ts";
+} from "../src/core/scheduler/host.ts";
 import {
 	SchedulerDispatchController,
 	type SchedulerDispatchExecutorRequirements,
-} from "../src/core/scheduler-dispatch.ts";
-import { SCHEDULER_IN_PROCESS_CAPABILITY_ID, SchedulerExecutorRegistry } from "../src/core/scheduler-executors.ts";
+} from "../src/core/scheduler/dispatch.ts";
+import { SCHEDULER_IN_PROCESS_CAPABILITY_ID, SchedulerExecutorRegistry } from "../src/core/scheduler/executors.ts";
 import {
 	SchedulerFanInController,
 	type SchedulerFanInSettleRequest,
 	schedulerFanInSnapshotsEqual,
 	schedulerNodeJoinId,
-} from "../src/core/scheduler-fan-in.ts";
-import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
+} from "../src/core/scheduler/fan-in.ts";
+import { SchedulerQueueStore } from "../src/core/scheduler/queue.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import {
@@ -56,7 +56,7 @@ import {
 	type TaskGraphRunLookup,
 	type TaskGraphRunSnapshot,
 	TaskGraphStore,
-} from "../src/core/task-graph.ts";
+} from "../src/core/scheduler/task-graph.ts";
 
 const NOW = "2026-08-22T12:00:00.000Z";
 const SESSION_ID = "session_scheduler_fan_in";

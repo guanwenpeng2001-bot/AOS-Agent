@@ -74,7 +74,7 @@ The source files that establish these facts are:
 - `src/core/sandbox.ts` for the side-effecting provider boundary;
 - `src/core/session-manager.ts` for Session entry identity and file scope;
 - `src/core/task-gate.ts` for Task Gate record, transition, and fold facts;
-- `src/core/task-graph.ts` for Task Graph record, node transition, DAG, and fold facts;
+- `src/core/scheduler/task-graph.ts` for Task Graph record, node transition, DAG, and fold facts;
 - `src/core/task-credential-lease.ts` and `src/core/task-credential-store.ts`
   for Task Credential grant, transition, and fold facts;
 - `src/core/subagent-composition.ts` and `src/core/execution-audit.ts` for the

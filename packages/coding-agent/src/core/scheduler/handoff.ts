@@ -22,7 +22,7 @@ import {
 	type ResultValue,
 	type SchedulerHandoffEventPayload,
 } from "@aos-agent/agent-core";
-import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
+import { runtimeClockFor, type RuntimeClock } from "../runtime-clock.ts";
 import {
 	applySchedulerHandoffTransition,
 	isSchedulerDispatchTerminal,
@@ -32,8 +32,8 @@ import {
 	serializeSchedulerOwnershipTransfer,
 	type SchedulerErrorCode,
 	type SchedulerOwnershipTransfer,
-} from "./scheduler.ts";
-import type { SchedulerClaimTransferResult, SchedulerQueueStore } from "./scheduler-queue.ts";
+} from "./host.ts";
+import type { SchedulerClaimTransferResult, SchedulerQueueStore } from "./queue.ts";
 
 export const SCHEDULER_HANDOFF_OBJECT_TYPE = "scheduler.handoff";
 export const SCHEDULER_HANDOFF_ACCEPTANCE_OBJECT_TYPE = "scheduler.handoff_acceptance";

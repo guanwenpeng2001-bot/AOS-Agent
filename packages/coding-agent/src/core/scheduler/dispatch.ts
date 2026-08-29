@@ -55,8 +55,8 @@ import {
 	type RunLedgerSession,
 	type RunSchedulerLifecycleHooks,
 	registerRunSchedulerLifecycleHooks,
-} from "./run-lifecycle.ts";
-import { type RuntimeClock, type RuntimeTimerHandle, runtimeClockFor } from "./runtime-clock.ts";
+} from "../run-lifecycle.ts";
+import { type RuntimeClock, type RuntimeTimerHandle, runtimeClockFor } from "../runtime-clock.ts";
 import {
 	assertSchedulerFencingToken,
 	parseSchedulerClaim,
@@ -70,7 +70,7 @@ import {
 	type SchedulerProviderClass,
 	type SchedulerQueueEntry,
 	type SchedulerSelectionFact,
-} from "./scheduler.ts";
+} from "./host.ts";
 import {
 	createSchedulerExecutorRuntimeSnapshot,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
@@ -79,9 +79,9 @@ import {
 	type SchedulerExecutorRuntimeSnapshot,
 	type SchedulerHostAttemptRunner,
 	SchedulerInProcessTaskExecutorProvider,
-} from "./scheduler-executors.ts";
-import type { SchedulerCancelAttempt, SchedulerQueueStore } from "./scheduler-queue.ts";
-import type { SchedulerSelectionSettlementReason } from "./scheduler-selection-reservations.ts";
+} from "./executors.ts";
+import type { SchedulerCancelAttempt, SchedulerQueueStore } from "./queue.ts";
+import type { SchedulerSelectionSettlementReason } from "./selection-reservations.ts";
 
 const ERROR_MESSAGES: Readonly<Record<SchedulerErrorCode, string>> = {
 	scheduler_queue_invalid: "Scheduler queue entry is invalid.",

@@ -136,7 +136,7 @@ import {
 	type TaskGraphNodeView,
 	type TaskGraphRecord,
 	type TaskGraphStore,
-} from "../../core/task-graph.ts";
+} from "../../core/scheduler/task-graph.ts";
 import {
 	validateWorkerRecord,
 	WORKER_LIFECYCLE_STATUSES,

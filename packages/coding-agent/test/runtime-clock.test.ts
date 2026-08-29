@@ -1,7 +1,7 @@
 import { FoundationError, Result } from "@aos-agent/agent-core";
 import { describe, expect, test } from "vitest";
 import { SYSTEM_RUNTIME_CLOCK, withRuntimeClock } from "../src/core/runtime-clock.ts";
-import { type SchedulerHostOptions, SchedulerHost } from "../src/core/scheduler.ts";
+import { type SchedulerHostOptions, SchedulerHost } from "../src/core/scheduler/host.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 describe("runtime clock", () => {

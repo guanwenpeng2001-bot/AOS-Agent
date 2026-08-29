@@ -32,22 +32,22 @@ import {
 import {
 	SchedulerDispatchController,
 	type SchedulerNativeAgentBridge,
-} from "./scheduler-dispatch.ts";
-import type { SchedulerExecutorRegistry } from "./scheduler-executors.ts";
-import { SchedulerFanInController, schedulerNodeJoinId } from "./scheduler-fan-in.ts";
-import { SchedulerHandoffController } from "./scheduler-handoff.ts";
+} from "./dispatch.ts";
+import type { SchedulerExecutorRegistry } from "./executors.ts";
+import { SchedulerFanInController, schedulerNodeJoinId } from "./fan-in.ts";
+import { SchedulerHandoffController } from "./handoff.ts";
 import {
 	SchedulerMessageOrchestrator,
 	type SchedulerMessageSessionEndpoint,
-} from "./scheduler-messages.ts";
-import { SchedulerQueueStore, type SchedulerCancelAttempt } from "./scheduler-queue.ts";
-import type { RunLedgerSession } from "./run-lifecycle.ts";
-import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "./runtime-clock.ts";
+} from "./messages.ts";
+import { SchedulerQueueStore, type SchedulerCancelAttempt } from "./queue.ts";
+import type { RunLedgerSession } from "../run-lifecycle.ts";
+import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "../runtime-clock.ts";
 import {
 	ConnectorRetryCircuit,
 	type ConnectorRetryGuarantee,
 	type ConnectorRetryPolicy,
-} from "./connector/retry-circuit.ts";
+} from "../connector/retry-circuit.ts";
 import {
 	applySchedulerWakeFire,
 	isSchedulerQueueTerminal,
@@ -63,7 +63,7 @@ import {
 	type SchedulerQueueEntry,
 	type SchedulerWake,
 	serializeSchedulerWake,
-} from "./scheduler.ts";
+} from "./host.ts";
 import type { TaskGraphStore } from "./task-graph.ts";
 
 export const SCHEDULER_WORKFLOW_WAKE_OBJECT_TYPE = "scheduler.wake";

@@ -70,10 +70,10 @@ import { AgentSession } from "../src/core/agent-session.ts";
 import { getAgentCanonicalSession } from "../src/core/agent-session-facade.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createRunLifecycleCoordinator, type RunHandle } from "../src/core/run-lifecycle.ts";
-import type { SchedulerNativeAgentResolveInput } from "../src/core/scheduler-dispatch.ts";
+import type { SchedulerNativeAgentResolveInput } from "../src/core/scheduler/dispatch.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createSessionManagerStorage } from "../src/core/session-manager-storage.ts";
-import type { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
+import type { SchedulerSelectionReservationStore } from "../src/core/scheduler/selection-reservations.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type {
 	SubagentCompositionOptions,
@@ -81,7 +81,7 @@ import type {
 import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
 import type { PlanSubagentSpawnInput } from "../src/core/subagent-supervisor.ts";
 import { createTaskCredentialTestProvider } from "../src/core/task-credential-provider.ts";
-import { TaskGraphStore } from "../src/core/task-graph.ts";
+import { TaskGraphStore } from "../src/core/scheduler/task-graph.ts";
 import { createCodingAgentHarness } from "../src/server/create-harness.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 import { createExternalConnectorTestRuntime } from "./external-connector-test-supervision.ts";

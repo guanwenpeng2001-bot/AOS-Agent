@@ -18,13 +18,13 @@ import {
 	SCHEDULER_HANDOFF_ACCEPTANCE_OBJECT_TYPE,
 	SCHEDULER_HANDOFF_OBJECT_TYPE,
 	SchedulerHandoffController,
-} from "../src/core/scheduler-handoff.ts";
+} from "../src/core/scheduler/handoff.ts";
 import {
 	SCHEDULER_CLAIM_OBJECT_TYPE,
 	SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE,
 	SchedulerQueueStore,
-} from "../src/core/scheduler-queue.ts";
-import type { SchedulerOwnershipTransfer, SchedulerQueueEntry } from "../src/core/scheduler.ts";
+} from "../src/core/scheduler/queue.ts";
+import type { SchedulerOwnershipTransfer, SchedulerQueueEntry } from "../src/core/scheduler/host.ts";
 
 const NOW = "2026-08-21T12:00:00.000Z";
 const DEADLINE = "2026-08-21T12:05:00.000Z";

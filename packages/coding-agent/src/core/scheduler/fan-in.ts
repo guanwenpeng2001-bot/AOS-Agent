@@ -34,7 +34,7 @@ import {
 	type SchedulerJoinPlan,
 	type SchedulerJoinPolicy,
 	type SchedulerNodeRef,
-} from "./scheduler.ts";
+} from "./host.ts";
 
 export const SCHEDULER_JOIN_SNAPSHOT_OBJECT_TYPE = "scheduler.join_snapshot";
 export const SCHEDULER_FAN_IN_HOST_PROVIDER_ID = "aos.scheduler.host";

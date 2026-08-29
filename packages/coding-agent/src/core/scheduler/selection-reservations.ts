@@ -15,7 +15,7 @@ import {
 	validateFingerprint,
 	validateQuotaReservation,
 } from "@aos-agent/agent-core";
-import type { SchedulerProviderClass, SchedulerSelectionScore } from "./scheduler.ts";
+import type { SchedulerProviderClass, SchedulerSelectionScore } from "./host.ts";
 
 const SCHEDULER_SELECTION_RESERVATIONS_OBJECT_TYPE = "scheduler_selection_reservations";
 const SCHEDULER_SELECTION_RESERVATIONS_OBJECT_ID = "session";

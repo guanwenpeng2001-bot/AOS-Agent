@@ -65,7 +65,7 @@ import type {
 	TaskGraphNodeView,
 	TaskGraphRecord,
 	TaskGraphStatus,
-} from "../../core/task-graph.ts";
+} from "../../core/scheduler/task-graph.ts";
 import type { WorkerLifecycleStatus } from "../../core/worker.ts";
 
 // ============================================================================
@@ -1376,4 +1376,4 @@ export type {
 	TaskGraphRunRef,
 	TaskGraphStatus,
 	TaskGraphSummary,
-} from "../../core/task-graph.ts";
+} from "../../core/scheduler/task-graph.ts";

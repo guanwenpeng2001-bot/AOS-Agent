@@ -151,21 +151,21 @@ import {
 	type RuntimeClock,
 	type RuntimeTimerHandle,
 } from "./runtime-clock.ts";
-import { SchedulerDeadlockController } from "./scheduler-deadlock.ts";
+import { SchedulerDeadlockController } from "./scheduler/deadlock.ts";
 import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	createSchedulerExecutorRuntimeSnapshot,
 	schedulerBindingRequirementDigest,
 	type SchedulerExecutorRegistry,
-} from "./scheduler-executors.ts";
-import type { SchedulerSelectionReservationStore } from "./scheduler-selection-reservations.ts";
-import type { SchedulerFanInController } from "./scheduler-fan-in.ts";
-import type { SchedulerHandoffController } from "./scheduler-handoff.ts";
-import type { SchedulerMessageOrchestrator } from "./scheduler-messages.ts";
+} from "./scheduler/executors.ts";
+import type { SchedulerSelectionReservationStore } from "./scheduler/selection-reservations.ts";
+import type { SchedulerFanInController } from "./scheduler/fan-in.ts";
+import type { SchedulerHandoffController } from "./scheduler/handoff.ts";
+import type { SchedulerMessageOrchestrator } from "./scheduler/messages.ts";
 import {
 	SchedulerWorkflowController,
 	type SchedulerWorkflowConnectorRetryOptions,
-} from "./scheduler-workflow.ts";
+} from "./scheduler/workflow.ts";
 import {
 	SCHEDULER_HOST_DEFAULT_POLL_INTERVAL_MS,
 	SCHEDULER_HOST_MAX_POLL_INTERVAL_MS,
@@ -173,11 +173,11 @@ import {
 	SchedulerHost,
 	type SchedulerHostEventSource,
 	type SchedulerHostOptions,
-} from "./scheduler.ts";
+} from "./scheduler/host.ts";
 import {
 	TaskGraphStore,
 	type TaskGraphGateLookup,
-} from "./task-graph.ts";
+} from "./scheduler/task-graph.ts";
 import {
 	createSubagentComposition,
 	type SchedulerNativeAgentPlanner,

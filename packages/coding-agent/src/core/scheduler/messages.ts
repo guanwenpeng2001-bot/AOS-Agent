@@ -23,7 +23,7 @@ import {
 	type SchedulerMessageCorrelation,
 	type SchedulerMessage,
 	serializeSchedulerMessage,
-} from "./scheduler.ts";
+} from "./host.ts";
 import type { TaskGraphRecord, TaskGraphStore } from "./task-graph.ts";
 
 export const SCHEDULER_MESSAGE_OBJECT_TYPES = Object.freeze({

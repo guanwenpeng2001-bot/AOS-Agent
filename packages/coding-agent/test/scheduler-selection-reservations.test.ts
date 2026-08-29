@@ -18,18 +18,18 @@ import {
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import type { SchedulerExecutorEntry, SchedulerQueueEntry } from "../src/core/scheduler.ts";
+import type { SchedulerExecutorEntry, SchedulerQueueEntry } from "../src/core/scheduler/host.ts";
 import {
 	createSchedulerExecutorRuntimeSnapshot,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SchedulerExecutorRegistry,
 	SchedulerInProcessTaskExecutorProvider,
 	schedulerBindingRequirementDigest,
-} from "../src/core/scheduler-executors.ts";
+} from "../src/core/scheduler/executors.ts";
 import {
 	SchedulerSelectionReservationStore,
 	type SchedulerSelectionSettlementReason,
-} from "../src/core/scheduler-selection-reservations.ts";
+} from "../src/core/scheduler/selection-reservations.ts";
 
 const NOW = "2026-08-21T12:00:00.000Z";
 const TASK_CAPABILITY: FoundationProviderCapability = {

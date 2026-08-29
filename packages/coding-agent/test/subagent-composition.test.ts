@@ -62,7 +62,7 @@ import {
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
 import type { PlanSubagentSpawnInput } from "../src/core/subagent-supervisor.ts";
-import type { SchedulerNativeAgentResolveInput } from "../src/core/scheduler-dispatch.ts";
+import type { SchedulerNativeAgentResolveInput } from "../src/core/scheduler/dispatch.ts";
 import type {
 	ChildWorktreeIdentity,
 	OwnedWorktreeState,

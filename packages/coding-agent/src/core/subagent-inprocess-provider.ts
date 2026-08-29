@@ -59,7 +59,7 @@ import {
 } from "./subagent-provider-context.ts";
 import { IN_PROCESS_PROVIDER } from "./subagent-registry.ts";
 import type { SubagentProviderSpawnPlan, SubagentSupervisor } from "./subagent-supervisor.ts";
-import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "./scheduler-executors.ts";
+import { SCHEDULER_IN_PROCESS_CAPABILITY_ID } from "./scheduler/executors.ts";
 
 export interface ChildAgentHarnessCreateInput {
 	readonly session: Session;

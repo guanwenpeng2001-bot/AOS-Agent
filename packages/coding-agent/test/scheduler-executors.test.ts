@@ -46,7 +46,7 @@ import {
 	type SchedulerQueueEntry,
 	schedulerErrorRetryable,
 	serializeSchedulerSelectionFact,
-} from "../src/core/scheduler.ts";
+} from "../src/core/scheduler/host.ts";
 import {
 	createSchedulerExecutorRuntimeSnapshot,
 	executorPassesHardFilters,
@@ -67,8 +67,8 @@ import {
 	schedulerQuotaOwnerKind,
 	scoreSchedulerExecutor,
 	selectSchedulerExecutor,
-} from "../src/core/scheduler-executors.ts";
-import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
+} from "../src/core/scheduler/executors.ts";
+import { SchedulerSelectionReservationStore } from "../src/core/scheduler/selection-reservations.ts";
 
 const NOW = "2026-08-21T12:00:00.000Z";
 const TASK_CAPABILITY: FoundationProviderCapability = {

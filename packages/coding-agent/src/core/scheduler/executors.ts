@@ -63,7 +63,7 @@ import {
 	type SchedulerSelectionScore,
 	serializeSchedulerExecutorEntry,
 	serializeSchedulerSelectionFact,
-} from "./scheduler.ts";
+} from "./host.ts";
 import {
 	createSchedulerDurableSelectionFact,
 	type SchedulerDurableSelectionFact,
@@ -74,7 +74,7 @@ import {
 	type SchedulerSelectionReservationRecord,
 	type SchedulerSelectionReservationStore,
 	type SchedulerSelectionSettlementReason,
-} from "./scheduler-selection-reservations.ts";
+} from "./selection-reservations.ts";
 
 export const SCHEDULER_IN_PROCESS_PROVIDER_ID = "aos.builtin.in-process";
 export const SCHEDULER_IN_PROCESS_CAPABILITY_ID = "foundation.task-executor";

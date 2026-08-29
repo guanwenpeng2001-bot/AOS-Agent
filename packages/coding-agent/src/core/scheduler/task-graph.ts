@@ -35,9 +35,9 @@
  * with safe warnings, never surfacing raw data.
  */
 
-import type { RunStatus, RunTerminalStatus } from "./run-lifecycle.ts";
-import type { SessionEntry } from "./session-manager.ts";
-import type { TaskGateRecord, TaskGateStatus } from "./task-gate.ts";
+import type { RunStatus, RunTerminalStatus } from "../run-lifecycle.ts";
+import type { SessionEntry } from "../session-manager.ts";
+import type { TaskGateRecord, TaskGateStatus } from "../task-gate.ts";
 
 export const TASK_GRAPH_SCHEMA_VERSION = 1 as const;
 export const TASK_GRAPH_CUSTOM_TYPE = "task.graph" as const;

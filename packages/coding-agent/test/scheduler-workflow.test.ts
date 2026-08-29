@@ -36,18 +36,18 @@ import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SchedulerExecutorRegistry,
 	schedulerBindingRequirementDigest,
-} from "../src/core/scheduler-executors.ts";
-import { SchedulerDispatchController } from "../src/core/scheduler-dispatch.ts";
-import { SchedulerFanInController } from "../src/core/scheduler-fan-in.ts";
-import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
-import { SchedulerMessageOrchestrator } from "../src/core/scheduler-messages.ts";
-import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
+} from "../src/core/scheduler/executors.ts";
+import { SchedulerDispatchController } from "../src/core/scheduler/dispatch.ts";
+import { SchedulerFanInController } from "../src/core/scheduler/fan-in.ts";
+import { SchedulerHandoffController } from "../src/core/scheduler/handoff.ts";
+import { SchedulerMessageOrchestrator } from "../src/core/scheduler/messages.ts";
+import { SchedulerSelectionReservationStore } from "../src/core/scheduler/selection-reservations.ts";
 import {
 	CONNECTOR_RETRY_DECISION_OBJECT_TYPE,
 	type ConnectorRetryPolicy,
 } from "../src/core/connector/retry-circuit.ts";
 import { withRuntimeClock, type RuntimeClock } from "../src/core/runtime-clock.ts";
-import { SchedulerHost, type SchedulerWake } from "../src/core/scheduler.ts";
+import { SchedulerHost, type SchedulerWake } from "../src/core/scheduler/host.ts";
 import {
 	SCHEDULER_WORKFLOW_ATTEMPT_OBJECT_TYPE,
 	SCHEDULER_WORKFLOW_COMPENSATION_OBJECT_TYPE,
@@ -60,11 +60,11 @@ import {
 	type SchedulerWorkflowConnectorRetryOptions,
 	type SchedulerWorkflowPolicyFact,
 	schedulerWorkflowExternalIds,
-} from "../src/core/scheduler-workflow.ts";
+} from "../src/core/scheduler/workflow.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { DeterministicClock } from "./support/deterministic-clock.ts";
-import { createTaskGraphStore, type TaskGraphStore } from "../src/core/task-graph.ts";
+import { createTaskGraphStore, type TaskGraphStore } from "../src/core/scheduler/task-graph.ts";
 
 vi.mock("@aos-agent/ai/compat", () => ({
 	clampThinkingLevel: (level: unknown) => level,

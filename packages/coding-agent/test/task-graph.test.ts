@@ -24,8 +24,8 @@ import {
 	type TaskGraphRunSnapshot,
 	type TaskGraphStatus,
 	type TaskGraphStoreOptions,
-} from "../src/core/task-graph.ts";
-import type { TaskGraphGateLookup } from "../src/core/task-graph.ts";
+} from "../src/core/scheduler/task-graph.ts";
+import type { TaskGraphGateLookup } from "../src/core/scheduler/task-graph.ts";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 

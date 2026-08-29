@@ -135,7 +135,7 @@ import {
 	type TaskGraphNodeRecord,
 	type TaskGraphNodeStatus,
 	type TaskGraphTransition,
-} from "./task-graph.ts";
+} from "./scheduler/task-graph.ts";
 import {
 	WORKER_FORBIDDEN_KEYS,
 	workerTransitionAllowed,
@@ -154,7 +154,7 @@ import {
 	SCHEDULER_DURABLE_EVENT_CATEGORIES,
 	SCHEDULER_FORBIDDEN_PAYLOAD_KEYS,
 	type SchedulerDurableEventCategory,
-} from "./scheduler.ts";
+} from "./scheduler/host.ts";
 
 export const AUDIT_SCHEMA_VERSION = 1 as const;
 export const AUDIT_DEFAULT_LIMIT = 50 as const;

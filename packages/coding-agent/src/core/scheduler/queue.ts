@@ -21,7 +21,7 @@ import {
 	Result,
 	type ResultValue,
 } from "@aos-agent/agent-core";
-import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
+import { runtimeClockFor, type RuntimeClock } from "../runtime-clock.ts";
 import {
 	applySchedulerClaimAcquire,
 	applySchedulerClaimRenew,
@@ -54,7 +54,7 @@ import {
 	serializeSchedulerClaim,
 	serializeSchedulerDispatchRecord,
 	serializeSchedulerQueueEntry,
-} from "./scheduler.ts";
+} from "./host.ts";
 
 export const SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE = "scheduler.queue_entry";
 export const SCHEDULER_QUEUE_KEY_OBJECT_TYPE = "scheduler.queue_key";

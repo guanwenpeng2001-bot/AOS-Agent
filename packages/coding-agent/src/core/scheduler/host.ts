@@ -32,18 +32,18 @@ import {
 	type TaskEnvelope,
 	type TaskResult,
 } from "@aos-agent/agent-core";
-import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "./runtime-clock.ts";
+import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "../runtime-clock.ts";
 import type {
 	SchedulerDispatchExecutorRequirements,
 	SchedulerDispatchOutcome,
 	SchedulerRunDispatchRequest,
-} from "./scheduler-dispatch.ts";
-import type { SchedulerFanInSettlement, SchedulerFanInSettleRequest } from "./scheduler-fan-in.ts";
+} from "./dispatch.ts";
+import type { SchedulerFanInSettlement, SchedulerFanInSettleRequest } from "./fan-in.ts";
 import type {
 	SchedulerClaimAcquireResult,
 	SchedulerQueueSnapshot,
 	SchedulerQueueTerminalRequest,
-} from "./scheduler-queue.ts";
+} from "./queue.ts";
 import type {
 	TaskGraphListFilter,
 	TaskGraphListResult,

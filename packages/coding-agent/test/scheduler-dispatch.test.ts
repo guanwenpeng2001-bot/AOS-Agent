@@ -43,7 +43,7 @@ import {
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
-import type { SchedulerClaim, SchedulerQueueEntry } from "../src/core/scheduler.ts";
+import type { SchedulerClaim, SchedulerQueueEntry } from "../src/core/scheduler/host.ts";
 import {
 	assembleSchedulerDispatch,
 	bindSchedulerInProcessTaskExecutor,
@@ -52,16 +52,16 @@ import {
 	type SchedulerNativeAgentBridge,
 	type SchedulerNativeAgentResolution,
 	type SchedulerNativeAgentResolveInput,
-} from "../src/core/scheduler-dispatch.ts";
+} from "../src/core/scheduler/dispatch.ts";
 import {
 	createSchedulerExecutorRuntimeSnapshot,
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
 	SCHEDULER_IN_PROCESS_PROVIDER_ID,
 	SchedulerExecutorRegistry,
 	schedulerBindingRequirementDigest,
-} from "../src/core/scheduler-executors.ts";
-import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
-import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
+} from "../src/core/scheduler/executors.ts";
+import { SchedulerQueueStore } from "../src/core/scheduler/queue.ts";
+import { SchedulerSelectionReservationStore } from "../src/core/scheduler/selection-reservations.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 

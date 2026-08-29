@@ -25,10 +25,10 @@ import {
 	type SchedulerDispatchEventPayload,
 	type SchedulerQueueEventPayload,
 } from "@aos-agent/agent-core";
-import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
-import { SCHEDULER_MESSAGE_OBJECT_TYPES, type SchedulerAskWaitFact } from "./scheduler-messages.ts";
-import type { SchedulerHandoffController } from "./scheduler-handoff.ts";
-import { SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE, type SchedulerQueueSnapshot } from "./scheduler-queue.ts";
+import { runtimeClockFor, type RuntimeClock } from "../runtime-clock.ts";
+import { SCHEDULER_MESSAGE_OBJECT_TYPES, type SchedulerAskWaitFact } from "./messages.ts";
+import type { SchedulerHandoffController } from "./handoff.ts";
+import { SCHEDULER_QUEUE_ENTRY_OBJECT_TYPE, type SchedulerQueueSnapshot } from "./queue.ts";
 import {
 	applySchedulerDispatchTransition,
 	applySchedulerEngineTransition,
@@ -51,8 +51,8 @@ import {
 	serializeSchedulerDeadlockFact,
 	serializeSchedulerDispatchRecord,
 	serializeSchedulerQueueEntry,
-} from "./scheduler.ts";
-import type { TaskGateDecisionRequest, TaskGateStore } from "./task-gate.ts";
+} from "./host.ts";
+import type { TaskGateDecisionRequest, TaskGateStore } from "../task-gate.ts";
 import type { TaskGraphRecord, TaskGraphStore } from "./task-graph.ts";
 
 export const SCHEDULER_DEADLOCK_OBJECT_TYPE = "scheduler.deadlock";

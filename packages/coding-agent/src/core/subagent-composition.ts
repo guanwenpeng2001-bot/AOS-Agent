@@ -93,7 +93,7 @@ import type {
 	SchedulerNativeAgentResolution,
 	SchedulerNativeAgentResolveInput,
 	SchedulerNativeAgentRevalidateInput,
-} from "./scheduler-dispatch.ts";
+} from "./scheduler/dispatch.ts";
 
 type ExecutableChildProviderV1 = ChildAgentProvider & TaskExecutorProvider & {
 	close(attemptId: string): Promise<ResultValue<void, FoundationError>>;

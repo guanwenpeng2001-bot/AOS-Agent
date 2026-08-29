@@ -45,15 +45,15 @@ export {
 	type SchedulerSafeStatus,
 	type SchedulerCompositionOptions,
 } from "./core/foundation-control-plane.ts";
-export { SchedulerHost, type SchedulerHostOptions, type SchedulerHostTickResult } from "./core/scheduler.ts";
-export { SchedulerQueueStore } from "./core/scheduler-queue.ts";
-export { SchedulerExecutorRegistry, SchedulerInProcessTaskExecutorProvider } from "./core/scheduler-executors.ts";
-export { SchedulerDispatchController } from "./core/scheduler-dispatch.ts";
-export { SchedulerFanInController } from "./core/scheduler-fan-in.ts";
-export { SchedulerMessageOrchestrator } from "./core/scheduler-messages.ts";
-export { SchedulerHandoffController } from "./core/scheduler-handoff.ts";
-export { SchedulerWorkflowController, type SchedulerWorkflowTickResult } from "./core/scheduler-workflow.ts";
-export { SchedulerDeadlockController, type SchedulerDeadlockTickResult } from "./core/scheduler-deadlock.ts";
+export { SchedulerHost, type SchedulerHostOptions, type SchedulerHostTickResult } from "./core/scheduler/host.ts";
+export { SchedulerQueueStore } from "./core/scheduler/queue.ts";
+export { SchedulerExecutorRegistry, SchedulerInProcessTaskExecutorProvider } from "./core/scheduler/executors.ts";
+export { SchedulerDispatchController } from "./core/scheduler/dispatch.ts";
+export { SchedulerFanInController } from "./core/scheduler/fan-in.ts";
+export { SchedulerMessageOrchestrator } from "./core/scheduler/messages.ts";
+export { SchedulerHandoffController } from "./core/scheduler/handoff.ts";
+export { SchedulerWorkflowController, type SchedulerWorkflowTickResult } from "./core/scheduler/workflow.ts";
+export { SchedulerDeadlockController, type SchedulerDeadlockTickResult } from "./core/scheduler/deadlock.ts";
 // Task Credential lifecycle service (session-owned; RPC Host registers it via AgentSession.getTaskCredentialService())
 export {
 	TaskCredentialService,
