@@ -4,7 +4,7 @@ Foundation closes Atlas rows 01–10 and 10A. Delivery status is a sealed
 integration candidate whose promotion requires exact-range external review and
 protected-branch CI. The user authorized that promotion workflow. Lines 11,
 12A, and 12B now have separate machine-checked implementation ledgers. Lines
-13, 14, and 15 remain later work.
+14 and 15 remain later work.
 
 ## Sealed rows
 
@@ -133,7 +133,7 @@ accepted by the configured join.
 | 11 Sandbox Operation Worker | Implemented | `74-87`, `135`, `136`; capability `140` remains on its extension track |
 | 12A Native Subagent Runtime / Agent Team | Implemented for `in_process` and `fork`; Runtime Host/ACP/SDK contract-only | `90-97`, `99-118` |
 | 12B Task Scheduler / Handoff | Implemented as trusted, explicit single-Host composition | `119-126`, `130`, `131` |
-| 13 External Agent Connector / Tool Gateway | Deferred | `132`, `133`, `138` |
+| 13 External Agent Connector / Tool Gateway | Convergence implemented; entry wiring and final gates pending | `132`, `133`, `138` |
 | 14 Integration / Hardening | Deferred | `134`, `137`, `139`, `141-144`, `149`, `150` |
 | 15 Product Delivery | Deferred | `147`, `148` |
 
