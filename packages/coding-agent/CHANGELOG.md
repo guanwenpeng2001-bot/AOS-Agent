@@ -56,6 +56,7 @@
 
 ### Fixed
 
+- Scheduler restarts now reclaim interrupted capacity and quota reservations before dispatching new work.
 - First-start migrations can no longer leave corrupted configuration or account files after interrupted writes.
 - Updated External Connector coverage to exercise current package, product-composition, runtime-limit, runtime-status, and durable retry behavior; the final promotion evidence gate remains outstanding, so this checkout does not claim product readiness.
 - External Connector capability checks and lifecycle rechecks now honor host hard and idle deadlines and cancellation. Cancellation remains tied to the same Attempt, and registry shutdown waits for confirmed process cleanup or fails closed.

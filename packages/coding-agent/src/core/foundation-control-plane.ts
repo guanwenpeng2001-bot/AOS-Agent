@@ -629,12 +629,28 @@ export class TrustedSchedulerComposition {
 					this.clock,
 				),
 			);
-			if (initializeBeforeStart === undefined) {
+			const durableSelectionsEnabled = options.registry.durableSelectionsEnabled();
+			if (initializeBeforeStart === undefined && !durableSelectionsEnabled) {
 				this.initializationComplete = true;
 				this.start();
 			} else {
 				const initialization = Promise.resolve()
-					.then(() => initializeBeforeStart())
+					.then(async () => {
+						await initializeBeforeStart?.();
+						if (!durableSelectionsEnabled) return;
+						// Providers must be re-registered before recovery because cancelAttempt may rebuild a
+						// durable attempt. Recovery and reservation reconciliation must finish before start()
+						// schedules the first tick, so new dispatch cannot race leaked capacity or quota.
+						const recovered = await this.workflow.queue.recoverExpired();
+						if (!recovered.ok) throw recovered.error;
+						const snapshot = await this.workflow.queue.snapshot();
+						if (!snapshot.ok) throw snapshot.error;
+						const activeQueueEntryIds = snapshot.value.entries
+							.filter((entry) => entry.state === "claimed" || entry.state === "dispatched")
+							.map((entry) => entry.queueEntryId);
+						const reconciled = await options.registry.reconcileReservations(activeQueueEntryIds);
+						if (!reconciled.ok) throw reconciled.error;
+					})
 					.then(() => {
 						this.initializationComplete = true;
 						if (!this.disposed) this.start();

@@ -1165,6 +1165,9 @@ export class SchedulerWorkflowController {
 			queueEntryId,
 			fencingToken,
 			binding: this.binding,
+			// dispatchClaimed combines these constraints with the immutable step binding to form
+			// the exact durable-selection requirements used by SchedulerHost dispatches.
+			executorRequirements: { requireResume: true, modelAccess: "aos_gateway" },
 		});
 		if (!dispatched.ok) {
 			return this.afterDispatchFailure(

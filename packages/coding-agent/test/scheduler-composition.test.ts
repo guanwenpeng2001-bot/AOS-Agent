@@ -2,6 +2,8 @@ import {
 	type AgentBinding,
 	type AttemptReceipt,
 	type Attempt,
+	type BudgetUsage,
+	createConnectorCapabilitySnapshot,
 	createModelProfileRevision,
 	createRoleRevision,
 	fingerprintFoundationValue,
@@ -15,8 +17,12 @@ import {
 	SessionLedger,
 	type TaskEnvelope,
 	type FoundationProviderExecutionOptions,
+	type FoundationProviderCapability,
+	type QuotaAttribution,
+	type QuotaProvider,
+	type QuotaReservation,
 } from "@aos-agent/agent-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	TrustedSchedulerComposition,
 	type TrustedSchedulerCompositionOptions,
@@ -24,21 +30,32 @@ import {
 import { SchedulerDeadlockController } from "../src/core/scheduler-deadlock.ts";
 import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,
+	createSchedulerExecutorRuntimeSnapshotV1,
 	SchedulerExecutorRegistry,
 	SchedulerInProcessTaskExecutorProvider,
+	schedulerBindingRequirementDigestV1,
 } from "../src/core/scheduler-executors.ts";
 import { SchedulerFanInController } from "../src/core/scheduler-fan-in.ts";
 import { SchedulerHandoffController } from "../src/core/scheduler-handoff.ts";
 import { SchedulerMessageOrchestrator } from "../src/core/scheduler-messages.ts";
 import { SchedulerWorkflowController } from "../src/core/scheduler-workflow.ts";
+import { SchedulerQueueStore } from "../src/core/scheduler-queue.ts";
+import { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import type { RunHandle } from "../src/core/run-lifecycle.ts";
-import { SchedulerHost } from "../src/core/scheduler.ts";
+import { SchedulerHost, type SchedulerQueueEntryV1 } from "../src/core/scheduler.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
 import { TaskGraphStore } from "../src/core/task-graph.ts";
+import { withRuntimeClock } from "../src/core/runtime-clock.ts";
+import { DeterministicClock } from "./support/deterministic-clock.ts";
 
 const NOW = "2026-08-22T00:00:00.000Z";
 const RUN_MODEL = { provider: "host", id: "host", thinkingLevel: "off" as const };
+const TASK_CAPABILITY: FoundationProviderCapability = {
+	schemaVersion: 1,
+	id: SCHEDULER_IN_PROCESS_CAPABILITY_ID,
+	version: 1,
+};
 
 function task(): TaskEnvelope {
 	return {
@@ -109,6 +126,137 @@ function bindingFor(currentTask: TaskEnvelope): AgentBinding {
 	});
 	if (!resolved.ok) throw resolved.error;
 	return resolved.value;
+}
+
+function reservationRuntimeSnapshot(providerId: string, binding: AgentBinding, now: string) {
+	const bindingDigest = schedulerBindingRequirementDigestV1(binding);
+	if (!bindingDigest.ok) throw bindingDigest.error;
+	if (binding.policyRevision.fingerprint === undefined) throw new Error("policy fingerprint missing");
+	const snapshot = createSchedulerExecutorRuntimeSnapshotV1({
+		schemaVersion: 1,
+		capabilitySnapshot: createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId,
+			revision: 1,
+			protocol: { name: "scheduler-restart-test", version: "1" },
+			modelAccess: "aos_gateway",
+			resume: true,
+			toolGateway: true,
+			artifacts: true,
+			images: false,
+		}),
+		configRevision: fingerprintFoundationValue(`config:${providerId}`),
+		bindingRequirementDigests: [bindingDigest.value],
+		toolSelectionDigests: [binding.mcpSelection.digest],
+		policyRevisionDigests: [binding.policyRevision.fingerprint],
+		reviewRevisionDigests: [],
+		credentialTargetRefs: [],
+		sandboxTargetRefs: [],
+		observedAt: now,
+		expiresAt: "2026-08-22T02:00:00.000Z",
+	});
+	if (!snapshot.ok) throw snapshot.error;
+	return snapshot.value;
+}
+
+class RestartQuota implements QuotaProvider {
+	readonly schemaVersion = 1 as const;
+	readonly providerId = "quota.scheduler-restart";
+	readonly providerClass = "quota" as const;
+	reserveCount = 0;
+	settleAttempts = 0;
+	settleCount = 0;
+	failNextSettlement = false;
+	onSettle: (() => void) | undefined;
+
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
+		return [];
+	}
+
+	async reserve(attribution: QuotaAttribution, budget: QuotaReservation["budget"]) {
+		this.reserveCount += 1;
+		return Result.ok({
+			schemaVersion: 1 as const,
+			reservationId: `restart_quota_${this.reserveCount}`,
+			attribution,
+			budget,
+			grantedAt: NOW,
+		});
+	}
+
+	async settle(_reservation: QuotaReservation, usage: BudgetUsage) {
+		this.settleAttempts += 1;
+		this.onSettle?.();
+		if (this.failNextSettlement) {
+			this.failNextSettlement = false;
+			return Result.err(new FoundationError("quota_exceeded", "Injected restart settlement failure"));
+		}
+		this.settleCount += 1;
+		return Result.ok(usage);
+	}
+
+	async dispose(): Promise<void> {}
+}
+
+async function registerReservationExecutor(
+	registry: SchedulerExecutorRegistry,
+	quota: RestartQuota,
+	binding: AgentBinding,
+	now: string,
+): Promise<void> {
+	const provider = new SchedulerInProcessTaskExecutorProvider({ providerId: "scheduler.restart", now: () => now });
+	const registered = await registry.register({
+		entry: {
+			schemaVersion: 1,
+			descriptor: { schemaVersion: 1, providerId: provider.providerId, providerClass: "task_executor" },
+			capabilities: [TASK_CAPABILITY],
+			costClass: "local",
+			registeredAt: now,
+		},
+		provider,
+		trusted: true,
+		latencyMs: 0,
+		maxConcurrency: 2,
+		runtimeSnapshot: reservationRuntimeSnapshot(provider.providerId, binding, now),
+		quota,
+		budget: { tokens: 10 },
+	});
+	if (!registered.ok) throw registered.error;
+}
+
+function reservationQueueEntry(queueEntryId: string, sessionId: string, now: string): SchedulerQueueEntryV1 {
+	return {
+		schemaVersion: 1,
+		queueEntryId,
+		sessionId,
+		taskId: task().taskId,
+		nodeRef: { taskId: task().taskId, graphRevision: 1, nodeId: queueEntryId },
+		goalId: task().goalId,
+		state: "queued",
+		priority: 0,
+		attemptsUsed: 0,
+		enqueuedAt: now,
+		revision: 0,
+	};
+}
+
+async function reserveExecutor(
+	registry: SchedulerExecutorRegistry,
+	binding: AgentBinding,
+	entry: SchedulerQueueEntryV1,
+) {
+	return registry.select({
+		queueEntry: entry,
+		requiredCapabilities: [TASK_CAPABILITY],
+		decidedAt: entry.enqueuedAt,
+		exactRequirements: {
+			binding,
+			attemptId: `attempt_${entry.queueEntryId}`,
+			bindingEpochId: `epoch_${entry.queueEntryId}`,
+			requireResume: true,
+			modelAccess: "aos_gateway",
+		},
+	});
 }
 
 async function seedBindingFacts(session: Session, currentTask: TaskEnvelope, binding: AgentBinding): Promise<void> {
@@ -187,10 +335,13 @@ interface CompositionFixture {
 function compositionFixture(input: {
 	readonly sourceSessionId?: string;
 	readonly targetSessionId?: string;
+	readonly sourceStorage?: InMemorySessionStorage;
 } = {}): CompositionFixture {
 	const sourceId = "session-composition-source";
 	const targetId = "session-composition-target";
-	const sourceSession = new Session(new InMemorySessionStorage({ id: input.sourceSessionId ?? sourceId, createdAt: 1 }));
+	const sourceSession = new Session(
+		input.sourceStorage ?? new InMemorySessionStorage({ id: input.sourceSessionId ?? sourceId, createdAt: 1 }),
+	);
 	const targetSession = new Session(new InMemorySessionStorage({ id: input.targetSessionId ?? targetId, createdAt: 1 }));
 	const sourceManager = SessionManager.inMemory("C:/workspace/source", { id: sourceId });
 	const targetManager = SessionManager.inMemory("C:/workspace/target", { id: targetId });
@@ -273,6 +424,156 @@ describe("trusted Scheduler production composition", () => {
 		try {
 			await expect(composition.tick()).rejects.toMatchObject({ code: "scheduler_queue_invalid" });
 			await expectNoDurableWrites(fixture);
+		} finally {
+			await composition.dispose();
+		}
+	});
+
+	it("reclaims crashed reservations after provider registration and before the first restart tick", async () => {
+		const sourceId = "session-composition-source";
+		const storage = new InMemorySessionStorage({ id: sourceId, createdAt: 1 });
+		const firstSession = new Session(storage);
+		const currentTask = task();
+		const currentBinding = bindingFor(currentTask);
+		const quota = new RestartQuota();
+		const firstStore = new SchedulerSelectionReservationStore(firstSession, {
+			ownerId: "scheduler-restart-owner-1",
+			now: () => NOW,
+		});
+		const firstRegistry = new SchedulerExecutorRegistry({ reservationStore: firstStore });
+		await registerReservationExecutor(firstRegistry, quota, currentBinding, NOW);
+		const firstQueue = new SchedulerQueueStore({
+			ledger: firstSession,
+			sessionId: sourceId,
+			ownerId: "scheduler-restart-owner-1",
+			now: () => NOW,
+		});
+		const interruptedEntries = [
+			reservationQueueEntry("queue_restart_reserved", sourceId, NOW),
+			reservationQueueEntry("queue_restart_settling", sourceId, NOW),
+		];
+		for (const entry of interruptedEntries) {
+			const enqueued = await firstQueue.enqueue(entry);
+			if (!enqueued.ok) throw enqueued.error;
+			const claimed = await firstQueue.claim({
+				queueEntryId: entry.queueEntryId,
+				ownerId: "scheduler-restart-owner-1",
+				ttlMs: 1_000,
+			});
+			if (!claimed.ok) throw claimed.error;
+			const selected = await reserveExecutor(firstRegistry, currentBinding, claimed.value.entry);
+			if (!selected.ok) throw selected.error;
+		}
+		expect(await firstStore.activeCounts()).toMatchObject({
+			ok: true,
+			value: new Map([["scheduler.restart", 2]]),
+		});
+		quota.failNextSettlement = true;
+		const interruptedSettlement = await firstRegistry.settleSelection(
+			"queue_restart_settling",
+			"failed",
+			{
+				inputTokens: 3,
+				outputTokens: 0,
+				cacheReadInputTokens: 0,
+				cacheCreationInputTokens: 0,
+				costUsd: 0,
+			},
+		);
+		expect(interruptedSettlement).toMatchObject({
+			ok: false,
+			error: { code: "scheduler_budget_exhausted_wait" },
+		});
+		await firstStore.release();
+
+		const restartClock = new DeterministicClock({
+			wallTimeMs: Date.parse(NOW) + 2_000,
+			monotonicTimeMs: 2_000,
+		});
+		const fixture = compositionFixture({ sourceStorage: storage });
+		const restartStore = new SchedulerSelectionReservationStore(fixture.sourceSession, {
+			ownerId: "scheduler-restart-owner-2",
+			now: () => new Date(restartClock.wallNow()).toISOString(),
+		});
+		const restartRegistry = new SchedulerExecutorRegistry({ reservationStore: restartStore });
+		const trace: string[] = [];
+		quota.onSettle = () => trace.push("quota_settled");
+		const composition = new TrustedSchedulerComposition(withRuntimeClock({
+			...compositionOptions(fixture),
+			ownerId: "scheduler-restart-owner-2",
+			registry: restartRegistry,
+			selectionReservationStore: restartStore,
+			initializeBeforeStart: async () => {
+				trace.push("providers_registered");
+				await registerReservationExecutor(
+					restartRegistry,
+					quota,
+					currentBinding,
+					new Date(restartClock.wallNow()).toISOString(),
+				);
+			},
+			eventSource: {
+				subscribe() {
+					trace.push("host_started");
+					return () => {};
+				},
+			},
+			now: () => new Date(restartClock.wallNow()).toISOString(),
+		}, restartClock));
+		const workflowTick = vi.spyOn(composition.workflow, "tick").mockImplementation(async () => {
+			trace.push("first_tick");
+			workflowTick.mockRestore();
+			return composition.workflow.tick();
+		});
+		try {
+			await composition.whenInitialized();
+			expect(trace).toEqual([
+				"providers_registered",
+				"quota_settled",
+				"quota_settled",
+				"host_started",
+			]);
+			expect(quota.reserveCount).toBe(2);
+			expect(quota.settleAttempts).toBe(3);
+			expect(quota.settleCount).toBe(2);
+			expect(await restartStore.activeCounts()).toMatchObject({ ok: true, value: new Map() });
+			for (const entry of interruptedEntries) {
+				const record = await restartRegistry.reservationRecord(entry.queueEntryId);
+				expect(record).toMatchObject({ ok: true, value: { status: "settled" } });
+			}
+
+			const repeated = await restartRegistry.reconcileReservations([]);
+			expect(repeated.ok).toBe(true);
+			expect(quota.settleAttempts).toBe(3);
+			expect(quota.settleCount).toBe(2);
+
+			const plateauEntries = ["queue_plateau_1", "queue_plateau_2", "queue_plateau_3"].map((id) =>
+				reservationQueueEntry(id, sourceId, new Date(restartClock.wallNow()).toISOString())
+			);
+			const concurrent = await Promise.all(
+				plateauEntries.map((entry) => reserveExecutor(restartRegistry, currentBinding, entry)),
+			);
+			expect(concurrent.filter((result) => result.ok)).toHaveLength(2);
+			expect(concurrent.filter((result) => !result.ok)).toMatchObject([
+				{ error: { code: "scheduler_backpressure" } },
+			]);
+			expect(quota.reserveCount).toBe(4);
+			expect(await restartStore.activeCounts()).toMatchObject({
+				ok: true,
+				value: new Map([["scheduler.restart", 2]]),
+			});
+			for (const [index, selected] of concurrent.entries()) {
+				if (!selected.ok) continue;
+				const settled = await restartRegistry.settleSelection(plateauEntries[index]!.queueEntryId, "succeeded");
+				if (!settled.ok) throw settled.error;
+			}
+			expect(quota.settleAttempts).toBe(5);
+			expect(quota.settleCount).toBe(4);
+			expect(await restartStore.activeCounts()).toMatchObject({ ok: true, value: new Map() });
+
+			await composition.tick();
+			expect(trace.at(-1)).toBe("first_tick");
+			expect(trace.indexOf("host_started")).toBeLessThan(trace.indexOf("first_tick"));
 		} finally {
 			await composition.dispose();
 		}
