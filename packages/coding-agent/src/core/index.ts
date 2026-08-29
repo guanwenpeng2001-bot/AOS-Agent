@@ -87,7 +87,7 @@ export {
 	getExecutionAssociations,
 	isExecutionAssociationRecord,
 	parseExecutionAssociation,
-} from "./execution-association.ts";
+} from "./migrations/execution-association.ts";
 export {
 	classifyAssistantFailure,
 	classifyProviderFailure,

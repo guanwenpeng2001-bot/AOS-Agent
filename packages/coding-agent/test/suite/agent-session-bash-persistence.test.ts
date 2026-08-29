@@ -4,7 +4,7 @@ import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/session/context-engine.ts";
-import { EXECUTION_ASSOCIATION_CUSTOM_TYPE } from "../../src/core/execution-association.ts";
+import { EXECUTION_ASSOCIATION_CUSTOM_TYPE } from "../../src/core/migrations/execution-association.ts";
 import { POLICY_BINDING_CUSTOM_TYPE } from "../../src/core/policy/execution.ts";
 import { MODEL_ATTEMPT_CUSTOM_TYPE, MODEL_BINDING_CUSTOM_TYPE } from "../../src/core/runtime/model-broker-ledger.ts";
 import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../../src/core/session/manager-storage.ts";

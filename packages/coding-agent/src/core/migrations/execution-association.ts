@@ -7,7 +7,7 @@
  * use AgentBinding/BindingEpoch and must never persist this second aggregate.
  */
 
-import type { ModelBrokerLedgerEntry } from "./runtime/model-broker-ledger.ts";
+import type { ModelBrokerLedgerEntry } from "../runtime/model-broker-ledger.ts";
 
 export const EXECUTION_ASSOCIATION_SCHEMA_VERSION = 1 as const;
 export const EXECUTION_ASSOCIATION_CUSTOM_TYPE = "execution.association" as const;
