@@ -925,7 +925,7 @@ const ac24 = defineLine13ResolvedCase({
 				trace.provider.pendingResponses === 0 &&
 				trace.final.activeRuns === 0 &&
 				trace.final.backlog === 0 &&
-				trace.final.status === 0 &&
+				trace.final.status === 1 &&
 				trace.final.credentials === 0 &&
 				trace.final.reservations === 0 &&
 				trace.final.processes === 0 &&
