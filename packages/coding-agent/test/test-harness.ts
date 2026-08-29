@@ -3,7 +3,7 @@ import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-te
  * Test harness for AgentSession runtime testing.
  *
  * Provides:
- * - A faux stream function with declarative response sequencing
+ * - A fake stream function with declarative response sequencing
  * - A one-call factory for a fully wired AgentSession with real in-memory dependencies
  * - Event capture for assertions
  */
@@ -40,18 +40,18 @@ import {
 } from "./utilities.ts";
 
 // ============================================================================
-// Faux model
+// Fake model
 // ============================================================================
 
-const FAUX_PROVIDER = "faux";
-const FAUX_MODEL_ID = "faux-1";
-const FAUX_API = "anthropic-messages" as const;
+const FAKE_PROVIDER = "fake";
+const FAKE_MODEL_ID = "fake-1";
+const FAKE_API = "anthropic-messages" as const;
 
-export const fauxModel: Model<typeof FAUX_API> = {
-	id: FAUX_MODEL_ID,
-	name: "Faux Model",
-	api: FAUX_API,
-	provider: FAUX_PROVIDER,
+export const fakeModel: Model<typeof FAKE_API> = {
+	id: FAKE_MODEL_ID,
+	name: "Fake Model",
+	api: FAKE_API,
+	provider: FAKE_PROVIDER,
 	baseUrl: "http://localhost:0",
 	reasoning: false,
 	input: ["text", "image"],
@@ -64,7 +64,7 @@ export const fauxModel: Model<typeof FAUX_API> = {
 // Response description
 // ============================================================================
 
-export interface FauxResponse {
+export interface FakeResponse {
 	/** Text content blocks. String shorthand becomes a single text block. */
 	text?: string;
 	/** Tool calls to include in the response. */
@@ -84,13 +84,13 @@ export interface FauxResponse {
 }
 
 /** Shorthand: a string becomes a simple text response. */
-export type FauxResponseInput = FauxResponse | string;
+export type FakeResponseInput = FakeResponse | string;
 
 // ============================================================================
-// Faux stream function
+// Fake stream function
 // ============================================================================
 
-function normalizeResponse(input: FauxResponseInput): FauxResponse {
+function normalizeResponse(input: FakeResponseInput): FakeResponse {
 	if (typeof input === "string") {
 		return { text: input };
 	}
@@ -114,7 +114,7 @@ function buildUsage(partial?: Partial<Usage>): Usage {
 
 let toolCallIdCounter = 0;
 
-function buildAssistantMessage(resp: FauxResponse): AssistantMessage {
+function buildAssistantMessage(resp: FakeResponse): AssistantMessage {
 	const content: (TextContent | ThinkingContent | ToolCall)[] = [];
 
 	if (resp.thinking) {
@@ -127,7 +127,7 @@ function buildAssistantMessage(resp: FauxResponse): AssistantMessage {
 		for (const tc of resp.toolCalls) {
 			content.push({
 				type: "toolCall",
-				id: tc.id ?? `faux_tc_${++toolCallIdCounter}`,
+				id: tc.id ?? `fake_tc_${++toolCallIdCounter}`,
 				name: tc.name,
 				arguments: tc.args,
 			});
@@ -153,9 +153,9 @@ function buildAssistantMessage(resp: FauxResponse): AssistantMessage {
 	return {
 		role: "assistant",
 		content,
-		api: FAUX_API,
-		provider: resp.model?.provider ?? FAUX_PROVIDER,
-		model: resp.model?.id ?? FAUX_MODEL_ID,
+		api: FAKE_API,
+		provider: resp.model?.provider ?? FAKE_PROVIDER,
+		model: resp.model?.id ?? FAKE_MODEL_ID,
 		usage: buildUsage(resp.usage),
 		stopReason,
 		errorMessage: resp.error,
@@ -245,7 +245,7 @@ function streamWithDeltas(stream: AssistantMessageEventStream, message: Assistan
 		const error: AssistantMessage = {
 			...message,
 			stopReason: "error",
-			errorMessage: "Faux response ended without a stop reason",
+			errorMessage: "Fake response ended without a stop reason",
 		};
 		stream.push({ type: "error", reason: "error", error });
 		return;
@@ -270,7 +270,7 @@ function makeEvent(
 // Stream function factory
 // ============================================================================
 
-export interface FauxStreamFnState {
+export interface FakeStreamFnState {
 	/** Number of times the stream function has been called. */
 	callCount: number;
 	/** The context passed to each call, in order. */
@@ -278,22 +278,22 @@ export interface FauxStreamFnState {
 }
 
 /**
- * Create a faux stream function from a sequence of response descriptions.
+ * Create a fake stream function from a sequence of response descriptions.
  *
  * The function cycles through responses in order. If more calls are made than
  * responses provided, it wraps around.
  *
  * Returns the stream function and a state object for inspection.
  */
-export function createFauxStreamFn(responses: FauxResponseInput[]): {
+export function createFakeStreamFn(responses: FakeResponseInput[]): {
 	streamFn: (model: Model<any>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
-	state: FauxStreamFnState;
+	state: FakeStreamFnState;
 } {
 	if (responses.length === 0) {
-		throw new Error("createFauxStreamFn requires at least one response");
+		throw new Error("createFakeStreamFn requires at least one response");
 	}
 
-	const state: FauxStreamFnState = { callCount: 0, contexts: [] };
+	const state: FakeStreamFnState = { callCount: 0, contexts: [] };
 
 	const streamFn = (_model: Model<any>, context: Context, _options?: SimpleStreamOptions) => {
 		const index = state.callCount % responses.length;
@@ -325,9 +325,9 @@ export function createFauxStreamFn(responses: FauxResponseInput[]): {
 // ============================================================================
 
 export interface HarnessOptions {
-	/** Response sequence for the faux provider. Default: single "ok" response. */
-	responses?: FauxResponseInput[];
-	/** Model to use. Default: fauxModel. */
+	/** Response sequence for the fake provider. Default: single "ok" response. */
+	responses?: FakeResponseInput[];
+	/** Model to use. Default: fakeModel. */
 	model?: Model<any>;
 	/** Context window override (applied to the model). */
 	contextWindow?: number;
@@ -350,8 +350,8 @@ export interface Harness {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
-	/** Faux stream function state (call count, captured contexts). */
-	faux: FauxStreamFnState;
+	/** Fake stream function state (call count, captured contexts). */
+	fake: FakeStreamFnState;
 	/** All events emitted by the session, in order. */
 	events: AgentSessionEvent[];
 	/** Filter captured events by type. */
@@ -373,13 +373,13 @@ async function createHarnessWithResourceLoader(
 	resourceLoader: ResourceLoader,
 	tempDir: string,
 ): Promise<Harness> {
-	const baseModel = options.model ?? fauxModel;
+	const baseModel = options.model ?? fakeModel;
 	const model: Model<any> = options.contextWindow ? { ...baseModel, contextWindow: options.contextWindow } : baseModel;
 
-	const { streamFn, state: fauxState } = createFauxStreamFn(options.responses ?? ["ok"]);
+	const { streamFn, state: fakeState } = createFakeStreamFn(options.responses ?? ["ok"]);
 
 	const agent = new Agent({
-		getApiKey: () => "faux-key",
+		getApiKey: () => "fake-key",
 		initialState: {
 			model,
 			systemPrompt: options.systemPrompt ?? "You are a test assistant.",
@@ -396,7 +396,7 @@ async function createHarnessWithResourceLoader(
 	}
 
 	const authStorage = AuthStorage.inMemory({
-		[model.provider]: { type: "api_key", key: "faux-key" },
+		[model.provider]: { type: "api_key", key: "fake-key" },
 	});
 	const modelRegistry = await createInMemoryModelRegistry(authStorage);
 	modelRegistry.registerProvider(model.provider, {
@@ -444,7 +444,7 @@ async function createHarnessWithResourceLoader(
 		agent,
 		sessionManager,
 		settingsManager,
-		faux: fauxState,
+		fake: fakeState,
 		events,
 		eventsOfType<T extends AgentSessionEvent["type"]>(type: T) {
 			return events.filter((e): e is Extract<AgentSessionEvent, { type: T }> => e.type === type);

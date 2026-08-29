@@ -25,7 +25,7 @@ describe("model selector filter resets selection to top", () => {
 
 	beforeAll(() => {
 		initTheme("dark");
-		// Keep this selector fixture limited to its faux catalog when the test
+		// Keep this selector fixture limited to its fake catalog when the test
 		// runner exposes an ambient provider credential.
 		delete process.env.DEEPSEEK_API_KEY;
 	});
@@ -72,7 +72,7 @@ describe("model selector filter resets selection to top", () => {
 		// Current model (alpha-1) is sorted first, so selection starts on row 0.
 		expect(selectedModelId(stripAnsi(selector.render(120).join("\n")))).toBe("alpha-1");
 
-		// Move to alpha-3 without assuming the faux models are adjacent to the
+		// Move to alpha-3 without assuming the fake models are adjacent to the
 		// offline built-in catalog entries.
 		for (let index = 0; index < 100; index++) {
 			if (selectedModelId(stripAnsi(selector.render(120).join("\n"))) === "alpha-3") break;

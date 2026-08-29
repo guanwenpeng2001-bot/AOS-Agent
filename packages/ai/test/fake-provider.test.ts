@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	complete,
-	fauxAssistantMessage,
-	fauxText,
-	fauxThinking,
-	fauxToolCall,
-	registerFauxProvider,
+	fakeAssistantMessage,
+	fakeText,
+	fakeThinking,
+	fakeToolCall,
+	registerFakeProvider,
 	stream,
 	Type,
 } from "../src/compat.ts";
@@ -27,11 +27,11 @@ afterEach(() => {
 	}
 });
 
-describe("faux provider", () => {
+describe("fake provider", () => {
 	it("registers a custom provider and estimates usage", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("hello world")]);
+		registration.setResponses([fakeAssistantMessage("hello world")]);
 
 		const context: Context = {
 			systemPrompt: "Be concise.",
@@ -47,10 +47,10 @@ describe("faux provider", () => {
 	});
 
 	it("supports helper blocks for text, thinking, and tool calls", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
 		registration.setResponses([
-			fauxAssistantMessage([fauxThinking("think"), fauxToolCall("echo", { text: "hi" }), fauxText("done")], {
+			fakeAssistantMessage([fakeThinking("think"), fakeToolCall("echo", { text: "hi" }), fakeText("done")], {
 				stopReason: "toolUse",
 			}),
 		]);
@@ -68,56 +68,56 @@ describe("faux provider", () => {
 	});
 
 	it("supports multiple models with per-model reasoning and model-aware factories", async () => {
-		const registration = registerFauxProvider({
+		const registration = registerFakeProvider({
 			models: [
-				{ id: "faux-fast", name: "Faux Fast", reasoning: false },
-				{ id: "faux-thinker", name: "Faux Thinker", reasoning: true },
+				{ id: "fake-fast", name: "Fake Fast", reasoning: false },
+				{ id: "fake-thinker", name: "Fake Thinker", reasoning: true },
 			],
 		});
 		registrations.push(registration);
 		registration.setResponses([
-			(_context, _options, _state, model) => fauxAssistantMessage(`${model.id}:${String(model.reasoning)}`),
-			(_context, _options, _state, model) => fauxAssistantMessage(`${model.id}:${String(model.reasoning)}`),
+			(_context, _options, _state, model) => fakeAssistantMessage(`${model.id}:${String(model.reasoning)}`),
+			(_context, _options, _state, model) => fakeAssistantMessage(`${model.id}:${String(model.reasoning)}`),
 		]);
 
-		expect(registration.models.map((model) => model.id)).toEqual(["faux-fast", "faux-thinker"]);
+		expect(registration.models.map((model) => model.id)).toEqual(["fake-fast", "fake-thinker"]);
 		expect(registration.getModel()).toBe(registration.models[0]);
-		expect(registration.getModel("faux-fast")?.reasoning).toBe(false);
-		expect(registration.getModel("faux-thinker")?.reasoning).toBe(true);
+		expect(registration.getModel("fake-fast")?.reasoning).toBe(false);
+		expect(registration.getModel("fake-thinker")?.reasoning).toBe(true);
 
-		const fast = await complete(registration.getModel("faux-fast")!, {
+		const fast = await complete(registration.getModel("fake-fast")!, {
 			messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 		});
-		const thinker = await complete(registration.getModel("faux-thinker")!, {
+		const thinker = await complete(registration.getModel("fake-thinker")!, {
 			messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 		});
 
-		expect(fast.content).toEqual([{ type: "text", text: "faux-fast:false" }]);
-		expect(thinker.content).toEqual([{ type: "text", text: "faux-thinker:true" }]);
+		expect(fast.content).toEqual([{ type: "text", text: "fake-fast:false" }]);
+		expect(thinker.content).toEqual([{ type: "text", text: "fake-thinker:true" }]);
 	});
 
 	it("rewrites api, provider, and model on returned messages", async () => {
-		const registration = registerFauxProvider({
-			api: "faux:test",
-			provider: "faux-provider",
-			models: [{ id: "faux-model" }],
+		const registration = registerFakeProvider({
+			api: "fake:test",
+			provider: "fake-provider",
+			models: [{ id: "fake-model" }],
 		});
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("hello")]);
+		registration.setResponses([fakeAssistantMessage("hello")]);
 
 		const response = await complete(registration.getModel(), {
 			messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
 		});
 
-		expect(response.api).toBe("faux:test");
-		expect(response.provider).toBe("faux-provider");
-		expect(response.model).toBe("faux-model");
+		expect(response.api).toBe("fake:test");
+		expect(response.provider).toBe("fake-provider");
+		expect(response.model).toBe("fake-model");
 	});
 
 	it("consumes queued responses in order and errors when exhausted", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		registration.setResponses([fakeAssistantMessage("first"), fakeAssistantMessage("second")]);
 
 		const context: Context = {
 			messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
@@ -130,15 +130,15 @@ describe("faux provider", () => {
 		expect(first.content).toEqual([{ type: "text", text: "first" }]);
 		expect(second.content).toEqual([{ type: "text", text: "second" }]);
 		expect(exhausted.stopReason).toBe("error");
-		expect(exhausted.errorMessage).toBe("No more faux responses queued");
+		expect(exhausted.errorMessage).toBe("No more fake responses queued");
 		expect(registration.getPendingResponseCount()).toBe(0);
 		expect(registration.state.callCount).toBe(3);
 	});
 
 	it("can replace and append queued responses", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("first")]);
+		registration.setResponses([fakeAssistantMessage("first")]);
 
 		const context: Context = {
 			messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
@@ -147,11 +147,11 @@ describe("faux provider", () => {
 		expect((await complete(registration.getModel(), context)).content).toEqual([{ type: "text", text: "first" }]);
 		expect(registration.getPendingResponseCount()).toBe(0);
 
-		registration.setResponses([fauxAssistantMessage("second")]);
+		registration.setResponses([fakeAssistantMessage("second")]);
 		expect(registration.getPendingResponseCount()).toBe(1);
 		expect((await complete(registration.getModel(), context)).content).toEqual([{ type: "text", text: "second" }]);
 
-		registration.appendResponses([fauxAssistantMessage("third"), fauxAssistantMessage("fourth")]);
+		registration.appendResponses([fakeAssistantMessage("third"), fakeAssistantMessage("fourth")]);
 		expect(registration.getPendingResponseCount()).toBe(2);
 		expect((await complete(registration.getModel(), context)).content).toEqual([{ type: "text", text: "third" }]);
 		expect((await complete(registration.getModel(), context)).content).toEqual([{ type: "text", text: "fourth" }]);
@@ -159,10 +159,10 @@ describe("faux provider", () => {
 	});
 
 	it("supports async response factories", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
 		registration.setResponses([
-			async (context, _options, state) => fauxAssistantMessage(`${context.messages.length}:${state.callCount}`),
+			async (context, _options, state) => fakeAssistantMessage(`${context.messages.length}:${state.callCount}`),
 		]);
 
 		const response = await complete(registration.getModel(), {
@@ -173,7 +173,7 @@ describe("faux provider", () => {
 	});
 
 	it("emits an error when a response factory throws", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
 		registration.setResponses([
 			() => {
@@ -194,9 +194,9 @@ describe("faux provider", () => {
 	});
 
 	it("rejects a queued response without a terminal stop reason", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("partial", { stopReason: "pending" })]);
+		registration.setResponses([fakeAssistantMessage("partial", { stopReason: "pending" })]);
 
 		const events = await collectEvents(
 			stream(registration.getModel(), { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
@@ -207,14 +207,14 @@ describe("faux provider", () => {
 		expect(terminal?.type).toBe("error");
 		if (terminal?.type === "error") {
 			expect(terminal.error.stopReason).toBe("error");
-			expect(terminal.error.errorMessage).toBe("Faux response ended without a stop reason");
+			expect(terminal.error.errorMessage).toBe("Fake response ended without a stop reason");
 		}
 	});
 
 	it("estimates prompt and output tokens from serialized context", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("done")]);
+		registration.setResponses([fakeAssistantMessage("done")]);
 
 		const tool = {
 			name: "echo",
@@ -232,7 +232,7 @@ describe("faux provider", () => {
 					],
 					timestamp: 1,
 				},
-				fauxAssistantMessage("prior"),
+				fakeAssistantMessage("prior"),
 				{
 					role: "toolResult",
 					toolCallId: "tool-1",
@@ -264,12 +264,12 @@ describe("faux provider", () => {
 	});
 
 	it("does not share cache across sessions or requests without sessionId", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
 		registration.setResponses([
-			fauxAssistantMessage("first"),
-			fauxAssistantMessage("second"),
-			fauxAssistantMessage("third"),
+			fakeAssistantMessage("first"),
+			fakeAssistantMessage("second"),
+			fakeAssistantMessage("third"),
 		]);
 
 		const context: Context = {
@@ -297,9 +297,9 @@ describe("faux provider", () => {
 	});
 
 	it("simulates prompt caching per sessionId", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		registration.setResponses([fakeAssistantMessage("first"), fakeAssistantMessage("second")]);
 
 		const context: Context = {
 			systemPrompt: "Be concise.",
@@ -325,16 +325,16 @@ describe("faux provider", () => {
 	});
 
 	it("does not simulate caching when cacheRetention is none", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		registration.setResponses([fakeAssistantMessage("first"), fakeAssistantMessage("second")]);
 
 		const context: Context = {
 			messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
 		};
 
 		await complete(registration.getModel(), context, { sessionId: "session-1", cacheRetention: "none" });
-		context.messages.push(fauxAssistantMessage("first"));
+		context.messages.push(fakeAssistantMessage("first"));
 		context.messages.push({ role: "user", content: "follow up", timestamp: Date.now() + 1 });
 		const second = await complete(registration.getModel(), context, {
 			sessionId: "session-1",
@@ -345,14 +345,14 @@ describe("faux provider", () => {
 	});
 
 	it("streams thinking, text, and partial tool call deltas", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
 		registration.setResponses([
-			fauxAssistantMessage(
+			fakeAssistantMessage(
 				[
-					fauxThinking("thinking text"),
-					fauxText("answer text"),
-					fauxToolCall("echo", { text: "hi", count: 12 }, { id: "tool-1" }),
+					fakeThinking("thinking text"),
+					fakeText("answer text"),
+					fakeToolCall("echo", { text: "hi", count: 12 }, { id: "tool-1" }),
 				],
 				{ stopReason: "toolUse" },
 			),
@@ -380,10 +380,10 @@ describe("faux provider", () => {
 	});
 
 	it("streams an exact event order for fixed-size chunks", async () => {
-		const registration = registerFauxProvider({ tokenSize: { min: 1, max: 1 } });
+		const registration = registerFakeProvider({ tokenSize: { min: 1, max: 1 } });
 		registrations.push(registration);
 		registration.setResponses([
-			fauxAssistantMessage([fauxThinking("go"), fauxText("ok"), fauxToolCall("echo", {}, { id: "tool-1" })], {
+			fakeAssistantMessage([fakeThinking("go"), fakeText("ok"), fakeToolCall("echo", {}, { id: "tool-1" })], {
 				stopReason: "toolUse",
 			}),
 		]);
@@ -409,13 +409,13 @@ describe("faux provider", () => {
 	});
 
 	it("streams multiple tool calls in one message", async () => {
-		const registration = registerFauxProvider();
+		const registration = registerFakeProvider();
 		registrations.push(registration);
 		registration.setResponses([
-			fauxAssistantMessage(
+			fakeAssistantMessage(
 				[
-					fauxToolCall("echo", { text: "one" }, { id: "tool-1" }),
-					fauxToolCall("echo", { text: "two" }, { id: "tool-2" }),
+					fakeToolCall("echo", { text: "one" }, { id: "tool-1" }),
+					fakeToolCall("echo", { text: "two" }, { id: "tool-2" }),
 				],
 				{ stopReason: "toolUse" },
 			),
@@ -430,11 +430,11 @@ describe("faux provider", () => {
 	});
 
 	it("streams an explicit assistant error message as a terminal error", async () => {
-		const registration = registerFauxProvider({ tokenSize: { min: 2, max: 2 } });
+		const registration = registerFakeProvider({ tokenSize: { min: 2, max: 2 } });
 		registrations.push(registration);
 		registration.setResponses([
 			{
-				...fauxAssistantMessage("partial"),
+				...fakeAssistantMessage("partial"),
 				stopReason: "error",
 				errorMessage: "upstream failed",
 			},
@@ -455,11 +455,11 @@ describe("faux provider", () => {
 	});
 
 	it("streams an explicit assistant aborted message as a terminal error", async () => {
-		const registration = registerFauxProvider({ tokenSize: { min: 2, max: 2 } });
+		const registration = registerFakeProvider({ tokenSize: { min: 2, max: 2 } });
 		registrations.push(registration);
 		registration.setResponses([
 			{
-				...fauxAssistantMessage("partial"),
+				...fakeAssistantMessage("partial"),
 				stopReason: "aborted",
 				errorMessage: "Request was aborted",
 			},
@@ -480,9 +480,9 @@ describe("faux provider", () => {
 	});
 
 	it("supports aborting before the first chunk", async () => {
-		const registration = registerFauxProvider({ tokensPerSecond: 50, tokenSize: { min: 3, max: 3 } });
+		const registration = registerFakeProvider({ tokensPerSecond: 50, tokenSize: { min: 3, max: 3 } });
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("abcdefghijklmnopqrstuvwxyz")]);
+		registration.setResponses([fakeAssistantMessage("abcdefghijklmnopqrstuvwxyz")]);
 
 		const controller = new AbortController();
 		controller.abort();
@@ -503,9 +503,9 @@ describe("faux provider", () => {
 	});
 
 	it("supports aborting mid-text stream when paced", async () => {
-		const registration = registerFauxProvider({ tokensPerSecond: 100, tokenSize: { min: 3, max: 3 } });
+		const registration = registerFakeProvider({ tokensPerSecond: 100, tokenSize: { min: 3, max: 3 } });
 		registrations.push(registration);
-		registration.setResponses([fauxAssistantMessage("abcdefghijklmnopqrstuvwxyz")]);
+		registration.setResponses([fakeAssistantMessage("abcdefghijklmnopqrstuvwxyz")]);
 
 		const controller = new AbortController();
 		const events: string[] = [];
@@ -531,11 +531,11 @@ describe("faux provider", () => {
 	});
 
 	it("supports aborting mid-thinking stream when paced", async () => {
-		const registration = registerFauxProvider({ tokensPerSecond: 100, tokenSize: { min: 3, max: 3 } });
+		const registration = registerFakeProvider({ tokensPerSecond: 100, tokenSize: { min: 3, max: 3 } });
 		registrations.push(registration);
 		registration.setResponses([
 			{
-				...fauxAssistantMessage("ignored"),
+				...fakeAssistantMessage("ignored"),
 				content: [{ type: "thinking", thinking: "abcdefghijklmnopqrstuvwxyz" }],
 			},
 		]);
@@ -564,11 +564,11 @@ describe("faux provider", () => {
 	});
 
 	it("supports aborting mid-toolcall stream when paced", async () => {
-		const registration = registerFauxProvider({ tokensPerSecond: 100, tokenSize: { min: 3, max: 3 } });
+		const registration = registerFakeProvider({ tokensPerSecond: 100, tokenSize: { min: 3, max: 3 } });
 		registrations.push(registration);
 		registration.setResponses([
 			{
-				...fauxAssistantMessage("done"),
+				...fakeAssistantMessage("done"),
 				content: [
 					{
 						type: "toolCall",
@@ -605,8 +605,8 @@ describe("faux provider", () => {
 	});
 
 	it("unregisters the provider", async () => {
-		const registration = registerFauxProvider();
-		registration.setResponses([fauxAssistantMessage("hello")]);
+		const registration = registerFakeProvider();
+		registration.setResponses([fakeAssistantMessage("hello")]);
 		registration.unregister();
 
 		await expect(

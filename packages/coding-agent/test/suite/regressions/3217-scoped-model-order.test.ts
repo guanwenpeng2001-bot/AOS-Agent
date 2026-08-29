@@ -34,9 +34,9 @@ describe("issue #3217 scoped model ordering", () => {
 	it("propagates reordered scoped models back to the session state", async () => {
 		const harness = await createHarness({
 			models: [
-				{ id: "faux-1", name: "One", reasoning: true },
-				{ id: "faux-2", name: "Two", reasoning: true },
-				{ id: "faux-3", name: "Three", reasoning: true },
+				{ id: "fake-1", name: "One", reasoning: true },
+				{ id: "fake-2", name: "Two", reasoning: true },
+				{ id: "fake-3", name: "Three", reasoning: true },
 			],
 		});
 		harnesses.push(harness);
@@ -65,16 +65,16 @@ describe("issue #3217 scoped model ordering", () => {
 	it("preserves scoped model order in the /model scoped tab", async () => {
 		const harness = await createHarness({
 			models: [
-				{ id: "faux-1", name: "One", reasoning: true },
-				{ id: "faux-2", name: "Two", reasoning: true },
-				{ id: "faux-3", name: "Three", reasoning: true },
+				{ id: "fake-1", name: "One", reasoning: true },
+				{ id: "fake-2", name: "Two", reasoning: true },
+				{ id: "fake-3", name: "Three", reasoning: true },
 			],
 		});
 		harnesses.push(harness);
 
-		const modelOne = harness.getModel("faux-1")!;
-		const modelTwo = harness.getModel("faux-2")!;
-		const modelThree = harness.getModel("faux-3")!;
+		const modelOne = harness.getModel("fake-1")!;
+		const modelTwo = harness.getModel("fake-2")!;
+		const modelThree = harness.getModel("fake-3")!;
 		const selector = new ModelSelectorComponent(
 			createFakeTui(),
 			modelOne,

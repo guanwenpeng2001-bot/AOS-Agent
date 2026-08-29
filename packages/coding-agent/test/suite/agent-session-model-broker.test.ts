@@ -1,5 +1,5 @@
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { Type } from "typebox";
 import { ModelBroker } from "../../src/core/model-broker.ts";
@@ -22,7 +22,7 @@ describe("AgentSession ModelBroker integration", () => {
 	it("persists safe binding and terminal attempt facts around an actual model call", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("ok")]);
+		harness.setResponses([fakeAssistantMessage("ok")]);
 
 		await harness.session.prompt("hello");
 
@@ -46,14 +46,14 @@ describe("AgentSession ModelBroker integration", () => {
 
 	it("retries a transient route failure with a fresh immutable context binding", async () => {
 		const harness = await createHarness({
-			models: [{ id: "faux-1" }, { id: "faux-2" }],
+			models: [{ id: "fake-1" }, { id: "fake-2" }],
 			modelBroker: new ModelBroker({
 				routes: {
 					fallback: {
 						id: "fallback",
 						candidates: [
-							{ provider: "faux", id: "faux-1" },
-							{ provider: "faux", id: "faux-2" },
+							{ provider: "fake", id: "fake-1" },
+							{ provider: "fake", id: "fake-2" },
 						],
 						fallback: { maxAttempts: 2, on: ["provider_unavailable"] },
 					},
@@ -63,15 +63,15 @@ describe("AgentSession ModelBroker integration", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([], { stopReason: "error", errorMessage: "503 unavailable" }),
-			fauxAssistantMessage("ok"),
+			fakeAssistantMessage([], { stopReason: "error", errorMessage: "503 unavailable" }),
+			fakeAssistantMessage("ok"),
 		]);
 
 		await harness.session.prompt("hello");
 
 		const attempts = [...foldModelAttemptEntries(harness.sessionManager.getEntries()).values()];
 		expect(attempts.map((attempt) => attempt.status)).toEqual(["failed", "completed"]);
-		expect(attempts.map((attempt) => attempt.candidate.modelId)).toEqual(["faux-1", "faux-2"]);
+		expect(attempts.map((attempt) => attempt.candidate.modelId)).toEqual(["fake-1", "fake-2"]);
 		expect(attempts[0]?.contextSnapshotId).toBeDefined();
 		expect(attempts[1]?.contextSnapshotId).toBeDefined();
 		expect(attempts[0]?.contextSnapshotId).not.toBe(attempts[1]?.contextSnapshotId);
@@ -83,7 +83,7 @@ describe("AgentSession ModelBroker integration", () => {
 			modelBroker: new ModelBroker({
 				routes: {
 					budgeted: {
-						candidates: [{ provider: "faux", id: "faux-1" }],
+						candidates: [{ provider: "fake", id: "fake-1" }],
 						budget: { maxOutputTokens: 0 },
 					},
 				},
@@ -91,7 +91,7 @@ describe("AgentSession ModelBroker integration", () => {
 			}),
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("retained")]);
+		harness.setResponses([fakeAssistantMessage("retained")]);
 
 		await harness.session.prompt("hello");
 
@@ -108,7 +108,7 @@ describe("AgentSession ModelBroker integration", () => {
 			status: "completed",
 			summary: "Model budget exceeded; subsequent calls are blocked.",
 		});
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.fake.state.callCount).toBe(1);
 	});
 
 	it("blocks a later model-loop call after the run budget is exhausted", async () => {
@@ -127,7 +127,7 @@ describe("AgentSession ModelBroker integration", () => {
 			modelBroker: new ModelBroker({
 				routes: {
 					limited: {
-						candidates: [{ provider: "faux", id: "faux-1" }],
+						candidates: [{ provider: "fake", id: "fake-1" }],
 						budget: { maxModelCalls: 1 },
 					},
 				},
@@ -136,13 +136,13 @@ describe("AgentSession ModelBroker integration", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("echo", { text: "first" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage("must not be dispatched"),
+			fakeAssistantMessage(fakeToolCall("echo", { text: "first" }), { stopReason: "toolUse" }),
+			fakeAssistantMessage("must not be dispatched"),
 		]);
 
 		await harness.session.prompt("hello");
 
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.fake.state.callCount).toBe(1);
 		expect(harness.session.messages.filter((message) => message.role === "toolResult")).toHaveLength(1);
 		expect(harness.session.messages.at(-1)).toMatchObject({
 			role: "assistant",
@@ -156,7 +156,7 @@ describe("AgentSession ModelBroker integration", () => {
 	it("writes the Context snapshot after the started attempt", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("ok")]);
+		harness.setResponses([fakeAssistantMessage("ok")]);
 
 		await harness.session.prompt("hello");
 

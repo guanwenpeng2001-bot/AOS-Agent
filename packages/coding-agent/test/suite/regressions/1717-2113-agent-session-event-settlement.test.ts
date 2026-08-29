@@ -1,5 +1,5 @@
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "../harness.ts";
@@ -41,10 +41,10 @@ describe("regressions #1717/#2113: agent session event settlement", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("echo", { text: "one" }), fauxToolCall("echo", { text: "two" })], {
+			fakeAssistantMessage([fakeToolCall("echo", { text: "one" }), fakeToolCall("echo", { text: "two" })], {
 				stopReason: "toolUse",
 			}),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage("done"),
 		]);
 		await harness.session.prompt("run tools");
 
@@ -84,8 +84,8 @@ describe("regressions #1717/#2113: agent session event settlement", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage([fakeToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		await harness.session.prompt("run tool");

@@ -1,5 +1,5 @@
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getUserTexts, type Harness } from "../harness.ts";
@@ -49,8 +49,8 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 			}
 		});
 		harness.setResponses([
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
-			fauxAssistantMessage("recovered"),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fakeAssistantMessage("recovered"),
 		]);
 
 		await harness.session.prompt("test");
@@ -79,7 +79,7 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+		harness.setResponses([fakeAssistantMessage("first"), fakeAssistantMessage("second")]);
 
 		await harness.session.prompt("hello");
 
@@ -134,8 +134,8 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 			});
 		});
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage(fakeToolCall("wait", {}), { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		const promptPromise = harness.session.prompt("start");

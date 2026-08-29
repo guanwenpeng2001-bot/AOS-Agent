@@ -101,8 +101,8 @@ function modelProfile(): ModelProfile {
 	return createModelProfileRevision({
 		schemaVersion: 1,
 		modelProfileId: "profile-result",
-		provider: "faux",
-		model: "faux-model",
+		provider: "fake",
+		model: "fake-model",
 		budget: {},
 		revision: 1,
 		createdAt: NOW,
@@ -128,7 +128,7 @@ function binding(taskValue: TaskEnvelope): AgentBinding {
 	}));
 }
 
-class FauxArtifactStore implements ArtifactStoreProvider {
+class FakeArtifactStore implements ArtifactStoreProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = "artifact-store-result";
 	readonly providerClass = "store" as const;
@@ -163,7 +163,7 @@ class FauxArtifactStore implements ArtifactStoreProvider {
 	async dispose(): Promise<void> {}
 }
 
-class FauxAgentExecutor implements TaskExecutorProvider {
+class FakeAgentExecutor implements TaskExecutorProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = "agent-result";
 	readonly providerClass = "agent" as const;
@@ -227,7 +227,7 @@ class FauxAgentExecutor implements TaskExecutorProvider {
 				},
 			},
 			sideEffectState: "none",
-			...(failed ? { error: { code: "tool_execution_failed", message: "faux failure", retryable: false } } : {}),
+			...(failed ? { error: { code: "tool_execution_failed", message: "fake failure", retryable: false } } : {}),
 		});
 	}
 
@@ -244,10 +244,10 @@ interface Fixture {
 	readonly task: TaskEnvelope;
 	readonly binding: AgentBinding;
 	readonly agent: AgentInstance;
-	readonly provider: FauxAgentExecutor;
+	readonly provider: FakeAgentExecutor;
 	readonly childWriter: SessionLedgerWriter;
 	readonly childGate: LayeredResultSettlement;
-	readonly artifactStore: FauxArtifactStore;
+	readonly artifactStore: FakeArtifactStore;
 }
 
 async function fixture(sessionId: string): Promise<Fixture> {
@@ -285,10 +285,10 @@ async function fixture(sessionId: string): Promise<Fixture> {
 		task: taskValue,
 		binding: bindingValue,
 		agent,
-		provider: new FauxAgentExecutor(),
+		provider: new FakeAgentExecutor(),
 		childWriter,
 		childGate: new LayeredResultSettlement(session, { writer: childWriter }),
-		artifactStore: new FauxArtifactStore(),
+		artifactStore: new FakeArtifactStore(),
 	};
 }
 
@@ -395,7 +395,7 @@ function settlementInput(
 		policy,
 		summary,
 		artifacts: [ARTIFACT],
-		tests: [{ name: "faux-provider-output", required: true, status: "passed", evidenceRefs: [ARTIFACT] }],
+		tests: [{ name: "fake-provider-output", required: true, status: "passed", evidenceRefs: [ARTIFACT] }],
 		evidence: [],
 		producer: {
 			producerKind: "host",

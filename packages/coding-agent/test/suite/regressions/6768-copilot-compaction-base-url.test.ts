@@ -1,7 +1,7 @@
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	fauxAssistantMessage,
+	fakeAssistantMessage,
 	type Model,
 	type Provider,
 } from "@aos-agent/ai";
@@ -21,7 +21,7 @@ function seedCompactableSession(harness: Harness): void {
 	});
 	const model = harness.getModel();
 	const assistant: AssistantMessage = {
-		...fauxAssistantMessage("assistant response to compact", { timestamp: now - 500 }),
+		...fakeAssistantMessage("assistant response to compact", { timestamp: now - 500 }),
 		api: model.api,
 		provider: model.provider,
 		model: model.id,
@@ -60,7 +60,7 @@ describe("issue #6768 Copilot compaction base URL", () => {
 				type: "done",
 				reason: "stop",
 				message: {
-					...fauxAssistantMessage("summary"),
+					...fakeAssistantMessage("summary"),
 					api: requestModel.api,
 					provider: requestModel.provider,
 					model: requestModel.id,

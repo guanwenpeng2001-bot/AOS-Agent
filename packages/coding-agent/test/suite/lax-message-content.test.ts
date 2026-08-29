@@ -8,7 +8,7 @@
  */
 
 import type { AgentMessage, AgentToolResult } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { type SessionEntry, sessionEntryToContextMessages } from "../../src/core/session-manager.ts";
@@ -43,8 +43,8 @@ describe("lax message content handling", () => {
 
 		try {
 			harness.setResponses([
-				fauxAssistantMessage(fauxToolCall("web_search", {}), { stopReason: "toolUse" }),
-				fauxAssistantMessage("done"),
+				fakeAssistantMessage(fakeToolCall("web_search", {}), { stopReason: "toolUse" }),
+				fakeAssistantMessage("done"),
 			]);
 
 			await harness.session.prompt("search something");
@@ -72,7 +72,7 @@ describe("lax message content handling", () => {
 		const harness = await createHarness({ extensionFactories });
 
 		try {
-			harness.setResponses([fauxAssistantMessage("hello")]);
+			harness.setResponses([fakeAssistantMessage("hello")]);
 			await harness.session.prompt("hi");
 
 			const assistantMessages = harness.session.messages.filter((message) => message.role === "assistant");

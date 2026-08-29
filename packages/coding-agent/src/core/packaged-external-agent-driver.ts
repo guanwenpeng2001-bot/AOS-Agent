@@ -33,9 +33,9 @@ export interface PackagedExternalAgentDriverOperation {
 /** Non-secret deterministic fixture shipped for package and binary verification. */
 export interface PackagedExternalAgentDriver {
 	readonly schemaVersion: 1;
-	readonly fixtureId: "line13-fake-connector";
-	readonly providerId: "line13.fake-connector";
-	readonly fauxProviderId: "line13.faux-provider";
+	readonly fixtureId: "aos.fake-connector";
+	readonly providerId: "aos.fake-connector";
+	readonly fakeProviderId: "aos.fake-provider";
 	readonly defaultEnabled: false;
 	readonly credentialMode: "none";
 	readonly networkMode: "disabled";
@@ -58,13 +58,13 @@ export interface PackagedExternalAgentDriverReceipt {
 	readonly phase: "run" | "resume" | "cancel";
 	readonly attemptReceiptId: string;
 	readonly attemptId: string;
-	readonly providerId: "line13.fake-connector";
+	readonly providerId: "aos.fake-connector";
 	readonly status: "suspended" | "succeeded" | "cancelled";
 	readonly sideEffectState: "none";
 }
 
 export interface PackagedExternalAgentDriverToolResult {
-	readonly toolCallId: "line13-tool-call";
+	readonly toolCallId: "aos.fake-tool-call";
 	readonly toolName: "fixture.echo";
 	readonly ok: true;
 	readonly sideEffectState: "none";
@@ -89,7 +89,7 @@ const EXACT_DRIVER_KEYS = new Set([
 	"schemaVersion",
 	"fixtureId",
 	"providerId",
-	"fauxProviderId",
+	"fakeProviderId",
 	"defaultEnabled",
 	"credentialMode",
 	"networkMode",
@@ -99,8 +99,8 @@ const EXACT_OPERATION_KEYS = new Set(["sequence", "kind", "input", "output"]);
 const OPERATION_KINDS: ReadonlySet<string> = new Set(["start", "tool", "resume", "cancel"]);
 const COMPILED_BUN_URL_MARKERS = Object.freeze(["$bunfs", "~BUN", "%7EBUN"]);
 const PACKAGED_NOW = "2026-08-29T00:00:00.000Z";
-const PACKAGED_PROVIDER_ID = "line13.fake-connector" as const;
-const PACKAGED_TOOL_CALL_ID = "line13-tool-call" as const;
+const PACKAGED_PROVIDER_ID = "aos.fake-connector" as const;
+const PACKAGED_TOOL_CALL_ID = "aos.fake-tool-call" as const;
 const PACKAGED_TOOL_NAME = "fixture.echo" as const;
 
 function ok<T>(value: T): Result<T, FoundationError> {
@@ -129,7 +129,7 @@ function operationInput(
 }
 
 function attemptIdFor(dispatchId: string): string {
-	return `line13_attempt_${dispatchId}`;
+	return `fake_attempt_${dispatchId}`;
 }
 
 function receiptSummary(
@@ -184,7 +184,7 @@ class PackagedFakeExternalAgentConnector implements ExternalAgentConnector {
 			schemaVersion: 1 as const,
 			providerId: this.providerId,
 			revision: 1,
-			protocol: { name: "line13-fake", version: "1" },
+			protocol: { name: "aos.fake-connector", version: "1" },
 			modelAccess: "none" as const,
 			resume: true,
 			toolGateway: true,
@@ -379,7 +379,7 @@ class PackagedFakeExternalAgentConnector implements ExternalAgentConnector {
 			ok: true,
 			sideEffectState: "none",
 			result: Object.freeze({ output: "echo:deterministic" }) as FoundationJsonValue,
-			toolReceiptRef: "line13-tool-receipt",
+			toolReceiptRef: "fake-tool-receipt",
 		});
 	}
 
@@ -389,7 +389,7 @@ class PackagedFakeExternalAgentConnector implements ExternalAgentConnector {
 		phase: PackagedExternalAgentDriverReceipt["phase"],
 		options?: FoundationProviderExecutionOptions,
 	): AttemptReceipt {
-		const attemptReceiptId = `line13_receipt_${phase}_${attempt.attemptId}`;
+		const attemptReceiptId = `fake_receipt_${phase}_${attempt.attemptId}`;
 		const receipt = Object.freeze({
 			schemaVersion: 1 as const,
 			attemptReceiptId,
@@ -407,7 +407,7 @@ class PackagedFakeExternalAgentConnector implements ExternalAgentConnector {
 				providerId: this.providerId,
 				producedAt: PACKAGED_NOW,
 				correlation: Object.freeze({
-					...(options?.correlation ?? { sessionId: "line13-session", laneId: "main", revision: 1 }),
+					...(options?.correlation ?? { sessionId: "fake-session", laneId: "main", revision: 1 }),
 					taskId: attempt.taskId,
 					dispatchId: attempt.dispatchId,
 					attemptId: attempt.attemptId,
@@ -459,9 +459,9 @@ function parseDriver(value: unknown): PackagedExternalAgentDriver {
 		!isRecord(value) ||
 		!hasExactKeys(value, EXACT_DRIVER_KEYS) ||
 		value.schemaVersion !== 1 ||
-		value.fixtureId !== "line13-fake-connector" ||
-		value.providerId !== "line13.fake-connector" ||
-		value.fauxProviderId !== "line13.faux-provider" ||
+		value.fixtureId !== "aos.fake-connector" ||
+		value.providerId !== "aos.fake-connector" ||
+		value.fakeProviderId !== "aos.fake-provider" ||
 		value.defaultEnabled !== false ||
 		value.credentialMode !== "none" ||
 		value.networkMode !== "disabled" ||
@@ -479,7 +479,7 @@ function parseDriver(value: unknown): PackagedExternalAgentDriver {
 		schemaVersion: 1,
 		fixtureId: value.fixtureId,
 		providerId: value.providerId,
-		fauxProviderId: value.fauxProviderId,
+		fakeProviderId: value.fakeProviderId,
 		defaultEnabled: false,
 		credentialMode: "none",
 		networkMode: "disabled",
@@ -535,9 +535,9 @@ export function loadPackagedExternalAgentDriver(name: string): PackagedExternalA
 
 export interface PackagedExternalAgentDriverTrace {
 	readonly schemaVersion: 1;
-	readonly fixtureId: "line13-fake-connector";
-	readonly providerId: "line13.fake-connector";
-	readonly fauxProviderId: "line13.faux-provider";
+	readonly fixtureId: "aos.fake-connector";
+	readonly providerId: "aos.fake-connector";
+	readonly fakeProviderId: "aos.fake-provider";
 	readonly defaultEnabled: false;
 	readonly credentialMode: "none";
 	readonly networkMode: "disabled";
@@ -556,7 +556,7 @@ function packagedBinding(taskId: string): AgentBinding {
 			revision: 1,
 			fingerprint: fingerprint({ type, id, revision: 1 }),
 		});
-	const capabilityRevision = immutableReference("capability_binding", "line13-capability-binding");
+	const capabilityRevision = immutableReference("capability_binding", "fake-capability-binding");
 	const mcpSelectionBase = {
 		schemaVersion: 1 as const,
 		capabilityBindingId: capabilityRevision.id,
@@ -565,16 +565,16 @@ function packagedBinding(taskId: string): AgentBinding {
 	};
 	const binding = {
 		schemaVersion: 1 as const,
-		bindingId: "line13-binding",
+		bindingId: "fake-binding",
 		taskId,
-		goalId: "line13-goal",
-		roleRevision: immutableReference("role_revision", "line13-role-revision"),
-		modelProfileRevision: immutableReference("model_profile_revision", "line13-model-profile"),
+		goalId: "fake-goal",
+		roleRevision: immutableReference("role_revision", "fake-role-revision"),
+		modelProfileRevision: immutableReference("model_profile_revision", "fake-model-profile"),
 		modelRoute: Object.freeze({ provider: "none", model: "none" }),
-		contextRevision: immutableReference("external_agent_binding", "line13-external-binding"),
+		contextRevision: immutableReference("external_agent_binding", "fake-external-binding"),
 		capabilityRevision,
-		modelBrokerBindingRevision: immutableReference("model_broker_binding", "line13-model-binding"),
-		policyRevision: immutableReference("policy_binding", "line13-policy-binding"),
+		modelBrokerBindingRevision: immutableReference("model_broker_binding", "fake-model-binding"),
+		policyRevision: immutableReference("policy_binding", "fake-policy-binding"),
 		capabilitySelector: Object.freeze({ policy: "all" as const }),
 		mcpSelection: Object.freeze({ ...mcpSelectionBase, digest: fingerprint(mcpSelectionBase) }),
 		budget: Object.freeze({}),
@@ -601,7 +601,7 @@ function packagedAttemptContext(dispatch: Dispatch): TaskExecutorAttemptContext 
 	return Object.freeze({
 		initialBindingEpoch: Object.freeze({
 			schemaVersion: 1,
-			bindingEpochId: `line13_epoch_${dispatch.dispatchId}`,
+			bindingEpochId: `fake_epoch_${dispatch.dispatchId}`,
 			taskId: dispatch.taskId,
 			attemptId: attemptIdFor(dispatch.dispatchId),
 			bindingId: dispatch.bindingId,
@@ -622,7 +622,7 @@ function requireOk<T>(result: Result<T, FoundationError>, phase: string): T {
 export async function runPackagedExternalAgentDriverFixture(): Promise<PackagedExternalAgentDriverTrace> {
 	const fixture = loadPackagedExternalAgentDriver("fake-connector");
 	const connector = new PackagedFakeExternalAgentConnector(fixture);
-	const taskId = "line13-task";
+	const taskId = "fake-task";
 	const binding = packagedBinding(taskId);
 	const capabilities = await connector.capabilities();
 	const probed = requireOk(await connector.probeCapabilities(), "capability probe");
@@ -635,16 +635,16 @@ export async function runPackagedExternalAgentDriverFixture(): Promise<PackagedE
 	) {
 		throw new Error("Packaged fake Connector capability negotiation failed.");
 	}
-	const primaryDispatch = packagedDispatch("line13-dispatch-primary", taskId, binding.bindingId);
+	const primaryDispatch = packagedDispatch("fake-dispatch-primary", taskId, binding.bindingId);
 	const primaryAttempt = requireOk(
 		await connector.createAttempt(primaryDispatch, binding, packagedAttemptContext(primaryDispatch)),
 		"start",
 	);
-	const correlation = Object.freeze({ sessionId: "line13-session", laneId: "main", revision: 1 });
+	const correlation = Object.freeze({ sessionId: "fake-session", laneId: "main", revision: 1 });
 	const runReceipt = requireOk(await connector.runAttempt(primaryAttempt, { correlation }), "tool run");
 	const resumeReceipt = requireOk(await connector.resumeAttempt(primaryAttempt, { correlation }), "resume");
 
-	const cancelDispatch = packagedDispatch("line13-dispatch-cancel", taskId, binding.bindingId);
+	const cancelDispatch = packagedDispatch("fake-dispatch-cancel", taskId, binding.bindingId);
 	const cancelAttempt = requireOk(
 		await connector.createAttempt(cancelDispatch, binding, packagedAttemptContext(cancelDispatch)),
 		"cancel start",
@@ -657,7 +657,7 @@ export async function runPackagedExternalAgentDriverFixture(): Promise<PackagedE
 		schemaVersion: 1,
 		fixtureId: fixture.fixtureId,
 		providerId: fixture.providerId,
-		fauxProviderId: fixture.fauxProviderId,
+		fakeProviderId: fixture.fakeProviderId,
 		defaultEnabled: fixture.defaultEnabled,
 		credentialMode: fixture.credentialMode,
 		networkMode: fixture.networkMode,

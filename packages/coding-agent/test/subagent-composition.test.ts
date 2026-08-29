@@ -441,7 +441,7 @@ async function planInput(
 		childLaneId: id("child-lane"),
 		childBinding,
 		providerDescriptor,
-		childAgentInstanceId: id("child-faux"),
+		childAgentInstanceId: id("child-fake"),
 		dispatchId: id("child-dispatch"),
 		attemptId: id("child-attempt"),
 		bindingEpochId: id("child-epoch"),
@@ -476,7 +476,7 @@ async function correctionHarness(options: {
 	};
 	const quota: QuotaProvider = {
 		schemaVersion: 1,
-		providerId: "faux",
+		providerId: "fake",
 		providerClass: "quota",
 		capabilities: async () => [],
 		reserve: async (attribution, budget) => Result.ok({
@@ -491,7 +491,7 @@ async function correctionHarness(options: {
 	};
 	const modelGateway = {
 		schemaVersion: 1 as const,
-		providerId: "faux-model-gateway",
+		providerId: "fake-model-gateway",
 		providerClass: "gateway" as const,
 		capabilities: async () => [],
 		stream: async () => Result.err(new Error("not used")),
@@ -499,7 +499,7 @@ async function correctionHarness(options: {
 	} as unknown as ScopedModelGateway;
 	const toolGateway = {
 		schemaVersion: 1 as const,
-		providerId: "faux-tool-gateway",
+		providerId: "fake-tool-gateway",
 		providerClass: "gateway" as const,
 		capabilities: async () => [],
 		execute: async () => Result.err(new Error("not used")),
@@ -507,7 +507,7 @@ async function correctionHarness(options: {
 	} as unknown as ToolGateway;
 	const artifactStore = {
 		schemaVersion: 1 as const,
-		providerId: "faux-artifact-store",
+		providerId: "fake-artifact-store",
 		providerClass: "store" as const,
 		capabilities: async () => [],
 		put: async () => Result.err(new Error("not used")),
@@ -591,7 +591,7 @@ async function correctionHarness(options: {
 		fork: { executable: process.execPath, entrypoint: fileURLToPath(new URL("../src/child-agent-entry.ts", import.meta.url)) },
 		...(options.productPrompt === undefined ? {} : { productPrompt: options.productPrompt }),
 		parentEndpoints: [
-			{ schemaVersion: 1, sessionId: "session-composition", laneId: "child-lane", agentInstanceId: "child-faux", taskId: "child-task", attemptId: "child-attempt" },
+			{ schemaVersion: 1, sessionId: "session-composition", laneId: "child-lane", agentInstanceId: "child-fake", taskId: "child-task", attemptId: "child-attempt" },
 			{ schemaVersion: 1, sessionId: "session-composition", laneId: "parent-lane", agentInstanceId: "parent-agent", taskId: "parent-task", attemptId: "parent-attempt" },
 		],
 		limits: { maxDepth: 4, maxConcurrent: 2, maxTurns: 4, queueCapacity: 2, maximumQueueWaitMs: 100 },
@@ -697,18 +697,18 @@ describe("trusted Subagent product composition", () => {
 		});
 		expect(chainedProjectionTrust).toBe("untrusted_child_output");
 		expect(fixture.harnessWorkspaces).toEqual([
-			"C:\\ephemeral\\child-faux:child-attempt",
-			"C:\\ephemeral\\child-faux-second:child-attempt-second",
+			"C:\\ephemeral\\child-fake:child-attempt",
+			"C:\\ephemeral\\child-fake-second:child-attempt-second",
 		]);
 		expect(adapter.calls).toEqual([
-			"create:child-faux:child-attempt",
-			"harness:child-faux:child-attempt",
-			"apply:child-faux:child-attempt:applied",
-			"create:child-faux-second:child-attempt-second",
-			"harness:child-faux-second:child-attempt-second",
-			"apply:child-faux-second:child-attempt-second:applied",
-			"delete:child-faux:child-attempt",
-			"delete:child-faux-second:child-attempt-second",
+			"create:child-fake:child-attempt",
+			"harness:child-fake:child-attempt",
+			"apply:child-fake:child-attempt:applied",
+			"create:child-fake-second:child-attempt-second",
+			"harness:child-fake-second:child-attempt-second",
+			"apply:child-fake-second:child-attempt-second:applied",
+			"delete:child-fake:child-attempt",
+			"delete:child-fake-second:child-attempt-second",
 		]);
 		const durable = await fixture.session.findFoundationRecords({ order: "oldestFirst" });
 		expect(JSON.stringify(durable)).not.toContain("C:\\\\ephemeral");
@@ -724,8 +724,8 @@ describe("trusted Subagent product composition", () => {
 		]);
 		const parentTurn = await fixture.composition.consumeParentNextTurnForRun("run-production-chain");
 		expect(parentTurn).toMatchObject({ ok: true, value: { entries: [
-			{ trust: "untrusted_child_output", childAgentInstanceId: "child-faux" },
-			{ trust: "untrusted_child_output", childAgentInstanceId: "child-faux-second" },
+			{ trust: "untrusted_child_output", childAgentInstanceId: "child-fake" },
+			{ trust: "untrusted_child_output", childAgentInstanceId: "child-fake-second" },
 		] } });
 		await fixture.close();
 	});
@@ -945,9 +945,9 @@ describe("trusted Subagent product composition", () => {
 
 	it.each([
 		["all_succeed", { type: "all_succeed" } as const, [] as const, true],
-		["quorum", { type: "quorum", minimumSucceeded: 1 } as const, ["child-faux-second"] as const, true],
-		["partial", { type: "partial" } as const, ["child-faux-second"] as const, true],
-		["all_succeed failure", { type: "all_succeed" } as const, ["child-faux-second"] as const, false],
+		["quorum", { type: "quorum", minimumSucceeded: 1 } as const, ["child-fake-second"] as const, true],
+		["partial", { type: "partial" } as const, ["child-fake-second"] as const, true],
+		["all_succeed failure", { type: "all_succeed" } as const, ["child-fake-second"] as const, false],
 	])("runs parallel Host join policy %s", async (_name, join, failedChildren, expectedOk) => {
 		const fixture = await correctionHarness({ failedChildren });
 		const second = await fixture.planFor("second");
@@ -974,7 +974,7 @@ describe("trusted Subagent product composition", () => {
 	});
 
 	it("interrupts a production chain after a failed Child receipt", async () => {
-		const fixture = await correctionHarness({ productionPath: true, failedChildren: ["child-faux"] });
+		const fixture = await correctionHarness({ productionPath: true, failedChildren: ["child-fake"] });
 		let nextCreated = false;
 		const result = await fixture.composition.executeComposition({
 			schemaVersion: 1,
@@ -1013,10 +1013,10 @@ describe("trusted Subagent product composition", () => {
 		});
 		expect(result).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
 		expect(adapter.calls).toEqual([
-			"create:child-faux:child-attempt",
-			"harness:child-faux:child-attempt",
-			"apply:child-faux:child-attempt:conflict",
-			"delete:child-faux:child-attempt",
+			"create:child-fake:child-attempt",
+			"harness:child-fake:child-attempt",
+			"apply:child-fake:child-attempt:conflict",
+			"delete:child-fake:child-attempt",
 		]);
 		await fixture.close();
 	});
@@ -1031,7 +1031,7 @@ describe("trusted Subagent product composition", () => {
 			plan: fixture.plan,
 		});
 		expect(result).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
-		expect(adapter.calls).toContain("quarantine:child-faux:child-attempt");
+		expect(adapter.calls).toContain("quarantine:child-fake:child-attempt");
 		await fixture.close();
 	});
 
@@ -1208,12 +1208,12 @@ describe("trusted Subagent product composition", () => {
 		};
 		const passiveProvider: QuotaProvider = {
 			schemaVersion: 1 as const,
-			providerId: "faux",
+			providerId: "fake",
 			providerClass: "quota" as const,
 			capabilities: async () => [],
 			reserve: async (attribution, budget) => Result.ok({
 				schemaVersion: 1,
-				reservationId: "reservation-faux",
+				reservationId: "reservation-fake",
 				attribution,
 				budget,
 				grantedAt: NOW,
@@ -1223,7 +1223,7 @@ describe("trusted Subagent product composition", () => {
 		};
 		const modelGateway = {
 			schemaVersion: 1 as const,
-			providerId: "faux-model-gateway",
+			providerId: "fake-model-gateway",
 			providerClass: "gateway" as const,
 			capabilities: async () => [],
 			stream: async () => Result.err(new Error("not used")),
@@ -1231,7 +1231,7 @@ describe("trusted Subagent product composition", () => {
 		} as unknown as ScopedModelGateway;
 		const toolGateway = {
 			schemaVersion: 1 as const,
-			providerId: "faux-tool-gateway",
+			providerId: "fake-tool-gateway",
 			providerClass: "gateway" as const,
 			capabilities: async () => [],
 			execute: async () => Result.err(new Error("not used")),
@@ -1239,7 +1239,7 @@ describe("trusted Subagent product composition", () => {
 		} as unknown as ToolGateway;
 		const artifactStore = {
 			schemaVersion: 1 as const,
-			providerId: "faux-artifact-store",
+			providerId: "fake-artifact-store",
 			providerClass: "store" as const,
 			capabilities: async () => [],
 			put: async () => Result.err(new Error("not used")),
@@ -1277,7 +1277,7 @@ describe("trusted Subagent product composition", () => {
 			}) as unknown as AgentHarness,
 			fork: { executable: process.execPath, entrypoint: fileURLToPath(new URL("../src/child-agent-entry.ts", import.meta.url)) },
 			parentEndpoints: [
-				{ schemaVersion: 1, sessionId: "session-composition", laneId: "child-lane", agentInstanceId: "child-faux", taskId: "child-task", attemptId: "child-attempt" },
+				{ schemaVersion: 1, sessionId: "session-composition", laneId: "child-lane", agentInstanceId: "child-fake", taskId: "child-task", attemptId: "child-attempt" },
 				{ schemaVersion: 1, sessionId: "session-composition", laneId: "parent-lane", agentInstanceId: "parent-agent", taskId: "parent-task", attemptId: "parent-attempt" },
 			],
 			limits: { maxDepth: 4, maxConcurrent: 2, maxTurns: 4, queueCapacity: 2, maximumQueueWaitMs: 100 },
@@ -1295,13 +1295,13 @@ describe("trusted Subagent product composition", () => {
 		const planned = await composition.planSpawn(await planInput(ledgerForLane("parent-lane"), role(), profile()));
 		expect(planned.ok).toBe(true);
 		if (!planned.ok) throw planned.error;
-		const executed = await composition.executePlan({ schemaVersion: 1, runId: "run-faux", plan: planned.value });
+		const executed = await composition.executePlan({ schemaVersion: 1, runId: "run-fake", plan: planned.value });
 		if (!executed.ok) throw executed.error;
 		expect(executed).toMatchObject({ ok: true, value: { receipt: { receipt: { status: "succeeded" } } } });
 		const sent = await composition.deliverChildMailbox({
 			schemaVersion: 1,
-			messageId: "message-faux",
-			fromAgentInstanceId: "child-faux",
+			messageId: "message-fake",
+			fromAgentInstanceId: "child-fake",
 			fromAttemptId: "child-attempt",
 			toAgentInstanceId: "parent-agent",
 			kind: "notice",
@@ -1315,7 +1315,7 @@ describe("trusted Subagent product composition", () => {
 			},
 		});
 		expect(sent.ok).toBe(true);
-		const nextTurn = await composition.consumeParentNextTurnForRun("run-faux");
+		const nextTurn = await composition.consumeParentNextTurnForRun("run-fake");
 		expect(nextTurn).toMatchObject({ ok: true, value: { entries: [{ trust: "untrusted_child_output" }] } });
 		if (!nextTurn.ok) throw nextTurn.error;
 		expect(nextTurn.value.contextText).toContain('trust="untrusted_child_output"');
@@ -1347,7 +1347,7 @@ describe("trusted Subagent product composition", () => {
 			},
 		});
 		expect((await fixture.statuses()).at(-1)).toBe("closed");
-		expect(await fixture.composition.get("run-bind-conflict", "child-faux")).toEqual(Result.ok(undefined));
+		expect(await fixture.composition.get("run-bind-conflict", "child-fake")).toEqual(Result.ok(undefined));
 		expect(await fixture.composition.list("run-bind-conflict", { limit: 10 })).toEqual(Result.ok([]));
 		await fixture.composition.dispose();
 	});
@@ -1364,7 +1364,7 @@ describe("trusted Subagent product composition", () => {
 			error: { code: "subagent_lost", message: "dispatch-failure-sentinel" },
 		});
 		expect((await fixture.statuses()).at(-1)).toBe("closed");
-		expect(await fixture.composition.get("run-dispatch-failure", "child-faux")).toEqual(Result.ok(undefined));
+		expect(await fixture.composition.get("run-dispatch-failure", "child-fake")).toEqual(Result.ok(undefined));
 		expect(await fixture.composition.list("run-dispatch-failure", { limit: 10 })).toEqual(Result.ok([]));
 		await fixture.composition.dispose();
 	});
@@ -1384,7 +1384,7 @@ describe("trusted Subagent product composition", () => {
 			},
 		});
 		expect((await fixture.statuses()).at(-1)).toBe("closed");
-		expect(await fixture.composition.get("run-settlement-failure", "child-faux")).toEqual(Result.ok(undefined));
+		expect(await fixture.composition.get("run-settlement-failure", "child-fake")).toEqual(Result.ok(undefined));
 		expect(await fixture.composition.list("run-settlement-failure", { limit: 10 })).toEqual(Result.ok([]));
 		await fixture.composition.dispose();
 	});
@@ -1424,7 +1424,7 @@ describe("trusted Subagent product composition", () => {
 		const resumed = await fixture.composition.resumeChild({
 			schemaVersion: 1,
 			runId: "run-resume-after-reload",
-			childAgentInstanceId: "child-faux",
+			childAgentInstanceId: "child-fake",
 			expectedTurnCount: 1,
 			additionalTurns: 1,
 		});

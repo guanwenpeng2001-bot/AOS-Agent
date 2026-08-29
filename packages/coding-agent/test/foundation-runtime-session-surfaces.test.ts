@@ -9,7 +9,7 @@ import type {
 	TaskEnvelope,
 	TaskResult,
 } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage } from "@aos-agent/ai/compat";
+import { fakeAssistantMessage, registerFakeProvider, type AssistantMessage } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	RUNTIME_SESSION_SURFACES,
@@ -30,7 +30,7 @@ function settledResponse(text: string): AssistantMessage {
 		errorMessage: _errorMessage,
 		responseId: _responseId,
 		...message
-	} = fauxAssistantMessage(text);
+	} = fakeAssistantMessage(text);
 	return message;
 }
 
@@ -76,12 +76,12 @@ describe("Foundation RuntimeSession public surfaces", () => {
 
 	it("drives every public surface through one AgentSession and the complete durable receipt chain", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-runtime-session-surfaces-"));
-		const faux = registerFauxProvider();
+		const fake = registerFakeProvider();
 		cleanup = () => {
-			faux.unregister();
+			fake.unregister();
 			rmSync(cwd, { recursive: true, force: true });
 		};
-		faux.setResponses([
+		fake.setResponses([
 			...RUNTIME_SESSION_SURFACES.map((surface) => settledResponse(`response from ${surface}`)),
 			settledResponse("response from sdk default"),
 			settledResponse("response from tui binding"),
@@ -91,9 +91,9 @@ describe("Foundation RuntimeSession public surfaces", () => {
 		]);
 
 		const authStorage = AuthStorage.inMemory();
-		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
-		const model = faux.getModel();
+		const model = fake.getModel();
 		modelRuntime.registerProvider(model.provider, {
 			baseUrl: model.baseUrl,
 			api: model.api,
@@ -186,12 +186,12 @@ describe("Foundation RuntimeSession public surfaces", () => {
 
 	it("keeps the SDK adapter, local TUI binding, canonical receipt, and Audit business terminal equal", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-runtime-surface-parity-"));
-		const faux = registerFauxProvider();
-		faux.setResponses([settledResponse("same response"), settledResponse("same response")]);
+		const fake = registerFakeProvider();
+		fake.setResponses([settledResponse("same response"), settledResponse("same response")]);
 		const authStorage = AuthStorage.inMemory();
-		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 		const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
-		const model = faux.getModel();
+		const model = fake.getModel();
 		modelRuntime.registerProvider(model.provider, {
 			baseUrl: model.baseUrl,
 			api: model.api,
@@ -255,7 +255,7 @@ describe("Foundation RuntimeSession public surfaces", () => {
 			sdk.session.dispose();
 			tui.session.dispose();
 			await Promise.all([sdk.session.waitForDispose(), tui.session.waitForDispose()]);
-			faux.unregister();
+			fake.unregister();
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	}, 90_000);

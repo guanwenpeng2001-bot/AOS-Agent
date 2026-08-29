@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@aos-agent/agent-core";
-import { type AssistantMessage, createAssistantMessageEventStream, fauxAssistantMessage } from "@aos-agent/ai";
+import { type AssistantMessage, createAssistantMessageEventStream, fakeAssistantMessage } from "@aos-agent/ai";
 import { getModel, streamSimple } from "@aos-agent/ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
@@ -90,7 +90,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 					type: "done",
 					reason: "stop",
 					message: {
-						...fauxAssistantMessage("compacted"),
+						...fakeAssistantMessage("compacted"),
 						api: summaryModel.api,
 						provider: summaryModel.provider,
 						model: summaryModel.id,

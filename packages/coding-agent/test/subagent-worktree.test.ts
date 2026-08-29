@@ -23,7 +23,7 @@ const TARGET_DIGEST = `sha256:${"b".repeat(64)}`;
 const CREATED_DIGEST = `sha256:${"c".repeat(64)}`;
 const EDITED_DIGEST = `sha256:${"d".repeat(64)}`;
 
-class FauxOwnedWorktreeAdapter implements WorktreeAdapter {
+class FakeOwnedWorktreeAdapter implements WorktreeAdapter {
 	state: OwnedWorktreeState = {
 		schemaVersion: 1,
 		childAgentInstanceId: "child-agent",
@@ -98,7 +98,7 @@ class FauxOwnedWorktreeAdapter implements WorktreeAdapter {
 	}
 }
 
-function fixture(id: string, adapter = new FauxOwnedWorktreeAdapter(), now: () => number = () => 1_767_225_600_000) {
+function fixture(id: string, adapter = new FakeOwnedWorktreeAdapter(), now: () => number = () => 1_767_225_600_000) {
 	const session = new Session(new InMemorySessionStorage({ id, createdAt: 1 }));
 	const laneId = "child-worktree-lane";
 	const ledger = new SessionLedger(session, { ownerId: `${id}-writer`, laneId });
@@ -177,7 +177,7 @@ describe("Subagent owned worktree lifecycle", () => {
 			worktreeDigest: `sha256:${"f".repeat(64)}`,
 		}, { clientRequestId: "corrupt-metadata", expectedRevision: 0, correlation: { attemptId: identity.attemptId, agentInstanceId: identity.childAgentInstanceId } });
 		await wrongLane.release();
-		const adapter = new FauxOwnedWorktreeAdapter();
+		const adapter = new FakeOwnedWorktreeAdapter();
 		const host: ChildWorktreeHost = { adapter, ledger: new SessionLedger(session, { ownerId: "expected-lane-writer", laneId: "expected-lane" }), sessionId: id, laneId: "expected-lane" };
 		expect(await createChildWorktree(host, identity.childAgentInstanceId, identity.attemptId, "main")).toMatchObject({ ok: false, error: { code: "subagent_worktree_conflict" } });
 		expect(adapter.createCount).toBe(0);
@@ -185,7 +185,7 @@ describe("Subagent owned worktree lifecycle", () => {
 
 	it("quarantines partial create throws and errors, and surfaces quarantine failure", async () => {
 		for (const behavior of ["throw", "error"] as const) {
-			const adapter = new FauxOwnedWorktreeAdapter();
+			const adapter = new FakeOwnedWorktreeAdapter();
 			adapter.createBehavior = behavior;
 			const { host, session } = fixture(`worktree-partial-${behavior}`, adapter);
 			expect(await createChildWorktree(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false });
@@ -193,7 +193,7 @@ describe("Subagent owned worktree lifecycle", () => {
 			expect(adapter.state.state).toBe("quarantined");
 			expect(await session.findFoundationRecords({ kind: "fact", objectType: "subagent_worktree_quarantine" })).toHaveLength(1);
 		}
-		const adapter = new FauxOwnedWorktreeAdapter();
+		const adapter = new FakeOwnedWorktreeAdapter();
 		adapter.createBehavior = "throw";
 		adapter.quarantineFails = true;
 		const { host } = fixture("worktree-quarantine-failure", adapter);
@@ -202,7 +202,7 @@ describe("Subagent owned worktree lifecycle", () => {
 
 	it("replays repeated quarantine with the original canonical timestamp", async () => {
 		let clock = 1_767_225_600_000;
-		const adapter = new FauxOwnedWorktreeAdapter();
+		const adapter = new FakeOwnedWorktreeAdapter();
 		adapter.resolveBehavior = "error";
 		const { host, session } = fixture("worktree-quarantine-replay", adapter, () => clock);
 		expect(await createChildWorktree(host, "child-agent", "attempt-1", "main")).toMatchObject({ ok: false });
@@ -216,7 +216,7 @@ describe("Subagent owned worktree lifecycle", () => {
 	});
 
 	it("quarantines when ownership cannot be resolved after delete", async () => {
-		const adapter = new FauxOwnedWorktreeAdapter();
+		const adapter = new FakeOwnedWorktreeAdapter();
 		const { host, session } = fixture("worktree-post-delete-resolve-throw", adapter);
 		const created = await createChildWorktree(host, "child-agent", "attempt-1", "main");
 		if (!created.ok) throw created.error;
@@ -233,7 +233,7 @@ describe("Subagent owned worktree lifecycle", () => {
 		const session = new Session(new InMemorySessionStorage({ id, createdAt: 1 }));
 		const blocker = new SessionLedger(session, { ownerId: "blocking-writer", laneId: "child-worktree-lane" });
 		await blocker.appendFact("blocker", "lease", { schemaVersion: 1 }, { clientRequestId: "hold-lease", expectedRevision: 0, correlation: {} });
-		const adapter = new FauxOwnedWorktreeAdapter();
+		const adapter = new FakeOwnedWorktreeAdapter();
 		const host: ChildWorktreeHost = {
 			adapter,
 			ledger: new SessionLedger(session, { ownerId: "worktree-writer", laneId: "child-worktree-lane" }),

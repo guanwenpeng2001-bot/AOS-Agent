@@ -15,7 +15,7 @@ describe("RemoteSession operations", () => {
 						role: "assistant",
 						content: [{ type: "text", text: "hello" }],
 						status: "streaming",
-						model: { provider: "faux", id: "model" },
+						model: { provider: "fake", id: "model" },
 						timestamp: 1,
 					},
 				],

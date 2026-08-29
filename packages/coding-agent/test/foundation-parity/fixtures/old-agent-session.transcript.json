@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "recorder": "old-AgentSession (suite harness + faux provider)",
+  "recorder": "old-AgentSession (suite harness + fake provider)",
   "normalization": {
     "stripped": [
       "message timestamps",

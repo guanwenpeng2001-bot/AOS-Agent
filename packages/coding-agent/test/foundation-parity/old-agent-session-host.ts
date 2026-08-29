@@ -19,10 +19,10 @@ import { join } from "node:path";
 import type { AgentMessage, AgentTool } from "@aos-agent/agent-core";
 import type { Usage } from "@aos-agent/ai";
 import {
-	fauxAssistantMessage,
-	registerFauxProvider,
-	type FauxProviderRegistration,
-	type FauxResponseStep,
+	fakeAssistantMessage,
+	registerFakeProvider,
+	type FakeProviderRegistration,
+	type FakeResponseStep,
 } from "@aos-agent/ai/compat";
 import { Type } from "typebox";
 import type { AgentSessionEvent } from "../../src/core/agent-session.ts";
@@ -224,7 +224,7 @@ export class OldAgentSessionHost implements ScenarioHost {
 	private requestedTools: AgentTool[] = [];
 	private requestedExtensions: InlineExtensionInput[] = [];
 	private requestedSettings: { compaction?: { keepRecentTokens: number } } = {};
-	private pendingResponses: FauxResponseStep[] = [];
+	private pendingResponses: FakeResponseStep[] = [];
 	private readonly blockingRelease: Map<string, () => void> = new Map();
 	private readonly toolStartWaiters: Map<string, Array<() => void>> = new Map();
 
@@ -251,7 +251,7 @@ export class OldAgentSessionHost implements ScenarioHost {
 		this.requestedTools = [...this.requestedTools, tool];
 	}
 
-	setResponses(responses: FauxResponseStep[]): void {
+	setResponses(responses: FakeResponseStep[]): void {
 		if (this.harness) {
 			this.harness.setResponses(responses);
 			return;
@@ -296,7 +296,7 @@ export class OldAgentSessionHost implements ScenarioHost {
 		});
 		const model = harness.getModel();
 		const assistant: AgentMessage = {
-			...fauxAssistantMessage("assistant response to compact", { stopReason: "stop", timestamp: now - 500 }),
+			...fakeAssistantMessage("assistant response to compact", { stopReason: "stop", timestamp: now - 500 }),
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
@@ -347,7 +347,7 @@ export class OldAgentSessionHost implements ScenarioHost {
 
 	async abortActiveResponse(responseText: string): Promise<void> {
 		const session = (await this.ensureHarness()).session;
-		this.setResponses([fauxAssistantMessage(responseText)]);
+		this.setResponses([fakeAssistantMessage(responseText)]);
 		const firstUpdate = new Promise<void>((resolve) => {
 			const unsubscribe = session.subscribe((event) => {
 				if (event.type === "message_update") {
@@ -433,8 +433,8 @@ export class ResumeAgentSessionHost implements ScenarioHost {
 	private readonly events: NormalizedEvent[] = [];
 	private readonly eventNormalizer = new EventNormalizer();
 	private runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>> | undefined;
-	private faux: FauxProviderRegistration | undefined;
-	private pendingResponses: FauxResponseStep[] = [];
+	private fake: FakeProviderRegistration | undefined;
+	private pendingResponses: FakeResponseStep[] = [];
 	private readonly tempDir: string;
 
 	constructor() {
@@ -450,9 +450,9 @@ export class ResumeAgentSessionHost implements ScenarioHost {
 		// The resume flow uses no blocking tools.
 	}
 
-	setResponses(responses: FauxResponseStep[]): void {
-		if (this.faux) {
-			this.faux.setResponses(responses);
+	setResponses(responses: FakeResponseStep[]): void {
+		if (this.fake) {
+			this.fake.setResponses(responses);
 			return;
 		}
 		this.pendingResponses = responses;
@@ -544,8 +544,8 @@ export class ResumeAgentSessionHost implements ScenarioHost {
 			await this.runtime.dispose();
 			this.runtime = undefined;
 		}
-		this.faux?.unregister();
-		this.faux = undefined;
+		this.fake?.unregister();
+		this.fake = undefined;
 		if (existsSync(this.tempDir)) {
 			rmSync(this.tempDir, { recursive: true, force: true });
 		}
@@ -556,13 +556,13 @@ export class ResumeAgentSessionHost implements ScenarioHost {
 		const tempDir = this.tempDir;
 		const events = this.events;
 
-		const faux = registerFauxProvider({
-			models: [{ id: "faux-1", reasoning: true }],
+		const fake = registerFakeProvider({
+			models: [{ id: "fake-1", reasoning: true }],
 		});
-		faux.setResponses([]);
-		this.faux = faux;
+		fake.setResponses([]);
+		this.fake = fake;
 		if (this.pendingResponses.length > 0) {
-			faux.setResponses(this.pendingResponses);
+			fake.setResponses(this.pendingResponses);
 			this.pendingResponses = [];
 		}
 
@@ -579,15 +579,15 @@ export class ResumeAgentSessionHost implements ScenarioHost {
 		const runtimeOptions = {
 			agentDir: tempDir,
 			authStorage: AuthStorage.inMemory(),
-			model: faux.getModel(),
+			model: fake.getModel(),
 			resourceLoaderOptions: {
 				extensionFactories: [
 					(agent: ExtensionAPI) => {
-						agent.registerProvider(faux.getModel().provider, {
-							baseUrl: faux.getModel().baseUrl,
-							apiKey: "faux-key",
-							api: faux.api,
-							models: faux.models.map((registeredModel) => ({
+						agent.registerProvider(fake.getModel().provider, {
+							baseUrl: fake.getModel().baseUrl,
+							apiKey: "fake-key",
+							api: fake.api,
+							models: fake.models.map((registeredModel) => ({
 								id: registeredModel.id,
 								name: registeredModel.name,
 								api: registeredModel.api,

@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@aos-agent/ai/compat";
+import { fakeAssistantMessage, registerFakeProvider } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type AgentRuntimeComposition,
@@ -69,16 +69,16 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		const tempDir = join(tmpdir(), `aos-runtime-events-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
-		const faux = registerFauxProvider();
-		faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two"), fauxAssistantMessage("three")]);
+		const fake = registerFakeProvider();
+		fake.setResponses([fakeAssistantMessage("one"), fakeAssistantMessage("two"), fakeAssistantMessage("three")]);
 
 		const authStorage = AuthStorage.inMemory();
-		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 		const modelRuntime = await ModelRuntime.create({
 			credentials: authStorage,
 			modelsPath: join(tempDir, "models.json"),
 		});
-		const model = faux.getModel();
+		const model = fake.getModel();
 		modelRuntime.registerProvider(model.provider, {
 			baseUrl: model.baseUrl,
 			api: model.api,
@@ -100,7 +100,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		const runtimeOptions = {
 			agentDir: tempDir,
 			modelRuntime,
-			model: faux.getModel(),
+			model: fake.getModel(),
 			runtimeComposition: createAgentRuntimeCompositionFactory({
 				externalConnectorRegistry: () => createExternalConnectorRegistry(),
 			}),
@@ -128,7 +128,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 					services,
 					sessionManager,
 					sessionStartEvent,
-					model: faux.getModel(),
+					model: fake.getModel(),
 				});
 			createdSessions.push(created.session);
 			registerCandidateSession(created.session);
@@ -163,7 +163,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		cleanups.push(async () => {
 			await runtimeHost.dispose();
-			faux.unregister();
+			fake.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
@@ -171,7 +171,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		return {
 			runtimeHost,
-			faux,
+			fake,
 			tempDir,
 			failConstructionAfterAllocation: () => {
 				nextFactoryFault = "construction";
@@ -855,12 +855,12 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 	});
 
 	it("isolates reload storage and preserves concurrent old-scope writes when the candidate fails", async () => {
-		const { runtimeHost, faux } = await createRuntimeHost(() => undefined);
-		faux.setResponses([
-			fauxAssistantMessage("one"),
-			fauxAssistantMessage("two"),
-			fauxAssistantMessage("three"),
-			fauxAssistantMessage("four"),
+		const { runtimeHost, fake } = await createRuntimeHost(() => undefined);
+		fake.setResponses([
+			fakeAssistantMessage("one"),
+			fakeAssistantMessage("two"),
+			fakeAssistantMessage("three"),
+			fakeAssistantMessage("four"),
 		]);
 		const oldSession = runtimeHost.session;
 		await oldSession.prompt("persist reload source");
@@ -900,11 +900,11 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 	});
 
 	it("commits same-file reload through one writer and merges accepted old-scope writes", async () => {
-		const { runtimeHost, faux } = await createRuntimeHost(() => undefined);
-		faux.setResponses([
-			fauxAssistantMessage("one"),
-			fauxAssistantMessage("two"),
-			fauxAssistantMessage("three"),
+		const { runtimeHost, fake } = await createRuntimeHost(() => undefined);
+		fake.setResponses([
+			fakeAssistantMessage("one"),
+			fakeAssistantMessage("two"),
+			fakeAssistantMessage("three"),
 		]);
 		const oldSession = runtimeHost.session;
 		await oldSession.prompt("persist reload success source");
@@ -960,11 +960,11 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 	for (const flow of ["switch", "import"] as const) {
 		it(`commits same-file ${flow} through the detached writer`, async () => {
-			const { runtimeHost, faux } = await createRuntimeHost(() => undefined);
-			faux.setResponses([
-				fauxAssistantMessage("one"),
-				fauxAssistantMessage("two"),
-				fauxAssistantMessage("three"),
+			const { runtimeHost, fake } = await createRuntimeHost(() => undefined);
+			fake.setResponses([
+				fakeAssistantMessage("one"),
+				fakeAssistantMessage("two"),
+				fakeAssistantMessage("three"),
 			]);
 			const oldSession = runtimeHost.session;
 			await oldSession.prompt(`persist same-file ${flow} source`);

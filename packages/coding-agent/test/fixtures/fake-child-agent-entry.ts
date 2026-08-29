@@ -5,27 +5,27 @@ import { FoundationError, Result } from "@aos-agent/agent-core";
 import {
 	createAssistantMessageEventStream,
 	createModels,
-	fauxProvider,
+	fakeProvider,
 } from "@aos-agent/ai";
 import {
 	AgentHarnessChildAgentEntryRuntime,
 	runChildAgentProcess,
 } from "../../src/child-agent-entry.ts";
 
-export const FAUX_CHILD_AGENT_SENTINEL = "AOS_CHILD_AGENT_FORK_OK";
-export const FAUX_CHILD_PARENT_CONTEXT = "AOS_CHILD_AGENT_PARENT_CONTEXT";
+export const FAKE_CHILD_AGENT_SENTINEL = "AOS_CHILD_AGENT_FORK_OK";
+export const FAKE_CHILD_PARENT_CONTEXT = "AOS_CHILD_AGENT_PARENT_CONTEXT";
 
-const faux = fauxProvider({ provider: "fake", models: [{ id: "model-1" }] });
+const fake = fakeProvider({ provider: "fake", models: [{ id: "model-1" }] });
 const models = createModels();
-models.setProvider(faux.provider);
+models.setProvider(fake.provider);
 const runtime = new AgentHarnessChildAgentEntryRuntime({
 	models,
 	streamFunction: (model, context) => {
 		const stream = createAssistantMessageEventStream();
-		const inherited = JSON.stringify(context.messages).includes(FAUX_CHILD_PARENT_CONTEXT);
+		const inherited = JSON.stringify(context.messages).includes(FAKE_CHILD_PARENT_CONTEXT);
 		const message = {
 			role: "assistant" as const,
-			content: [{ type: "text" as const, text: inherited ? FAUX_CHILD_AGENT_SENTINEL : "AOS_CHILD_AGENT_PARENT_CONTEXT_MISSING" }],
+			content: [{ type: "text" as const, text: inherited ? FAKE_CHILD_AGENT_SENTINEL : "AOS_CHILD_AGENT_PARENT_CONTEXT_MISSING" }],
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
@@ -47,10 +47,10 @@ const runtime = new AgentHarnessChildAgentEntryRuntime({
 		return stream;
 	},
 	resolveModel: (selection) => {
-		const model = faux.getModel();
+		const model = fake.getModel();
 		return selection.provider === model.provider && selection.model === model.id
 			? Result.ok(model)
-			: Result.err(new FoundationError("subagent_provider_unavailable", "Faux smoke model selection did not match"));
+			: Result.err(new FoundationError("subagent_provider_unavailable", "Fake smoke model selection did not match"));
 	},
 });
 

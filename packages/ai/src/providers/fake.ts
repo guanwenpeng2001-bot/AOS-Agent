@@ -20,10 +20,10 @@ import type {
 } from "../types.ts";
 import { createAssistantMessageEventStream } from "../utils/event-stream.ts";
 
-const DEFAULT_API = "faux";
-const DEFAULT_PROVIDER = "faux";
-const DEFAULT_MODEL_ID = "faux-1";
-const DEFAULT_MODEL_NAME = "Faux Model";
+const DEFAULT_API = "fake";
+const DEFAULT_PROVIDER = "fake";
+const DEFAULT_MODEL_ID = "fake-1";
+const DEFAULT_MODEL_NAME = "Fake Model";
 const DEFAULT_BASE_URL = "http://localhost:0";
 const DEFAULT_MIN_TOKEN_SIZE = 3;
 const DEFAULT_MAX_TOKEN_SIZE = 5;
@@ -37,7 +37,7 @@ const DEFAULT_USAGE: Usage = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-export interface FauxModelDefinition {
+export interface FakeModelDefinition {
 	id: string;
 	name?: string;
 	reasoning?: boolean;
@@ -47,17 +47,17 @@ export interface FauxModelDefinition {
 	maxTokens?: number;
 }
 
-export type FauxContentBlock = TextContent | ThinkingContent | ToolCall;
+export type FakeContentBlock = TextContent | ThinkingContent | ToolCall;
 
-export function fauxText(text: string): TextContent {
+export function fakeText(text: string): TextContent {
 	return { type: "text", text };
 }
 
-export function fauxThinking(thinking: string): ThinkingContent {
+export function fakeThinking(thinking: string): ThinkingContent {
 	return { type: "thinking", thinking };
 }
 
-export function fauxToolCall(name: string, arguments_: ToolCall["arguments"], options: { id?: string } = {}): ToolCall {
+export function fakeToolCall(name: string, arguments_: ToolCall["arguments"], options: { id?: string } = {}): ToolCall {
 	return {
 		type: "toolCall",
 		id: options.id ?? randomId("tool"),
@@ -66,15 +66,15 @@ export function fauxToolCall(name: string, arguments_: ToolCall["arguments"], op
 	};
 }
 
-function normalizeFauxAssistantContent(content: string | FauxContentBlock | FauxContentBlock[]): FauxContentBlock[] {
+function normalizeFakeAssistantContent(content: string | FakeContentBlock | FakeContentBlock[]): FakeContentBlock[] {
 	if (typeof content === "string") {
-		return [fauxText(content)];
+		return [fakeText(content)];
 	}
 	return Array.isArray(content) ? content : [content];
 }
 
-export function fauxAssistantMessage(
-	content: string | FauxContentBlock | FauxContentBlock[],
+export function fakeAssistantMessage(
+	content: string | FakeContentBlock | FakeContentBlock[],
 	options: {
 		stopReason?: AssistantMessage["stopReason"];
 		deferred?: DeferredHandle;
@@ -85,7 +85,7 @@ export function fauxAssistantMessage(
 ): AssistantMessage {
 	return {
 		role: "assistant",
-		content: normalizeFauxAssistantContent(content),
+		content: normalizeFakeAssistantContent(content),
 		api: DEFAULT_API,
 		provider: DEFAULT_PROVIDER,
 		model: DEFAULT_MODEL_ID,
@@ -98,25 +98,25 @@ export function fauxAssistantMessage(
 	};
 }
 
-export interface FauxProviderState {
+export interface FakeProviderState {
 	callCount: number;
 	deferredFetchCount: number;
 	cancelledDeferred: DeferredHandle[];
 }
 
-export type FauxResponseFactory = (
+export type FakeResponseFactory = (
 	context: Context,
 	options: SimpleStreamOptions | undefined,
-	state: FauxProviderState,
+	state: FakeProviderState,
 	model: Model<string>,
 ) => AssistantMessage | Promise<AssistantMessage>;
 
-export type FauxResponseStep = AssistantMessage | FauxResponseFactory;
+export type FakeResponseStep = AssistantMessage | FakeResponseFactory;
 
-export interface RegisterFauxProviderOptions {
+export interface RegisterFakeProviderOptions {
 	api?: string;
 	provider?: string;
-	models?: FauxModelDefinition[];
+	models?: FakeModelDefinition[];
 	deferred?: {
 		/** Number of fetches that return the original handle before the scripted response becomes ready. */
 		pendingFetches?: number;
@@ -129,27 +129,27 @@ export interface RegisterFauxProviderOptions {
 	};
 }
 
-export interface FauxProviderRegistration {
+export interface FakeProviderRegistration {
 	api: string;
 	models: [Model<string>, ...Model<string>[]];
 	getModel(): Model<string>;
 	getModel(modelId: string): Model<string> | undefined;
-	state: FauxProviderState;
-	setResponses: (responses: FauxResponseStep[]) => void;
-	appendResponses: (responses: FauxResponseStep[]) => void;
+	state: FakeProviderState;
+	setResponses: (responses: FakeResponseStep[]) => void;
+	appendResponses: (responses: FakeResponseStep[]) => void;
 	getPendingResponseCount: () => number;
 	unregister: () => void;
 }
 
-export interface FauxProviderHandle {
+export interface FakeProviderHandle {
 	provider: Provider;
 	api: string;
 	models: [Model<string>, ...Model<string>[]];
 	getModel(): Model<string>;
 	getModel(modelId: string): Model<string> | undefined;
-	state: FauxProviderState;
-	setResponses: (responses: FauxResponseStep[]) => void;
-	appendResponses: (responses: FauxResponseStep[]) => void;
+	state: FakeProviderState;
+	setResponses: (responses: FakeResponseStep[]) => void;
+	appendResponses: (responses: FakeResponseStep[]) => void;
 	getPendingResponseCount: () => number;
 }
 
@@ -421,7 +421,7 @@ async function streamWithDeltas(
 	}
 
 	if (message.stopReason === "pending") {
-		throw new Error("Faux response ended without a stop reason");
+		throw new Error("Fake response ended without a stop reason");
 	}
 	if (message.stopReason === "error" || message.stopReason === "aborted") {
 		stream.push({ type: "error", reason: message.stopReason, error: message });
@@ -433,7 +433,7 @@ async function streamWithDeltas(
 	stream.end(message);
 }
 
-export function createFauxCore(options: RegisterFauxProviderOptions) {
+export function createFakeCore(options: RegisterFakeProviderOptions) {
 	const api = options.api ?? randomId(DEFAULT_API);
 	const provider = options.provider ?? DEFAULT_PROVIDER;
 	const minTokenSize = Math.max(
@@ -441,15 +441,15 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 		Math.min(options.tokenSize?.min ?? DEFAULT_MIN_TOKEN_SIZE, options.tokenSize?.max ?? DEFAULT_MAX_TOKEN_SIZE),
 	);
 	const maxTokenSize = Math.max(minTokenSize, options.tokenSize?.max ?? DEFAULT_MAX_TOKEN_SIZE);
-	let pendingResponses: FauxResponseStep[] = [];
+	let pendingResponses: FakeResponseStep[] = [];
 	const tokensPerSecond = options.tokensPerSecond;
-	const state: FauxProviderState = { callCount: 0, deferredFetchCount: 0, cancelledDeferred: [] };
+	const state: FakeProviderState = { callCount: 0, deferredFetchCount: 0, cancelledDeferred: [] };
 	const promptCache = new Map<string, string>();
 	const deferredResponses = new Map<
 		string,
 		{
 			handle: DeferredHandle;
-			step: FauxResponseStep;
+			step: FakeResponseStep;
 			context: Context;
 			options: SimpleStreamOptions | undefined;
 			model: Model<string>;
@@ -486,7 +486,7 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 	})) as [Model<string>, ...Model<string>[]];
 
 	const resolveResponse = async (
-		step: FauxResponseStep,
+		step: FakeResponseStep,
 		context: Context,
 		streamOptions: SimpleStreamOptions | undefined,
 		requestModel: Model<string>,
@@ -510,7 +510,7 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 				await streamOptions?.onResponse?.({ status: 200, headers: {} }, requestModel);
 				if (!step) {
 					let message = createErrorMessage(
-						new Error("No more faux responses queued"),
+						new Error("No more fake responses queued"),
 						api,
 						provider,
 						requestModel.id,
@@ -582,9 +582,9 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 					entry.handle.modelId !== handle.modelId ||
 					entry.handle.api !== handle.api
 				) {
-					throw new Error(`Unknown faux deferred response: ${handle.id}`);
+					throw new Error(`Unknown fake deferred response: ${handle.id}`);
 				}
-				if (entry.cancelled) throw new Error(`Faux deferred response was cancelled: ${handle.id}`);
+				if (entry.cancelled) throw new Error(`Fake deferred response was cancelled: ${handle.id}`);
 
 				if (entry.pendingFetches > 0) {
 					entry.pendingFetches--;
@@ -660,10 +660,10 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 		cancelDeferred,
 		getModel,
 		state,
-		setResponses(responses: FauxResponseStep[]) {
+		setResponses(responses: FakeResponseStep[]) {
 			pendingResponses = [...responses];
 		},
-		appendResponses(responses: FauxResponseStep[]) {
+		appendResponses(responses: FakeResponseStep[]) {
 			pendingResponses.push(...responses);
 		},
 		getPendingResponseCount() {
@@ -673,20 +673,20 @@ export function createFauxCore(options: RegisterFauxProviderOptions) {
 }
 
 /**
- * Faux provider for tests built on explicit `Models` collections:
+ * Fake provider for tests built on explicit `Models` collections:
  *
  * ```ts
- * const faux = fauxProvider();
+ * const fake = fakeProvider();
  * const models = createModels();
- * models.setProvider(faux.provider);
- * faux.setResponses([fauxAssistantMessage("hi")]);
+ * models.setProvider(fake.provider);
+ * fake.setResponses([fakeAssistantMessage("hi")]);
  * ```
  */
-export function fauxProvider(options: RegisterFauxProviderOptions = {}): FauxProviderHandle {
-	const core = createFauxCore(options);
+export function fakeProvider(options: RegisterFakeProviderOptions = {}): FakeProviderHandle {
+	const core = createFakeCore(options);
 	const provider = createProvider({
 		id: core.provider,
-		auth: { apiKey: { name: "Faux", resolve: async () => ({ auth: {} }) } },
+		auth: { apiKey: { name: "Fake", resolve: async () => ({ auth: {} }) } },
 		models: core.models,
 		api: {
 			stream: core.stream,

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fauxAssistantMessage } from "@aos-agent/ai";
+import { fakeAssistantMessage } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type ExecutionPolicyProfile,
@@ -403,7 +403,7 @@ describe("T7 fake-sandbox execution policy regressions", () => {
 		const firstRun = coordinator.reserve().accept({
 			runId: "run:start",
 			attempt: 1,
-			model: { provider: "faux", id: "faux", thinkingLevel: "off" },
+			model: { provider: "fake", id: "fake", thinkingLevel: "off" },
 			policyBinding: first.binding,
 			policySummary: first.summary,
 		});
@@ -432,7 +432,7 @@ describe("T7 fake-sandbox execution policy regressions", () => {
 			runId: "run:resume",
 			sourceRunId: "run:start",
 			attempt: 2,
-			model: { provider: "faux", id: "faux", thinkingLevel: "off" },
+			model: { provider: "fake", id: "fake", thinkingLevel: "off" },
 			previousPolicyBindingId: first.binding.id,
 			policyBinding: successor.binding,
 			policySummary: successor.summary,
@@ -447,7 +447,7 @@ describe("T7 fake-sandbox execution policy regressions", () => {
 			coordinator.reserve().accept({
 				runId: "bad",
 				attempt: 1,
-				model: { provider: "faux", id: "faux", thinkingLevel: "off" },
+				model: { provider: "fake", id: "fake", thinkingLevel: "off" },
 				previousPolicyBindingId: "wrong",
 				policyBinding: successor.binding,
 			});
@@ -502,7 +502,7 @@ describe("T7 fake-sandbox execution policy regressions", () => {
 			profile: strictProfile({ processAction: "ask", processApproval: "ask" }),
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("unused")]);
+		harness.setResponses([fakeAssistantMessage("unused")]);
 
 		await expect(harness.session.executeBash("needs approval")).rejects.toMatchObject({
 			code: "policy_approval_required",

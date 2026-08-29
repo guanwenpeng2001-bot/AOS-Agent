@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/context-engine.ts";
@@ -100,9 +100,9 @@ describe("AgentSession bash and persistence characterization", () => {
 		const harness = await createHarness({ tools: [waitTool] });
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("wait", {})], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
-			fauxAssistantMessage("after flush"),
+			fakeAssistantMessage([fakeToolCall("wait", {})], { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
+			fakeAssistantMessage("after flush"),
 		]);
 
 		const sawToolStart = new Promise<void>((resolve) => {
@@ -249,8 +249,8 @@ describe("AgentSession bash and persistence characterization", () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage([fakeToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		await harness.session.sendCustomMessage({
@@ -334,7 +334,7 @@ describe("AgentSession bash and persistence characterization", () => {
 	it("persists aborted assistant messages", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("x".repeat(20_000))]);
+		harness.setResponses([fakeAssistantMessage("x".repeat(20_000))]);
 
 		const sawMessageUpdate = new Promise<void>((resolve) => {
 			const unsubscribe = harness.session.subscribe((event) => {

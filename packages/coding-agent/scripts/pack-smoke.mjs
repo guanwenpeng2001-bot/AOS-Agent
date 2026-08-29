@@ -52,7 +52,7 @@ const REQUIRED_PACKAGE_FILES = Object.freeze([
 const RUNTIME_STATES = Object.freeze(["passed", "failed", "unavailable", "not_run"]);
 const RESULT_STATES = Object.freeze(["passed", "failed", "not_run"]);
 // PR-07 replaces this transitional fixture ID during naming convergence.
-export const PACKAGED_FIXTURE_TOOL_CALL_ID = "line13-tool-call";
+export const PACKAGED_FIXTURE_TOOL_CALL_ID = "aos.fake-tool-call";
 
 function npmCommand() {
 	return process.platform === "win32" ? "npm.cmd" : "npm";
@@ -214,7 +214,7 @@ function assertTrace(value) {
 			"schemaVersion",
 			"fixtureId",
 			"providerId",
-			"fauxProviderId",
+			"fakeProviderId",
 			"defaultEnabled",
 			"credentialMode",
 			"networkMode",
@@ -228,9 +228,9 @@ function assertTrace(value) {
 	);
 	if (
 		trace.schemaVersion !== 1 ||
-		trace.fixtureId !== "line13-fake-connector" ||
-		trace.providerId !== "line13.fake-connector" ||
-		trace.fauxProviderId !== "line13.faux-provider" ||
+		trace.fixtureId !== "aos.fake-connector" ||
+		trace.providerId !== "aos.fake-connector" ||
+		trace.fakeProviderId !== "aos.fake-provider" ||
 		trace.defaultEnabled !== false ||
 		trace.credentialMode !== "none" ||
 		trace.networkMode !== "disabled" ||
@@ -269,7 +269,7 @@ function assertTrace(value) {
 		if (
 			receipt.phase !== expectedReceipts[index][0] ||
 			receipt.status !== expectedReceipts[index][1] ||
-			receipt.providerId !== "line13.fake-connector" ||
+			receipt.providerId !== "aos.fake-connector" ||
 			receipt.sideEffectState !== "none" ||
 			typeof receipt.attemptReceiptId !== "string" ||
 			receipt.attemptReceiptId.length === 0 ||
@@ -524,9 +524,9 @@ function validateDryRunInputs(repoRoot) {
 	));
 	if (
 		fixture.schemaVersion !== 1 ||
-		fixture.fixtureId !== "line13-fake-connector" ||
-		fixture.providerId !== "line13.fake-connector" ||
-		fixture.fauxProviderId !== "line13.faux-provider" ||
+		fixture.fixtureId !== "aos.fake-connector" ||
+		fixture.providerId !== "aos.fake-connector" ||
+		fixture.fakeProviderId !== "aos.fake-provider" ||
 		fixture.defaultEnabled !== false ||
 		fixture.credentialMode !== "none" ||
 		fixture.networkMode !== "disabled" ||

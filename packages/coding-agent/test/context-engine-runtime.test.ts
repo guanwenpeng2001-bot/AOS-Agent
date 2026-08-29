@@ -9,7 +9,7 @@ import {
 import { createRunLifecycleCoordinator } from "../src/core/run-lifecycle.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { observeCanonicalTerminal } from "./support/canonical-run-terminal.ts";
-import { createHarness, createHarnessWithExtensions, fauxModel } from "./test-harness.ts";
+import { createHarness, createHarnessWithExtensions, fakeModel } from "./test-harness.ts";
 import { assistantMsg, createTestResourceLoader, userMsg } from "./utilities.ts";
 
 function freezeSampleSnapshot(sessionId: string, id: string): ContextSnapshot {
@@ -78,9 +78,9 @@ describe("context-engine runtime persistence", () => {
 		try {
 			await harness.session.prompt("hello", { runId: "run-boundary" });
 
-			expect(harness.faux.callCount).toBe(1);
-			expect(harness.faux.contexts[0]?.systemPrompt).toContain("TRUSTED_PROJECT_RULE");
-			expect(harness.faux.contexts[0]?.systemPrompt).not.toContain("UNTRUSTED_PROJECT_RULE");
+			expect(harness.fake.callCount).toBe(1);
+			expect(harness.fake.contexts[0]?.systemPrompt).toContain("TRUSTED_PROJECT_RULE");
+			expect(harness.fake.contexts[0]?.systemPrompt).not.toContain("UNTRUSTED_PROJECT_RULE");
 
 			const snapshots = harness.sessionManager.getContextSnapshots();
 			expect(snapshots).toHaveLength(1);
@@ -129,8 +129,8 @@ describe("context-engine runtime persistence", () => {
 		try {
 			await harness.session.prompt("hello");
 
-			expect(harness.faux.contexts[0]?.systemPrompt).toContain("EXTENSION_PROMPT");
-			expect(JSON.stringify(harness.faux.contexts[0]?.messages)).toContain("EXTENSION_MESSAGE");
+			expect(harness.fake.contexts[0]?.systemPrompt).toContain("EXTENSION_PROMPT");
+			expect(JSON.stringify(harness.fake.contexts[0]?.messages)).toContain("EXTENSION_MESSAGE");
 			const snapshot = harness.sessionManager.getContextSnapshots().at(-1);
 			expect(snapshot?.sources).toEqual(
 				expect.arrayContaining([
@@ -162,7 +162,7 @@ describe("context-engine runtime persistence", () => {
 			await expect(harness.session.prompt("hello")).rejects.toMatchObject({
 				contextError: { code: "context_extension_source_missing" },
 			});
-			expect(harness.faux.callCount).toBe(0);
+			expect(harness.fake.callCount).toBe(0);
 			expect(harness.sessionManager.getContextSnapshots()).toEqual([]);
 		} finally {
 			harness.cleanup();
@@ -184,14 +184,14 @@ describe("context-engine runtime persistence", () => {
 			harness.sessionManager.appendMessage(userMsg("old context"));
 			harness.sessionManager.appendMessage({
 				...assistantMsg("old response"),
-				provider: fauxModel.provider,
-				model: fauxModel.id,
+				provider: fakeModel.provider,
+				model: fakeModel.id,
 			});
 
 			await expect(harness.session.compact()).rejects.toMatchObject({
 				contextError: { code: "context_extension_source_missing" },
 			});
-			expect(harness.faux.callCount).toBe(0);
+			expect(harness.fake.callCount).toBe(0);
 			expect(harness.sessionManager.getContextSnapshots()).toEqual([]);
 		} finally {
 			harness.cleanup();
@@ -227,7 +227,7 @@ describe("context-engine runtime persistence", () => {
 			await expect(harness.session.prompt("hello")).rejects.toMatchObject({
 				contextError: { code: "context_budget_exceeded" },
 			});
-			expect(harness.faux.callCount).toBe(0);
+			expect(harness.fake.callCount).toBe(0);
 			expect(harness.sessionManager.getContextSnapshots()).toEqual([]);
 		} finally {
 			harness.cleanup();
@@ -256,7 +256,7 @@ describe("context-engine runtime persistence", () => {
 
 		try {
 			await harness.session.prompt("hello");
-			expect(harness.faux.contexts[0]?.systemPrompt).toContain("LEGACY_RULE_WHEN_DISABLED");
+			expect(harness.fake.contexts[0]?.systemPrompt).toContain("LEGACY_RULE_WHEN_DISABLED");
 			expect(harness.sessionManager.getContextSnapshots()).toEqual([]);
 		} finally {
 			harness.cleanup();
@@ -338,7 +338,7 @@ describe("context-engine runtime persistence", () => {
 				.filter((entry) => entry.purpose === "compaction");
 			const snapshot = compactionSnapshots[compactionSnapshots.length - 1];
 			expect(snapshot).toBeDefined();
-			expect(harness.faux.contexts.at(-1)?.systemPrompt).toContain("context summarization assistant");
+			expect(harness.fake.contexts.at(-1)?.systemPrompt).toContain("context summarization assistant");
 			expect(snapshot?.sources).toEqual(
 				expect.arrayContaining([expect.objectContaining({ sourceId: "system:compaction:runtime" })]),
 			);
@@ -359,8 +359,8 @@ describe("context-engine runtime persistence", () => {
 			const rootId = harness.sessionManager.appendMessage(userMsg("root"));
 			const oldLeafId = harness.sessionManager.appendMessage({
 				...assistantMsg("old branch context"),
-				provider: fauxModel.provider,
-				model: fauxModel.id,
+				provider: fakeModel.provider,
+				model: fakeModel.id,
 			});
 			harness.sessionManager.branch(rootId);
 			const targetId = harness.sessionManager.appendMessage(userMsg("target"));
@@ -371,8 +371,8 @@ describe("context-engine runtime persistence", () => {
 				.getContextSnapshots()
 				.find((entry) => entry.purpose === "branch_summary");
 
-			expect(harness.faux.callCount).toBe(1);
-			expect(harness.faux.contexts[0]?.systemPrompt).toContain("context summarization assistant");
+			expect(harness.fake.callCount).toBe(1);
+			expect(harness.fake.contexts[0]?.systemPrompt).toContain("context summarization assistant");
 			expect(snapshot).toBeDefined();
 			expect(result.summaryEntry?.details).toMatchObject({ contextSnapshotId: snapshot?.id });
 		} finally {
@@ -388,7 +388,7 @@ describe("context-engine runtime persistence", () => {
 		const coordinator = createRunLifecycleCoordinator(session);
 		const handle = coordinator.reserve().accept({
 			attempt: 1,
-			model: { provider: "faux", id: "m1", thinkingLevel: "off" },
+			model: { provider: "fake", id: "m1", thinkingLevel: "off" },
 		});
 		handle.start();
 		const { event: terminal } = await observeCanonicalTerminal(session, handle, { outcome: "completed" });
@@ -398,7 +398,7 @@ describe("context-engine runtime persistence", () => {
 		// A later Run is likewise never linked to a concurrent/latest snapshot by inference.
 		const handle2 = coordinator.reserve().accept({
 			attempt: 1,
-			model: { provider: "faux", id: "m1", thinkingLevel: "off" },
+			model: { provider: "fake", id: "m1", thinkingLevel: "off" },
 			runId: "run-explicit",
 		});
 		handle2.start();

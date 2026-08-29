@@ -1,7 +1,7 @@
 import { crc32, deflateSync } from "node:zlib";
 import type { AgentTool } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "./harness.ts";
@@ -76,8 +76,8 @@ describe("AgentSession tool result images", () => {
 		const harness = await createHarness({ tools: [screenshotTool] });
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("screenshot", {})], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage([fakeToolCall("screenshot", {})], { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		await harness.session.prompt("take a screenshot");
@@ -96,8 +96,8 @@ describe("AgentSession tool result images", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("screenshot", {})], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage([fakeToolCall("screenshot", {})], { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		await harness.session.prompt("take a screenshot");

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerFauxProvider } from "@aos-agent/ai/compat";
+import { registerFakeProvider } from "@aos-agent/ai/compat";
 import {
 	createAgentSession,
 	createAgentSessionFromServices,
@@ -28,10 +28,10 @@ async function createSdkSession(
 	runtimeComposition?: AgentRuntimeCompositionFactory,
 ): Promise<{ session: Awaited<ReturnType<typeof createAgentSession>>["session"]; cleanup: SessionCleanup }> {
 	const cwd = mkdtempSync(join(tmpdir(), "aos-sdk-worker-composition-"));
-	const faux = registerFauxProvider();
-	const model = faux.getModel();
+	const fake = registerFakeProvider();
+	const model = fake.getModel();
 	const authStorage = AuthStorage.inMemory();
-	await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
+	await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "fake-key" }));
 	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 	modelRuntime.registerProvider(model.provider, {
 		baseUrl: model.baseUrl,
@@ -66,7 +66,7 @@ async function createSdkSession(
 		cleanup: async () => {
 			created.session.dispose();
 			await created.session.waitForDispose();
-			faux.unregister();
+			fake.unregister();
 			rmSync(cwd, { recursive: true, force: true });
 		},
 	};
@@ -181,12 +181,12 @@ describe("SDK Worker composition", () => {
 
 	it("creates isolated providers when two sessions share one services factory", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-sdk-worker-services-"));
-		const faux = registerFauxProvider();
+		const fake = registerFakeProvider();
 		const sessions: Array<Awaited<ReturnType<typeof createAgentSession>>["session"]> = [];
 		try {
-			const model = faux.getModel();
+			const model = fake.getModel();
 			const authStorage = AuthStorage.inMemory();
-			await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
+			await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "fake-key" }));
 			const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: null });
 			modelRuntime.registerProvider(model.provider, {
 				baseUrl: model.baseUrl,
@@ -248,7 +248,7 @@ describe("SDK Worker composition", () => {
 				session.dispose();
 				await session.waitForDispose();
 			}
-			faux.unregister();
+			fake.unregister();
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});

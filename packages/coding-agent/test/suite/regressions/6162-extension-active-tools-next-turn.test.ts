@@ -1,4 +1,4 @@
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { ExtensionFactory } from "../../../src/index.ts";
@@ -47,11 +47,11 @@ describe("extension active tools next-turn refresh", () => {
 			harness.setResponses([
 				(context) => {
 					providerToolNames.push((context.tools ?? []).map((tool) => tool.name).sort());
-					return fauxAssistantMessage(fauxToolCall("switch_tools", {}), { stopReason: "toolUse" });
+					return fakeAssistantMessage(fakeToolCall("switch_tools", {}), { stopReason: "toolUse" });
 				},
 				(context) => {
 					providerToolNames.push((context.tools ?? []).map((tool) => tool.name).sort());
-					return fauxAssistantMessage("done");
+					return fakeAssistantMessage("done");
 				},
 			]);
 
@@ -102,14 +102,14 @@ describe("extension active tools next-turn refresh", () => {
 
 			const addedToolNames: string[][] = [];
 			harness.setResponses([
-				() => fauxAssistantMessage(fauxToolCall("load_more_tools", {}), { stopReason: "toolUse" }),
+				() => fakeAssistantMessage(fakeToolCall("load_more_tools", {}), { stopReason: "toolUse" }),
 				(context) => {
 					addedToolNames.push(
 						context.messages
 							.filter((message) => message.role === "toolResult")
 							.flatMap((message) => message.addedToolNames ?? []),
 					);
-					return fauxAssistantMessage("done");
+					return fakeAssistantMessage("done");
 				},
 			]);
 
@@ -175,12 +175,12 @@ describe("extension active tools next-turn refresh", () => {
 				(context) => {
 					providerSystemPrompts.push(context.systemPrompt ?? "");
 					providerToolNames.push((context.tools ?? []).map((tool) => tool.name).sort());
-					return fauxAssistantMessage(fauxToolCall("switch_tools", {}), { stopReason: "toolUse" });
+					return fakeAssistantMessage(fakeToolCall("switch_tools", {}), { stopReason: "toolUse" });
 				},
 				(context) => {
 					providerSystemPrompts.push(context.systemPrompt ?? "");
 					providerToolNames.push((context.tools ?? []).map((tool) => tool.name).sort());
-					return fauxAssistantMessage("done");
+					return fakeAssistantMessage("done");
 				},
 			]);
 

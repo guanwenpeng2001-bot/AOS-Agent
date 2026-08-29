@@ -263,7 +263,7 @@ function providerReceipt(
 	};
 }
 
-class FauxTaskExecutor implements TaskExecutorProvider {
+class FakeTaskExecutor implements TaskExecutorProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = "task_executor_scheduler_fan_in";
 	readonly providerClass = "task_executor" as const;
@@ -374,7 +374,7 @@ interface FanInHarness {
 	readonly dispatch: SchedulerDispatchController;
 	readonly fanIn: SchedulerFanInController;
 	readonly graph: TaskGraphStore;
-	readonly provider: FauxTaskExecutor;
+	readonly provider: FakeTaskExecutor;
 	readonly registry: SchedulerExecutorRegistry;
 	readonly coordinator: ReturnType<typeof createRunLifecycleCoordinator>;
 	readonly runs: Map<string, RunHandle>;
@@ -409,7 +409,7 @@ async function createHarness(
 		nodes: nodes.map((node) => ({ nodeId: node.nodeId, dependsOn: [...node.dependsOn] })),
 		clientRequestId: "create-scheduler-fan-in-graph",
 	});
-	const provider = new FauxTaskExecutor();
+	const provider = new FakeTaskExecutor();
 	const registry = new SchedulerExecutorRegistry();
 	const registered = await registry.register({
 		entry: {
@@ -544,8 +544,8 @@ describe("scheduler production fan-in", () => {
 		const executorRequirements = Object.freeze({
 			requireResume: true,
 			modelAccess: "aos_gateway" as const,
-			credentialTargetRefs: Object.freeze(["credential:line13"]),
-			sandboxTargetRefs: Object.freeze(["sandbox:line13"]),
+			credentialTargetRefs: Object.freeze(["credential:fake"]),
+			sandboxTargetRefs: Object.freeze(["sandbox:fake"]),
 		});
 		let forwardedRequirements: SchedulerDispatchExecutorRequirements | undefined;
 		const host = new SchedulerHost({

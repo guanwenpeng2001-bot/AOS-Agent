@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@aos-agent/ai";
+import { fakeAssistantMessage } from "@aos-agent/ai";
 import { Container, Text } from "@aos-agent/tui";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentSession, AgentSessionEvent, ExtensionBindings } from "../../../src/core/agent-session.ts";
@@ -479,7 +479,7 @@ describe("regression #5943: session_start transient UI", () => {
 				},
 			],
 		});
-		harness.setResponses([fauxAssistantMessage("assistant from start")]);
+		harness.setResponses([fakeAssistantMessage("assistant from start")]);
 
 		try {
 			const context: RebindContext = {

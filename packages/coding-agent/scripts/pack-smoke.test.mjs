@@ -55,6 +55,7 @@ function run(command, args, cwd) {
 }
 
 function assertExecutedTrace(trace) {
+	assert.equal(PACKAGED_FIXTURE_TOOL_CALL_ID, "aos.fake-tool-call");
 	assert.equal(trace.defaultEnabled, false);
 	assert.equal(trace.networkMode, "disabled");
 	assert.deepEqual(trace.events.map(({ kind }) => kind), [

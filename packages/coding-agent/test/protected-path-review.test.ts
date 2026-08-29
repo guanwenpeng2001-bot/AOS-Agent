@@ -51,7 +51,7 @@ import { classifyExternalToolPolicyOperation } from "../src/core/external-tool-p
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { fauxModel } from "./test-harness.ts";
+import { fakeModel } from "./test-harness.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 const protectedPaths = {
@@ -354,7 +354,7 @@ async function createCanonicalReviewFixture(): Promise<CanonicalReviewFixture> {
 	const created = await createAgentSessionFromServices({
 		services,
 		sessionManager,
-		model: fauxModel,
+		model: fakeModel,
 		policyProfile: canonicalProfile.id,
 		noTools: "all",
 	});
@@ -1092,7 +1092,7 @@ describe("Foundation reviewer evidence integration", () => {
 			reopened = await createAgentSessionFromServices({
 				services: fixture.services,
 				sessionManager: reopenedManager,
-				model: fauxModel,
+				model: fakeModel,
 				policyProfile: profile.id,
 				noTools: "all",
 			});

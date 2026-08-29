@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@aos-agent/ai";
+import { fakeAssistantMessage } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
 import { createHarness } from "../harness.ts";
 
@@ -15,13 +15,13 @@ describe("regression: issue 6019 explicit provider retry messages", () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
 		try {
 			harness.setResponses([
-				fauxAssistantMessage("", { stopReason: "error", errorMessage }),
-				fauxAssistantMessage("recovered"),
+				fakeAssistantMessage("", { stopReason: "error", errorMessage }),
+				fakeAssistantMessage("recovered"),
 			]);
 
 			await harness.session.prompt("test");
 
-			expect(harness.faux.state.callCount).toBe(2);
+			expect(harness.fake.state.callCount).toBe(2);
 			expect(harness.eventsOfType("auto_retry_start").map((event) => event.errorMessage)).toEqual([errorMessage]);
 			expect(harness.eventsOfType("auto_retry_end").map((event) => event.success)).toEqual([true]);
 		} finally {

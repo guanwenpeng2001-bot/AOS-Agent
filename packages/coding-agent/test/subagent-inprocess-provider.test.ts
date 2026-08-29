@@ -41,7 +41,7 @@ import {
 	type ToolGateway,
 	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
-import { createAssistantMessageEventStream, createModels, fauxProvider } from "@aos-agent/ai";
+import { createAssistantMessageEventStream, createModels, fakeProvider } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
 import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
 import {
@@ -465,11 +465,11 @@ async function driveScopedGateway(input: ChildAgentHarnessCreateInput): Promise<
 }
 
 async function createHarness(input: ChildAgentHarnessCreateInput): Promise<AgentHarness> {
-	const faux = fauxProvider();
+	const fake = fakeProvider();
 	const created = await AgentHarness.create({
 		session: input.session,
 		models: createModels(),
-		model: faux.getModel(),
+		model: fake.getModel(),
 		streamFunction: async (model) => {
 			await driveScopedGateway(input);
 			const stream = createAssistantMessageEventStream();

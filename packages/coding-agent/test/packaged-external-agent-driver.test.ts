@@ -10,9 +10,9 @@ describe("packaged External Agent driver fixture", () => {
 		const fixture = loadPackagedExternalAgentDriver("fake-connector");
 		expect(fixture).toMatchObject({
 			schemaVersion: 1,
-			fixtureId: "line13-fake-connector",
-			providerId: "line13.fake-connector",
-			fauxProviderId: "line13.faux-provider",
+			fixtureId: "aos.fake-connector",
+			providerId: "aos.fake-connector",
+			fakeProviderId: "aos.fake-provider",
 			defaultEnabled: false,
 			credentialMode: "none",
 			networkMode: "disabled",
@@ -49,7 +49,7 @@ describe("packaged External Agent driver fixture", () => {
 			{ phase: "cancel", status: "cancelled" },
 		]);
 		expect(trace.toolResult).toEqual({
-			toolCallId: "line13-tool-call",
+			toolCallId: "aos.fake-tool-call",
 			toolName: "fixture.echo",
 			ok: true,
 			sideEffectState: "none",
@@ -69,11 +69,11 @@ describe("packaged External Agent driver fixture", () => {
 	});
 
 	it("fails safely when the allowlisted packaged asset is unavailable", () => {
-		expect(() => loadPackagedExternalAgentDriver("line13-missing-connector")).toThrow(
+		expect(() => loadPackagedExternalAgentDriver("fake-missing-connector")).toThrow(
 			PackagedExternalAgentDriverAssetError,
 		);
 		try {
-			loadPackagedExternalAgentDriver("line13-missing-connector");
+			loadPackagedExternalAgentDriver("fake-missing-connector");
 		} catch (error) {
 			expect(error).toMatchObject({ code: "external_agent_driver_asset_missing" });
 		}

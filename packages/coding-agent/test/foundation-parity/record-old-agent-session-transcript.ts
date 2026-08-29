@@ -22,7 +22,7 @@ export interface OldAgentSessionTranscriptScenario extends ScenarioObservation {
 
 export interface OldAgentSessionTranscript {
 	schemaVersion: 1;
-	recorder: "old-AgentSession (suite harness + faux provider)";
+	recorder: "old-AgentSession (suite harness + fake provider)";
 	normalization: {
 		stripped: string[];
 		collapsed: string[];
@@ -67,7 +67,7 @@ export async function recordOldAgentSessionTranscript(): Promise<OldAgentSession
 	}
 	return {
 		schemaVersion: 1,
-		recorder: "old-AgentSession (suite harness + faux provider)",
+		recorder: "old-AgentSession (suite harness + fake provider)",
 		normalization: {
 			stripped: [...TRANSCRIPT_NORMALIZATION.stripped],
 			collapsed: [...TRANSCRIPT_NORMALIZATION.collapsed],

@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@aos-agent/ai";
+import { fakeAssistantMessage } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, type Harness } from "../harness.ts";
 
@@ -17,13 +17,13 @@ describe("issue #3317 network connection lost retry", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "Network connection lost." }),
-			fauxAssistantMessage("recovered after reconnect"),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "Network connection lost." }),
+			fakeAssistantMessage("recovered after reconnect"),
 		]);
 
 		await harness.session.prompt("test");
 
-		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.fake.state.callCount).toBe(2);
 		expect(harness.eventsOfType("auto_retry_start").map((event) => event.errorMessage)).toEqual([
 			"Network connection lost.",
 		]);

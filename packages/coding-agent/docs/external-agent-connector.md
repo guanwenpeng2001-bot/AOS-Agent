@@ -56,7 +56,7 @@ Define targets in user settings and select one with `targetId`:
       {
         "schemaVersion": 1,
         "targetId": "packaged-fake",
-        "providerId": "line13.fake-connector",
+        "providerId": "aos.fake-connector",
         "executablePath": "/absolute/path/to/node",
         "modulePath": "/absolute/path/to/fake-connector-process.mjs",
         "cwd": "/absolute/trusted/workspace",

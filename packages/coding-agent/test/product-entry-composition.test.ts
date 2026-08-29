@@ -51,7 +51,7 @@ function packagedSettings(cwd: string): SettingsManager {
 				{
 					schemaVersion: 1,
 					targetId: "packaged-fake",
-					providerId: "line13.fake-connector",
+					providerId: "aos.fake-connector",
 					executablePath: process.execPath,
 					modulePath,
 					cwd,
@@ -189,7 +189,7 @@ describe("External Connector product entry composition", () => {
 			const runReceipts = await session.findFoundationRecords({ objectType: "run_receipt" });
 			expect(attemptReceipts).toHaveLength(1);
 			expect(attemptReceipts[0]).toMatchObject({
-				payload: { providerId: "line13.fake-connector", status: "succeeded" },
+				payload: { providerId: "aos.fake-connector", status: "succeeded" },
 			});
 			expect(taskResults).toHaveLength(1);
 			expect(runReceipts[0]).toMatchObject({ payload: { runId: started.data.runId, terminalStatus: "completed" } });

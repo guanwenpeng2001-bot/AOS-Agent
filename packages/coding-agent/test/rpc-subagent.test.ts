@@ -28,10 +28,10 @@ vi.mock("@aos-agent/ai/compat", () => ({
 vi.mock("@aos-agent/ai/providers/all", () => ({}));
 
 const TEST_MODEL: Model<"anthropic-messages"> = {
-	id: "faux-model",
-	name: "Faux",
+	id: "fake-model",
+	name: "Fake",
 	api: "anthropic-messages",
-	provider: "faux",
+	provider: "fake",
 	baseUrl: "https://invalid.test",
 	reasoning: false,
 	input: [],
@@ -93,15 +93,15 @@ async function harness(registryFactory: (sessionId: string) => RpcSubagentRegist
 	const directory = join(tmpdir(), `aos-rpc-subagent-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(directory, { recursive: true });
 	const agent = new Agent({
-		getApiKey: () => "faux",
+		getApiKey: () => "fake",
 		initialState: { model: TEST_MODEL, systemPrompt: "Test", tools: [] },
 		streamFn: () => { throw new Error("not used"); },
 	});
 	const modelRuntime = {
 		hasConfiguredAuth: () => true,
-		checkAuth: async () => ({ type: "api_key", key: "faux" }),
+		checkAuth: async () => ({ type: "api_key", key: "fake" }),
 		isUsingOAuth: () => false,
-		getAuth: async () => ({ type: "api_key", key: "faux" }),
+		getAuth: async () => ({ type: "api_key", key: "fake" }),
 	} as unknown as ModelRuntime;
 	const session = new AgentSession({
 		agent,
@@ -156,7 +156,7 @@ describe("RPC Subagent surface", () => {
 		const value = await harness((sessionId) => ({
 			get: async () => Result.ok({ ...safe(sessionId), prompt: "raw child prompt" } as unknown as SafeSubagentLifecycleProjection),
 			list: async () => Result.ok([]),
-			cancel: async () => Result.err(new FoundationError("subagent_cancel_failed", "faux")),
+			cancel: async () => Result.err(new FoundationError("subagent_cancel_failed", "fake")),
 		}));
 		await value.controller.dispatch({ type: "initialize", protocolVersion: 1 });
 		expect(await value.controller.dispatch({ type: "subagent.get", runId: "run-1", childAgentInstanceId: "child-1" })).toMatchObject({ success: false, error: { code: "subagent_not_found" } });

@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@aos-agent/ai";
+import { fakeAssistantMessage } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getMessageText, getUserTexts, type Harness } from "../harness.ts";
 
@@ -49,10 +49,10 @@ describe("issue #7150: RPC prompt during manual compaction", () => {
 			timestamp: timestamp - 1000,
 		});
 		harness.sessionManager.appendMessage(
-			fauxAssistantMessage("old assistant response", { timestamp: timestamp - 500 }),
+			fakeAssistantMessage("old assistant response", { timestamp: timestamp - 500 }),
 		);
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
-		harness.setResponses([fauxAssistantMessage("probe response")]);
+		harness.setResponses([fakeAssistantMessage("probe response")]);
 
 		const compactPromise = harness.session.compact();
 		await compactionStarted;

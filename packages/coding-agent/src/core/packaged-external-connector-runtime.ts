@@ -25,7 +25,7 @@ import {
 } from "./packaged-external-agent-driver.ts";
 import type { ExternalConnectorVendorDriver } from "./vendor-drivers/types.ts";
 
-const PACKAGED_PROVIDER_ID = "line13.fake-connector" as const;
+const PACKAGED_PROVIDER_ID = "aos.fake-connector" as const;
 
 class SessionBoundExternalConnectorStore implements ExternalConnectorDurableStore {
 	#delegate: SessionExternalConnectorDurableStore | undefined;
@@ -223,7 +223,7 @@ function packagedCapability(): ConnectorCapabilitySnapshot {
 		schemaVersion: 1,
 		providerId: PACKAGED_PROVIDER_ID,
 		revision: 1,
-		protocol: { name: "line13-packaged-fake", version: "1" },
+		protocol: { name: "aos.fake-connector", version: "1" },
 		modelAccess: "none",
 		resume: true,
 		toolGateway: false,

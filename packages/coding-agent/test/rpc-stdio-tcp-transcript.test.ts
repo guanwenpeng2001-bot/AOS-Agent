@@ -1486,7 +1486,7 @@ function normalizePublicValue(
 }
 
 describe("RPC stdio/TCP public transcript parity", () => {
-	it("emits the same Automation Host records for the same faux-provider sequence", async () => {
+	it("emits the same Automation Host records for the same fake-provider sequence", async () => {
 		const stdio = await startStdioRpcMode();
 		let stdioTranscript: ParsedRecord[];
 		try {

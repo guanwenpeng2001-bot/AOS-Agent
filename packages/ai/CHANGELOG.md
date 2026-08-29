@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - Renamed `TextSignatureV1` to `TextSignature`; the wire field `v` remains `1`.
+- Renamed the public fake test-provider API from `Faux*`/`faux*` to `Fake*`/`fake*`, including `registerFakeProvider`, with no compatibility aliases.
 
 ### Fixed
 

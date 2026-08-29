@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@aos-agent/ai/compat";
+import { fakeAssistantMessage, registerFakeProvider } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSession, ExtensionBindings } from "../../../src/core/agent-session.ts";
 import {
@@ -39,13 +39,13 @@ describe("regression #2860: replaced session callbacks", () => {
 		const tempDir = join(tmpdir(), `aos-2860-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
-		const faux = registerFauxProvider({
-			models: [{ id: "faux-1", reasoning: false }],
+		const fake = registerFakeProvider({
+			models: [{ id: "fake-1", reasoning: false }],
 		});
-		faux.setResponses(responses.map((response) => fauxAssistantMessage(response)));
+		fake.setResponses(responses.map((response) => fakeAssistantMessage(response)));
 
 		const authStorage = AuthStorage.inMemory();
-		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 		const modelRuntime = await ModelRuntime.create({
 			credentials: authStorage,
 			modelsPath: join(tempDir, "models.json"),
@@ -64,11 +64,11 @@ describe("regression #2860: replaced session callbacks", () => {
 				resourceLoaderOptions: {
 					extensionFactories: [
 						(agent: ExtensionAPI) => {
-							agent.registerProvider(faux.getModel().provider, {
-								baseUrl: faux.getModel().baseUrl,
-								apiKey: "faux-key",
-								api: faux.api,
-								models: faux.models.map((registeredModel) => ({
+							agent.registerProvider(fake.getModel().provider, {
+								baseUrl: fake.getModel().baseUrl,
+								apiKey: "fake-key",
+								api: fake.api,
+								models: fake.models.map((registeredModel) => ({
 									id: registeredModel.id,
 									name: registeredModel.name,
 									api: registeredModel.api,
@@ -91,7 +91,7 @@ describe("regression #2860: replaced session callbacks", () => {
 				services,
 				sessionManager,
 				sessionStartEvent,
-				model: faux.getModel(),
+				model: fake.getModel(),
 			});
 			registerCandidateSession(created.session);
 			return {
@@ -142,13 +142,13 @@ describe("regression #2860: replaced session callbacks", () => {
 
 		cleanups.push(async () => {
 			await runtime.dispose();
-			faux.unregister();
+			fake.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
 		});
 
-		return { runtime, faux };
+		return { runtime, fake };
 	}
 
 	it("rebinds before withSession, targets the replacement session, and invalidates stale agent/ctx", async () => {

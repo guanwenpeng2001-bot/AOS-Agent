@@ -44,7 +44,7 @@ import {
 	type RoleRevision,
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
-import { createAssistantMessageEventStream, createModels, fauxProvider } from "@aos-agent/ai";
+import { createAssistantMessageEventStream, createModels, fakeProvider } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
 import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
 import {
@@ -74,7 +74,7 @@ import type { LoadParentContext } from "../src/core/subagent-provider-context.ts
 const NOW = "2026-01-01T00:00:00.000Z";
 const PROVIDER_ID = "native.fork";
 const ENTRYPOINT = fileURLToPath(import.meta.url);
-const REAL_ENTRYPOINT = fileURLToPath(new URL("fixtures/faux-child-agent-entry.ts", import.meta.url));
+const REAL_ENTRYPOINT = fileURLToPath(new URL("fixtures/fake-child-agent-entry.ts", import.meta.url));
 const ROOT_TSCONFIG = fileURLToPath(new URL("../../../tsconfig.json", import.meta.url));
 const RUN_REAL_FORK_SMOKE = process.env.AOS_AGENT_REAL_FORK_SMOKE === "1";
 const CHILD_AGENT_ENTRY_SENTINEL = "AOS_CHILD_AGENT_FORK_OK";
@@ -1304,9 +1304,9 @@ describe("ForkChildAgentProvider", () => {
 
 	it("aggregates exact usage across a retry, tool call, and final model call", async () => {
 		const { initialize } = childEntryInitialize();
-		const faux = fauxProvider({ provider: "fake", models: [{ id: "model-1" }] });
+		const fake = fakeProvider({ provider: "fake", models: [{ id: "model-1" }] });
 		const models = createModels();
-		models.setProvider(faux.provider);
+		models.setProvider(fake.provider);
 		let callCount = 0;
 		const tool: HarnessTool = {
 			name: "echo",
@@ -1352,7 +1352,7 @@ describe("ForkChildAgentProvider", () => {
 				});
 				return stream;
 			},
-			resolveModel: () => Result.ok(faux.getModel()),
+			resolveModel: () => Result.ok(fake.getModel()),
 			now: () => NOW,
 		});
 		const initialized = await runtime.initialize(initialize);
@@ -1375,9 +1375,9 @@ describe("ForkChildAgentProvider", () => {
 
 	it("fails cancellation after an unproven tool side effect and reports an error stop reason", async () => {
 		const { initialize } = childEntryInitialize();
-		const faux = fauxProvider({ provider: "fake", models: [{ id: "model-1" }] });
+		const fake = fakeProvider({ provider: "fake", models: [{ id: "model-1" }] });
 		const models = createModels();
-		models.setProvider(faux.provider);
+		models.setProvider(fake.provider);
 		let toolStarted = false;
 		let releaseTool: () => void = () => undefined;
 		const toolHold = new Promise<void>((resolve) => {
@@ -1422,7 +1422,7 @@ describe("ForkChildAgentProvider", () => {
 				});
 				return stream;
 			},
-			resolveModel: () => Result.ok(faux.getModel()),
+			resolveModel: () => Result.ok(fake.getModel()),
 			now: () => NOW,
 		});
 		const initialized = await runtime.initialize(initialize);
@@ -1671,7 +1671,7 @@ describe("ForkChildAgentProvider", () => {
 		).toThrowError(/invalid/i);
 	});
 
-	it.skipIf(!RUN_REAL_FORK_SMOKE)("runs the trusted AgentHarness child in a real OS process with faux output", async () => {
+	it.skipIf(!RUN_REAL_FORK_SMOKE)("runs the trusted AgentHarness child in a real OS process with fake output", async () => {
 		const root = await mkdtemp(join(tmpdir(), "aos-real-fork-"));
 		const value = fixture();
 		const input = await planInput(value);

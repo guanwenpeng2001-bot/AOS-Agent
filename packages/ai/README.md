@@ -45,7 +45,7 @@ The standalone AOS Agent build owns its generated provider-neutral registry unde
   - [createProvider()](#createprovider)
   - [Calling API Implementations Directly](#calling-api-implementations-directly)
   - [OpenAI Compatibility Settings](#openai-compatibility-settings)
-- [Faux Provider for Tests](#faux-provider-for-tests)
+- [Fake Provider for Tests](#fake-provider-for-tests)
 - [Cross-Provider Handoffs](#cross-provider-handoffs)
 - [Context Serialization](#context-serialization)
 - [Browser Usage](#browser-usage)
@@ -1209,36 +1209,36 @@ If `compat` is not set, the library falls back to URL-based detection. If `compa
 - **Custom inference servers**: May use non-standard field names
 - **Self-hosted endpoints**: May have different feature support
 
-## Faux Provider for Tests
+## Fake Provider for Tests
 
-`fauxProvider()` builds an in-memory provider with scripted responses for tests and demos:
+`fakeProvider()` builds an in-memory provider with scripted responses for tests and demos:
 
 ```typescript
 import {
   createModels,
-  fauxAssistantMessage,
-  fauxProvider,
-  fauxText,
-  fauxThinking,
-  fauxToolCall,
+  fakeAssistantMessage,
+  fakeProvider,
+  fakeText,
+  fakeThinking,
+  fakeToolCall,
 } from '@aos-agent/ai';
 
-const faux = fauxProvider({
+const fake = fakeProvider({
   tokensPerSecond: 50 // optional
 });
 
 const models = createModels();
-models.setProvider(faux.provider);
+models.setProvider(fake.provider);
 
-const model = faux.getModel();
+const model = fake.getModel();
 const context = {
   messages: [{ role: 'user', content: 'Summarize package.json and then call echo', timestamp: Date.now() }]
 };
 
-faux.setResponses([
-  fauxAssistantMessage([
-    fauxThinking('Need to inspect package metadata first.'),
-    fauxToolCall('echo', { text: 'package.json' })
+fake.setResponses([
+  fakeAssistantMessage([
+    fakeThinking('Need to inspect package metadata first.'),
+    fakeToolCall('echo', { text: 'package.json' })
   ], { stopReason: 'toolUse' })
 ]);
 
@@ -1257,10 +1257,10 @@ context.messages.push({
   timestamp: Date.now()
 });
 
-faux.setResponses([
-  fauxAssistantMessage([
-    fauxThinking('Now I can summarize the tool output.'),
-    fauxText('Here is the summary.')
+fake.setResponses([
+  fakeAssistantMessage([
+    fakeThinking('Now I can summarize the tool output.'),
+    fakeText('Here is the summary.')
   ])
 ]);
 
@@ -1269,32 +1269,32 @@ for await (const event of s) {
   console.log(event.type);
 }
 
-// Optional: multiple faux models for model-switching tests
-const multiModel = fauxProvider({
-  provider: 'faux-multi',
+// Optional: multiple fake models for model-switching tests
+const multiModel = fakeProvider({
+  provider: 'fake-multi',
   models: [
-    { id: 'faux-fast', reasoning: false },
-    { id: 'faux-thinker', reasoning: true }
+    { id: 'fake-fast', reasoning: false },
+    { id: 'fake-thinker', reasoning: true }
   ]
 });
 models.setProvider(multiModel.provider);
-const thinker = multiModel.getModel('faux-thinker');
+const thinker = multiModel.getModel('fake-thinker');
 
 console.log(thinker?.reasoning);
-console.log(faux.getPendingResponseCount());
-console.log(faux.state.callCount);
+console.log(fake.getPendingResponseCount());
+console.log(fake.state.callCount);
 ```
 
 Notes:
 - Responses are consumed from a queue in request start order.
-- If the queue is empty, the faux provider returns an assistant error message with `errorMessage: "No more faux responses queued"`.
-- Use `faux.setResponses([...])` to replace the remaining queue and `faux.appendResponses([...])` to add more responses.
-- `faux.models` exposes all faux models. `faux.getModel()` returns the first one, and `faux.getModel(id)` returns a specific one.
-- Use `fauxAssistantMessage(...)` for scripted assistant replies. Use `fauxText(...)`, `fauxThinking(...)`, and `fauxToolCall(...)` to build content blocks without filling in low-level fields manually.
+- If the queue is empty, the fake provider returns an assistant error message with `errorMessage: "No more fake responses queued"`.
+- Use `fake.setResponses([...])` to replace the remaining queue and `fake.appendResponses([...])` to add more responses.
+- `fake.models` exposes all fake models. `fake.getModel()` returns the first one, and `fake.getModel(id)` returns a specific one.
+- Use `fakeAssistantMessage(...)` for scripted assistant replies. Use `fakeText(...)`, `fakeThinking(...)`, and `fakeToolCall(...)` to build content blocks without filling in low-level fields manually.
 - Usage is estimated at roughly 1 token per 4 characters. When `sessionId` is present and `cacheRetention` is not `"none"`, prompt cache reads and writes are simulated automatically.
 - Tool call arguments stream incrementally via `toolcall_delta` chunks.
 - By default, each streamed chunk is emitted on its own microtask. Set `tokensPerSecond` to pace chunk delivery in real time.
-- The intended use is one deterministic scripted flow per handle. If you need independent concurrent flows, create separate faux providers with distinct `provider` ids.
+- The intended use is one deterministic scripted flow per handle. If you need independent concurrent flows, create separate fake providers with distinct `provider` ids.
 
 ## Cross-Provider Handoffs
 
@@ -1586,7 +1586,7 @@ Compat is a strict superset of the root entrypoint, so a file can switch its imp
 | `registerApiProvider({ api, stream, streamSimple })` | `createProvider({ id, auth, models, api })` + `models.setProvider()` |
 | `getEnvApiKey('openai')` | `await models.getAuth(model.provider)` |
 | `streamAnthropic(model, ctx, opts)` | `stream` from `@aos-agent/ai/api/anthropic-messages`, or a provider in a collection |
-| `registerFauxProvider()` | `fauxProvider()` + `models.setProvider()` |
+| `registerFakeProvider()` | `fakeProvider()` + `models.setProvider()` |
 
 ## Development
 

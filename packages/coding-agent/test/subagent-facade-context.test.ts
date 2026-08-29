@@ -29,10 +29,10 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { SubagentComposition } from "../src/core/subagent-composition.ts";
 
 const MODEL: Model<"anthropic-messages"> = {
-	id: "faux-model",
-	name: "Faux",
+	id: "fake-model",
+	name: "Fake",
 	api: "anthropic-messages",
-	provider: "faux",
+	provider: "fake",
 	baseUrl: "https://invalid.test",
 	reasoning: false,
 	input: [],
@@ -61,7 +61,7 @@ function resources(): ResourceLoader {
 
 function createAgent(contexts: Context[]): Agent {
 	return new Agent({
-		getApiKey: () => "faux",
+		getApiKey: () => "fake",
 		initialState: { model: MODEL, systemPrompt: "Test", tools: [] },
 		streamFn: async (model, context) => {
 			contexts.push(context);
@@ -95,9 +95,9 @@ function createAgent(contexts: Context[]): Agent {
 function modelRuntime(): ModelRuntime {
 	return {
 		hasConfiguredAuth: () => true,
-		checkAuth: async () => ({ type: "api_key", key: "faux" }),
+		checkAuth: async () => ({ type: "api_key", key: "fake" }),
 		isUsingOAuth: () => false,
-		getAuth: async () => ({ type: "api_key", key: "faux" }),
+		getAuth: async () => ({ type: "api_key", key: "fake" }),
 	} as unknown as ModelRuntime;
 }
 
@@ -151,7 +151,7 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 			};
 			const quota = {
 				schemaVersion: 1 as const,
-				providerId: "faux-quota",
+				providerId: "fake-quota",
 				providerClass: "quota" as const,
 				capabilities: async () => [],
 				reserve: async () => Result.err(new Error("not used")),
@@ -160,7 +160,7 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 			} as unknown as QuotaProvider;
 			const modelGateway = {
 				schemaVersion: 1 as const,
-				providerId: "faux-model-gateway",
+				providerId: "fake-model-gateway",
 				providerClass: "gateway" as const,
 				capabilities: async () => [],
 				stream: async () => Result.err(new Error("not used")),
@@ -168,7 +168,7 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 			} as unknown as ScopedModelGateway;
 			const toolGateway = {
 				schemaVersion: 1 as const,
-				providerId: "faux-tool-gateway",
+				providerId: "fake-tool-gateway",
 				providerClass: "gateway" as const,
 				capabilities: async () => [],
 				execute: async () => Result.err(new Error("not used")),
@@ -176,7 +176,7 @@ describe("AgentSessionFacade Subagent next-turn Context", () => {
 			} as unknown as ToolGateway;
 			const artifactStore = {
 				schemaVersion: 1 as const,
-				providerId: "faux-artifact-store",
+				providerId: "fake-artifact-store",
 				providerClass: "store" as const,
 				capabilities: async () => [],
 				put: async () => Result.err(new Error("not used")),

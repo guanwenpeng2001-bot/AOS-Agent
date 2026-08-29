@@ -1,4 +1,4 @@
-import { type AssistantMessage, fauxAssistantMessage } from "@aos-agent/ai";
+import { type AssistantMessage, fakeAssistantMessage } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarness, getUserTexts, type Harness } from "../harness.ts";
 
@@ -25,7 +25,7 @@ describe("pre-prompt compaction regression", () => {
 
 	it("compacts length-stop overflow before a new prompt without continuing from an assistant message", async () => {
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 100, maxTokens: 100 }],
+			models: [{ id: "fake-1", contextWindow: 100, maxTokens: 100 }],
 			settings: { compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 } },
 			tools: [],
 			extensionFactories: [
@@ -55,7 +55,7 @@ describe("pre-prompt compaction regression", () => {
 			timestamp: now - 1000,
 		});
 		const lengthStopAssistant: AssistantMessage = {
-			...fauxAssistantMessage("length-stop assistant response", { stopReason: "length", timestamp: now - 500 }),
+			...fakeAssistantMessage("length-stop assistant response", { stopReason: "length", timestamp: now - 500 }),
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
@@ -63,7 +63,7 @@ describe("pre-prompt compaction regression", () => {
 		};
 		harness.sessionManager.appendMessage(lengthStopAssistant);
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
-		harness.setResponses([fauxAssistantMessage("answered next prompt")]);
+		harness.setResponses([fakeAssistantMessage("answered next prompt")]);
 		const continueSpy = vi.spyOn(harness.session.agent, "continue");
 
 		await expect(harness.session.prompt("next prompt")).resolves.toBeUndefined();
@@ -75,6 +75,6 @@ describe("pre-prompt compaction regression", () => {
 			willRetry: true,
 		});
 		expect(getUserTexts(harness)).toContain("next prompt");
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.fake.state.callCount).toBe(1);
 	});
 });

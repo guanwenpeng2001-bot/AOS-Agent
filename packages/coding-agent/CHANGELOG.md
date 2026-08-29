@@ -11,6 +11,7 @@
 - Removed the writable execution-association API and binding association/handle execution inputs. Execution now uses canonical `AgentBinding`/`BindingEpoch`; historical associations remain read-only migration and public views.
 - Removed Line13 trace and upgrade exports from the `aos-agent/external-connector` subpath.
 - Public composition and factory names now use their domain names without the `Trusted` prefix. Update imports and type references to the unprefixed names.
+- Renamed the packaged connector fixture IDs to `aos.fake-connector`, `aos.fake-provider`, and `aos.fake-tool-call`; fixture consumers must read `fakeProviderId` instead of `fauxProviderId`.
 
 ### Added
 

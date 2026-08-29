@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
-import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@aos-agent/ai/compat";
+import { fakeAssistantMessage, fakeToolCall, registerFakeProvider } from "@aos-agent/ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -45,30 +45,30 @@ describe("AgentSessionRuntime characterization", () => {
 			options?.cwd ?? join(tmpdir(), `aos-runtime-suite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
-		const faux = registerFauxProvider({
+		const fake = registerFakeProvider({
 			models: [
-				{ id: "faux-1", reasoning: true },
-				{ id: "faux-2", reasoning: false },
+				{ id: "fake-1", reasoning: true },
+				{ id: "fake-2", reasoning: false },
 			],
 		});
-		faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two"), fauxAssistantMessage("three")]);
+		fake.setResponses([fakeAssistantMessage("one"), fakeAssistantMessage("two"), fakeAssistantMessage("three")]);
 
 		const authStorage = AuthStorage.inMemory();
-		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 
 		const runtimeOptions = {
 			agentDir: tempDir,
 			authStorage,
-			model: options?.bootstrapModel === false ? undefined : faux.getModel(),
+			model: options?.bootstrapModel === false ? undefined : fake.getModel(),
 			thinkingLevel: options?.bootstrapThinkingLevel === false ? undefined : undefined,
 			resourceLoaderOptions: {
 				extensionFactories: [
 					(agent: ExtensionAPI) => {
-						agent.registerProvider(faux.getModel().provider, {
-							baseUrl: faux.getModel().baseUrl,
-							apiKey: "faux-key",
-							api: faux.api,
-							models: faux.models.map((registeredModel) => ({
+						agent.registerProvider(fake.getModel().provider, {
+							baseUrl: fake.getModel().baseUrl,
+							apiKey: "fake-key",
+							api: fake.api,
+							models: fake.models.map((registeredModel) => ({
 								id: registeredModel.id,
 								name: registeredModel.name,
 								api: registeredModel.api,
@@ -120,13 +120,13 @@ describe("AgentSessionRuntime characterization", () => {
 
 		cleanups.push(async () => {
 			await runtime.dispose();
-			faux.unregister();
+			fake.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
 		});
 
-		return { runtime, faux, tempDir };
+		return { runtime, fake, tempDir };
 	}
 
 	it("persists message_end assistant replacements to the session manager", async () => {
@@ -175,7 +175,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const toolStartedPromise = new Promise<void>((resolve) => {
 			toolStarted = resolve;
 		});
-		const { runtime, faux } = await createRuntimeForTest((agent: ExtensionAPI) => {
+		const { runtime, fake } = await createRuntimeForTest((agent: ExtensionAPI) => {
 			agent.registerTool({
 				name: "block",
 				label: "Block",
@@ -196,7 +196,7 @@ describe("AgentSessionRuntime characterization", () => {
 		await runtime.newSession();
 		await runtime.session.bindExtensions({});
 
-		faux.setResponses([fauxAssistantMessage(fauxToolCall("block", {}), { stopReason: "toolUse" })]);
+		fake.setResponses([fakeAssistantMessage(fakeToolCall("block", {}), { stopReason: "toolUse" })]);
 		const outgoingSession = runtime.session;
 		const promptPromise = outgoingSession.prompt("start blocking tool");
 		await toolStartedPromise;
@@ -405,29 +405,29 @@ describe("AgentSessionRuntime characterization", () => {
 		const tempDir = join(tmpdir(), `aos-runtime-suite-in-memory-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
-		const faux = registerFauxProvider({
+		const fake = registerFakeProvider({
 			models: [
-				{ id: "faux-1", reasoning: true },
-				{ id: "faux-2", reasoning: false },
+				{ id: "fake-1", reasoning: true },
+				{ id: "fake-2", reasoning: false },
 			],
 		});
-		faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two"), fauxAssistantMessage("three")]);
+		fake.setResponses([fakeAssistantMessage("one"), fakeAssistantMessage("two"), fakeAssistantMessage("three")]);
 
 		const authStorage = AuthStorage.inMemory();
-		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 
 		const runtimeOptions = {
 			agentDir: tempDir,
 			authStorage,
-			model: faux.getModel(),
+			model: fake.getModel(),
 			resourceLoaderOptions: {
 				extensionFactories: [
 					(agent: ExtensionAPI) => {
-						agent.registerProvider(faux.getModel().provider, {
-							baseUrl: faux.getModel().baseUrl,
-							apiKey: "faux-key",
-							api: faux.api,
-							models: faux.models.map((registeredModel) => ({
+						agent.registerProvider(fake.getModel().provider, {
+							baseUrl: fake.getModel().baseUrl,
+							apiKey: "fake-key",
+							api: fake.api,
+							models: fake.models.map((registeredModel) => ({
 								id: registeredModel.id,
 								name: registeredModel.name,
 								api: registeredModel.api,
@@ -476,7 +476,7 @@ describe("AgentSessionRuntime characterization", () => {
 		await runtime.session.bindExtensions({});
 		cleanups.push(async () => {
 			await runtime.dispose();
-			faux.unregister();
+			fake.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
@@ -530,20 +530,20 @@ describe("AgentSessionRuntime characterization", () => {
 		const secondDir = join(tmpdir(), `aos-runtime-cwd-b-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(firstDir, { recursive: true });
 		mkdirSync(secondDir, { recursive: true });
-		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {}, { cwd: firstDir });
+		const { runtime, fake, tempDir } = await createRuntimeForTest(() => {}, { cwd: firstDir });
 		const otherAuthStorage = AuthStorage.inMemory();
-		await otherAuthStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await otherAuthStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 		const otherRuntimeOptions = {
 			agentDir: tempDir,
 			authStorage: otherAuthStorage,
 			resourceLoaderOptions: {
 				extensionFactories: [
 					(agent: ExtensionAPI) => {
-						agent.registerProvider(faux.getModel().provider, {
-							baseUrl: faux.getModel().baseUrl,
-							apiKey: "faux-key",
-							api: faux.api,
-							models: faux.models.map((registeredModel) => ({
+						agent.registerProvider(fake.getModel().provider, {
+							baseUrl: fake.getModel().baseUrl,
+							apiKey: "fake-key",
+							api: fake.api,
+							models: fake.models.map((registeredModel) => ({
 								id: registeredModel.id,
 								name: registeredModel.name,
 								api: registeredModel.api,
@@ -601,25 +601,25 @@ describe("AgentSessionRuntime characterization", () => {
 	});
 
 	it("restores model and thinking state from the destination session", async () => {
-		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {}, {
+		const { runtime, fake, tempDir } = await createRuntimeForTest(() => {}, {
 			bootstrapModel: false,
 			bootstrapThinkingLevel: false,
 		});
 		const otherDir = join(tempDir, "other");
 		mkdirSync(otherDir, { recursive: true });
 		const otherAuthStorage = AuthStorage.inMemory();
-		await otherAuthStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await otherAuthStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 		const otherRuntimeOptions = {
 			agentDir: tempDir,
 			authStorage: otherAuthStorage,
 			resourceLoaderOptions: {
 				extensionFactories: [
 					(agent: ExtensionAPI) => {
-						agent.registerProvider(faux.getModel().provider, {
-							baseUrl: faux.getModel().baseUrl,
-							apiKey: "faux-key",
-							api: faux.api,
-							models: faux.models.map((registeredModel) => ({
+						agent.registerProvider(fake.getModel().provider, {
+							baseUrl: fake.getModel().baseUrl,
+							apiKey: "fake-key",
+							api: fake.api,
+							models: fake.models.map((registeredModel) => ({
 								id: registeredModel.id,
 								name: registeredModel.name,
 								api: registeredModel.api,
@@ -667,14 +667,14 @@ describe("AgentSessionRuntime characterization", () => {
 		cleanups.push(async () => {
 			await otherRuntime.dispose();
 		});
-		await otherRuntime.session.setModel(faux.getModel("faux-2")!);
+		await otherRuntime.session.setModel(fake.getModel("fake-2")!);
 		otherRuntime.session.setThinkingLevel("off");
 		await otherRuntime.session.prompt("hello");
 		const targetSessionFile = otherRuntime.session.sessionFile!;
 
 		await runtime.switchSession(targetSessionFile);
 
-		expect(runtime.session.model?.id).toBe("faux-2");
+		expect(runtime.session.model?.id).toBe("fake-2");
 		expect(runtime.session.thinkingLevel).toBe("off");
 	});
 });

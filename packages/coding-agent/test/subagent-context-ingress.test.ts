@@ -32,9 +32,9 @@ const SESSION_ID = "session-context-ingress";
 const PARENT_LANE = "parent-lane";
 const CHILD_LANE = "child-lane";
 
-class FauxArtifactStore implements ArtifactStoreProvider {
+class FakeArtifactStore implements ArtifactStoreProvider {
 	readonly schemaVersion = 1 as const;
-	readonly providerId = "faux-artifact-store";
+	readonly providerId = "fake-artifact-store";
 	readonly providerClass = "store" as const;
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
@@ -126,7 +126,7 @@ function fixture(): Fixture {
 			schemaVersion: 1,
 			mailbox,
 			ledger,
-			artifactStore: new FauxArtifactStore(),
+			artifactStore: new FakeArtifactStore(),
 			sessionId: SESSION_ID,
 			parentLaneId: PARENT_LANE,
 		}),

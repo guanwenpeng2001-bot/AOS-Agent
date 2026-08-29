@@ -44,7 +44,7 @@ import { builtinModels, getBuiltinModel, getBuiltinModels, getBuiltinProviders }
 
 export type { BuiltinProvider } from "./providers/all.ts";
 
-import { createFauxCore, type FauxProviderRegistration, type RegisterFauxProviderOptions } from "./providers/faux.ts";
+import { createFakeCore, type FakeProviderRegistration, type RegisterFakeProviderOptions } from "./providers/fake.ts";
 import type {
 	Api,
 	ApiStreamOptions,
@@ -157,9 +157,9 @@ function clearApiProviders(): void {
 	apiProviderRegistry.clear();
 }
 
-export function registerFauxProvider(options: RegisterFauxProviderOptions = {}): FauxProviderRegistration {
-	const core = createFauxCore(options);
-	const sourceId = `faux-provider-${Math.random().toString(36).slice(2, 10)}`;
+export function registerFakeProvider(options: RegisterFakeProviderOptions = {}): FakeProviderRegistration {
+	const core = createFakeCore(options);
+	const sourceId = `fake-provider-${Math.random().toString(36).slice(2, 10)}`;
 	registerApiProvider({ api: core.api, stream: core.stream, streamSimple: core.streamSimple }, sourceId);
 	return {
 		api: core.api,

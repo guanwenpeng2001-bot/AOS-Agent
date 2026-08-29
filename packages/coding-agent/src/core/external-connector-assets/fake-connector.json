@@ -1,8 +1,8 @@
 {
 	"schemaVersion": 1,
-	"fixtureId": "line13-fake-connector",
-	"providerId": "line13.fake-connector",
-	"fauxProviderId": "line13.faux-provider",
+	"fixtureId": "aos.fake-connector",
+	"providerId": "aos.fake-connector",
+	"fakeProviderId": "aos.fake-provider",
 	"defaultEnabled": false,
 	"credentialMode": "none",
 	"networkMode": "disabled",

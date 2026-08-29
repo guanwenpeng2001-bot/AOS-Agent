@@ -16,7 +16,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider } from "@aos-agent/ai/compat";
+import { registerFakeProvider } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	createAgentSessionFromServices,
@@ -52,10 +52,10 @@ describe("MCP OAuth default session wiring", () => {
 		return agentDir;
 	}
 
-	async function createFauxRuntime(agentDir: string, authStorage: AuthStorage): Promise<ModelRuntime> {
-		const faux = registerFauxProvider({ models: [{ id: "faux-1", reasoning: false }] });
-		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
-		cleanups.push(() => faux.unregister());
+	async function createFakeRuntime(agentDir: string, authStorage: AuthStorage): Promise<ModelRuntime> {
+		const fake = registerFakeProvider({ models: [{ id: "fake-1", reasoning: false }] });
+		await authStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
+		cleanups.push(() => fake.unregister());
 		return ModelRuntime.create({
 			credentials: authStorage,
 			modelsPath: join(agentDir, "models.json"),
@@ -83,7 +83,7 @@ describe("MCP OAuth default session wiring", () => {
 
 	it("defaults mcpAuthManagerOptions to the agent auth namespace store and passes options through", async () => {
 		const agentDir = newAgentDir();
-		const modelRuntime = await createFauxRuntime(agentDir, AuthStorage.create(join(agentDir, "auth.json")));
+		const modelRuntime = await createFakeRuntime(agentDir, AuthStorage.create(join(agentDir, "auth.json")));
 		const authProvider = (): undefined => undefined;
 
 		const services = await createServices(agentDir, modelRuntime, { mcpAuthProvider: authProvider });
@@ -97,7 +97,7 @@ describe("MCP OAuth default session wiring", () => {
 
 	it("honors explicit mcpAuthManagerOptions instead of the default store", async () => {
 		const agentDir = newAgentDir();
-		const modelRuntime = await createFauxRuntime(agentDir, AuthStorage.create(join(agentDir, "auth.json")));
+		const modelRuntime = await createFakeRuntime(agentDir, AuthStorage.create(join(agentDir, "auth.json")));
 		const explicit = {
 			store: AuthStorage.inMemory(),
 			installationId: "explicit-install",
@@ -110,7 +110,7 @@ describe("MCP OAuth default session wiring", () => {
 
 	it("builds a session-scoped manager per session backed by the default store", async () => {
 		const agentDir = newAgentDir();
-		const modelRuntime = await createFauxRuntime(agentDir, AuthStorage.create(join(agentDir, "auth.json")));
+		const modelRuntime = await createFakeRuntime(agentDir, AuthStorage.create(join(agentDir, "auth.json")));
 		const services = await createServices(agentDir, modelRuntime);
 
 		const sessionManagerA = SessionManager.inMemory(agentDir);
@@ -133,7 +133,7 @@ describe("MCP OAuth default session wiring", () => {
 
 	it("listMcpCredentialStatuses reads the explicitly supplied store and never surfaces tokens", async () => {
 		const agentDir = newAgentDir();
-		const modelRuntime = await createFauxRuntime(agentDir, AuthStorage.create(join(agentDir, "auth.json")));
+		const modelRuntime = await createFakeRuntime(agentDir, AuthStorage.create(join(agentDir, "auth.json")));
 		const explicit = {
 			store: AuthStorage.inMemory(),
 			installationId: "explicit-install",

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider } from "@aos-agent/ai/compat";
+import { registerFakeProvider } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -28,11 +28,11 @@ describe("issue #2753 reload stale resource settings", () => {
 		mkdirSync(promptsDir, { recursive: true });
 		writeFileSync(join(promptsDir, "test.md"), "Echo test prompt\n");
 
-		const faux = registerFauxProvider({
-			models: [{ id: "faux-1", reasoning: false }],
+		const fake = registerFakeProvider({
+			models: [{ id: "fake-1", reasoning: false }],
 		});
 		const authStorage = AuthStorage.inMemory();
-		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 		const modelRuntime = await ModelRuntime.create({
 			credentials: authStorage,
 			modelsPath: join(agentDir, "models.json"),
@@ -51,11 +51,11 @@ describe("issue #2753 reload stale resource settings", () => {
 				resourceLoaderOptions: {
 					extensionFactories: [
 						(agent) => {
-							agent.registerProvider(faux.getModel().provider, {
-								baseUrl: faux.getModel().baseUrl,
-								apiKey: "faux-key",
-								api: faux.api,
-								models: faux.models.map((registeredModel) => ({
+							agent.registerProvider(fake.getModel().provider, {
+								baseUrl: fake.getModel().baseUrl,
+								apiKey: "fake-key",
+								api: fake.api,
+								models: fake.models.map((registeredModel) => ({
 									id: registeredModel.id,
 									name: registeredModel.name,
 									api: registeredModel.api,
@@ -76,7 +76,7 @@ describe("issue #2753 reload stale resource settings", () => {
 				services,
 				sessionManager,
 				sessionStartEvent,
-				model: faux.getModel(),
+				model: fake.getModel(),
 			});
 			registerCandidateSession(created.session);
 			return {
@@ -93,7 +93,7 @@ describe("issue #2753 reload stale resource settings", () => {
 
 		cleanups.push(() => {
 			runtime.session.dispose();
-			faux.unregister();
+			fake.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
