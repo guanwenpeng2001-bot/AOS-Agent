@@ -1,6 +1,8 @@
 import {
 	chmodSync,
+	linkSync,
 	mkdtempSync,
+	mkdirSync,
 	readFileSync,
 	readdirSync,
 	rmSync,
@@ -19,6 +21,8 @@ import {
 	type ControlPlaneStorageOptions,
 	writeControlPlaneState,
 } from "../src/core/control-plane-atomic-storage.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
+import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 
 function validateObject(content: string): void {
 	const parsed: unknown = JSON.parse(content);
@@ -186,5 +190,55 @@ describe("control-plane atomic storage", () => {
 			first: { type: "api_key", key: "first-key" },
 			second: { type: "api_key", key: "second-key" },
 		});
+	});
+
+	it("replaces settings, auth, and trust hardlinks without mutating committed content", async () => {
+		const agentDir = join(tempDir, "agent");
+		const projectDir = join(tempDir, "project");
+		const sentinelsDir = join(tempDir, "sentinels");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(projectDir, { recursive: true });
+		mkdirSync(sentinelsDir, { recursive: true });
+
+		const committedContents = {
+			settings: `${JSON.stringify({ defaultProvider: "old-provider" })}\n`,
+			auth: "{}\n",
+			trust: "{}\n",
+		} as const;
+		const controlPaths = {
+			settings: join(agentDir, "settings.json"),
+			auth: join(agentDir, "auth.json"),
+			trust: join(agentDir, "trust.json"),
+		} as const;
+		const sentinelPaths = {
+			settings: join(sentinelsDir, "settings-committed.json"),
+			auth: join(sentinelsDir, "auth-committed.json"),
+			trust: join(sentinelsDir, "trust-committed.json"),
+		} as const;
+		for (const name of ["settings", "auth", "trust"] as const) {
+			writeFileSync(sentinelPaths[name], committedContents[name], "utf-8");
+			linkSync(sentinelPaths[name], controlPaths[name]);
+		}
+
+		const settings = SettingsManager.create(projectDir, agentDir);
+		settings.setDefaultProvider("new-provider");
+		await settings.flush();
+		await AuthStorage.create(controlPaths.auth).modify("new-provider", async () => ({
+			type: "api_key",
+			key: "new-key",
+		}));
+		const trust = new ProjectTrustStore(agentDir);
+		trust.set(projectDir, true);
+
+		expect(JSON.parse(readFileSync(controlPaths.settings, "utf-8")).defaultProvider).toBe(
+			"new-provider",
+		);
+		expect(JSON.parse(readFileSync(controlPaths.auth, "utf-8"))["new-provider"]?.key).toBe(
+			"new-key",
+		);
+		expect(trust.get(projectDir)).toBe(true);
+		for (const name of ["settings", "auth", "trust"] as const) {
+			expect(readFileSync(sentinelPaths[name], "utf-8")).toBe(committedContents[name]);
+		}
 	});
 });
