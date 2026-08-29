@@ -13,7 +13,7 @@ import {
 const HEAD_SHA = "a".repeat(40);
 
 function productTrace(iterations) {
-	const final = Object.fromEntries(LINE13_SOAK_RESOURCE_NAMES.map((name) => [name, name === "files" ? 1 : 0]));
+	const final = Object.fromEntries(LINE13_SOAK_RESOURCE_NAMES.map((name) => [name, name === "files" || name === "status" ? 1 : 0]));
 	return {
 		schemaVersion: 1,
 		entrypoint: "aos-agent/external-connector",
@@ -30,7 +30,25 @@ function productTrace(iterations) {
 			"session_manager",
 		],
 		samples: Array.from({ length: iterations }, () => ({ ...final })),
+		canonicalRecords: Array.from({ length: iterations }, (_, index) => ({
+			operation: LINE13_SOAK_OPERATION_PLAN[index % LINE13_SOAK_OPERATION_PLAN.length],
+			attempts: 1,
+			attemptReceipts: 1,
+			taskResults: 1,
+			runReceipts: 1,
+			attemptId: "attempt-line13",
+			attemptReceiptId: "attempt-receipt-line13",
+			taskResultId: "task-result-line13",
+			runReceiptId: "run-receipt-line13",
+			runId: "line13-product-trace-run",
+			providerId: "aos.line13.external-connector",
+		})),
 		final,
+		connector: {
+			providerId: "aos.line13.external-connector",
+			currentRegistrySize: 1,
+			attemptExecutions: 1 + Math.floor((iterations + 4) / LINE13_SOAK_OPERATION_PLAN.length),
+		},
 		provider: { kind: "faux", pendingResponses: 0 },
 	};
 }
@@ -70,6 +88,7 @@ test("offline adapters are invoked but cannot mint product-trace evidence", asyn
 		assert.equal(result.evidenceClass, "structural_fixture");
 		assert.equal(result.operations.restart, 1);
 		assert.equal(result.resources.final.files, 1);
+		assert.equal(result.connector.attemptExecutions, 2);
 		assert.equal(existsSync(workRoot), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

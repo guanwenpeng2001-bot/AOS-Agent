@@ -148,7 +148,7 @@ function createSystemProductTraceExecutor(workRoot) {
 function assertCanonicalClosure(snapshot, context) {
 	for (const name of LINE13_SOAK_RESOURCE_NAMES) {
 		const value = snapshot?.[name];
-		if (!Number.isSafeInteger(value) || value < 0 || (name === "files" ? value > 1 : value !== 0)) {
+		if (!Number.isSafeInteger(value) || value < 0 || (name === "files" ? value > 1 : name === "status" ? value !== 1 : value !== 0)) {
 			throw new Error(`${context} retained ${name}`);
 		}
 	}
@@ -167,6 +167,9 @@ function assertCanonicalTrace(trace, iterations, plateauWindow) {
 	if (!Array.isArray(trace.samples) || trace.samples.length !== iterations) {
 		throw new Error("Packaged product trace did not return every bounded sample");
 	}
+	if (!Array.isArray(trace.canonicalRecords) || trace.canonicalRecords.length !== iterations) {
+		throw new Error("Packaged product trace did not return every canonical result sample");
+	}
 	for (const operation of LINE13_SOAK_OPERATION_PLAN) {
 		if (!Number.isSafeInteger(trace.operations?.[operation]) || trace.operations[operation] < 1) {
 			throw new Error(`Packaged product trace did not invoke ${operation}`);
@@ -175,7 +178,24 @@ function assertCanonicalTrace(trace, iterations, plateauWindow) {
 	for (const [index, sample] of trace.samples.slice(-plateauWindow).entries()) {
 		assertCanonicalClosure(sample, `Packaged product trace plateau sample ${index}`);
 	}
+	for (const [index, records] of trace.canonicalRecords.entries()) {
+		if (
+			records?.operation !== LINE13_SOAK_OPERATION_PLAN[index % LINE13_SOAK_OPERATION_PLAN.length] ||
+			records.attempts !== 1 ||
+			records.attemptReceipts !== 1 ||
+			records.taskResults !== 1 ||
+			records.runReceipts !== 1 ||
+			records.providerId !== "aos.line13.external-connector" ||
+			records.runId !== "line13-product-trace-run" ||
+			![records.attemptId, records.attemptReceiptId, records.taskResultId, records.runReceiptId].every((id) => typeof id === "string" && id.length > 0)
+		) throw new Error(`Packaged product trace canonical result sample ${index} is invalid`);
+	}
 	assertCanonicalClosure(trace.final, "Packaged product trace final sample");
+	if (
+		trace.connector?.providerId !== "aos.line13.external-connector" ||
+		trace.connector.currentRegistrySize !== 1 ||
+		trace.connector.attemptExecutions !== 1 + trace.operations.fork
+	) throw new Error("Packaged product trace did not execute the registry-backed Connector");
 	if (trace.provider?.kind !== "faux" || trace.provider.pendingResponses !== 0) {
 		throw new Error("Packaged product trace retained faux responses");
 	}
@@ -323,6 +343,7 @@ export async function runLine13Soak(options, executor) {
 				plateauSamples: plateau.length,
 				plateauDigest: digestJson(plateau),
 			}),
+			connector: trace.connector,
 			provider: trace.provider,
 			safety: Object.freeze({ credentialsPersisted: false, rawPayloadPersisted: false, pathsPersisted: false }),
 		};
