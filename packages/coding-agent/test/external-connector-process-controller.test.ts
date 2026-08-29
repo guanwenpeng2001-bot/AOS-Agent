@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import {
 	externalConnectorGuardianLaunchStrategy,
 	externalConnectorMinimalEnvironment,
 	ProductionExternalConnectorProcessController,
+	resolveProductionExternalConnectorDriverProvenance,
 } from "../src/core/external-connector-process-controller.ts";
 import {
 	ExternalConnectorBoundedSupervisor,
@@ -322,6 +324,30 @@ describe("production External Connector process controller", () => {
 				OPENAI_API_KEY: "secret",
 			}),
 		).toEqual({ SystemRoot: "C:\\Windows", TEMP: "C:\\Temp" });
+	});
+
+	it("rejects trusted driver provenance with a mismatched module identity or empty version", () => {
+		const executableIdentity = `sha256:${createHash("sha256").update(readFileSync(process.execPath)).digest("hex")}`;
+		const trustedProvenance = {
+			modulePath: process.execPath,
+			cwd: process.cwd(),
+			version: process.version,
+			executableIdentity,
+			moduleIdentity: executableIdentity,
+		} as const;
+
+		expect(() =>
+			resolveProductionExternalConnectorDriverProvenance({
+				executablePath: process.execPath,
+				trustedProvenance: { ...trustedProvenance, moduleIdentity: "sha256:wrong" },
+			}),
+		).toThrow("trusted driver file identity does not match");
+		expect(() =>
+			resolveProductionExternalConnectorDriverProvenance({
+				executablePath: process.execPath,
+				trustedProvenance: { ...trustedProvenance, version: "" },
+			}),
+		).toThrow("trusted driver provenance is invalid");
 	});
 
 	it("rejects reattach when the nonce or any full-identity field differs", async () => {
