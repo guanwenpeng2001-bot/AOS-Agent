@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - Product orchestration deep imports moved from `packages/agent/src/harness/foundation/{ask-store,durable-store,goal-store,query,workflow,workflow-store}.ts` to `packages/coding-agent/src/orchestration/`.
+- `@aos-agent/agent-core` now exposes only execution-loop contracts; product orchestration stores, query helpers, and Workflow DSL exports moved out of its public surface. Consumers of the removed exports must migrate to the coding-agent orchestration implementation.
 - Removed `BuildSystemPromptOptions.contextFiles`. Route session context through Context Engine sources; direct prompt construction can use approved `instructionBlocks`.
 - With Context Engine enabled (the default), extensions must return a labeled `before_agent_start` `contribution` for model-facing input. Legacy `message`/`systemPrompt` returns, `context` mutations, and `before_provider_request` payload rewrites require `context.enabled: false`.
 - Capability registry ids, revisions, binding ids, and public capability provenance are now installation-scoped opaque references. Public RPC, SDK, Context Engine, run receipt, and session-event surfaces no longer return raw capability source paths, URLs, session file paths, or legacy raw capability identifiers.
