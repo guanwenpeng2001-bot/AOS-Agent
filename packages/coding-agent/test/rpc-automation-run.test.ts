@@ -254,6 +254,7 @@ const OPAQUE_REVISION_ID = `rev:${"r".repeat(43)}`;
 const RPC_IMAGE_ID = "4".repeat(64);
 const RPC_FILE_ID = "5".repeat(64);
 const RPC_COMPOSITION_TOOL_PROVIDER_ID = "rpc.current.external";
+const RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS = 10_000;
 
 interface RpcCompositionToolGatewayState {
 	readonly toolGatewayRequests: ToolGatewayRequest[];
@@ -1737,7 +1738,7 @@ describe("RPC Automation Host run lifecycle", () => {
 
 			await controller.handleCommand({ id: "r-memory", type: "run.start", message: "Hello" });
 			await vi.waitFor(() => expect(records.some((record) => record.type === "run.completed")).toBe(true), {
-				timeout: 10_000,
+				timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS,
 			});
 			expect(records.some((record) => record.type === "run.started")).toBe(true);
 			expect(records.some((record) => record.type === "run.event")).toBe(true);
@@ -1810,7 +1811,9 @@ describe("RPC Automation Host run lifecycle", () => {
 					],
 				},
 			});
-			await vi.waitFor(() => expect(fixture.driver.spawnedRequest).toBeDefined());
+			await vi.waitFor(() => expect(fixture.driver.spawnedRequest).toBeDefined(), {
+				timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS,
+			});
 			const request = fixture.driver.spawnedRequest!;
 			expect(request.modelProjection).toMatchObject({
 				provider: DEFAULT_MODEL.provider,
@@ -1829,8 +1832,9 @@ describe("RPC Automation Host run lifecycle", () => {
 				},
 			});
 			expect(fixture.driver.matrixReads).toBeGreaterThanOrEqual(2);
-			await vi.waitFor(() =>
-				expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed" })),
+			await vi.waitFor(
+				() => expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed" })),
+				{ timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS },
 			);
 		} finally {
 			await harness.controller.shutdown();
@@ -1873,7 +1877,9 @@ describe("RPC Automation Host run lifecycle", () => {
 				},
 			});
 
-			await vi.waitFor(() => expect(fixture.driver.spawnedRequest).toBeDefined());
+			await vi.waitFor(() => expect(fixture.driver.spawnedRequest).toBeDefined(), {
+				timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS,
+			});
 			const request = fixture.driver.spawnedRequest!;
 			expect(request.modelProjection).toMatchObject({
 				provider: DEFAULT_MODEL.provider,
@@ -1900,8 +1906,9 @@ describe("RPC Automation Host run lifecycle", () => {
 					},
 				},
 			});
-			await vi.waitFor(() =>
-				expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed" })),
+			await vi.waitFor(
+				() => expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed" })),
+				{ timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS },
 			);
 		} finally {
 			await harness.controller.shutdown();
@@ -1943,7 +1950,9 @@ describe("RPC Automation Host run lifecycle", () => {
 				},
 			});
 
-			await vi.waitFor(() => expect(fixture.driver.spawnedRequest).toBeDefined());
+			await vi.waitFor(() => expect(fixture.driver.spawnedRequest).toBeDefined(), {
+				timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS,
+			});
 			const request = fixture.driver.spawnedRequest!;
 			expect(request.modelProjection).toMatchObject({
 				provider: DEFAULT_MODEL.provider,
@@ -1970,8 +1979,9 @@ describe("RPC Automation Host run lifecycle", () => {
 					},
 				},
 			});
-			await vi.waitFor(() =>
-				expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed" })),
+			await vi.waitFor(
+				() => expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed" })),
+				{ timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS },
 			);
 		} finally {
 			await harness.controller.shutdown();
