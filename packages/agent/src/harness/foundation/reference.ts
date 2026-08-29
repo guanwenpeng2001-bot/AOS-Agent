@@ -3,7 +3,7 @@ import type { Fingerprint } from "./identity.ts";
 import { FingerprintSchema } from "./schema.ts";
 import { parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 import type { FoundationError } from "./errors.ts";
-import type { Result as ResultValue } from "../result.ts";
+import type { ResultValue } from "../result.ts";
 
 export interface VersionedReference { schemaVersion: 1; type: string; id: string; revision?: number; fingerprint?: Fingerprint; providerId?: string; }
 export const VersionedReferenceSchema = Type.Object({ schemaVersion: Type.Literal(1), type: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }), revision: Type.Optional(Type.Integer({ minimum: 0 })), fingerprint: Type.Optional(FingerprintSchema), providerId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });

@@ -7,7 +7,7 @@ import {
 	type ArtifactStoreProvider,
 	type AttemptReceipt,
 	type Fingerprint,
-	type Result as ResultValue,
+	type ResultValue,
 	type SessionLedger,
 	validateAttemptReceipt,
 	validateTaskResult,

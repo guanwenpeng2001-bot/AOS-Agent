@@ -1,4 +1,4 @@
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import { Type } from "typebox";
 import { BudgetUsageSchema, BudgetSchema, type BudgetUsage, type Budget } from "./budget.ts";
 import { FoundationError, type PublicExecutionError } from "./errors.ts";

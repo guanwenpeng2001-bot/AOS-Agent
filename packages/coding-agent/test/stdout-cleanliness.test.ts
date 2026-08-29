@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.ts";
+import { ENV_CODING_AGENT_DIR } from "../src/config.ts";
 import { allowNetwork } from "./test-network-env.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "./cli-process.ts";
 
@@ -63,7 +63,7 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 	return await new Promise((resolvePromise, reject) => {
 		const child = spawn(process.execPath, sourceProcessArgs(cliPath, args), {
 			cwd: projectDir,
-			env: { ...sourceProcessEnv(), [ENV_AGENT_DIR]: agentDir },
+			env: { ...sourceProcessEnv(), [ENV_CODING_AGENT_DIR]: agentDir },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 

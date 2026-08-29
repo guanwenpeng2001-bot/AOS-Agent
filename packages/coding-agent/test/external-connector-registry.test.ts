@@ -16,7 +16,7 @@ import {
 	type ExecutionCorrelation,
 	type FoundationProviderExecutionOptions,
 	type FoundationJsonValue,
-	type Result as ResultValue,
+	type ResultValue,
 	type ToolGatewayRequest,
 	type ToolGatewayProvider,
 	type ToolGatewayRoute,

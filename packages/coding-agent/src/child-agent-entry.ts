@@ -22,7 +22,7 @@ import {
 	type AttemptReceipt,
 	type BudgetUsage,
 	type HarnessTool,
-	type Result as ResultValue,
+	type ResultValue,
 } from "@aos-agent/agent-core";
 import { contentText, type Api, type Model, type Models } from "@aos-agent/ai";
 import { attachJsonlLineReader, createJsonlLineWriter } from "./modes/rpc/jsonl.ts";

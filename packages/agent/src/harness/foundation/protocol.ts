@@ -1,4 +1,4 @@
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import { redactText } from "./errors.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
 import { canonicalFoundationJson } from "./identity.ts";

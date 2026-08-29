@@ -6,7 +6,7 @@
  * from its parent scope, but it may never add them back. The helpers in this
  * file are intentionally provider-neutral and do not connect to MCP servers.
  */
-import { Result, type Result as ResultValue } from "./result.ts";
+import { Result, type ResultValue } from "./result.ts";
 import type { ChildSpawnRequest, TaskExecutorProvider } from "./foundation/providers.ts";
 import { FoundationError } from "./foundation/errors.ts";
 import {

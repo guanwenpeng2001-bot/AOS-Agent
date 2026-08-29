@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - Public and internal agent business names no longer use the false `V1` suffix. Update source imports and references to the unversioned names.
+- `ResultValue` is now the canonical type name for outcomes constructed with the `Result` value helpers.
 - Capability manifests are no longer part of the `@aos-agent/agent-core` public exports.
 - The session context ledger is now exposed as `ContextLedger` through `harness.ledger`, with domain object tags and the `session/ledger-writer.ts` source path. Existing `t5.*` object tags remain readable.
 

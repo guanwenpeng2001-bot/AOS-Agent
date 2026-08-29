@@ -18,7 +18,7 @@ import {
 	type BudgetUsage,
 	type ExecutionCorrelation,
 	type Fingerprint,
-	type Result as ResultValue,
+	type ResultValue,
 	type RevisionReference,
 	type TaskArtifactProjection,
 } from "@aos-agent/agent-core";

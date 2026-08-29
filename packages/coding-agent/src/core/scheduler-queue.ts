@@ -19,7 +19,7 @@ import {
 	type FoundationRecord,
 	type LedgerWriterLease,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 } from "@aos-agent/agent-core";
 import { runtimeClockFor, type RuntimeClock } from "./runtime-clock.ts";
 import {

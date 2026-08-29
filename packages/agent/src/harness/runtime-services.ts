@@ -4,7 +4,7 @@ import { FOUNDATION_SCHEMA_VERSION } from "./foundation/identity.ts";
 import type { FoundationJsonValue } from "./foundation/event-catalog.ts";
 import type { ExtensionContract, LspExtensionContract, MonitorExtensionContract } from "./foundation/profile.ts";
 import type { ToolDefinition } from "./tool-pipeline.ts";
-import { Result, type Result as ResultValue } from "./result.ts";
+import { Result, type ResultValue } from "./result.ts";
 
 export type RuntimeServiceDependency = string | { serviceId: string; version?: string };
 

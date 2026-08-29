@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import type { Result as ResultValue } from "../result.ts";
+import type { ResultValue } from "../result.ts";
 import type { FoundationError } from "./errors.ts";
 import type { FoundationEnvelope } from "./schema.ts";
 import type { Fingerprint } from "./identity.ts";

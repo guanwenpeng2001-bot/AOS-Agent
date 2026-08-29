@@ -3,12 +3,12 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { shouldRunFirstTimeSetup } from "../src/cli/startup-ui.ts";
-import { ENV_AGENT_DIR } from "../src/config.ts";
+import { ENV_CODING_AGENT_DIR } from "../src/config.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("shouldRunFirstTimeSetup", () => {
 	const originalExperimental = process.env.AOS_AGENT_EXPERIMENTAL;
-	const originalAgentDir = process.env[ENV_AGENT_DIR];
+	const originalAgentDir = process.env[ENV_CODING_AGENT_DIR];
 	let tempDir: string;
 	let settingsPath: string;
 
@@ -16,7 +16,7 @@ describe("shouldRunFirstTimeSetup", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "aos-first-time-setup-"));
 		settingsPath = join(tempDir, "settings.json");
 		process.env.AOS_AGENT_EXPERIMENTAL = "1";
-		delete process.env[ENV_AGENT_DIR];
+		delete process.env[ENV_CODING_AGENT_DIR];
 	});
 
 	afterEach(() => {
@@ -27,9 +27,9 @@ describe("shouldRunFirstTimeSetup", () => {
 			process.env.AOS_AGENT_EXPERIMENTAL = originalExperimental;
 		}
 		if (originalAgentDir === undefined) {
-			delete process.env[ENV_AGENT_DIR];
+			delete process.env[ENV_CODING_AGENT_DIR];
 		} else {
-			process.env[ENV_AGENT_DIR] = originalAgentDir;
+			process.env[ENV_CODING_AGENT_DIR] = originalAgentDir;
 		}
 	});
 
@@ -44,7 +44,7 @@ describe("shouldRunFirstTimeSetup", () => {
 	});
 
 	it("returns false when a custom agent dir is set", () => {
-		process.env[ENV_AGENT_DIR] = tempDir;
+		process.env[ENV_CODING_AGENT_DIR] = tempDir;
 
 		expect(shouldRunFirstTimeSetup(settingsPath)).toBe(false);
 	});

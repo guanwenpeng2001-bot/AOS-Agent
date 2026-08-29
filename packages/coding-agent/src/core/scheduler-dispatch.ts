@@ -39,7 +39,7 @@ import {
 	LayeredResultSettlement,
 	type QuotaProvider,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type Session,
 	type TaskExecutorProvider,
 	validateAgentInstance,

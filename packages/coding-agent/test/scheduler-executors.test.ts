@@ -24,7 +24,7 @@ import {
 	type QuotaProvider,
 	type QuotaReservation,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type RevisionReference,
 	resolveAgentBinding,
 	resolveMcpSelection,

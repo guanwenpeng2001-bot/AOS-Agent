@@ -4,7 +4,7 @@ import {
 	type ExecutionCorrelation,
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
-	type Result as ResultValue,
+	type ResultValue,
 	type SandboxOperationRequest,
 	type WorkerReceipt,
 } from "@aos-agent/agent-core";

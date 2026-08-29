@@ -11,7 +11,7 @@ import {
 	type FoundationJsonValue,
 	type LayeredResultSettlement,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type ResultProvenance,
 	type SessionLedger,
 	type SettleTaskResultInput,

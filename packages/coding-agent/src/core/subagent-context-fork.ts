@@ -31,7 +31,7 @@ import {
 	type Entry,
 	type Fingerprint,
 	type MessageEntry,
-	type Result as ResultValue,
+	type ResultValue,
 	type RevisionReference,
 	type RoleRevision,
 	type TaskArtifactProjection,

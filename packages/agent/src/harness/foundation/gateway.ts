@@ -1,4 +1,4 @@
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import { InMemoryBudgetLedger, type BudgetLedger, type BudgetScope, type BudgetUsage, type Budget } from "./budget.ts";
 import { FoundationError, toFoundationError } from "./errors.ts";
 import { validateScopedModelRequest, validateScopedModelResult, validateToolExecutionResult, validateToolGatewayRequest, type ScopedModelGateway, type ScopedModelRequest, type ScopedModelResult, type ToolExecutionResult, type ToolGateway, type ToolGatewayRequest } from "./providers.ts";

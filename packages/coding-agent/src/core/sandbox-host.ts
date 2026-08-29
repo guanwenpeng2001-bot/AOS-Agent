@@ -11,7 +11,7 @@ import {
 	type FoundationError as FoundationErrorValue,
 	type FoundationJsonValue,
 	type FoundationProviderCapability,
-	type Result as ResultValue,
+	type ResultValue,
 	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import {

@@ -1,6 +1,6 @@
 import { type TSchema, Type } from "typebox";
 import { Check, Errors } from "typebox/value";
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import { FoundationError, type FoundationErrorCode } from "./errors.ts";
 import { canonicalFoundationJson, type ExecutionCorrelation, type Fingerprint, type FoundationLineage } from "./identity.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";

@@ -32,7 +32,7 @@ import {
 	type McpCapabilityBinding,
 	type McpToolRoute,
 	type RevisionReference,
-	type Result as ResultValue,
+	type ResultValue,
 	type RoleRevision,
 	type RoleRegistry,
 	type RunOutcome,

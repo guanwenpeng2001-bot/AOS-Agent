@@ -17,7 +17,7 @@ import {
 	type ArtifactRef,
 	type FoundationJsonValue,
 	type PublicExecutionError,
-	type Result as ResultValue,
+	type ResultValue,
 	type SandboxOperationRequest,
 	type SideEffectState,
 	type WorkerReceipt,

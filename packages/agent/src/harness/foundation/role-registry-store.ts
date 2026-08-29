@@ -1,4 +1,4 @@
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import type { Session } from "../session/session.ts";
 import { DurableLedgerError } from "../session/durable/errors.ts";
 import { FoundationError, toFoundationError, type FoundationErrorCode } from "./errors.ts";

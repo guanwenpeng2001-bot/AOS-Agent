@@ -15,7 +15,7 @@ import {
 	type FoundationProviderExecutionOptions,
 	resolveAgentBinding,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type RevisionReference,
 	Session,
 	SessionLedger,

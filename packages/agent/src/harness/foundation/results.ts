@@ -1,4 +1,4 @@
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import type { AcceptanceFact } from "./goal.ts";
 import { FoundationError, type PublicExecutionError } from "./errors.ts";
 import { fingerprintFoundationValue, type ExecutionCorrelation, type Fingerprint, type FoundationLineage } from "./identity.ts";

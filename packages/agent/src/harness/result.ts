@@ -1,4 +1,11 @@
+/**
+ * Use `Result.ok` and `Result.err` to construct operation outcomes, then branch
+ * on `result.ok`. Use `TaggedError._tag` only to distinguish domain error
+ * variants after a Result has failed; do not introduce another discriminator.
+ */
 export type Result<TValue, TError> = { ok: true; value: TValue } | { ok: false; error: TError };
+
+export type ResultValue<TValue, TError> = Result<TValue, TError>;
 
 export const Result = {
 	ok<TValue>(value: TValue): Result<TValue, never> {

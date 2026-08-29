@@ -9,7 +9,7 @@ import { ResourceSelectorSchema, type ResourceSelector } from "./foundation/refe
 import { FingerprintSchema, validateExactShape } from "./foundation/schema.ts";
 import { EffectScope, orderRuntimeHooks, type EffectDisposer, type EffectResourceKind, type RuntimeHookSpec } from "./runtime-services.ts";
 import { validateMcpSelectorTightening, validateSelector } from "./profile.ts";
-import { Result, type Result as ResultValue } from "./result.ts";
+import { Result, type ResultValue } from "./result.ts";
 import type { FileError, FileSystem } from "./types.ts";
 
 export type PluginPackageSource = "local" | "remote" | "hosted";

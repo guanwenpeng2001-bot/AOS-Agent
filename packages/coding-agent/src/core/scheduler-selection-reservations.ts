@@ -7,7 +7,7 @@ import {
 	newFoundationId,
 	type QuotaReservation,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type Session,
 	SessionLedger,
 	type SessionLedgerWriter,

@@ -3,7 +3,7 @@ import {
 	FoundationError,
 	type PublicExecutionError,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type SessionLedger,
 	type SideEffectState,
 } from "@aos-agent/agent-core";

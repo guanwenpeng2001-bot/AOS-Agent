@@ -3,7 +3,7 @@ import {
 	MemoryError,
 	type MemoryProvenanceBoundary,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	ScopedMemoryStore,
 } from "@aos-agent/agent-core";
 

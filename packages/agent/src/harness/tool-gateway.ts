@@ -14,7 +14,7 @@ import {
 	validateToolGatewayRequest,
 } from "./foundation/providers.ts";
 import { validateWorkerReceipt, type WorkerReceipt } from "./foundation/results.ts";
-import type { Result as ResultValue } from "./result.ts";
+import type { ResultValue } from "./result.ts";
 import { Result } from "./result.ts";
 
 export type ToolGatewayRouteKind = "local" | "mcp" | "sandbox" | "external";

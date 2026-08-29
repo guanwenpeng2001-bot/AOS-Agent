@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import type { Result as ResultValue } from "../result.ts";
+import type { ResultValue } from "../result.ts";
 import type { FoundationError } from "./errors.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
 import { type ArtifactRef, ArtifactRefSchema } from "./reference.ts";

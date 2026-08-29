@@ -20,7 +20,7 @@ import {
 	type FoundationJsonValue,
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
-	type Result as ResultValue,
+	type ResultValue,
 	type ToolExecutionResult,
 	type WorkerReceiptRef,
 	type Session,

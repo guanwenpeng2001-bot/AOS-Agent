@@ -6,7 +6,7 @@ import {
 	Result,
 	Session,
 	SessionLedger,
-	type Result as ResultValue,
+	type ResultValue,
 } from "@aos-agent/agent-core";
 import {
 	applyChildWorktree,

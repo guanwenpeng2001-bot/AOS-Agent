@@ -6,7 +6,7 @@ import {
 	FoundationError,
 	type FoundationJsonValue,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type SessionLedger,
 	validateEventPayloadForCategory,
 	validateExactShape,

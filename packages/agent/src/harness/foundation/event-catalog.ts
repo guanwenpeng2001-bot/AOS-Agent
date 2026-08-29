@@ -1,4 +1,4 @@
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import { redactProjection } from "./errors.ts";
 import { canonicalFoundationJson } from "./identity.ts";
 

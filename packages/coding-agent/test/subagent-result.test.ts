@@ -28,7 +28,7 @@ import {
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
 	type ModelProfile,
-	type Result as ResultValue,
+	type ResultValue,
 	type RevisionReference,
 	type RoleRevision,
 	type TaskEnvelope,

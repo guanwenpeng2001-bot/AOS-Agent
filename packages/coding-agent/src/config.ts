@@ -499,7 +499,7 @@ export const APP_TITLE = "AOS Agent";
 export const CONFIG_DIR_NAME: string = pkg.aosAgentConfig?.configDir || ".aos-agent";
 export const VERSION: string = pkg.version || "0.0.0";
 
-export const ENV_AGENT_DIR = "AOS_AGENT_CODING_AGENT_DIR";
+export const ENV_CODING_AGENT_DIR = "AOS_AGENT_CODING_AGENT_DIR";
 export const ENV_SESSION_DIR = "AOS_AGENT_CODING_AGENT_SESSION_DIR";
 
 export function expandTildePath(path: string): string {
@@ -521,7 +521,7 @@ export function getShareViewerUrl(gistId: string): string {
 
 /** Get the agent config directory (e.g., ~/.aos-agent/agent/) */
 export function getAgentDir(): string {
-	const envDir = process.env[ENV_AGENT_DIR];
+	const envDir = process.env[ENV_CODING_AGENT_DIR];
 	if (envDir) {
 		return expandTildePath(envDir);
 	}

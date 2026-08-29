@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Result } from "../../src/harness/result.ts";
-import type { Result as ResultValue } from "../../src/harness/result.ts";
+import type { ResultValue } from "../../src/harness/result.ts";
 import {
 	ArtifactRefSchema,
 	DURABLE_LEDGER_ERROR_CODES,

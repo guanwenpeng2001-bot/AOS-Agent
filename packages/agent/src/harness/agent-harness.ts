@@ -73,7 +73,7 @@ import {
 	type HarnessEventOfType,
 	type HarnessEventType,
 } from "./events.ts";
-import { type Result as ResultValue, Result, TaggedError } from "./result.ts";
+import { type ResultValue, Result, TaggedError } from "./result.ts";
 import { FoundationError, toFoundationError } from "./foundation/errors.ts";
 import {
 	FoundationToolPipeline,

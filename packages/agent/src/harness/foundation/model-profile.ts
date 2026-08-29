@@ -1,4 +1,4 @@
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import { FoundationError } from "./errors.ts";
 import { fingerprintFoundationValue } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";

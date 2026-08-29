@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ENV_AGENT_DIR } from "../../../src/config.ts";
+import { ENV_CODING_AGENT_DIR } from "../../../src/config.ts";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import { runMigrations } from "../../../src/migrations.ts";
 import { createModelRegistry } from "../../model-runtime-test-utils.ts";
@@ -17,15 +17,15 @@ describe("regression #5661: uppercase models.json header values", () => {
 	});
 
 	function withAgentDir(agentDir: string, fn: () => void): void {
-		const previousAgentDir = process.env[ENV_AGENT_DIR];
-		process.env[ENV_AGENT_DIR] = agentDir;
+		const previousAgentDir = process.env[ENV_CODING_AGENT_DIR];
+		process.env[ENV_CODING_AGENT_DIR] = agentDir;
 		try {
 			fn();
 		} finally {
 			if (previousAgentDir === undefined) {
-				delete process.env[ENV_AGENT_DIR];
+				delete process.env[ENV_CODING_AGENT_DIR];
 			} else {
-				process.env[ENV_AGENT_DIR] = previousAgentDir;
+				process.env[ENV_CODING_AGENT_DIR] = previousAgentDir;
 			}
 		}
 	}

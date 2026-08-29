@@ -15,7 +15,7 @@ import { isAbsolute, dirname } from "node:path";
 import {
 	FoundationError,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type SandboxOperationRequest,
 	type WorkerReceipt,
 } from "@aos-agent/agent-core";

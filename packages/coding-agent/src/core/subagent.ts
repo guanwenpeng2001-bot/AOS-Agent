@@ -10,7 +10,7 @@ import {
 	canonicalFoundationJson,
 	FoundationError,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 } from "@aos-agent/agent-core";
 
 export const SUBAGENT_SCHEMA_VERSION = 1 as const;

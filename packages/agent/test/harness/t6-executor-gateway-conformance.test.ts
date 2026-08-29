@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Result, type Result as ResultValue } from "../../src/harness/result.ts";
+import { Result, type ResultValue } from "../../src/harness/result.ts";
 import {
 	ScopedExecutionGateway,
 	createBindingEpoch,

@@ -19,7 +19,7 @@ import {
 	type FoundationRecord,
 	type LedgerWriterLease,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type SchedulerClaimEventPayload,
 	type SchedulerDeadlockEventPayload,
 	type SchedulerDispatchEventPayload,

@@ -17,7 +17,7 @@ import {
 	type FoundationRecord,
 	type SchedulerWakeEventPayload,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type Session,
 	SessionLedger,
 	type SessionLedgerWriter,

@@ -3,7 +3,7 @@ import {
 	FoundationError,
 	Result,
 	type ContextSnapshot,
-	type Result as ResultValue,
+	type ResultValue,
 	type ChildSpawnRequest,
 } from "@aos-agent/agent-core";
 import {

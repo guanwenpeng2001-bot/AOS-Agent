@@ -42,7 +42,7 @@ import {
 	type QuotaAttribution,
 	type QuotaProvider,
 	type QuotaReservation,
-	type Result as ResultValue,
+	type ResultValue,
 	type ScopedMemoryStore,
 	type ScopedModelGateway,
 	type Session,

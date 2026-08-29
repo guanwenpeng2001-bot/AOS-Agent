@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as AgentPublic from "../../src/index.ts";
-import { Result, type Result as ResultValue } from "../../src/harness/result.ts";
+import { Result, type ResultValue } from "../../src/harness/result.ts";
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 import {

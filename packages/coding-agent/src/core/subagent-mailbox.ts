@@ -9,7 +9,7 @@ import {
 	type EventCorrelationRef,
 	type FoundationJsonValue,
 	type FoundationRecord,
-	type Result as ResultValue,
+	type ResultValue,
 	type SessionLedger,
 } from "@aos-agent/agent-core";
 import { SUBAGENT_PROVIDER_KINDS } from "./subagent.ts";

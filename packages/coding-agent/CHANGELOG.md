@@ -12,6 +12,7 @@
 - Removed Line13 trace and upgrade exports from the `aos-agent/external-connector` subpath.
 - Public composition and factory names now use their domain names without the `Trusted` prefix. Update imports and type references to the unprefixed names.
 - Renamed the packaged connector fixture IDs to `aos.fake-connector`, `aos.fake-provider`, and `aos.fake-tool-call`; fixture consumers must read `fakeProviderId` instead of `fauxProviderId`.
+- Renamed the exported configuration constant `ENV_AGENT_DIR` to `ENV_CODING_AGENT_DIR`; the environment variable value remains `AOS_AGENT_CODING_AGENT_DIR`.
 
 ### Added
 

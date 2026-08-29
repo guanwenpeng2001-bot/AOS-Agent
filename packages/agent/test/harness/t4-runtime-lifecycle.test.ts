@@ -26,7 +26,7 @@ import {
 import { FoundationError } from "../../src/harness/foundation/errors.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { applyProfilePatch, composeProfileBundle, resolveChildExecutorMcpSelectors, selectResources } from "../../src/harness/profile.ts";
-import { Result, type Result as ResultValue } from "../../src/harness/result.ts";
+import { Result, type ResultValue } from "../../src/harness/result.ts";
 import { FileError } from "../../src/harness/types.ts";
 import { Type } from "typebox";
 import { validateProfileContract, type LspExtensionContract, type MonitorExtensionContract } from "../../src/harness/foundation/profile.ts";

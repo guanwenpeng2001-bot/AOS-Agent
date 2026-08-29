@@ -33,7 +33,7 @@ import {
 	type ModelRoute,
 	type McpSelection,
 	type ResourceSelector,
-	type Result as ResultValue,
+	type ResultValue,
 	type RevisionReference,
 	type RoleRevision,
 	type SessionLedger,

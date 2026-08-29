@@ -19,7 +19,7 @@ import {
 	type ChildSpawnResult,
 	type QuotaProvider,
 	type RoleRegistry,
-	type Result as ResultValue,
+	type ResultValue,
 	type ScopedMemoryStore,
 	type ScopedModelGateway,
 	type Session,

@@ -32,7 +32,7 @@ import {
 	type QuotaProvider,
 	type QuotaReservation,
 	type RevisionReference,
-	type Result as ResultValue,
+	type ResultValue,
 	type RoleRevision,
 	type ScopedMemoryStore,
 	type ScopedModelGateway,

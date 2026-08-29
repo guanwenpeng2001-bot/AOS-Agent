@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.ts";
+import { ENV_CODING_AGENT_DIR } from "../src/config.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { runMigrations } from "../src/migrations.ts";
 
@@ -27,13 +27,13 @@ describe("keybindings migration", () => {
 			cursorUp: ["up", "ctrl+p"],
 			expandTools: "ctrl+x",
 		});
-		const previousAgentDir = process.env[ENV_AGENT_DIR];
-		process.env[ENV_AGENT_DIR] = agentDir;
+		const previousAgentDir = process.env[ENV_CODING_AGENT_DIR];
+		process.env[ENV_CODING_AGENT_DIR] = agentDir;
 		runMigrations(agentDir);
 		if (previousAgentDir === undefined) {
-			delete process.env[ENV_AGENT_DIR];
+			delete process.env[ENV_CODING_AGENT_DIR];
 		} else {
-			process.env[ENV_AGENT_DIR] = previousAgentDir;
+			process.env[ENV_CODING_AGENT_DIR] = previousAgentDir;
 		}
 
 		const migrated = JSON.parse(fs.readFileSync(path.join(agentDir, "keybindings.json"), "utf-8")) as Record<
@@ -51,13 +51,13 @@ describe("keybindings migration", () => {
 			expandTools: "ctrl+x",
 			"app.tools.expand": "ctrl+y",
 		});
-		const previousAgentDir = process.env[ENV_AGENT_DIR];
-		process.env[ENV_AGENT_DIR] = agentDir;
+		const previousAgentDir = process.env[ENV_CODING_AGENT_DIR];
+		process.env[ENV_CODING_AGENT_DIR] = agentDir;
 		runMigrations(agentDir);
 		if (previousAgentDir === undefined) {
-			delete process.env[ENV_AGENT_DIR];
+			delete process.env[ENV_CODING_AGENT_DIR];
 		} else {
-			process.env[ENV_AGENT_DIR] = previousAgentDir;
+			process.env[ENV_CODING_AGENT_DIR] = previousAgentDir;
 		}
 
 		const migrated = JSON.parse(fs.readFileSync(path.join(agentDir, "keybindings.json"), "utf-8")) as Record<

@@ -11,7 +11,7 @@ import {
 	type FoundationErrorCode,
 	type FoundationProviderCapability,
 	type FoundationProviderExecutionOptions,
-	type Result as ResultValue,
+	type ResultValue,
 	type SandboxOperationProvider,
 	type SandboxOperationRequest,
 	type WorkerReceipt,

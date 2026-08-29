@@ -32,7 +32,7 @@ import {
 	type Dispatch,
 	type ExecutionCorrelation,
 	type LayeredResultSettlement,
-	type Result as ResultValue,
+	type ResultValue,
 	type SessionLedger,
 } from "@aos-agent/agent-core";
 import {

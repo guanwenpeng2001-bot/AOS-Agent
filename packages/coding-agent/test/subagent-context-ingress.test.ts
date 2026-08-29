@@ -9,7 +9,7 @@ import {
 	type ArtifactStoreProvider,
 	type FoundationJsonValue,
 	type FoundationProviderCapability,
-	type Result as ResultValue,
+	type ResultValue,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import {

@@ -18,7 +18,7 @@ import {
 	Result,
 	type ResultProvenance,
 	type ResultValidation,
-	type Result as ResultValue,
+	type ResultValue,
 	type Session,
 	SessionLedger,
 	type SessionLedgerWriter,

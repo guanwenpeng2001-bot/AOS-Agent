@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import type { Result as ResultValue } from "../result.ts";
+import type { ResultValue } from "../result.ts";
 import type { FoundationError } from "./errors.ts";
 import { ObserverCursorSchema, type ObserverCursor } from "./observer.ts";
 import { parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";

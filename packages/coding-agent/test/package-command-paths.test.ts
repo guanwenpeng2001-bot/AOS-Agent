@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, w
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { APP_NAME, ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
+import { APP_NAME, ENV_CODING_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { ResolvedPaths } from "../src/core/package-manager.ts";
 import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
@@ -63,7 +63,7 @@ describe("package commands", () => {
 		mkdirSync(packageDir, { recursive: true });
 
 		originalCwd = process.cwd();
-		originalAgentDir = process.env[ENV_AGENT_DIR];
+		originalAgentDir = process.env[ENV_CODING_AGENT_DIR];
 		originalPackageDir = process.env.AOS_AGENT_PACKAGE_DIR;
 		originalLatestVersionUrl = process.env.AOS_AGENT_LATEST_VERSION_URL;
 		process.env.AOS_AGENT_LATEST_VERSION_URL = "https://example.test/aos/latest";
@@ -79,7 +79,7 @@ describe("package commands", () => {
 			}
 			return undefined as never;
 		}) as typeof process.exit);
-		process.env[ENV_AGENT_DIR] = agentDir;
+		process.env[ENV_CODING_AGENT_DIR] = agentDir;
 		process.chdir(projectDir);
 	});
 
@@ -89,9 +89,9 @@ describe("package commands", () => {
 		process.chdir(originalCwd);
 		process.exitCode = originalExitCode;
 		if (originalAgentDir === undefined) {
-			delete process.env[ENV_AGENT_DIR];
+			delete process.env[ENV_CODING_AGENT_DIR];
 		} else {
-			process.env[ENV_AGENT_DIR] = originalAgentDir;
+			process.env[ENV_CODING_AGENT_DIR] = originalAgentDir;
 		}
 		if (originalPackageDir === undefined) {
 			delete process.env.AOS_AGENT_PACKAGE_DIR;

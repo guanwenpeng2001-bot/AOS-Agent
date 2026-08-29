@@ -14,7 +14,7 @@ import {
 	InMemorySessionStorage,
 	type ModelProfile,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type RevisionReference,
 	resolveAgentBinding,
 	Session,

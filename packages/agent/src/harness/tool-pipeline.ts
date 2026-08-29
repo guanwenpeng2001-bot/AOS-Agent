@@ -35,7 +35,7 @@ import type {
 	ProvisionedFoundationRecord,
 } from "./session/durable/types.ts";
 import { DurableLedgerError } from "./session/durable/errors.ts";
-import { Result, type Result as ResultValue } from "./result.ts";
+import { Result, type ResultValue } from "./result.ts";
 import {
 	type ExactShapeIssue,
 	FingerprintSchema,

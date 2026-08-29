@@ -18,7 +18,7 @@ import {
 	type ExternalAgentConnector,
 	type Fingerprint,
 	type FoundationProviderExecutionOptions,
-	type Result as ResultValue,
+	type ResultValue,
 	type ToolExecutionResult,
 	type ToolGateway,
 	type ToolGatewayRequest,

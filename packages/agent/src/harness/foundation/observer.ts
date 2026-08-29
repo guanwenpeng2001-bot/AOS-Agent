@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import type { DurableEventEnvelope, LiveDeltaEnvelope } from "./event-catalog.ts";
 import type { FoundationError } from "./errors.ts";
 import { parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";

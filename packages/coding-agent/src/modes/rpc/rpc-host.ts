@@ -18,7 +18,7 @@ import {
 	type FoundationError,
 	fingerprintFoundationValue,
 	LayeredResultSettlement,
-	type Result as ResultValue,
+	type ResultValue,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";

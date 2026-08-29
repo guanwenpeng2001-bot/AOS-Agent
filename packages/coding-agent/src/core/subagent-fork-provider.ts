@@ -38,7 +38,7 @@ import {
 	type BudgetUsage,
 	type QuotaProvider,
 	type QuotaReservation,
-	type Result as ResultValue,
+	type ResultValue,
 	type SessionLedger,
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,

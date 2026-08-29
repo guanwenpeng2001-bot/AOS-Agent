@@ -27,7 +27,7 @@ import {
 	type Idempotency,
 	isSideEffectRetryable,
 	Result,
-	type Result as ResultValue,
+	type ResultValue,
 	type SideEffectState,
 	type TaskEnvelope,
 	type TaskResult,

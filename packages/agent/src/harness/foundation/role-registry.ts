@@ -1,4 +1,4 @@
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import { Type } from "typebox";
 import type { JsonValue } from "../session/types.ts";
 import { FoundationError, redactProjection } from "./errors.ts";
