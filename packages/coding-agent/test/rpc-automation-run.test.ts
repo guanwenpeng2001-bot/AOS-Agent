@@ -643,7 +643,9 @@ type RpcExternalConnectorSupervision = ReturnType<typeof createExternalConnector
 // These recovery cases exercise durable replay, not supervision timeout behavior.
 // Keep the real timer bounded but well outside the assertion window so full-suite
 // CPU and filesystem contention cannot turn a valid replay into a deadline failure.
-const RPC_RECOVERY_EVENT_DEADLINE = Object.freeze({ hardMs: 60_000, idleMs: 60_000 });
+// The in-process crash cut cannot kill the old hanging read, so its receipt timer
+// must use the same recovery bound as the restored event stream.
+const RPC_RECOVERY_SUPERVISION_DEADLINE = Object.freeze({ hardMs: 60_000, idleMs: 60_000 });
 const RPC_RECOVERY_WAIT_TIMEOUT_MS = 30_000;
 const RPC_RECOVERY_TEST_TIMEOUT_MS = 90_000;
 
@@ -2190,6 +2192,12 @@ describe("RPC Automation Host run lifecycle", () => {
 		let reloadedController: RpcHostController | undefined;
 		try {
 			await harness.runtimeHost.session.prompt("persist composition-owned RPC recovery session");
+			const supervision = createExternalConnectorTestSupervision();
+			const recoveryDeadlines = {
+				...supervision.options.deadlines,
+				event: RPC_RECOVERY_SUPERVISION_DEADLINE,
+				receipt: RPC_RECOVERY_SUPERVISION_DEADLINE,
+			};
 			const gatewayRequest: Omit<ToolGatewayRequest, "context"> = {
 				schemaVersion: 1,
 				toolCallId: "rpc-composition-crash-call",
@@ -2204,6 +2212,8 @@ describe("RPC Automation Host run lifecycle", () => {
 				toolGateway: true,
 				connectorToolGatewayRequest: gatewayRequest,
 				readHangs: true,
+				supervision,
+				supervisionDeadlines: recoveryDeadlines,
 			});
 			const initialSession = harness.runtimeHost.session;
 			const initialComposition = initialSession.agentRuntimeComposition;
@@ -2302,10 +2312,7 @@ describe("RPC Automation Host run lifecycle", () => {
 					toolGateway: true,
 					connectorToolGatewayCanonicalRequests: [canonicalRequest, secondCanonicalRequest],
 					supervision: fixture.supervision,
-					supervisionDeadlines: {
-						...fixture.supervision.options.deadlines,
-						event: RPC_RECOVERY_EVENT_DEADLINE,
-					},
+					supervisionDeadlines: recoveryDeadlines,
 				});
 				return result;
 			});
@@ -3608,6 +3615,12 @@ describe("RPC Automation Host run lifecycle", () => {
 		let reloadedController: RpcHostController | undefined;
 		try {
 			await harness.runtimeHost.session.prompt("persist Tool Gateway recovery session");
+			const supervision = createExternalConnectorTestSupervision();
+			const recoveryDeadlines = {
+				...supervision.options.deadlines,
+				event: RPC_RECOVERY_SUPERVISION_DEADLINE,
+				receipt: RPC_RECOVERY_SUPERVISION_DEADLINE,
+			};
 			const gatewayRequest = {
 				schemaVersion: 1 as const,
 				toolCallId: `tool-${testCase.cutpoint}`,
@@ -3622,6 +3635,8 @@ describe("RPC Automation Host run lifecycle", () => {
 				artifacts: true,
 				images: true,
 				...(testCase.persistTerminal ? { connectorToolGatewayRequest: gatewayRequest, readHangs: true } : {}),
+				supervision,
+				...(testCase.persistTerminal ? { supervisionDeadlines: recoveryDeadlines } : {}),
 			});
 			await harness.controller.handleCommand({
 				id: `gateway-cutpoint-${testCase.cutpoint}-init`,
@@ -3756,14 +3771,7 @@ describe("RPC Automation Host run lifecycle", () => {
 						? [canonicalGatewayRequest, secondCanonicalGatewayRequest]
 						: [canonicalGatewayRequest],
 					supervision: fixture.supervision,
-					...(testCase.persistTerminal
-						? {
-								supervisionDeadlines: {
-									...fixture.supervision.options.deadlines,
-									event: RPC_RECOVERY_EVENT_DEADLINE,
-								},
-							}
-						: {}),
+					...(testCase.persistTerminal ? { supervisionDeadlines: recoveryDeadlines } : {}),
 				});
 				return result;
 			});
@@ -3887,7 +3895,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			await harness.controller.shutdown();
 			await harness.cleanup();
 		}
-	});
+	}, RPC_RECOVERY_TEST_TIMEOUT_MS);
 
 	it.each([{ name: "artifact omission", commandId: "gateway-artifact-omission" }] as const)(
 		"rejects $name from canonical recovery input before effects",
