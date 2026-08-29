@@ -1,5 +1,9 @@
 # External Agent Connector
 
+## Status
+
+The External Agent Connector contract and the architecture convergence are implemented. Product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) and the final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) are not complete. This checkout does not claim product readiness.
+
 `ExternalAgentConnector` is the only public execution contract for an external
 agent. It implements the shared `TaskExecutorProvider` boundary and therefore
 enters the same executor pool as every other provider. An external run uses the
@@ -84,5 +88,5 @@ fields.
 The following promotion evidence was not run in this closure: Bun package and
 compiled artifacts, Windows/Linux/macOS CI, upgrade and restart from a
 previously published package, pinned vendor certification, and exact-head remote
-artifacts. The final External Connector gate therefore has not passed, and
-these local results do not establish product readiness.
+artifacts. These checks are part of the final promotion gate and are not complete
+in this checkout.

@@ -2683,10 +2683,11 @@ Current external traces never contain an `AgentInstance`.
 The local connector closure regression exercises this RPC selection through the
 standard product composition and separately verifies RuntimeLimits, passive
 runtime-status projection, and terminal `side_effect_unknown` retry handling.
-It adds no RPC status command and is not final promotion evidence. Bun and
-compiled artifacts, Windows/Linux/macOS CI, upgrade from a previously published
-package, vendor certification, and exact-head remote artifacts were not run;
-the final gate has not passed and product readiness is not claimed.
+It adds no RPC status command. The External Agent Connector contract and the
+architecture convergence are implemented. Product entry wiring (default
+CLI/RPC/SDK composition and settings-based connector registration) and the final
+promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor
+certification) are not complete. This checkout does not claim product readiness.
 
 ### Structured errors
 

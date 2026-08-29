@@ -4,6 +4,8 @@ AOS Agent is a standalone terminal agent for reading, editing, and running code.
 
 This repository contains the controlled AOS Agent source baseline and its terminal-agent packages.
 
+Package mapping: `packages/coding-agent` is published as npm `aos-agent` (CLI `aos`); `packages/agent` is published as `@aos-agent/agent-core`.
+
 ## Quick start
 
 The current public CLI release is `aos-agent@0.84.3`. Install it globally with Node.js 22.19 or newer:
@@ -42,14 +44,9 @@ The installable package is `aos-agent`, and it exposes the `aos` executable. The
 
 This repository contains the source for the published `0.84.3` package set. Hosted services and generated model catalogs remain outside the release boundary.
 
-External Connector checks in this checkout cover the Node package's public
-`aos-agent/external-connector` subpath through an isolated npm install, plus
-local deterministic product-transition, RuntimeLimits, runtime-status, and
-retry-circuit regressions. This is local closure evidence only. Bun and compiled
-artifact checks, Windows/Linux/macOS CI, upgrade from a previously published
-package, vendor certification, and exact-head remote artifacts have not been
-run, so the final External Connector promotion gate has not passed and this
-checkout does not claim product readiness.
+Product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) and the final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) are not complete. This checkout does not claim product readiness.
+
+The root `./test.sh` script runs non-e2e product tests.
 
 ## Configuration
 
