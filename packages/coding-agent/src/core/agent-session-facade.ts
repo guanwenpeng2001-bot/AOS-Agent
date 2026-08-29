@@ -178,7 +178,7 @@ import {
 import type { PromptTaskDependencyName } from "./prompt-task-adapter.ts";
 import type { RuntimeSessionSurface } from "./runtime-session-surface.ts";
 import type {
-	TrustedSubagentComposition,
+	SubagentComposition,
 } from "./subagent-composition.ts";
 import {
 	createAgentSessionReadProjection,
@@ -3396,7 +3396,7 @@ export class CanonicalAgentSessionServices {
 		};
 	}
 
-	getSubagentRegistry(): Pick<TrustedSubagentComposition, "get" | "list" | "cancel"> | undefined {
+	getSubagentRegistry(): Pick<SubagentComposition, "get" | "list" | "cancel"> | undefined {
 		const subagents = this.controlPlane.getSubagentComposition();
 		if (subagents === undefined) return undefined;
 		return {

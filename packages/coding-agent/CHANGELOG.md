@@ -10,6 +10,7 @@
 - Public and internal Scheduler, Worker, Subagent, migration, and external-agent business names no longer use the false `V1` suffix. Update source imports and references to the unversioned names.
 - Removed the writable execution-association API and binding association/handle execution inputs. Execution now uses canonical `AgentBinding`/`BindingEpoch`; historical associations remain read-only migration and public views.
 - Removed Line13 trace and upgrade exports from the `aos-agent/external-connector` subpath.
+- Public composition and factory names now use their domain names without the `Trusted` prefix. Update imports and type references to the unprefixed names.
 
 ### Added
 

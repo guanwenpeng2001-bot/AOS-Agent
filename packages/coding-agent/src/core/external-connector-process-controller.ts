@@ -376,7 +376,8 @@ export interface ProductionExternalConnectorProcess {
 	readonly trustedProvenance?: ProductionExternalConnectorTrustedProvenance;
 }
 
-export type TrustedProductionExternalConnectorProcess = ProductionExternalConnectorProcess & {
+/** Production process configuration whose provenance was established by trusted Host composition. */
+export type ProductionExternalConnectorProcessWithProvenance = ProductionExternalConnectorProcess & {
 	readonly trustedProvenance: ProductionExternalConnectorTrustedProvenance;
 };
 

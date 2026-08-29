@@ -35,8 +35,8 @@ import { describe, expect, it } from "vitest";
 import type { PromptTaskSubagentCompositionInput } from "../src/core/prompt-task-adapter.ts";
 import { ProductPromptIngress } from "../src/core/product-prompt-ingress.ts";
 import {
-	TrustedSubagentComposition,
-	type TrustedProductPromptCompositionPolicy,
+	SubagentComposition,
+	type ProductPromptCompositionPolicy,
 } from "../src/core/subagent-composition.ts";
 import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
 import type { PlanSubagentSpawnInput, SubagentSpawnPlan } from "../src/core/subagent-supervisor.ts";
@@ -114,7 +114,7 @@ function childBinding(
 
 async function preparePlan(
 	input: PromptTaskSubagentCompositionInput,
-	composition: TrustedSubagentComposition,
+	composition: SubagentComposition,
 	ledger: SessionLedger,
 	descriptor: SubagentProviderDescriptor,
 	task: TaskEnvelope,
@@ -208,7 +208,7 @@ async function preparePlan(
 interface CompositionFixture {
 	readonly session: Session;
 	readonly ingress: ProductPromptIngress;
-	readonly composition: TrustedSubagentComposition;
+	readonly composition: SubagentComposition;
 	close(): Promise<void>;
 }
 
@@ -292,9 +292,9 @@ async function createFixture(options: {
 		),
 		parentAgentInstanceId,
 	});
-	let composition: TrustedSubagentComposition | undefined;
+	let composition: SubagentComposition | undefined;
 	const failingChildren = new Set<string>();
-	const policy: TrustedProductPromptCompositionPolicy = {
+	const policy: ProductPromptCompositionPolicy = {
 		schemaVersion: 1,
 		mode: options.mode,
 		join: options.join,
@@ -320,7 +320,7 @@ async function createFixture(options: {
 		},
 	};
 	const registry = new InMemoryRoleRegistry({ now: () => NOW });
-	composition = new TrustedSubagentComposition({
+	composition = new SubagentComposition({
 		schemaVersion: 1,
 		enabled: true,
 		session,

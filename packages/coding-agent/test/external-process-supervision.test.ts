@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import type { ExternalConnectorDurableStore } from "../src/core/external-agent-operation.ts";
 import {
 	ProductionExternalConnectorProcessController,
-	type TrustedProductionExternalConnectorProcess,
+	type ProductionExternalConnectorProcessWithProvenance,
 } from "../src/core/external-connector-process-controller.ts";
 import {
 	createProductionExternalAgentConnector,
@@ -44,7 +44,7 @@ const CAPABILITY = createConnectorCapabilitySnapshot({
 	images: false,
 });
 
-function containedProcess(targetPidPath?: string): TrustedProductionExternalConnectorProcess {
+function containedProcess(targetPidPath?: string): ProductionExternalConnectorProcessWithProvenance {
 	return {
 		executablePath: process.execPath,
 		arguments:
@@ -100,7 +100,7 @@ function startupDriver(): ExternalConnectorVendorDriver {
 
 async function createRecoveryConnector(
 	privateStatePath: string,
-	processConfiguration: TrustedProductionExternalConnectorProcess,
+	processConfiguration: ProductionExternalConnectorProcessWithProvenance,
 ): Promise<ExternalAgentConnector> {
 	return createProductionExternalAgentConnector({
 		providerId: PROVIDER_ID,

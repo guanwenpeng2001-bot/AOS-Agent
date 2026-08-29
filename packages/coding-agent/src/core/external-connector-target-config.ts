@@ -4,7 +4,7 @@ import {
 	FoundationError,
 	type ConnectorCapabilitySnapshot,
 } from "@aos-agent/agent-core";
-import type { TrustedProductionExternalConnectorProcess } from "./external-connector-process-controller.ts";
+import type { ProductionExternalConnectorProcessWithProvenance } from "./external-connector-process-controller.ts";
 
 export const EXTERNAL_CONNECTOR_TARGET_CONFIG_SCHEMA_VERSION = 1 as const;
 
@@ -523,7 +523,7 @@ export function assertExternalConnectorCapabilityWithinTarget(
 /** Convert one attested target into the existing no-shell production process contract. */
 export function externalConnectorProcessForTarget(
 	target: ExternalConnectorResolvedTarget,
-): TrustedProductionExternalConnectorProcess {
+): ProductionExternalConnectorProcessWithProvenance {
 	if (!isTrustedExternalConnectorResolvedTarget(target)) {
 		fail("untrusted_source", "$.target", "External Connector target was not resolved by the trusted Host configuration.");
 	}

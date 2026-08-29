@@ -19,7 +19,7 @@ import type { WorkerLifecycleStatus, WorkerRecord } from "../src/core/worker.ts"
 import {
 	createAgentRuntimeCompositionFactory,
 	createAgentSession,
-	createTrustedWorkerSandboxComposition,
+	createWorkerSandboxComposition,
 } from "../src/index.ts";
 import type { WorkerSandboxProvider } from "../src/core/worker-sandbox-provider.ts";
 import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
@@ -269,7 +269,7 @@ async function createCanonicalWorkerSession(
 		isUsingOAuth: () => false,
 		getAuth: async () => ({ type: "api_key", key: "test-key" }),
 	}) as unknown as ModelRuntime;
-	const composition = createTrustedWorkerSandboxComposition({
+	const composition = createWorkerSandboxComposition({
 		providerId: "sandbox-worker",
 		profile: {
 			profileId: "local-worker",

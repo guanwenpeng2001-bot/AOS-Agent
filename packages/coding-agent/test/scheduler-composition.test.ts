@@ -24,8 +24,8 @@ import {
 } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import {
-	TrustedSchedulerComposition,
-	type TrustedSchedulerCompositionOptions,
+	SchedulerComposition,
+	type SchedulerCompositionOptions,
 } from "../src/core/foundation-control-plane.ts";
 import { SchedulerDeadlockController } from "../src/core/scheduler-deadlock.ts";
 import {
@@ -356,8 +356,8 @@ function compositionFixture(input: {
 
 function compositionOptions(
 	fixture: CompositionFixture,
-	eventSource?: TrustedSchedulerCompositionOptions["eventSource"],
-): TrustedSchedulerCompositionOptions {
+	eventSource?: SchedulerCompositionOptions["eventSource"],
+): SchedulerCompositionOptions {
 	return {
 		schemaVersion: 1,
 		enabled: true,
@@ -396,20 +396,20 @@ async function expectNoDurableWrites(fixture: CompositionFixture): Promise<void>
 describe("trusted Scheduler production composition", () => {
 	it("releases construction resources when event subscription throws and permits same-Session retry", async () => {
 		const fixture = compositionFixture();
-		expect(() => new TrustedSchedulerComposition(compositionOptions(fixture, {
+		expect(() => new SchedulerComposition(compositionOptions(fixture, {
 			subscribe() {
 				throw new Error("event subscription failed");
 			},
 		}))).toThrow("event subscription failed");
 		await expectNoDurableWrites(fixture);
 
-		const retry = new TrustedSchedulerComposition(compositionOptions(fixture));
+		const retry = new SchedulerComposition(compositionOptions(fixture));
 		await retry.dispose();
 	});
 
 	it("rejects a mismatched source Session identity before any durable write", async () => {
 		const fixture = compositionFixture({ sourceSessionId: "wrong-source-session" });
-		const composition = new TrustedSchedulerComposition(compositionOptions(fixture));
+		const composition = new SchedulerComposition(compositionOptions(fixture));
 		try {
 			await expect(composition.tick()).rejects.toMatchObject({ code: "scheduler_queue_invalid" });
 			await expectNoDurableWrites(fixture);
@@ -420,7 +420,7 @@ describe("trusted Scheduler production composition", () => {
 
 	it("rejects a mismatched target Session identity before any durable write", async () => {
 		const fixture = compositionFixture({ targetSessionId: "wrong-target-session" });
-		const composition = new TrustedSchedulerComposition(compositionOptions(fixture));
+		const composition = new SchedulerComposition(compositionOptions(fixture));
 		try {
 			await expect(composition.tick()).rejects.toMatchObject({ code: "scheduler_queue_invalid" });
 			await expectNoDurableWrites(fixture);
@@ -498,7 +498,7 @@ describe("trusted Scheduler production composition", () => {
 		const restartRegistry = new SchedulerExecutorRegistry({ reservationStore: restartStore });
 		const trace: string[] = [];
 		quota.onSettle = () => trace.push("quota_settled");
-		const composition = new TrustedSchedulerComposition(withRuntimeClock({
+		const composition = new SchedulerComposition(withRuntimeClock({
 			...compositionOptions(fixture),
 			ownerId: "scheduler-restart-owner-2",
 			registry: restartRegistry,
@@ -611,8 +611,8 @@ describe("trusted Scheduler production composition", () => {
 		});
 		if (!registered.ok) throw registered.error;
 		const runs = new Map<string, RunHandle>();
-		let composition: TrustedSchedulerComposition | undefined;
-		composition = new TrustedSchedulerComposition({
+		let composition: SchedulerComposition | undefined;
+		composition = new SchedulerComposition({
 			schemaVersion: 1,
 			enabled: true,
 			sourceSession: fixture.sourceSession,
@@ -690,7 +690,7 @@ describe("trusted Scheduler production composition", () => {
 		const targetGraph = new TaskGraphStore(targetManager, emptyRunLookup, emptyGateLookup, { now: () => NOW });
 		let subscriptions = 0;
 		let wake: (() => void) | undefined;
-		const composition = new TrustedSchedulerComposition({
+		const composition = new SchedulerComposition({
 			schemaVersion: 1,
 			enabled: true,
 			sourceSession,

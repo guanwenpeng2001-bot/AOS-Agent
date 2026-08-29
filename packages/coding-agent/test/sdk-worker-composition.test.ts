@@ -9,7 +9,7 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 	createAgentRuntimeCompositionFactory,
-	createTrustedWorkerSandboxComposition,
+	createWorkerSandboxComposition,
 	type AgentRuntimeCompositionFactory,
 } from "../src/index.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -85,7 +85,7 @@ function createRpcController(session: Awaited<ReturnType<typeof createAgentSessi
 }
 
 function createTestWorkerSandboxComposition() {
-	return createTrustedWorkerSandboxComposition({
+	return createWorkerSandboxComposition({
 		providerId: "sandbox-worker",
 		profile: {
 			profileId: "sdk-production-worker",

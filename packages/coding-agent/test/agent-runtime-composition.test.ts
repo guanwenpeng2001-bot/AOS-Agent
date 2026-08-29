@@ -46,7 +46,7 @@ import {
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 	createRpcHostController,
-	createTrustedWorkerSandboxComposition,
+	createWorkerSandboxComposition,
 	buildExternalConnectorTargetConfig,
 	ExternalConnectorTargetConfigError,
 	InteractiveMode,
@@ -58,7 +58,7 @@ import {
 	type AgentRuntimeCompositionOptions,
 	type CreateAgentSessionRuntimeFactory,
 	type TaskCredentialProvider,
-	type TrustedSchedulerRuntimeOptions,
+	type SchedulerRuntimeOptions,
 	type ExternalConnectorRegistry,
 	type ExternalConnectorTargetConfigErrorReason,
 	type ExternalConnectorTargetDefinition,
@@ -76,7 +76,7 @@ import { createSessionManagerStorage } from "../src/core/session-manager-storage
 import type { SchedulerSelectionReservationStore } from "../src/core/scheduler-selection-reservations.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type {
-	TrustedSubagentCompositionOptions,
+	SubagentCompositionOptions,
 } from "../src/core/subagent-composition.ts";
 import type { SubagentProviderDescriptor } from "../src/core/subagent-registry.ts";
 import type { PlanSubagentSpawnInput } from "../src/core/subagent-supervisor.ts";
@@ -100,9 +100,9 @@ interface CompositionCaptures {
 	readonly contexts: AgentRuntimeCompositionContext[];
 	readonly gateways: ToolGateway[];
 	readonly composedGateways: ToolGateway[];
-	readonly workers: ReturnType<typeof createTrustedWorkerSandboxComposition>[];
-	readonly subagents: TrustedSubagentCompositionOptions[];
-	readonly schedulers: TrustedSchedulerRuntimeOptions[];
+	readonly workers: ReturnType<typeof createWorkerSandboxComposition>[];
+	readonly subagents: SubagentCompositionOptions[];
+	readonly schedulers: SchedulerRuntimeOptions[];
 	readonly externalRegistries: ExternalConnectorRegistry[];
 	readonly credentialProviders: TaskCredentialProvider[];
 }
@@ -307,8 +307,8 @@ function schedulerBinding(currentTask: TaskEnvelope, sessionId: string): AgentBi
 function createSubagents(
 	context: AgentRuntimeCompositionContext,
 	toolGateway: ToolGateway,
-	createHarness: NonNullable<TrustedSubagentCompositionOptions["createHarness"]> = async () => context.harness,
-): TrustedSubagentCompositionOptions {
+	createHarness: NonNullable<SubagentCompositionOptions["createHarness"]> = async () => context.harness,
+): SubagentCompositionOptions {
 	const memoryLedger = new SessionT5Ledger(context.session, {
 		writer: context.harness.t5.writer,
 		memoryScopeId: `composition-memory-scope-${context.sessionId}`,
@@ -486,7 +486,7 @@ function createScheduler(
 		readonly registry?: SchedulerExecutorRegistry;
 		readonly onStart?: () => void;
 	} = {},
-): TrustedSchedulerRuntimeOptions {
+): SchedulerRuntimeOptions {
 	const targetSessionId = `scheduler-target-${context.sessionId}`;
 	const targetManager = SessionManager.inMemory(cwd, { id: targetSessionId });
 	const targetSession = new Session(createSessionManagerStorage(targetManager));
@@ -568,7 +568,7 @@ function createCompositionFactory(cwd: string, captures: CompositionCaptures): A
 		},
 		trustedWorkerSandboxFactory: (context) => {
 			captures.contexts.push(context);
-			const worker = createTrustedWorkerSandboxComposition({
+			const worker = createWorkerSandboxComposition({
 				providerId: `composition-worker-${context.sessionId}`,
 				profile: {
 					profileId: `composition-worker-profile-${context.sessionId}`,
@@ -1965,7 +1965,7 @@ describe("AgentRuntimeComposition", () => {
 
 	it("rejects reused mutable Worker, registry, and credential authorities", async () => {
 		const fixture = await createRuntimeFixture();
-		const worker = createTrustedWorkerSandboxComposition({
+		const worker = createWorkerSandboxComposition({
 			providerId: "reused-worker",
 			profile: {
 				profileId: "reused-worker-profile",

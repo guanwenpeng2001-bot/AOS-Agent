@@ -15,7 +15,7 @@ import {
 	bindCanonicalExternalToolGatewayPolicy,
 	createCanonicalExternalToolGateway,
 } from "./external-tool-gateway-authority.ts";
-import type { TrustedSchedulerCompositionOptions } from "./foundation-control-plane.ts";
+import type { SchedulerCompositionOptions } from "./foundation-control-plane.ts";
 import type { MCPAuthManagerOptions } from "./mcp-auth-manager.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
 import type { ModelBroker } from "./model-broker.ts";
@@ -34,7 +34,7 @@ import {
 } from "./scheduler-executors.ts";
 import { SchedulerSelectionReservationStore } from "./scheduler-selection-reservations.ts";
 import type { SessionManager } from "./session-manager.ts";
-import type { TrustedSubagentCompositionOptions } from "./subagent-composition.ts";
+import type { SubagentCompositionOptions } from "./subagent-composition.ts";
 import type { TaskCredentialProvider } from "./task-credential-provider.ts";
 import {
 	type WorkerSandboxProfile,
@@ -42,30 +42,33 @@ import {
 	WorkerSandboxProvider,
 } from "./worker-sandbox-provider.ts";
 
-export type TrustedWorkerSandboxProviderOptions = Omit<WorkerSandboxProviderOptions, "profile"> & {
+/** Host-only inputs for constructing a branded Worker sandbox composition. */
+export type WorkerSandboxCompositionOptions = Omit<WorkerSandboxProviderOptions, "profile"> & {
 	readonly profile: WorkerSandboxProfile;
 };
 
 const trustedWorkerSandboxBrand: unique symbol = Symbol("trustedWorkerSandbox");
 
-export interface TrustedWorkerSandboxComposition {
+/** Branded Worker sandbox authority created only by trusted programmatic composition. */
+export interface WorkerSandboxComposition {
 	readonly provider: WorkerSandboxProvider;
 	readonly [trustedWorkerSandboxBrand]: true;
 }
 
-export type TrustedWorkerSandboxFactory = (context: AgentRuntimeCompositionContext) => TrustedWorkerSandboxComposition;
+/** Trusted Host factory for a fresh Worker sandbox authority in each Session. */
+export type WorkerSandboxFactory = (context: AgentRuntimeCompositionContext) => WorkerSandboxComposition;
 
 /** Construct a Worker provider only from trusted programmatic composition. */
-export function createTrustedWorkerSandboxComposition(
-	options: TrustedWorkerSandboxProviderOptions,
-): TrustedWorkerSandboxComposition {
+export function createWorkerSandboxComposition(
+	options: WorkerSandboxCompositionOptions,
+): WorkerSandboxComposition {
 	return Object.freeze({
 		provider: new WorkerSandboxProvider(options),
 		[trustedWorkerSandboxBrand]: true as const,
 	});
 }
 
-function requireTrustedWorkerSandboxProvider(composition: TrustedWorkerSandboxComposition): WorkerSandboxProvider {
+function requireTrustedWorkerSandboxProvider(composition: WorkerSandboxComposition): WorkerSandboxProvider {
 	if (composition[trustedWorkerSandboxBrand] !== true || !(composition.provider instanceof WorkerSandboxProvider)) {
 		throw new TypeError("Trusted Worker composition is invalid");
 	}
@@ -86,54 +89,63 @@ export interface AgentRuntimeCompositionContext {
 	readonly sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 }
 
-export type TrustedToolGatewayFactory = (context: AgentRuntimeCompositionContext) => ToolGateway;
-export interface TrustedToolGatewayCatalog {
+/** Trusted Host factory for the canonical Session Tool Gateway. */
+export type ToolGatewayFactory = (context: AgentRuntimeCompositionContext) => ToolGateway;
+/** Provider catalog supplied only by trusted Host composition. */
+export interface ToolGatewayCatalog {
 	readonly gatewayId: string;
 	readonly builtinLocalProviders: readonly ToolGatewayProvider[];
 	readonly mcpProviders: readonly ToolGatewayProvider[];
 	readonly sandboxProviders: readonly ToolGatewayProvider[];
 }
-export type TrustedToolGatewayCatalogFactory = (context: AgentRuntimeCompositionContext) => TrustedToolGatewayCatalog;
-export type TrustedSubagentCompositionFactory = (
+/** Trusted Host factory for a fresh Tool Gateway provider catalog. */
+export type ToolGatewayCatalogFactory = (context: AgentRuntimeCompositionContext) => ToolGatewayCatalog;
+/** Trusted Host factory for canonical Subagent composition inputs. */
+export type SubagentCompositionFactory = (
 	context: AgentRuntimeCompositionContext,
-) => TrustedSubagentCompositionOptions;
-export type TrustedSchedulerCompositionFactory = (
+) => SubagentCompositionOptions;
+/** Trusted Host factory for canonical Scheduler composition inputs. */
+export type SchedulerCompositionFactory = (
 	context: AgentRuntimeCompositionContext,
 	/** Canonical Session-backed exact-selection and capacity authority. */
 	selectionReservations: SchedulerSelectionReservationStore,
-) => TrustedSchedulerRuntimeOptions;
-export type TrustedSchedulerRuntimeOptions = Omit<TrustedSchedulerCompositionOptions, "runLifecycleSession">;
-export interface TrustedExternalConnectorProductAuthority {
+) => SchedulerRuntimeOptions;
+/** Scheduler inputs retained inside the trusted runtime composition boundary. */
+export type SchedulerRuntimeOptions = Omit<SchedulerCompositionOptions, "runLifecycleSession">;
+/** Trusted Host authority shared by External Connector readiness and execution. */
+export interface ExternalConnectorProductAuthority {
 	/** Reloadable trusted source sampled once for each new Connector Attempt. */
 	readonly runtimeLimitsSource: RuntimeLimitsSource;
 	/** Frozen source identity used by this composition generation. */
 	readonly runtimeLimits: RuntimeLimitsSnapshot;
 }
-export type TrustedExternalConnectorRegistryFactory = (
+/** Trusted Host factory for the Session-scoped External Connector registry. */
+export type ExternalConnectorRegistryFactory = (
 	context: AgentRuntimeCompositionContext,
 	/** The same canonical Foundation Tool Gateway exposed to every executor in this Session. */
 	toolGateway: ToolGateway | undefined,
 	/** Explicit target resolved from trusted global/managed definitions plus project/Role narrowing. */
 	target: ExternalConnectorResolvedTarget | undefined,
 	/** Centralized limits shared by readiness, Scheduler retry, and Connector execution. */
-	authority: TrustedExternalConnectorProductAuthority,
+	authority: ExternalConnectorProductAuthority,
 ) => ExternalConnectorRegistry;
-export type TrustedTaskCredentialProviderFactory = (context: AgentRuntimeCompositionContext) => TaskCredentialProvider;
+/** Trusted Host factory for the Session-scoped Task Credential provider. */
+export type TaskCredentialProviderFactory = (context: AgentRuntimeCompositionContext) => TaskCredentialProvider;
 
 /** Trusted optional providers accepted by the public composition root. */
 export interface AgentRuntimeCompositionOptions {
-	readonly toolGateway?: TrustedToolGatewayFactory;
+	readonly toolGateway?: ToolGatewayFactory;
 	/** Composition-owned provider catalog validated before runtime readiness. */
-	readonly toolGatewayCatalog?: TrustedToolGatewayCatalogFactory;
-	readonly trustedWorkerSandboxFactory?: TrustedWorkerSandboxFactory;
-	readonly subagents?: TrustedSubagentCompositionFactory;
-	readonly scheduler?: TrustedSchedulerCompositionFactory;
+	readonly toolGatewayCatalog?: ToolGatewayCatalogFactory;
+	readonly trustedWorkerSandboxFactory?: WorkerSandboxFactory;
+	readonly subagents?: SubagentCompositionFactory;
+	readonly scheduler?: SchedulerCompositionFactory;
 	/** Immutable target catalog. A catalog without explicit selection remains off. */
 	readonly externalConnectorTargetConfig?: ExternalConnectorTargetConfig;
-	readonly externalConnectorRegistry?: TrustedExternalConnectorRegistryFactory;
+	readonly externalConnectorRegistry?: ExternalConnectorRegistryFactory;
 	/** Centralized reloadable limits; omission uses the finite product defaults. */
 	readonly runtimeLimits?: RuntimeLimitsSource;
-	readonly taskCredentialProvider?: TrustedTaskCredentialProviderFactory;
+	readonly taskCredentialProvider?: TaskCredentialProviderFactory;
 	readonly taskCredentialPolicyMaxTtlMs?: number;
 }
 
@@ -147,8 +159,8 @@ export interface AgentRuntimeComposition extends AgentRuntimeCompositionContext 
 	readonly factory: AgentRuntimeCompositionFactory;
 	readonly toolGateway?: ToolGateway;
 	readonly workerSandboxProvider?: WorkerSandboxProvider;
-	readonly subagents?: TrustedSubagentCompositionOptions;
-	readonly scheduler?: TrustedSchedulerRuntimeOptions;
+	readonly subagents?: SubagentCompositionOptions;
+	readonly scheduler?: SchedulerRuntimeOptions;
 	readonly externalConnectorTargetConfig?: ExternalConnectorTargetConfig;
 	readonly externalConnectorTarget?: ExternalConnectorResolvedTarget;
 	readonly externalConnectorRegistry?: ExternalConnectorRegistry;
@@ -168,8 +180,8 @@ export interface AgentRuntimeCompositionFactory {
 
 interface InternalAgentRuntimeCompositionOptions extends AgentRuntimeCompositionOptions {
 	readonly workerSandboxProvider?: WorkerSandboxProvider;
-	readonly subagentOptions?: TrustedSubagentCompositionOptions;
-	readonly schedulerOptions?: TrustedSchedulerCompositionOptions;
+	readonly subagentOptions?: SubagentCompositionOptions;
+	readonly schedulerOptions?: SchedulerCompositionOptions;
 	readonly externalConnectorRegistryInstance?: ExternalConnectorRegistry;
 	readonly taskCredentialProviderInstance?: TaskCredentialProvider;
 }
@@ -177,8 +189,8 @@ interface InternalAgentRuntimeCompositionOptions extends AgentRuntimeComposition
 function assertCanonicalProviders(
 	context: AgentRuntimeCompositionContext,
 	toolGateway: ToolGateway | undefined,
-	subagents: TrustedSubagentCompositionOptions | undefined,
-	scheduler: TrustedSchedulerRuntimeOptions | undefined,
+	subagents: SubagentCompositionOptions | undefined,
+	scheduler: SchedulerRuntimeOptions | undefined,
 ): void {
 	if (subagents !== undefined) {
 		if (subagents.session !== context.session) {
@@ -196,8 +208,8 @@ function assertCanonicalProviders(
 }
 
 function withoutPhysicalScheduler(
-	options: TrustedSchedulerCompositionOptions | TrustedSchedulerRuntimeOptions,
-): TrustedSchedulerRuntimeOptions {
+	options: SchedulerCompositionOptions | SchedulerRuntimeOptions,
+): SchedulerRuntimeOptions {
 	if (!("runLifecycleSession" in options)) return Object.freeze({ ...options });
 	const { runLifecycleSession: _runLifecycleSession, ...runtimeOptions } = options;
 	return Object.freeze(runtimeOptions);
@@ -235,7 +247,7 @@ function connectorRetryPolicy(runtimeLimits: RuntimeLimitsSnapshot): ConnectorRe
 
 async function registerSelectedExternalConnector(options: {
 	readonly registry: ExternalConnectorRegistry;
-	readonly scheduler: TrustedSchedulerRuntimeOptions;
+	readonly scheduler: SchedulerRuntimeOptions;
 	readonly targetConfig: ExternalConnectorTargetConfig;
 	readonly target: ExternalConnectorResolvedTarget;
 	readonly runtimeLimits: RuntimeLimitsSnapshot;
@@ -595,7 +607,7 @@ export function createAgentRuntimeCompositionFactory(
 export function bindAgentRuntimeSchedulerComposition(
 	composition: AgentRuntimeComposition,
 	runLifecycleSession: SessionManager,
-): TrustedSchedulerCompositionOptions | undefined {
+): SchedulerCompositionOptions | undefined {
 	if (composition.scheduler === undefined) return undefined;
 	return Object.freeze({
 		...composition.scheduler,

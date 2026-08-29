@@ -6,7 +6,7 @@ import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import {
 	createAgentRuntimeCompositionFactory,
-	createTrustedWorkerSandboxComposition,
+	createWorkerSandboxComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
 } from "./agent-runtime-composition.ts";
@@ -65,25 +65,25 @@ export type { SessionCreationOptions } from "./session-creation.ts";
 
 export {
 	createAgentRuntimeCompositionFactory,
-	createTrustedWorkerSandboxComposition,
+	createWorkerSandboxComposition,
 };
 export type {
 	AgentRuntimeComposition,
 	AgentRuntimeCompositionContext,
 	AgentRuntimeCompositionFactory,
 	AgentRuntimeCompositionOptions,
-	TrustedExternalConnectorProductAuthority,
-	TrustedExternalConnectorRegistryFactory,
-	TrustedSchedulerCompositionFactory,
-	TrustedSchedulerRuntimeOptions,
-	TrustedSubagentCompositionFactory,
-	TrustedTaskCredentialProviderFactory,
-	TrustedToolGatewayCatalog,
-	TrustedToolGatewayCatalogFactory,
-	TrustedToolGatewayFactory,
-	TrustedWorkerSandboxComposition,
-	TrustedWorkerSandboxFactory,
-	TrustedWorkerSandboxProviderOptions,
+	ExternalConnectorProductAuthority,
+	ExternalConnectorRegistryFactory,
+	SchedulerCompositionFactory,
+	SchedulerRuntimeOptions,
+	SubagentCompositionFactory,
+	TaskCredentialProviderFactory,
+	ToolGatewayCatalog,
+	ToolGatewayCatalogFactory,
+	ToolGatewayFactory,
+	WorkerSandboxComposition,
+	WorkerSandboxFactory,
+	WorkerSandboxCompositionOptions,
 } from "./agent-runtime-composition.ts";
 
 export interface CreateAgentSessionOptions {

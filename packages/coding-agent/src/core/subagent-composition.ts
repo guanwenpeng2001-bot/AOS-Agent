@@ -53,7 +53,7 @@ import {
 import {
 	persistChildBindingProjection,
 	projectChildBinding,
-	type TrustedMcpInheritanceApprovalAuthority,
+	type McpInheritanceApprovalAuthority,
 } from "./subagent-binding.ts";
 import { cleanupChildMemoryScope, createChildMemoryScope } from "./subagent-memory.ts";
 import {
@@ -99,7 +99,8 @@ type ExecutableChildProviderV1 = ChildAgentProvider & TaskExecutorProvider & {
 	close(attemptId: string): Promise<ResultValue<void, FoundationError>>;
 };
 
-export interface TrustedSchedulerNativeAgentPlanner {
+/** Trusted Host planner that bridges Scheduler selection into the Native Subagent owner. */
+export interface SchedulerNativeAgentPlanner {
 	readonly schemaVersion: 1;
 	plan(
 		input: SchedulerNativeAgentResolveInput,
@@ -108,7 +109,7 @@ export interface TrustedSchedulerNativeAgentPlanner {
 }
 
 /** Trusted product-only lane projection over the canonical parent writer lease. */
-class TrustedChildLaneSessionLedgerWriterV1 extends SessionLedgerWriter {
+class ChildLaneSessionLedgerWriterV1 extends SessionLedgerWriter {
 	private readonly parent: SessionLedgerWriter;
 
 	constructor(parent: SessionLedgerWriter, childLaneId: string) {
@@ -123,7 +124,8 @@ class TrustedChildLaneSessionLedgerWriterV1 extends SessionLedgerWriter {
 	override async releaseLease(): Promise<void> {}
 }
 
-export interface TrustedSubagentCompositionOptions {
+/** Host-owned Subagent inputs bound to canonical Session authorities. */
+export interface SubagentCompositionOptions {
 	readonly schemaVersion: 1;
 	readonly enabled: true;
 	readonly session: Session;
@@ -143,7 +145,7 @@ export interface TrustedSubagentCompositionOptions {
 		parentAgentInstanceId: string,
 	) => { readonly store: ScopedMemoryStore; readonly parentAgentInstanceId: string };
 	/** Effective Host PolicyBinding plus canonical durable approval ledger for non-empty MCP inheritance. */
-	readonly mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthority;
+	readonly mcpInheritanceAuthority?: McpInheritanceApprovalAuthority;
 	/** Explicit trusted Host opt-in for isolated in-process child execution. */
 	readonly worktree?: {
 		readonly schemaVersion: 1;
@@ -174,7 +176,7 @@ export interface TrustedSubagentCompositionOptions {
 		readonly worktreeRequired: boolean;
 		readonly backgroundRequired: boolean;
 		/** Fixed trusted Host composition; mode and join cannot come from prompt, RPC, or project text. */
-		readonly composition?: TrustedProductPromptCompositionPolicy;
+		readonly composition?: ProductPromptCompositionPolicy;
 		readonly childModelProfile?: (
 			roleId: string,
 			parentModelProfile: ModelProfile,
@@ -188,7 +190,7 @@ export interface TrustedSubagentCompositionOptions {
 		readonly maximumQueueWaitMs: number;
 	};
 	readonly now?: () => string;
-	readonly onReady?: (composition: TrustedSubagentComposition) => void;
+	readonly onReady?: (composition: SubagentComposition) => void;
 }
 
 export interface SafeSubagentLifecycleProjection {
@@ -216,7 +218,7 @@ export interface ExecuteTrustedSubagentPlanInput {
 	readonly signal?: AbortSignal;
 }
 
-export interface TrustedSubagentExecution {
+export interface SubagentExecution {
 	readonly spawn: ChildSpawnResult;
 	readonly receipt: Awaited<ReturnType<LayeredResultSettlement["executeDispatch"]>> extends ResultValue<infer TValue, FoundationError>
 		? TValue
@@ -232,12 +234,12 @@ export interface ResumeTrustedSubagentInput {
 	readonly signal?: AbortSignal;
 }
 
-export interface TrustedSubagentResume {
+export interface SubagentResume {
 	readonly lifecycle: SafeSubagentLifecycleProjection;
 	readonly receipt: AttemptReceipt;
 }
 
-export type TrustedSubagentChainStep =
+export type SubagentChainStep =
 	| {
 			readonly input: "root" | "task_package";
 			readonly plan: SubagentSpawnPlan;
@@ -249,11 +251,11 @@ export type TrustedSubagentChainStep =
 			): SubagentSpawnPlan | Promise<SubagentSpawnPlan>;
 	  };
 
-export interface ExecuteTrustedSubagentCompositionInput {
+export interface ExecuteSubagentCompositionInput {
 	readonly schemaVersion: 1;
 	readonly runId: string;
 	readonly mode: "parallel" | "chain";
-	readonly steps: readonly TrustedSubagentChainStep[];
+	readonly steps: readonly SubagentChainStep[];
 	readonly join: ChildTaskSettlementPolicy;
 	readonly taskResultId: string;
 	readonly task: TaskEnvelope;
@@ -265,26 +267,27 @@ export interface ExecuteTrustedSubagentCompositionInput {
 	readonly signal?: AbortSignal;
 }
 
-export interface TrustedSubagentCompositionExecution {
-	readonly executions: readonly TrustedSubagentExecution[];
+export interface SubagentCompositionExecution {
+	readonly executions: readonly SubagentExecution[];
 	readonly projections: readonly SafeChildResultProjection[];
 	readonly taskResult: TaskResult;
 	/** Exact unique AttemptReceipt ids accepted by the configured Host join. */
 	readonly attemptReceiptIds: readonly string[];
 }
 
-export type TrustedProductPromptCompositionPreparation = Omit<
-	ExecuteTrustedSubagentCompositionInput,
+export type ProductPromptCompositionPreparation = Omit<
+	ExecuteSubagentCompositionInput,
 	"schemaVersion" | "runId" | "mode" | "join" | "signal"
 >;
 
-export interface TrustedProductPromptCompositionPolicy {
+/** Trusted Host policy; prompts, RPC, and project text cannot supply its composition decisions. */
+export interface ProductPromptCompositionPolicy {
 	readonly schemaVersion: 1;
 	readonly mode: "parallel" | "chain";
 	readonly join: ChildTaskSettlementPolicy;
 	prepare(
 		input: PromptTaskSubagentCompositionInput,
-	): TrustedProductPromptCompositionPreparation | Promise<TrustedProductPromptCompositionPreparation>;
+	): ProductPromptCompositionPreparation | Promise<ProductPromptCompositionPreparation>;
 }
 
 const ACTIVE_STATUSES = new Set<ChildLifecycleStatus>(["spawning", "running", "awaiting_input", "background", "cancelling"]);
@@ -316,7 +319,8 @@ function providerForKind(
 	return provider;
 }
 
-export class TrustedSubagentComposition {
+/** Trusted Host composition for Child Agent planning, execution, settlement, and recovery. */
+export class SubagentComposition {
 	readonly services = Object.freeze({
 		projectSafeChildResult,
 		createChildWorktree,
@@ -331,11 +335,11 @@ export class TrustedSubagentComposition {
 	private readonly ledgerForLane: (laneId: string) => SessionLedger;
 	private readonly parentLaneId: string;
 	private readonly artifactStore: ArtifactStoreProvider;
-	private readonly worktree: TrustedSubagentCompositionOptions["worktree"];
+	private readonly worktree: SubagentCompositionOptions["worktree"];
 	private readonly writer: SessionLedgerWriter | undefined;
-	private readonly productPrompt: TrustedSubagentCompositionOptions["productPrompt"];
-	private readonly mcpInheritanceAuthority: TrustedMcpInheritanceApprovalAuthority | undefined;
-	private readonly productPromptComposition: TrustedProductPromptCompositionPolicy | undefined;
+	private readonly productPrompt: SubagentCompositionOptions["productPrompt"];
+	private readonly mcpInheritanceAuthority: McpInheritanceApprovalAuthority | undefined;
+	private readonly productPromptComposition: ProductPromptCompositionPolicy | undefined;
 	private readonly now: () => string;
 	private readonly registry: SubagentProviderRegistry;
 	private readonly supervisor: SubagentSupervisor;
@@ -354,7 +358,7 @@ export class TrustedSubagentComposition {
 	private recovery: Promise<ResultValue<void, FoundationError>>;
 	private disposed = false;
 
-	constructor(options: TrustedSubagentCompositionOptions) {
+	constructor(options: SubagentCompositionOptions) {
 		if (options.schemaVersion !== 1 || options.enabled !== true) {
 			throw new FoundationError("subagent_spawn_invalid", "Subagents require an explicit trusted Host opt-in");
 		}
@@ -531,7 +535,7 @@ export class TrustedSubagentComposition {
 	}
 
 	/** Build the explicit default-off Scheduler bridge over this composition's exact Native runtimes. */
-	schedulerNativeAgentBridge(planner: TrustedSchedulerNativeAgentPlanner): SchedulerNativeAgentBridge {
+	schedulerNativeAgentBridge(planner: SchedulerNativeAgentPlanner): SchedulerNativeAgentBridge {
 		if (planner.schemaVersion !== 1 || typeof planner.plan !== "function") {
 			throw new FoundationError("subagent_spawn_invalid", "Trusted Scheduler Native Agent planner is invalid");
 		}
@@ -544,7 +548,7 @@ export class TrustedSubagentComposition {
 
 	private async resolveSchedulerNativeAgent(
 		input: SchedulerNativeAgentResolveInput,
-		planner: TrustedSchedulerNativeAgentPlanner,
+		planner: SchedulerNativeAgentPlanner,
 	): Promise<ResultValue<SchedulerNativeAgentResolution, FoundationError>> {
 		if (this.disposed) {
 			return Result.err(new FoundationError("subagent_provider_unavailable", "Trusted subagent composition is disposed"));
@@ -869,7 +873,7 @@ export class TrustedSubagentComposition {
 		return this.supervisor.planSpawn(input);
 	}
 
-	async executePlan(input: ExecuteTrustedSubagentPlanInput): Promise<ResultValue<TrustedSubagentExecution, FoundationError>> {
+	async executePlan(input: ExecuteTrustedSubagentPlanInput): Promise<ResultValue<SubagentExecution, FoundationError>> {
 		if (this.disposed) return Result.err(new FoundationError("subagent_provider_unavailable", "Trusted subagent composition is disposed"));
 		const recovered = await this.recovery;
 		if (!recovered.ok) return recovered;
@@ -934,7 +938,7 @@ export class TrustedSubagentComposition {
 		return Result.ok(cloneDeepFrozen({ spawn: spawn.value, receipt: receipt.value }));
 	}
 
-	async resumeChild(input: ResumeTrustedSubagentInput): Promise<ResultValue<TrustedSubagentResume, FoundationError>> {
+	async resumeChild(input: ResumeTrustedSubagentInput): Promise<ResultValue<SubagentResume, FoundationError>> {
 		if (
 			input.schemaVersion !== 1 ||
 			typeof input.runId !== "string" ||
@@ -1036,8 +1040,8 @@ export class TrustedSubagentComposition {
 	}
 
 	async executeComposition(
-		input: ExecuteTrustedSubagentCompositionInput,
-	): Promise<ResultValue<TrustedSubagentCompositionExecution, FoundationError>> {
+		input: ExecuteSubagentCompositionInput,
+	): Promise<ResultValue<SubagentCompositionExecution, FoundationError>> {
 		if (
 			input.schemaVersion !== 1 ||
 			(input.mode !== "parallel" && input.mode !== "chain") ||
@@ -1057,11 +1061,11 @@ export class TrustedSubagentComposition {
 		}
 
 		const plans: SubagentSpawnPlan[] = [];
-		const executions: TrustedSubagentExecution[] = [];
+		const executions: SubagentExecution[] = [];
 		const projections: SafeChildResultProjection[] = [];
 		const executeStaticStep = async (
-			step: Extract<TrustedSubagentChainStep, { readonly input: "root" | "task_package" }>,
-		): Promise<ResultValue<TrustedSubagentExecution, FoundationError>> => {
+			step: Extract<SubagentChainStep, { readonly input: "root" | "task_package" }>,
+		): Promise<ResultValue<SubagentExecution, FoundationError>> => {
 			if (step.input === "task_package" && step.plan.request.forkScope !== "task_package") {
 				return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent task_package chain step did not preserve task_package context isolation"));
 			}
@@ -1078,7 +1082,7 @@ export class TrustedSubagentComposition {
 		};
 
 		if (input.mode === "parallel") {
-			const staticSteps = input.steps as readonly Extract<TrustedSubagentChainStep, { readonly input: "root" | "task_package" }>[];
+			const staticSteps = input.steps as readonly Extract<SubagentChainStep, { readonly input: "root" | "task_package" }>[];
 			const executed = await Promise.all(staticSteps.map(executeStaticStep));
 			const failure = executed.find((result) => !result.ok);
 			if (failure !== undefined && !failure.ok) {
@@ -1647,7 +1651,7 @@ export class TrustedSubagentComposition {
 			attemptId: input.parentBindingEpoch.attemptId,
 		});
 		if (!registeredParent.ok) return registeredParent;
-		let prepared: TrustedProductPromptCompositionPreparation;
+		let prepared: ProductPromptCompositionPreparation;
 		try {
 			prepared = await policy.prepare(input);
 		} catch {
@@ -1905,7 +1909,7 @@ export class TrustedSubagentComposition {
 		}
 		const existing = this.laneWriters.get(laneId);
 		if (existing !== undefined) return existing;
-		const writer = new TrustedChildLaneSessionLedgerWriterV1(this.writer, laneId);
+		const writer = new ChildLaneSessionLedgerWriterV1(this.writer, laneId);
 		this.laneWriters.set(laneId, writer);
 		return writer;
 	}
@@ -1974,11 +1978,12 @@ export class TrustedSubagentComposition {
 	}
 }
 
-export function createTrustedSubagentComposition(
-	options: TrustedSubagentCompositionOptions | undefined,
-): TrustedSubagentComposition | undefined {
+/** Construct the trusted Host Subagent authority for one canonical Session. */
+export function createSubagentComposition(
+	options: SubagentCompositionOptions | undefined,
+): SubagentComposition | undefined {
 	if (options === undefined) return undefined;
-	const composition = new TrustedSubagentComposition(options);
+	const composition = new SubagentComposition(options);
 	options.onReady?.(composition);
 	return composition;
 }

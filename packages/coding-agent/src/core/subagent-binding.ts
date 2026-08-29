@@ -96,12 +96,12 @@ export interface ChildBindingHostPreflight {
 }
 
 /** Nominal Host authority backed by one effective PolicyBinding and its durable approval ledger. */
-export interface TrustedMcpInheritanceApprovalAuthority {
+export interface McpInheritanceApprovalAuthority {
 	readonly schemaVersion: 1;
 	readonly policyBindingId: string;
 }
 
-export interface CreateTrustedMcpInheritanceApprovalAuthorityInput {
+export interface CreateMcpInheritanceApprovalAuthorityInput {
 	readonly schemaVersion: 1;
 	readonly profile: ExecutionPolicyProfile;
 	readonly binding: PolicyBinding;
@@ -193,7 +193,7 @@ function projectionError(message: string): ResultValue<never, FoundationError> {
 	return Result.err(new FoundationError("subagent_binding_projection_invalid", message));
 }
 
-interface TrustedMcpInheritanceApprovalAuthorityStateV1 {
+interface McpInheritanceApprovalAuthorityStateV1 {
 	readonly profile: ExecutionPolicyProfile;
 	readonly binding: PolicyBinding;
 	readonly policyRevision: RevisionReference;
@@ -202,14 +202,14 @@ interface TrustedMcpInheritanceApprovalAuthorityStateV1 {
 }
 
 const MCP_INHERITANCE_AUTHORITIES = new WeakMap<
-	TrustedMcpInheritanceApprovalAuthority,
-	TrustedMcpInheritanceApprovalAuthorityStateV1
+	McpInheritanceApprovalAuthority,
+	McpInheritanceApprovalAuthorityStateV1
 >();
 const TRUSTED_CHILD_BINDING_PROJECTIONS = new WeakSet<ChildBindingProjection>();
 
-export function createTrustedMcpInheritanceApprovalAuthority(
-	input: CreateTrustedMcpInheritanceApprovalAuthorityInput,
-): TrustedMcpInheritanceApprovalAuthority {
+export function createMcpInheritanceApprovalAuthority(
+	input: CreateMcpInheritanceApprovalAuthorityInput,
+): McpInheritanceApprovalAuthority {
 	if (input.schemaVersion !== 1 || !(input.ledger instanceof InMemoryExecutionPolicyLedger)) {
 		throw new FoundationError("subagent_binding_projection_invalid", "MCP inheritance approval authority is invalid");
 	}
@@ -251,7 +251,7 @@ function isCanonicalTimestamp(value: unknown): value is string {
 }
 
 function resolveMcpInheritanceApproval(
-	authority: TrustedMcpInheritanceApprovalAuthority | undefined,
+	authority: McpInheritanceApprovalAuthority | undefined,
 	input: {
 		readonly parentBindingId: string;
 		readonly childBindingId: string;
@@ -459,7 +459,7 @@ function validateInputShape(value: unknown): value is ProjectChildBindingInput {
 
 function projectChildBindingUnchecked(
 	input: ProjectChildBindingInput,
-	mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthority,
+	mcpInheritanceAuthority?: McpInheritanceApprovalAuthority,
 ): ResultValue<ChildBindingProjection, FoundationError> {
 	if (input.childBudget !== undefined) {
 		const budget = validateBudget(input.childBudget);
@@ -654,7 +654,7 @@ function projectChildBindingUnchecked(
  */
 export function projectChildBinding(
 	inputValue: unknown,
-	mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthority,
+	mcpInheritanceAuthority?: McpInheritanceApprovalAuthority,
 ): ResultValue<ChildBindingProjection, FoundationError> {
 	try {
 		if (!validateInputShape(inputValue)) {

@@ -41,7 +41,7 @@ import {
 	type ProductPromptDependencySnapshotContext,
 } from "./product-prompt-binding-authority.ts";
 import { isRuntimeSessionSurface, type RuntimeSessionSurface } from "./runtime-session-surface.ts";
-import type { TrustedSubagentComposition } from "./subagent-composition.ts";
+import type { SubagentComposition } from "./subagent-composition.ts";
 
 export type { ProductPromptDependencySnapshotContext } from "./product-prompt-binding-authority.ts";
 
@@ -135,7 +135,7 @@ export interface ProductPromptIngressOptions {
 		context: ProductPromptDependencySnapshotContext,
 	) => FoundationJsonValue;
 	/** Explicit trusted Host opt-in. Omission keeps product prompts on the existing path. */
-	readonly subagents?: TrustedSubagentComposition;
+	readonly subagents?: SubagentComposition;
 	readonly now?: () => string;
 }
 

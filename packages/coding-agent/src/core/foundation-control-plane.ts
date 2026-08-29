@@ -179,10 +179,10 @@ import {
 	type TaskGraphGateLookup,
 } from "./task-graph.ts";
 import {
-	createTrustedSubagentComposition,
-	type TrustedSchedulerNativeAgentPlanner,
-	type TrustedSubagentCompositionOptions,
-	type TrustedSubagentComposition,
+	createSubagentComposition,
+	type SchedulerNativeAgentPlanner,
+	type SubagentCompositionOptions,
+	type SubagentComposition,
 } from "./subagent-composition.ts";
 import {
 	parseWorkerRecord,
@@ -229,9 +229,9 @@ export interface FoundationControlPlaneOptions {
 	/** Explicit Operation Worker profile/provider. Omission preserves the inline/Host path. */
 	workerSandboxProvider?: WorkerSandboxProvider;
 	/** Explicit trusted Host opt-in. Project/model/RPC configuration cannot populate this option. */
-	subagents?: TrustedSubagentCompositionOptions;
+	subagents?: SubagentCompositionOptions;
 	/** Explicit trusted Host-only Scheduler opt-in. Omission preserves the original runtime path. */
-	scheduler?: TrustedSchedulerCompositionOptions;
+	scheduler?: SchedulerCompositionOptions;
 	/** Testable optimization bound; Session eventId lookup remains authoritative. */
 	workerFactCacheLimit?: number;
 	policyProfile?: string;
@@ -244,7 +244,8 @@ export interface FoundationControlPlaneOptions {
 	excludedToolNames?: ReadonlyArray<string>;
 }
 
-export interface TrustedSchedulerCompositionOptions {
+/** Host-owned Scheduler inputs bound to canonical Session authorities. */
+export interface SchedulerCompositionOptions {
 	readonly schemaVersion: 1;
 	readonly enabled: true;
 	readonly sourceSession: Session;
@@ -259,7 +260,7 @@ export interface TrustedSchedulerCompositionOptions {
 	/** Canonical Session-backed owner shared with the exact-selection registry. */
 	readonly selectionReservationStore?: SchedulerSelectionReservationStore;
 	/** Per-Session trusted factory planner; prompt, RPC, and project configuration cannot supply it. */
-	readonly nativeAgentPlanner?: TrustedSchedulerNativeAgentPlanner;
+	readonly nativeAgentPlanner?: SchedulerNativeAgentPlanner;
 	/** Trusted product initialization that must complete before the Scheduler can start. */
 	readonly initializeBeforeStart?: () => Promise<void>;
 	/** Exact External Connector target and frozen retry policy for this composition generation. */
@@ -325,8 +326,8 @@ function nativeSchedulerRuntimeSnapshot(
 }
 
 async function registerNativeSchedulerProviders(
-	options: TrustedSchedulerCompositionOptions,
-	subagents: TrustedSubagentComposition,
+	options: SchedulerCompositionOptions,
+	subagents: SubagentComposition,
 	now: string,
 ): Promise<void> {
 	const descriptors = new Map(
@@ -430,7 +431,7 @@ export interface SchedulerSafeStatus {
  * before the Run coordinator is created so the T4 observation contract cannot
  * be bypassed by construction order.
  */
-export class TrustedSchedulerComposition {
+export class SchedulerComposition {
 	readonly runLifecycle: RunLifecycleCoordinator;
 	readonly graph: TaskGraphStore;
 	readonly workflow: SchedulerWorkflowController;
@@ -462,7 +463,7 @@ export class TrustedSchedulerComposition {
 	private tickFailures = 0;
 	private lastTick: SchedulerSafeStatus["lastTick"];
 
-	constructor(options: TrustedSchedulerCompositionOptions, subagents?: TrustedSubagentComposition) {
+	constructor(options: SchedulerCompositionOptions, subagents?: SubagentComposition) {
 		if (options.schemaVersion !== 1 || options.enabled !== true) {
 			throw new FoundationError("scheduler_queue_invalid", "Scheduler requires an explicit trusted Host opt-in");
 		}
@@ -1023,12 +1024,12 @@ export class FoundationControlPlane {
 	private readonly taskCredentialProviderAvailability: TaskCredentialProviderAvailability | undefined;
 	private readonly sandboxProviders: ReadonlyMap<string, SandboxProvider>;
 	private readonly workerSandboxProvider: WorkerSandboxProvider | undefined;
-	private readonly scheduler: TrustedSchedulerComposition | undefined;
+	private readonly scheduler: SchedulerComposition | undefined;
 	private readonly workerLifecycleHooks: RunWorkerLifecycleHooks | undefined;
 	private readonly unregisterWorkerLifecycleHooks: (() => void) | undefined;
 	private readonly releaseWorkerDurableSink: (() => void) | undefined;
 	private readonly releaseWorkerCredentialDetachSink: (() => void) | undefined;
-	private readonly subagents: TrustedSubagentComposition | undefined;
+	private readonly subagents: SubagentComposition | undefined;
 	private readonly unregisterSubagentLifecycleHooks: (() => void) | undefined;
 	private readonly persistedWorkerFacts = new Map<string, {
 		readonly customType: string;
@@ -1107,7 +1108,7 @@ export class FoundationControlPlane {
 		if (options.subagents !== undefined && options.subagents.sessionId !== this.sessionManager.getSessionId()) {
 			throw new FoundationError("subagent_spawn_invalid", "Trusted subagent composition must use the control-plane Session");
 		}
-		this.subagents = createTrustedSubagentComposition(options.subagents);
+		this.subagents = createSubagentComposition(options.subagents);
 		this.workerFactCacheLimit = options.workerFactCacheLimit ?? 4_096;
 		if (!Number.isSafeInteger(this.workerFactCacheLimit) || this.workerFactCacheLimit < 1) {
 			throw new RangeError("workerFactCacheLimit must be a positive safe integer");
@@ -1137,7 +1138,7 @@ export class FoundationControlPlane {
 		let releaseWorkerCredentialDetachSink: (() => void) | undefined;
 		let unregisterWorkerLifecycleHooks: (() => void) | undefined;
 		let unregisterSubagentLifecycleHooks: (() => void) | undefined;
-		let scheduler: TrustedSchedulerComposition | undefined;
+		let scheduler: SchedulerComposition | undefined;
 		try {
 			if (this.subagents !== undefined) {
 				unregisterSubagentLifecycleHooks = registerRunSubagentLifecycleHooks(
@@ -1179,7 +1180,7 @@ export class FoundationControlPlane {
 				if (options.scheduler.runLifecycleSession !== this.sessionManager) {
 					throw new FoundationError("scheduler_queue_invalid", "Scheduler must use the control-plane Session");
 				}
-				scheduler = new TrustedSchedulerComposition(options.scheduler, this.subagents);
+				scheduler = new SchedulerComposition(options.scheduler, this.subagents);
 			}
 		} catch (error) {
 			unregisterSubagentLifecycleHooks?.();
@@ -2826,7 +2827,7 @@ export class FoundationControlPlane {
 	reclaimWorker(workerId: string) { return this.workerSandboxProvider?.reclaimWorker(workerId); }
 	async cancelWorkerOperations(): Promise<void> { await this.workerSandboxProvider?.cancelAll("cancel"); }
 	getWorkerRunLifecycleHooks(): RunWorkerLifecycleHooks | undefined { return this.workerLifecycleHooks; }
-	getSubagentComposition(): TrustedSubagentComposition | undefined { return this.subagents; }
+	getSubagentComposition(): SubagentComposition | undefined { return this.subagents; }
 	getSchedulerStatus(): SchedulerSafeStatus | undefined { return this.scheduler?.status(); }
 	/**
 	 * Narrow compatibility projection for RPC integrations that need to

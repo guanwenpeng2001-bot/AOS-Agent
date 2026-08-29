@@ -10,7 +10,7 @@ import {
 } from "@aos-agent/agent-core";
 import type {
 	AgentRuntimeCompositionContext,
-	TrustedExternalConnectorRegistryFactory,
+	ExternalConnectorRegistryFactory,
 } from "./agent-runtime-composition.ts";
 import {
 	type ExternalConnectorDurableStore,
@@ -236,7 +236,7 @@ function packagedCapability(): ConnectorCapabilitySnapshot {
 export async function createPackagedExternalConnectorRegistryFactory(options: {
 	readonly target: ExternalConnectorResolvedTarget;
 	readonly agentDir: string;
-}): Promise<TrustedExternalConnectorRegistryFactory | undefined> {
+}): Promise<ExternalConnectorRegistryFactory | undefined> {
 	if (!matchesPackagedTarget(options.target)) return undefined;
 	loadPackagedExternalAgentDriver("fake-connector");
 	const store = new SessionBoundExternalConnectorStore();

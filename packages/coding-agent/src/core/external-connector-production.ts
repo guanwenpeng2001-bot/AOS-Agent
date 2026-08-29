@@ -14,7 +14,7 @@ import {
 	ProductionExternalConnectorProcessController,
 	resolveProductionExternalConnectorDriverProvenance,
 	type ProductionExternalConnectorDriverProvenance,
-	type TrustedProductionExternalConnectorProcess,
+	type ProductionExternalConnectorProcessWithProvenance,
 } from "./external-connector-process-controller.ts";
 import {
 	assertExternalConnectorCapabilityWithinTarget,
@@ -43,7 +43,7 @@ import type { ExternalConnectorVendorDriver } from "./vendor-drivers/types.ts";
 
 export interface ProductionExternalConnectorSupervisionOptions {
 	readonly privateStatePath: string;
-	readonly process: TrustedProductionExternalConnectorProcess;
+	readonly process: ProductionExternalConnectorProcessWithProvenance;
 	readonly deadlines?: ExternalConnectorSupervisorDeadlineOverrides;
 	readonly limits?: Partial<ExternalConnectorSupervisorLimits>;
 	readonly runtimeLimits?: RuntimeLimitsSource;
@@ -62,7 +62,7 @@ export type ProductionExternalAgentConnectorRuntimeOptions = Omit<
 		  }
 		| {
 				readonly target?: never;
-				readonly process: TrustedProductionExternalConnectorProcess;
+				readonly process: ProductionExternalConnectorProcessWithProvenance;
 		  }
 	);
 
@@ -79,13 +79,13 @@ const PRODUCTION_VENDOR_DRIVER = new WeakMap<ExternalAgentConnector, ExternalCon
 const PRODUCTION_TARGET = new WeakMap<ExternalAgentConnector, ExternalConnectorResolvedTarget>();
 
 class BoundProductionExternalConnectorVendorDriver implements ExternalConnectorVendorDriver {
-	readonly process: TrustedProductionExternalConnectorProcess;
+	readonly process: ProductionExternalConnectorProcessWithProvenance;
 	readonly provenance: ProductionExternalConnectorDriverProvenance;
 	readonly #source: ExternalConnectorVendorDriver;
 
 	constructor(
 		source: ExternalConnectorVendorDriver,
-		process: TrustedProductionExternalConnectorProcess,
+		process: ProductionExternalConnectorProcessWithProvenance,
 		provenance: ProductionExternalConnectorDriverProvenance,
 	) {
 		this.#source = source;
@@ -177,14 +177,14 @@ export function getProductionExternalConnectorVendorDriverProvenance(
 /** Private Host evidence binding the execution driver to its exact process target. */
 export function getProductionExternalConnectorVendorDriverProcess(
 	driver: ExternalConnectorVendorDriver,
-): TrustedProductionExternalConnectorProcess | undefined {
+): ProductionExternalConnectorProcessWithProvenance | undefined {
 	return PRODUCTION_VENDOR_DRIVER_BINDING.get(driver)?.process;
 }
 
 function canonicalProductionDriverProcess(
-	value: TrustedProductionExternalConnectorProcess,
+	value: ProductionExternalConnectorProcessWithProvenance,
 	provenance: ProductionExternalConnectorDriverProvenance,
-): TrustedProductionExternalConnectorProcess {
+): ProductionExternalConnectorProcessWithProvenance {
 	if (value.arguments !== undefined && !Array.isArray(value.arguments)) {
 		throw new TypeError("External Connector companion process arguments are invalid");
 	}
@@ -202,8 +202,8 @@ function canonicalProductionDriverProcess(
 }
 
 function sameProductionDriverProcess(
-	left: TrustedProductionExternalConnectorProcess,
-	right: TrustedProductionExternalConnectorProcess,
+	left: ProductionExternalConnectorProcessWithProvenance,
+	right: ProductionExternalConnectorProcessWithProvenance,
 ): boolean {
 	const leftArguments = left.arguments ?? [];
 	const rightArguments = right.arguments ?? [];
@@ -221,7 +221,7 @@ function sameProductionDriverProcess(
 
 function bindProductionVendorDriver(
 	driver: ExternalConnectorVendorDriver,
-	process: TrustedProductionExternalConnectorProcess,
+	process: ProductionExternalConnectorProcessWithProvenance,
 ): BoundProductionExternalConnectorVendorDriver {
 	const provenance = resolveProductionExternalConnectorDriverProvenance(process);
 	if (provenance === undefined) {

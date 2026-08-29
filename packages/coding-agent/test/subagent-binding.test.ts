@@ -20,13 +20,13 @@ import {
 import {
 	CHILD_BINDING_PROJECTION_FIELDS,
 	CHILD_BINDING_PROJECTION_OBJECT_TYPE,
-	createTrustedMcpInheritanceApprovalAuthority,
+	createMcpInheritanceApprovalAuthority,
 	persistChildBindingProjection,
 	projectChildBinding,
 	validateChildBindingProjection,
 	type ChildBindingProjectionField,
 	type ProjectChildBindingInput,
-	type TrustedMcpInheritanceApprovalAuthority,
+	type McpInheritanceApprovalAuthority,
 } from "../src/core/subagent-binding.ts";
 import {
 	resolveExecutionPolicy,
@@ -91,7 +91,7 @@ function policyAuthority(
 	const session = options.session ?? new MemoryPolicySession();
 	const ledger = createExecutionPolicyLedger(session);
 	const policy = policyResolution(mcpApproval);
-	const authority = createTrustedMcpInheritanceApprovalAuthority({
+	const authority = createMcpInheritanceApprovalAuthority({
 		schemaVersion: 1,
 		...policy,
 		policyRevision: immutableFact("policy_binding", "policy-1"),
@@ -231,7 +231,7 @@ function input(overrides: Partial<ProjectChildBindingInput> = {}): ProjectChildB
 	};
 }
 
-function mustProject(value: ProjectChildBindingInput, authority?: TrustedMcpInheritanceApprovalAuthority) {
+function mustProject(value: ProjectChildBindingInput, authority?: McpInheritanceApprovalAuthority) {
 	const result = projectChildBinding(value, authority);
 	if (!result.ok) throw result.error;
 	return result.value;

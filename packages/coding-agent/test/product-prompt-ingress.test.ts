@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { deriveProductPromptModelProfileId } from "../src/core/product-prompt-binding-authority.ts";
 import { ProductPromptIngress } from "../src/core/product-prompt-ingress.ts";
-import { TrustedSubagentComposition } from "../src/core/subagent-composition.ts";
+import { SubagentComposition } from "../src/core/subagent-composition.ts";
 import { createCodingAgentHarnessFromTrustedProvidersForTest } from "../src/server/create-harness.ts";
 
 const MODEL = getModel("openai", "gpt-4o-mini");
@@ -227,7 +227,7 @@ describe("ProductPromptIngress", () => {
 		let replaceLeaseBeforeChildPersistence = false;
 		let replacementFencingToken: string | undefined;
 		let selectedForkScope: "none" | "recent_n" = "none";
-		const composition = new TrustedSubagentComposition({
+		const composition = new SubagentComposition({
 			schemaVersion: 1,
 			enabled: true,
 			session,

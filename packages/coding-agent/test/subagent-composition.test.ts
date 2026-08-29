@@ -41,13 +41,13 @@ import { googleProvider } from "@aos-agent/ai/providers/google";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-	createTrustedSubagentComposition,
-	TrustedSubagentComposition,
-	type TrustedSubagentCompositionOptions,
+	createSubagentComposition,
+	SubagentComposition,
+	type SubagentCompositionOptions,
 } from "../src/core/subagent-composition.ts";
 import {
-	createTrustedMcpInheritanceApprovalAuthority,
-	type TrustedMcpInheritanceApprovalAuthority,
+	createMcpInheritanceApprovalAuthority,
+	type McpInheritanceApprovalAuthority,
 } from "../src/core/subagent-binding.ts";
 import {
 	resolveExecutionPolicy,
@@ -108,7 +108,7 @@ function mcpInheritanceAuthority(pending: PolicyApprovalRequest[]) {
 	});
 	if (!resolved.ok) throw resolved.error;
 	const ledger = createExecutionPolicyLedger(new MemoryPolicySession());
-	const authority = createTrustedMcpInheritanceApprovalAuthority({
+	const authority = createMcpInheritanceApprovalAuthority({
 		schemaVersion: 1,
 		profile: resolved.profile,
 		binding: resolved.binding,
@@ -459,8 +459,8 @@ async function correctionHarness(options: {
 	readonly failedChildren?: readonly string[];
 	readonly suspendThenResume?: boolean;
 	readonly planMaxTurns?: number;
-	readonly productPrompt?: TrustedSubagentCompositionOptions["productPrompt"];
-	readonly mcpInheritanceAuthority?: TrustedMcpInheritanceApprovalAuthority;
+	readonly productPrompt?: SubagentCompositionOptions["productPrompt"];
+	readonly mcpInheritanceAuthority?: McpInheritanceApprovalAuthority;
 } = {}) {
 	const session = new Session(new InMemorySessionStorage({ id: "session-composition", createdAt: 1 }));
 	const ledgers = new Map<string, SessionLedger>();
@@ -518,7 +518,7 @@ async function correctionHarness(options: {
 	} as unknown as ArtifactStoreProvider;
 	const harnessWorkspaces: Array<string | undefined> = [];
 	let resumeCalls = 0;
-	const compositionOptions: TrustedSubagentCompositionOptions = {
+	const compositionOptions: SubagentCompositionOptions = {
 		schemaVersion: 1,
 		enabled: true,
 		session,
@@ -599,7 +599,7 @@ async function correctionHarness(options: {
 	};
 	let productionHarness: AgentHarness | undefined;
 	let productionEnv: NodeExecutionEnv | undefined;
-	let composition: TrustedSubagentComposition;
+	let composition: SubagentComposition;
 	if (options.productionPath === true) {
 		const models = createModels();
 		models.setProvider(googleProvider());
@@ -615,7 +615,7 @@ async function correctionHarness(options: {
 		productionHarness = created.harness;
 		composition = created.subagentComposition;
 	} else {
-		composition = new TrustedSubagentComposition(compositionOptions);
+		composition = new SubagentComposition(compositionOptions);
 	}
 	const inProcessDescriptor = composition.providerDescriptors().find((candidate) => candidate.providerKind === "in_process");
 	if (inProcessDescriptor === undefined) throw new Error("Expected in-process provider descriptor");
@@ -1195,7 +1195,7 @@ describe("trusted Subagent product composition", () => {
 	});
 
 	it("is default-off and constructs only the fixed in-process/fork registry after explicit Host opt-in", async () => {
-		expect(createTrustedSubagentComposition(undefined)).toBeUndefined();
+		expect(createSubagentComposition(undefined)).toBeUndefined();
 		const session = new Session(new InMemorySessionStorage({ id: "session-composition", createdAt: 1 }));
 		const ledgers = new Map<string, SessionLedger>();
 		const ledgerForLane = (laneId: string): SessionLedger => {
@@ -1248,7 +1248,7 @@ describe("trusted Subagent product composition", () => {
 			delete: async () => Result.ok(undefined),
 			dispose: async () => {},
 		} as unknown as ArtifactStoreProvider;
-		const composition = new TrustedSubagentComposition({
+		const composition = new SubagentComposition({
 			schemaVersion: 1,
 			enabled: true,
 			session,

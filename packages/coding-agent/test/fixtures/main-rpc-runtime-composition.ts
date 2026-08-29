@@ -26,11 +26,11 @@ import {
 import {
 	createAgentRuntimeCompositionFactory,
 	createExternalConnectorRegistry,
-	createTrustedWorkerSandboxComposition,
+	createWorkerSandboxComposition,
 	main,
 	SchedulerExecutorRegistry,
 	type AgentRuntimeCompositionContext,
-	type TrustedSchedulerRuntimeOptions,
+	type SchedulerRuntimeOptions,
 } from "../../src/index.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/external-agent-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../../src/core/external-agent-operation.ts";
@@ -47,7 +47,7 @@ import {
 import { createSessionManagerStorage } from "../../src/core/session-manager-storage.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { SchedulerSelectionReservationStore } from "../../src/core/scheduler-selection-reservations.ts";
-import type { TrustedSubagentCompositionOptions } from "../../src/core/subagent-composition.ts";
+import type { SubagentCompositionOptions } from "../../src/core/subagent-composition.ts";
 import { createTaskCredentialTestProvider } from "../../src/core/task-credential-provider.ts";
 import { TaskGraphStore } from "../../src/core/task-graph.ts";
 import { createExternalConnectorTestRuntime } from "../external-connector-test-supervision.ts";
@@ -174,7 +174,7 @@ function schedulerBinding(task: TaskEnvelope, sessionId: string): AgentBinding {
 	return resolved.value;
 }
 
-function createSubagents(context: AgentRuntimeCompositionContext): TrustedSubagentCompositionOptions {
+function createSubagents(context: AgentRuntimeCompositionContext): SubagentCompositionOptions {
 	const toolGateway = canonicalToolGateway;
 	if (toolGateway === undefined) throw new Error("main RPC Tool Gateway was not composed before Subagent");
 	const memoryLedger = new SessionT5Ledger(context.session, {
@@ -268,7 +268,7 @@ function createSubagents(context: AgentRuntimeCompositionContext): TrustedSubage
 function createScheduler(
 	context: AgentRuntimeCompositionContext,
 	selectionReservations: SchedulerSelectionReservationStore,
-): TrustedSchedulerRuntimeOptions {
+): SchedulerRuntimeOptions {
 	const targetSessionId = `main-rpc-scheduler-target-${context.sessionId}`;
 	const targetManager = SessionManager.inMemory(process.cwd(), { id: targetSessionId });
 	const targetSession = new Session(createSessionManagerStorage(targetManager));
@@ -475,7 +475,7 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 	},
 	trustedWorkerSandboxFactory: (context) => {
 		requireCanonicalContext(context);
-		return createTrustedWorkerSandboxComposition({
+		return createWorkerSandboxComposition({
 			providerId: `main-rpc-worker-${context.sessionId}`,
 			profile: {
 				profileId: `main-rpc-worker-profile-${context.sessionId}`,
