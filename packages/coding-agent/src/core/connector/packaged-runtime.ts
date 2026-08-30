@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import {
+	type AgentBinding,
+	type Attempt,
 	type ConnectorCapabilitySnapshot,
 	createConnectorCapabilitySnapshot,
 	type FoundationJsonValue,
@@ -17,6 +19,10 @@ import {
 	type ExternalConnectorDurableStore,
 	SessionExternalConnectorDurableStore,
 } from "./operation.ts";
+import type {
+	ExternalConnectorCredentialRuntime,
+	ExternalConnectorCredentialService,
+} from "./durable-connector.ts";
 import { createExternalConnectorRegistry } from "./registry.ts";
 import { createProductionExternalAgentConnector } from "./production.ts";
 import type { ExternalConnectorResolvedTarget } from "./target-config.ts";
@@ -26,6 +32,11 @@ import {
 } from "./packaged-driver.ts";
 import { JsonlProcessExternalConnectorDriver } from "./vendor/jsonl-process-driver.ts";
 import type { ExternalConnectorVendorDriver } from "./vendor/types.ts";
+import {
+	bindExternalConnectorVendorBehaviorManifest,
+	EXTERNAL_CONNECTOR_TOOL_GATEWAY_REQUEST_EVENT,
+	EXTERNAL_CONNECTOR_TOOL_GATEWAY_RESULT_WRITE,
+} from "./tool-gateway-binding.ts";
 
 const PACKAGED_PROVIDER_ID = "aos.fake-connector" as const;
 
@@ -127,6 +138,42 @@ class SessionBoundExternalConnectorStore implements ExternalConnectorDurableStor
 	#requireDelegate(): SessionExternalConnectorDurableStore {
 		if (this.#delegate === undefined) throw new TypeError("Packaged External Connector store is not session-bound");
 		return this.#delegate;
+	}
+}
+
+class SessionBoundExternalConnectorCredentialRuntime implements ExternalConnectorCredentialRuntime {
+	readonly service: ExternalConnectorCredentialService;
+	#delegate: ExternalConnectorCredentialRuntime | undefined;
+	#bound = false;
+
+	constructor() {
+		this.service = Object.freeze({
+			issueForTaskRun: (...args: Parameters<ExternalConnectorCredentialService["issueForTaskRun"]>) =>
+				this.#delegate?.service.issueForTaskRun(...args) ?? {
+					ok: false as const,
+					code: "task_credential_target_unavailable" as const,
+				},
+			lookupDeliveredLease: (...args: Parameters<ExternalConnectorCredentialService["lookupDeliveredLease"]>) =>
+				this.#delegate?.service.lookupDeliveredLease(...args) ?? {
+					ok: false as const,
+					code: "task_credential_target_unavailable" as const,
+				},
+			releaseDeliveredLease: (...args: Parameters<ExternalConnectorCredentialService["releaseDeliveredLease"]>) =>
+				this.#delegate?.service.releaseDeliveredLease(...args) ?? {
+					ok: false as const,
+					code: "task_credential_target_unavailable" as const,
+				},
+		});
+	}
+
+	bind(runtime: ExternalConnectorCredentialRuntime | undefined): void {
+		if (this.#bound) throw new TypeError("Packaged External Connector credential runtime is already bound");
+		this.#bound = true;
+		this.#delegate = runtime;
+	}
+
+	resolveIssueContext(attempt: Attempt, binding: AgentBinding) {
+		return this.#delegate?.resolveIssueContext(attempt, binding);
 	}
 }
 
@@ -267,14 +314,20 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 	const packaged = matchesPackagedTarget(options.target);
 	if (packaged) loadPackagedExternalAgentDriver("fake-connector");
 	const store = new SessionBoundExternalConnectorStore();
+	const credentialRuntime = new SessionBoundExternalConnectorCredentialRuntime();
 	const capability = packaged ? packagedCapability() : genericTargetCapability(options.target);
-	const driver: ExternalConnectorVendorDriver = packaged
-		? new PackagedExternalConnectorVendorDriver(store)
-		: new JsonlProcessExternalConnectorDriver({
+	let jsonlDriver: JsonlProcessExternalConnectorDriver | undefined;
+	let driver: ExternalConnectorVendorDriver;
+	if (packaged) {
+		driver = new PackagedExternalConnectorVendorDriver(store);
+	} else {
+		jsonlDriver = new JsonlProcessExternalConnectorDriver({
 			providerId: options.target.providerId,
 			version: options.target.version,
 			capability,
 		});
+		driver = jsonlDriver;
+	}
 	const connector = await createProductionExternalAgentConnector({
 		providerId: options.target.providerId,
 		capability,
@@ -283,27 +336,48 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 		driver,
 		privateStatePath: targetPrivateStatePath(options.target, options.agentDir),
 		target: options.target,
+		credential: credentialRuntime,
 	});
-	const registry = createExternalConnectorRegistry();
-	const registered = registry.registerPrepared(
-		{
-			descriptor: {
-				schemaVersion: 1,
-				providerId: options.target.providerId,
-				providerClass: PROVIDER_CLASS.externalConnector,
-				revision: capability.revision,
-				capabilitySnapshotDigest: capability.digest,
-			},
-			connector,
-		},
-		capability,
-	);
-	if (!registered.ok) {
-		await connector.dispose();
-		throw registered.error;
-	}
-	return (context) => {
+	return (context, toolGateway, target, authority, credential) => {
+		if (target !== options.target) {
+			throw new TypeError("Packaged External Connector factory target does not match its trusted target");
+		}
+		void authority;
+		credentialRuntime.bind(credential);
 		store.bind(context);
+		const registry = createExternalConnectorRegistry({
+			...(toolGateway === undefined ? {} : { toolGateway }),
+		});
+		if (jsonlDriver !== undefined) {
+			const implementedOperations = jsonlDriver.jsonlImplementedOperations;
+			bindExternalConnectorVendorBehaviorManifest(connector, () => ({
+				schemaVersion: 1,
+				revision: capability.revision,
+				events: implementedOperations.includes(EXTERNAL_CONNECTOR_TOOL_GATEWAY_REQUEST_EVENT)
+					? [EXTERNAL_CONNECTOR_TOOL_GATEWAY_REQUEST_EVENT]
+					: [],
+				writes: implementedOperations.includes(EXTERNAL_CONNECTOR_TOOL_GATEWAY_RESULT_WRITE)
+					? [EXTERNAL_CONNECTOR_TOOL_GATEWAY_RESULT_WRITE]
+					: [],
+			}));
+		}
+		const registered = registry.registerPrepared(
+			{
+				descriptor: {
+					schemaVersion: 1,
+					providerId: options.target.providerId,
+					providerClass: PROVIDER_CLASS.externalConnector,
+					revision: capability.revision,
+					capabilitySnapshotDigest: capability.digest,
+				},
+				connector,
+			},
+			capability,
+		);
+		if (!registered.ok) {
+			void connector.dispose();
+			throw registered.error;
+		}
 		return registry;
 	};
 }

@@ -8,6 +8,7 @@ import {
 	SessionLedger,
 	Session,
 	createBindingEpoch,
+	createFoundationToolGateway,
 	createModelProfileRevision,
 	createRoleRevision,
 	fingerprintFoundationValue,
@@ -20,7 +21,10 @@ import {
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import { createPackagedExternalConnectorRegistryFactory } from "../../src/core/connector/packaged-runtime.ts";
-import { externalConnectorAttemptId } from "../../src/core/connector/durable-connector.ts";
+import {
+	externalConnectorAttemptId,
+	type ExternalConnectorCredentialRuntime,
+} from "../../src/core/connector/durable-connector.ts";
 import { fingerprintCanonicalExternalAgentInput } from "../../src/core/connector/input.ts";
 import type { AgentRuntimeCompositionContext } from "../../src/core/runtime/composition.ts";
 import { buildExternalConnectorTargetConfig, type ExternalConnectorTargetDefinition } from "../../src/external-connector.ts";
@@ -39,7 +43,7 @@ function immutableReference(type: string, id: string): RevisionReference {
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function target(): ReturnType<typeof buildExternalConnectorTargetConfig>["selectedTarget"] {
+function target(options: { readonly toolGateway?: boolean } = {}): ReturnType<typeof buildExternalConnectorTargetConfig>["selectedTarget"] {
 	const definition: ExternalConnectorTargetDefinition = {
 		schemaVersion: 1,
 		targetId: "fixture-external-jsonl-target",
@@ -53,7 +57,7 @@ function target(): ReturnType<typeof buildExternalConnectorTargetConfig>["select
 		capabilityCeiling: {
 			modelAccess: ["none"],
 			resume: true,
-			toolGateway: false,
+			toolGateway: options.toolGateway ?? false,
 			artifacts: false,
 			images: false,
 		},
@@ -146,10 +150,28 @@ describe("generic External Connector JSONL module SPI", () => {
 			sessionId: "session-jsonl-module-spi",
 			models: {},
 		} as unknown as AgentRuntimeCompositionContext;
+		let credentialContextCalls = 0;
+		const credentialRuntime = {
+			service: {
+				issueForTaskRun: () => {
+					throw new Error("Credential issue is not expected without a resolved context");
+				},
+				lookupDeliveredLease: () => {
+					throw new Error("Credential lookup is not expected without a resolved context");
+				},
+				releaseDeliveredLease: () => {
+					throw new Error("Credential release is not expected without a resolved context");
+				},
+			},
+			resolveIssueContext: () => {
+				credentialContextCalls += 1;
+				return undefined;
+			},
+		} satisfies ExternalConnectorCredentialRuntime;
 		const registry = registryFactory(context, undefined, selectedTarget, {
 			runtimeLimitsSource: {},
-		runtimeLimits: DEFAULT_RUNTIME_LIMITS,
-	});
+			runtimeLimits: DEFAULT_RUNTIME_LIMITS,
+		}, credentialRuntime);
 		const registered = registry.list();
 		expect(registered).toHaveLength(1);
 		const connectorSelection = await registry.select({
@@ -230,9 +252,52 @@ describe("generic External Connector JSONL module SPI", () => {
 				expect(settled.value.providerId).toBe(PROVIDER_ID);
 				expect(settled.value.sideEffectState).toBe("none");
 			}
+			expect(credentialContextCalls).toBe(1);
 		} finally {
 			await registry.dispose();
 			await ledger.release();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("binds JSONL Tool Gateway behavior before generic target registration and selection", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-jsonl-module-tool-gateway-"));
+		const selectedTarget = target({ toolGateway: true });
+		if (selectedTarget === undefined) throw new Error("Target selection unexpectedly missing");
+		const registryFactory = await createPackagedExternalConnectorRegistryFactory({
+			target: selectedTarget,
+			agentDir: root,
+		});
+		if (registryFactory === undefined) throw new Error("Generic target factory was not created");
+		const session = new Session(new InMemorySessionStorage({ id: "session-jsonl-tool-gateway", createdAt: 2 }));
+		const contextLedger = new ContextLedger(session, { ownerId: "jsonl-tool-gateway-test" });
+		const context = {
+			session,
+			harness: { ledger: { writer: contextLedger.writer } },
+			sessionId: "session-jsonl-tool-gateway",
+			models: {},
+		} as unknown as AgentRuntimeCompositionContext;
+		const registry = registryFactory(
+			context,
+			createFoundationToolGateway({ gatewayId: "jsonl-tool-gateway", providers: [] }),
+			selectedTarget,
+			{
+				runtimeLimitsSource: {},
+				runtimeLimits: DEFAULT_RUNTIME_LIMITS,
+			},
+			undefined,
+		);
+		try {
+			const registered = registry.list();
+			expect(registered).toHaveLength(1);
+			const selected = await registry.select({
+				providerId: PROVIDER_ID,
+				revision: 1,
+				capabilitySnapshotDigest: registered[0]!.capabilitySnapshotDigest,
+			});
+			expect(selected.ok).toBe(true);
+		} finally {
+			await registry.dispose();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});

@@ -320,6 +320,7 @@ export async function createProductionExternalAgentConnector(
 		driver: driverBinding,
 		supervision,
 		runtimeLimits: runtimeLimitsSource,
+		...(options.credential === undefined ? {} : { credential: options.credential }),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.operationNonce === undefined ? {} : { operationNonce: options.operationNonce }),
 	});
