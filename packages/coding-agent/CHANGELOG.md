@@ -15,6 +15,7 @@
 - Public composition and factory names now use their domain names without the `Trusted` prefix. Update imports and type references to the unprefixed names.
 - Renamed the packaged connector fixture IDs to `aos.fake-connector`, `aos.fake-provider`, and `aos.fake-tool-call`; fixture consumers must read `fakeProviderId` instead of `fauxProviderId`.
 - Renamed the exported configuration constant `ENV_AGENT_DIR` to `ENV_CODING_AGENT_DIR`; the environment variable value remains `AOS_AGENT_CODING_AGENT_DIR`.
+- Internal controllers and implementation helpers are no longer exported from `aos-agent`. The documented SDK contract is unchanged; repository consumers can import internalized names from their package-internal modules, while external consumers should migrate to the documented SDK symbols.
 
 ### Added
 
