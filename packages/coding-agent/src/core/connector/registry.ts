@@ -67,6 +67,12 @@ import {
 } from "./runtime-status.ts";
 import type { RuntimeClock } from "../runtime/clock.ts";
 import { PROVIDER_CLASS } from "./provider-class.ts";
+import {
+	createExternalConnectorToolGatewayBinding,
+	readExternalConnectorVendorBehaviorManifest,
+	supportsExternalConnectorToolGatewayBehavior,
+	type ExternalConnectorToolGatewayBinding,
+} from "./tool-gateway-binding.ts";
 
 /** The only current provider class admitted by the open connector registry. */
 export const EXTERNAL_CONNECTOR_PROVIDER_CLASSES = Object.freeze([PROVIDER_CLASS.externalConnector] as const);
@@ -114,7 +120,7 @@ type ExternalConnectorToolGatewayConsumerBinder = (
 	attemptId: string,
 	binding: AgentBinding,
 	policyBinding: PolicyBinding,
-) => () => void;
+) => ExternalConnectorToolGatewayBinding;
 
 export interface ExternalConnectorToolGatewayCatalogSnapshot {
 	readonly gatewayId: string;
@@ -398,9 +404,10 @@ function scopedToolGatewayConsumer(
 ): ExternalConnectorToolGatewayConsumer {
 	const bindingResult = validateAgentBinding(bindingValue);
 	if (!bindingResult.ok) throw bindingResult.error;
-	const binding = bindingResult.value;
+	const binding = cloneDeepFrozen(bindingResult.value);
+	const policy = createPolicyBindingLedgerRecord(policyBinding) as PolicyBinding;
 	const policyRevisionPayload = {
-		...createPolicyBindingLedgerRecord(policyBinding),
+		...policy,
 		type: "policy_binding" as const,
 		revision: binding.policyRevision.revision,
 	};
@@ -412,7 +419,7 @@ function scopedToolGatewayConsumer(
 		throw connectorRegistryError("External connector PolicyBinding does not match its durable AgentBinding.");
 	}
 	const routes = cloneDeepFrozen(catalog.scope.routes.filter(
-		(route) => routeSelectedByBinding(route, binding) && routeSelectedByPolicy(route, policyBinding),
+		(route) => routeSelectedByBinding(route, binding) && routeSelectedByPolicy(route, policy),
 	));
 	const scope: ExternalConnectorToolGatewayScope = cloneDeepFrozen({
 		schemaVersion: 1,
@@ -481,7 +488,7 @@ export function bindExternalConnectorToolGatewayConsumer(
 	attemptId: string,
 	binding: AgentBinding,
 	policyBinding: PolicyBinding,
-): () => void {
+): ExternalConnectorToolGatewayBinding {
 	const bind = externalConnectorToolGatewayConsumerBinders.get(selection);
 	if (bind === undefined) {
 		throw connectorRegistryError("External connector selection has no Tool Gateway consumer authority.");
@@ -841,6 +848,7 @@ function createCapabilityPinnedConnector(
 function capabilityTruth(
 	connectorId: string,
 	snapshot: ConnectorCapabilitySnapshot,
+	connector: ExternalAgentConnector,
 	implementation: RegisteredExternalConnectorImplementation,
 	toolGateway: ToolGateway | undefined,
 ): ResultValue<ExternalCapabilityTruthSnapshot, FoundationError> {
@@ -866,6 +874,20 @@ function capabilityTruth(
 			),
 		);
 	}
+	const behaviorManifest = snapshot.toolGateway
+		? readExternalConnectorVendorBehaviorManifest(connector)
+		: undefined;
+	if (
+		snapshot.toolGateway &&
+		(behaviorManifest === undefined || !supportsExternalConnectorToolGatewayBehavior(behaviorManifest))
+	) {
+		return Result.err(
+			new FoundationError(
+				"external_connector_not_ready",
+				"External connector Tool Gateway adapter behavior is not ready.",
+			),
+		);
+	}
 	if (snapshot.toolGateway && toolGateway === undefined) {
 		return Result.err(
 			new FoundationError("external_connector_not_ready", "External connector Tool Gateway is not ready."),
@@ -874,7 +896,11 @@ function capabilityTruth(
 	if (snapshot.toolGateway && toolGateway !== undefined) {
 		const catalog = routeCatalogForGateway(toolGateway);
 		if (!catalog.ok) return catalog;
-		declare("toolGateway", `${toolGateway.providerId}.execute`, toolGateway.execute);
+		declare(
+			"toolGateway",
+			`external.tool-gateway.${fingerprintFoundationValue(behaviorManifest).value}`,
+			toolGateway.execute,
+		);
 	}
 	if (snapshot.artifacts) declare("artifacts", `${connectorId}.runAttempt.artifacts`, implementation.runAttempt);
 	if (snapshot.images) declare("images", `${connectorId}.runAttempt.images`, implementation.runAttempt);
@@ -1246,13 +1272,17 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		const truthResult = capabilityTruth(
 			registered.implementation.providerId,
 			snapshot,
+			registered.connector,
 			registered.implementation,
 			this.#options.toolGateway,
 		);
 		if (!truthResult.ok) return truthResult;
 		if (!sameFingerprint(truthResult.value.snapshotDigest, registered.capabilityTruth.snapshotDigest)) {
 			return Result.err(
-				connectorRegistryError("External connector capability evidence drifted after registration."),
+				new FoundationError(
+					"external_capability_mismatch",
+					"External connector capability evidence drifted after registration.",
+				),
 			);
 		}
 		const observedAtMs = this.#nowMs();
@@ -1466,6 +1496,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		const truthResult = capabilityTruth(
 			implementation.providerId,
 			snapshot,
+			connector,
 			implementation,
 			this.#options.toolGateway,
 		);
@@ -1536,6 +1567,22 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		if (!readiness.ok) return readiness;
 		const readinessSnapshot = readiness.value;
 		const capabilitySnapshot = registered.capabilitySnapshot;
+		const selectionTruth = capabilityTruth(
+			registered.implementation.providerId,
+			capabilitySnapshot,
+			registered.connector,
+			registered.implementation,
+			this.#options.toolGateway,
+		);
+		if (!selectionTruth.ok) return selectionTruth;
+		if (!sameFingerprint(selectionTruth.value.snapshotDigest, registered.capabilityTruth.snapshotDigest)) {
+			return Result.err(
+				new FoundationError(
+					"external_capability_mismatch",
+					"External connector capability evidence drifted before selection.",
+				),
+			);
+		}
 		const capabilityTruthSnapshot = registered.capabilityTruth;
 		let selectedConnector = registered.selectedConnectors.get(readinessSnapshot);
 		if (selectedConnector === undefined) {
@@ -1671,11 +1718,20 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				);
 			}
 			externalConnectorToolGatewayCatalogs.set(resolvedSelection, toolGatewayCatalog);
-			const bindToolGatewayConsumer: ExternalConnectorToolGatewayConsumerBinder = (attemptId, binding, policyBinding) =>
-				Reflect.apply(registered.implementation.bindToolGatewayConsumer!, registered.connector, [
+			const bindToolGatewayConsumer: ExternalConnectorToolGatewayConsumerBinder = (attemptId, binding, policyBinding) => {
+				const consumer = scopedToolGatewayConsumer(
+					toolGatewayCatalog,
 					attemptId,
-					scopedToolGatewayConsumer(toolGatewayCatalog, attemptId, binding, policyBinding, executeToolGateway),
+					binding,
+					policyBinding,
+					executeToolGateway,
+				);
+				const release = Reflect.apply(registered.implementation.bindToolGatewayConsumer!, registered.connector, [
+					attemptId,
+					consumer,
 				]);
+				return createExternalConnectorToolGatewayBinding(consumer, release);
+			};
 			externalConnectorToolGatewayConsumerBinders.set(resolvedSelection, bindToolGatewayConsumer);
 		}
 		return Result.ok(resolvedSelection);

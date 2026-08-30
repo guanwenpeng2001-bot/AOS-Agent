@@ -58,6 +58,7 @@ import type {
 } from "../../src/core/connector/vendor/types.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
+import { bindExternalConnectorVendorBehaviorManifest } from "../../src/core/connector/tool-gateway-binding.ts";
 
 const NOW = "2026-08-27T00:00:00.000Z";
 const PROVIDER_ID = "third-party.zeta-connector";
@@ -372,6 +373,14 @@ function createSupportedConnector(
 		now: () => NOW,
 		operationNonce: () => `zeta-nonce-${fixtureId}`,
 	});
+	if (snapshot.toolGateway) {
+		bindExternalConnectorVendorBehaviorManifest(connector, () => ({
+			schemaVersion: 1,
+			revision: snapshot.revision,
+			events: ["started", "tool_gateway_request"],
+			writes: ["tool_gateway_result"],
+		}));
+	}
 	return { connector, driver, session, snapshot, supervision, ledger };
 }
 

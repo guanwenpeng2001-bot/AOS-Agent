@@ -66,6 +66,7 @@ import {
 	type ExternalConnectorExecutionInput,
 	type ExternalConnectorToolGatewayTerminal,
 } from "./operation.ts";
+import type { ExternalConnectorToolGatewayBinding } from "./tool-gateway-binding.ts";
 
 const DECLARED_AT = "1970-01-01T00:00:00.000Z";
 
@@ -800,10 +801,10 @@ export async function executePreparedExternalConnectorProductRun(
 		ownerId: `external-connector:${binding.bindingId}`,
 		...(input.writer === undefined ? {} : { writer: input.writer }),
 	});
-	let releaseToolGatewayConsumer: (() => void) | undefined;
+	let toolGatewayBinding: ExternalConnectorToolGatewayBinding | undefined;
 	try {
 		if (selected.capabilitySnapshot.toolGateway) {
-			releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(
+			toolGatewayBinding = bindExternalConnectorToolGatewayConsumer(
 				selected,
 				epoch.attemptId,
 				binding,
@@ -846,7 +847,7 @@ export async function executePreparedExternalConnectorProductRun(
 			? execution
 			: Object.freeze({ ...execution, toolGatewayExchanges: gatewayExchanges });
 	} finally {
-		releaseToolGatewayConsumer?.();
+		toolGatewayBinding?.release();
 		await settlement.release();
 		await ledger.release();
 	}
@@ -1208,10 +1209,10 @@ export async function recoverExternalConnectorProductRun(
 			ownerId: `external-connector:${prepared.binding.bindingId}`,
 			...(input.writer === undefined ? {} : { writer: input.writer }),
 		});
-		let releaseToolGatewayConsumer: (() => void) | undefined;
+		let toolGatewayBinding: ExternalConnectorToolGatewayBinding | undefined;
 		try {
 			if (prepared.selected.capabilitySnapshot.toolGateway) {
-				releaseToolGatewayConsumer = bindExternalConnectorToolGatewayConsumer(
+				toolGatewayBinding = bindExternalConnectorToolGatewayConsumer(
 					prepared.selected,
 					identity.attemptId,
 					prepared.binding,
@@ -1315,7 +1316,7 @@ export async function recoverExternalConnectorProductRun(
 				? execution
 				: Object.freeze({ ...execution, toolGatewayExchanges: gatewayExchanges });
 		} finally {
-			releaseToolGatewayConsumer?.();
+			toolGatewayBinding?.release();
 			await settlement.release();
 		}
 	} finally {
