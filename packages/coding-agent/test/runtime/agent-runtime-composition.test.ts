@@ -22,6 +22,7 @@ import {
 	type AgentBinding,
 	type AgentHarness,
 	type AgentInstance,
+	type Attempt,
 	type ArtifactStoreProvider,
 	type ChildSpawnRequest,
 	type ModelProfile,
@@ -34,6 +35,8 @@ import {
 	type ToolGatewayProvider,
 	type ToolGatewayRoute,
 } from "../../../agent/src/internal.ts";
+import { Agent } from "@aos-agent/agent-core";
+import type { Model } from "@aos-agent/ai";
 import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import { createModels } from "@aos-agent/ai";
@@ -60,6 +63,7 @@ import {
 } from "../../src/external-connector.ts";
 import {
 	createWorkerSandboxComposition,
+	materializeAgentRuntimeComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionContext,
 	type AgentRuntimeCompositionFactory,
@@ -70,6 +74,8 @@ import {
 	createExternalConnectorRegistry,
 	type ExternalConnectorRegistry,
 } from "../../src/core/connector/registry.ts";
+import { bindExternalConnectorVendorBehaviorManifest } from "../../src/core/connector/tool-gateway-binding.ts";
+import { bindCanonicalExternalToolGatewayPolicy } from "../../src/core/connector/tool-gateway.ts";
 import type { TaskCredentialProvider } from "../../src/core/policy/task-credential-provider.ts";
 import { SchedulerExecutorRegistry } from "../../src/core/scheduler/executors.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
@@ -93,6 +99,18 @@ import { createCodingAgentHarness } from "../../src/server/create-harness.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
 import { createExternalConnectorTestRuntime } from "../connector/external-connector-test-supervision.ts";
 import { observeCanonicalTerminal } from "../support/canonical-run-terminal.ts";
+import {
+	createPr11CredentialProvider,
+	createPr11RegistryFactory,
+	createPr11SyntheticCompositionContext,
+	createPr11ToolGateway,
+	PR11_CREDENTIAL_CANARY,
+	PR11_SCOPE,
+	pr11CredentialPolicySettings,
+	pr11TargetConfig,
+	executePr11ProductRun,
+	type Pr11RegistryCapture,
+} from "../connector/fixtures/pr-11-cross-layer.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("../fixtures/fake-worker-child.ts", import.meta.url));
@@ -551,6 +569,15 @@ function createTestExternalConnectorRegistry(
 	const registry = createExternalConnectorRegistry({
 		...(toolGateway === undefined ? {} : { toolGateway }),
 	});
+	const connector = createExternalConnectorTestRuntime(snapshot);
+	if (snapshot.toolGateway) {
+		bindExternalConnectorVendorBehaviorManifest(connector, () => ({
+			schemaVersion: 1,
+			revision: snapshot.revision,
+			events: ["tool_gateway_request"],
+			writes: ["tool_gateway_result"],
+		}));
+	}
 	const registered = registry.registerPrepared({
 		descriptor: {
 			schemaVersion: 1,
@@ -559,7 +586,7 @@ function createTestExternalConnectorRegistry(
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},
-		connector: createExternalConnectorTestRuntime(snapshot),
+		connector,
 	}, snapshot);
 	if (!registered.ok) throw registered.error;
 	return registry;
@@ -614,9 +641,12 @@ function createCompositionFactory(cwd: string, captures: CompositionCaptures): A
 			captures.schedulers.push(scheduler);
 			return scheduler;
 		},
-		externalConnectorRegistry: (context, toolGateway) => {
+		externalConnectorRegistry: (context, toolGateway, _target, _authority, _credential) => {
 			captures.contexts.push(context);
 			if (toolGateway === undefined) throw new Error("External registry requires the canonical composition Tool Gateway");
+			void _target;
+			void _authority;
+			void _credential;
 			captures.composedGateways.push(toolGateway);
 			const registry = createTestExternalConnectorRegistry(context.sessionId, toolGateway);
 			captures.externalRegistries.push(registry);
@@ -1426,6 +1456,277 @@ describe("AgentRuntimeComposition", () => {
 		expect(composedTarget).toBe(selectedConfig.selectedTarget);
 		expect(selectedRegistry.externalConnectorTarget).toBe(selectedConfig.selectedTarget);
 		expect(selectedRegistry.externalConnectorRegistry).toBeDefined();
+	});
+
+	it("projects trimmed Tool Gateway routes and completes request, execute, and result through composition", async () => {
+		const synthetic = createPr11SyntheticCompositionContext("pr11-composition-tool-gateway");
+		const captures: Pr11RegistryCapture[] = [];
+		let providerExecutions = 0;
+		const targetConfig = pr11TargetConfig(process.cwd(), {
+			targetId: "pr11-tool-gateway-target",
+			providerId: "pr11.tool-gateway",
+			toolGateway: true,
+		});
+		const gateway = createPr11ToolGateway(() => {
+			providerExecutions += 1;
+		});
+		const factory = createAgentRuntimeCompositionFactory({
+			toolGateway: () => gateway,
+			externalConnectorTargetConfig: targetConfig,
+			externalConnectorRegistry: createPr11RegistryFactory({ mode: "tool_gateway", captures }),
+		});
+		const composition = materializeAgentRuntimeComposition(factory, synthetic.context);
+		bindCanonicalExternalToolGatewayPolicy(composition.toolGateway, {
+			authorizeExternalToolGatewayRequest: async () => {},
+		});
+		try {
+			const capture = captures[0];
+			if (capture === undefined) throw new Error("PR-11 Tool Gateway connector was not composed");
+			expect(capture.target).toBe(targetConfig.selectedTarget);
+			expect(capture.toolGateway).toBe(composition.toolGateway);
+			expect(capture.authority.runtimeLimits).toBe(composition.runtimeLimits);
+
+			const execution = await executePr11ProductRun(synthetic.context, capture, "pr11-tool-gateway-run");
+			expect(execution.runReceipt.terminalStatus).toBe("completed");
+			expect(providerExecutions).toBe(1);
+			expect(capture.driver.spawnRequests).toHaveLength(1);
+			expect(capture.driver.spawnRequests[0]?.toolGatewayRoutes).toEqual([
+				{
+					kind: "local",
+					namespace: "workspace",
+					toolName: "workspace.read",
+					providerId: "pr11-builtin-tools",
+					revision: 1,
+					operation: { resource: "filesystem.read", effects: ["read"] },
+				},
+			]);
+			expect(capture.driver.writes).toHaveLength(1);
+			expect(capture.driver.writes[0]).toMatchObject({
+				schemaVersion: 1,
+				kind: "tool_gateway_result",
+				operationNonce: expect.any(String),
+			});
+			expect(capture.driver.writes[0]?.result).toEqual(execution.toolGatewayExchanges?.[0]?.result);
+			expect(execution.toolGatewayExchanges).toMatchObject([{
+				request: { toolName: "workspace.read" },
+				result: { ok: true, toolName: "workspace.read", sideEffectState: "none" },
+			}]);
+		} finally {
+			await composition.externalConnectorRegistry?.dispose();
+			await composition.toolGateway?.dispose();
+		}
+	});
+
+	it("rejects unknown or unauthorized routes and orphan or nonce events before provider effects", async () => {
+		for (const mode of ["unknown", "unauthorized", "orphan", "nonce"] as const) {
+			const synthetic = createPr11SyntheticCompositionContext(`pr11-rejection-${mode}`);
+			const captures: Pr11RegistryCapture[] = [];
+			const targetConfig = pr11TargetConfig(process.cwd(), {
+				targetId: `pr11-rejection-target-${mode}`,
+				providerId: `pr11.rejection.${mode}`,
+				toolGateway: true,
+			});
+			let providerExecutions = 0;
+			const gateway = createPr11ToolGateway(() => {
+				providerExecutions += 1;
+			});
+			const factory = createAgentRuntimeCompositionFactory({
+				toolGateway: () => gateway,
+				externalConnectorTargetConfig: targetConfig,
+				externalConnectorRegistry: createPr11RegistryFactory({ mode, captures }),
+			});
+			const composition = materializeAgentRuntimeComposition(factory, synthetic.context);
+			bindCanonicalExternalToolGatewayPolicy(composition.toolGateway, {
+				authorizeExternalToolGatewayRequest: async () => {},
+			});
+			try {
+				const capture = captures[0];
+				if (capture === undefined) throw new Error(`PR-11 ${mode} connector was not composed`);
+				const execution = await executePr11ProductRun(
+					synthetic.context,
+					capture,
+					`pr11-rejection-run-${mode}`,
+				);
+				expect(execution.runReceipt.terminalStatus).toBe("failed");
+				expect(execution.attemptReceipt.status).toBe("failed");
+				expect(execution.attemptReceipt.error?.code).toBe(
+					mode === "unknown" || mode === "unauthorized"
+						? "external_tool_route_denied"
+						: "external_event_invalid",
+				);
+				expect(providerExecutions).toBe(0);
+				expect(capture.driver.writes).toHaveLength(0);
+			} finally {
+				await composition.externalConnectorRegistry?.dispose();
+				await composition.toolGateway?.dispose();
+			}
+		}
+	});
+
+	it("fails closed during composition when a true Tool Gateway capability lacks vendor behavior", () => {
+		const synthetic = createPr11SyntheticCompositionContext("pr11-capability-missing-behavior");
+		const targetConfig = pr11TargetConfig(process.cwd(), {
+			targetId: "pr11-capability-missing-behavior-target",
+			providerId: "pr11.capability-missing-behavior",
+			toolGateway: true,
+		});
+		const gateway = createPr11ToolGateway();
+		const factory = createAgentRuntimeCompositionFactory({
+			toolGateway: () => gateway,
+			externalConnectorTargetConfig: targetConfig,
+			externalConnectorRegistry: createPr11RegistryFactory({
+				mode: "tool_gateway",
+				bindBehaviorManifest: false,
+			}),
+		});
+
+		expect(() => materializeAgentRuntimeComposition(factory, synthetic.context)).toThrow(
+			"External connector Tool Gateway adapter behavior is not ready",
+		);
+	});
+
+	it("passes external credential authority through the five-argument composition and rejects it after revoke", async () => {
+		const fixture = await createRuntimeFixture();
+		const targetConfig = pr11TargetConfig(fixture.cwd, {
+			targetId: "pr11-credential-composition-target",
+			providerId: "pr11.credential-composition",
+			accountReference: { schemaVersion: 1, namespace: "test", accountId: "opaque-account" },
+		});
+		const credential = createPr11CredentialProvider();
+		const captures: Pr11RegistryCapture[] = [];
+		const factory = createAgentRuntimeCompositionFactory({
+			externalConnectorTargetConfig: targetConfig,
+			externalConnectorCredentialIssueContext: () => (attempt, binding) => ({
+				taskId: attempt.taskId,
+				graphRevision: 1,
+				nodeId: "pr11-credential-node",
+				runId: "pr11-credential-run",
+				capabilityBindingId: binding.capabilityRevision.id,
+				policyBindingId: binding.policyRevision.id,
+				scopes: [PR11_SCOPE],
+				requestedTtlMs: 60_000,
+				clientRequestId: "pr11-credential-resolver",
+				nodeAttached: true,
+			}),
+			externalConnectorRegistry: createPr11RegistryFactory({ mode: "complete", captures }),
+			taskCredentialProvider: () => credential.provider,
+			taskCredentialPolicyMaxTtlMs: 300_000,
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model: {
+					id: "pr11-credential-model",
+					name: "PR-11 Credential Model",
+					api: "anthropic-messages",
+					provider: "test",
+					baseUrl: "https://test.invalid",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 1_000,
+					maxTokens: 100,
+				} satisfies Model<"anthropic-messages">,
+				systemPrompt: "PR-11 credential composition",
+				tools: [],
+			},
+			streamFn: () => {
+				throw new Error("PR-11 credential test does not stream a model");
+			},
+		});
+		const sessionManager = SessionManager.inMemory(fixture.cwd, { id: "pr11-credential-composition-session" });
+		const session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager: SettingsManager.inMemory({ executionPolicy: pr11CredentialPolicySettings() }),
+			cwd: fixture.cwd,
+			modelRuntime: fixture.services.modelRuntime,
+			resourceLoader: fixture.services.resourceLoader,
+			runtimeComposition: factory,
+			taskCredentialProviderAvailability: { available: true, declaresDelivery: true },
+			noTools: "all",
+		});
+		try {
+			await session.runExternalAgentPreflight("pr11-credential-run");
+			const capture = captures[0];
+			if (capture === undefined || capture.credential === undefined) {
+				throw new Error("PR-11 credential authority was not composed");
+			}
+			expect(capture.target).toBe(targetConfig.selectedTarget);
+			expect(capture.credential).toBeDefined();
+			expect(session.getTaskCredentialService()).toBeDefined();
+			const capabilityBindingId = session.getCapabilityBindingId();
+			const policyBinding = session.getActiveExecutionPolicyBinding();
+			if (capabilityBindingId === undefined || policyBinding === undefined) {
+				throw new Error("PR-11 credential policy boundary was not materialized");
+			}
+			const attempt = { taskId: "pr11-credential-task" } as unknown as Attempt;
+			const binding = {
+				capabilityRevision: { id: capabilityBindingId },
+				policyRevision: { id: policyBinding.id },
+			} as unknown as AgentBinding;
+			const issueContext = capture.credential.resolveIssueContext(attempt, binding);
+			if (issueContext === undefined) throw new Error("PR-11 credential issue context is missing");
+			const service = session.getTaskCredentialService();
+			if (service === undefined) throw new Error("PR-11 credential service is missing");
+			const issued = service.issueForTaskRun(issueContext);
+			expect(issued).toMatchObject({ ok: true, delivery: { status: "succeeded" } });
+			if (!issued.ok) return;
+			expect(credential.target.projectedMaterials).toEqual([PR11_CREDENTIAL_CANARY]);
+			expect(Object.keys(issued.grant).sort()).not.toContain("material");
+			const projection = {
+				schemaVersion: 1 as const,
+				leaseId: issued.leaseId,
+				grantId: issued.grant.grantId,
+				bindingId: issued.bindingId,
+				scopeDigest: issued.grant.scopeDigest,
+				expiresAt: issued.grant.expiresAt,
+				clientRequestId: "pr11-safe-projection",
+			};
+			expect(capture.credential.service.lookupDeliveredLease({
+				projection,
+				targetId: targetConfig.selectedTarget?.targetId ?? "missing-target",
+			})).toMatchObject({ ok: true, projection });
+			expect(JSON.stringify({ issued, projection, entries: sessionManager.getEntries() })).not.toContain(
+				PR11_CREDENTIAL_CANARY,
+			);
+
+			const renewed = service.renew({
+				leaseId: issued.leaseId,
+				grantId: issued.grant.grantId,
+				bindingId: issued.bindingId,
+				heartbeatSequence: 1,
+				requestedTtlMs: 120_000,
+				clientRequestId: "pr11-credential-renew",
+				nodeAttached: true,
+			});
+			expect(renewed).toMatchObject({ ok: true, grant: { heartbeatSequence: 1 } });
+			expect(credential.target.renewals).toHaveLength(1);
+			const revoked = service.revoke({
+				leaseId: issued.leaseId,
+				reasonCode: "run_cancelled",
+				clientRequestId: "pr11-credential-revoke",
+				nodeAttached: true,
+			});
+			expect(revoked).toMatchObject({ ok: true, grant: { status: "revoked" } });
+			expect(credential.target.revocations).toHaveLength(1);
+			expect(service.lookupDeliveredLease({
+				projection,
+				targetId: targetConfig.selectedTarget?.targetId ?? "missing-target",
+			})).toMatchObject({ ok: false });
+			expect(service.renew({
+				leaseId: issued.leaseId,
+				grantId: issued.grant.grantId,
+				bindingId: issued.bindingId,
+				heartbeatSequence: 2,
+				requestedTtlMs: 60_000,
+				clientRequestId: "pr11-credential-renew-after-revoke",
+				nodeAttached: true,
+			}).ok).toBe(false);
+		} finally {
+			session.dispose();
+			await session.waitForDispose();
+		}
 	});
 
 	it("binds one selected Connector target to frozen limits, durable Scheduler selection, and retry", async () => {

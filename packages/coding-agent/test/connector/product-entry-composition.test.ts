@@ -16,8 +16,10 @@ import {
 	ModelRuntime,
 	SettingsManager,
 } from "../../src/index.ts";
+import type { ExternalConnectorTargetDefinition } from "../../src/external-connector.ts";
 import { createRpcHostController } from "../../src/modes/rpc/rpc-host.ts";
 import type { RpcHostOutputRecord } from "../../src/modes/rpc/rpc-host.ts";
+import { pr11TargetDefinition } from "./fixtures/pr-11-cross-layer.ts";
 
 const directories: string[] = [];
 const DEFAULT_MODEL: Model<"anthropic-messages"> = {
@@ -67,6 +69,26 @@ function packagedSettings(cwd: string): SettingsManager {
 					},
 				},
 			],
+		},
+	});
+}
+
+function genericSettings(
+	cwd: string,
+	overrides: Partial<ExternalConnectorTargetDefinition> = {},
+): SettingsManager {
+	const target = {
+		...pr11TargetDefinition(cwd, {
+			targetId: "settings-generic-jsonl",
+			providerId: "fixture.external-jsonl",
+		}),
+		...overrides,
+	};
+	return SettingsManager.inMemory({
+		externalConnectors: {
+			schemaVersion: 1,
+			targetId: target.targetId,
+			targets: [target],
 		},
 	});
 }
@@ -201,6 +223,107 @@ describe("External Connector product entry composition", () => {
 			await controller.shutdown();
 		}
 	}, 90_000);
+
+	it("runs a non-packaged module target through settings, events, terminal, and receipt", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-generic-"));
+		directories.push(cwd);
+		const runtime = await createRuntime(cwd, genericSettings(cwd));
+		const records: RpcHostOutputRecord[] = [];
+		const controller = createRpcHostController(runtime, { output: { publish: (record) => records.push(record) } });
+		await controller.start();
+		try {
+			const initialized = await controller.dispatch({ id: "generic-init", type: "initialize", protocolVersion: 1 });
+			if (initialized === undefined || initialized.command !== "initialize" || !initialized.success) {
+				throw new Error("Generic settings entry did not initialize");
+			}
+			expect(initialized.data.externalConnectors).toHaveLength(1);
+			const descriptor = initialized.data.externalConnectors?.[0];
+			if (descriptor === undefined) throw new Error("Generic settings connector descriptor is missing");
+			const selection = {
+				providerId: descriptor.providerId,
+				revision: descriptor.revision,
+				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+			};
+
+			await controller.handleCommand({
+				id: "generic-start",
+				type: "run.start",
+				message: "execute the generic settings connector",
+				externalConnector: selection,
+			});
+			await vi.waitFor(() =>
+				expect(records).toContainEqual(
+					expect.objectContaining({
+						id: "generic-start",
+						type: "response",
+						command: "run.start",
+						success: true,
+					}),
+				),
+			);
+			const started = records.find((record) => record.type === "response" && record.id === "generic-start");
+			if (started?.type !== "response" || started.command !== "run.start" || !started.success) {
+				throw new Error("Generic run was not accepted");
+			}
+
+			await vi.waitFor(
+				() =>
+					expect(
+						records.some(
+							(record) =>
+								record.type === "run.completed" ||
+								record.type === "run.failed" ||
+								record.type === "run.cancelled",
+						),
+					).toBe(true),
+				{ timeout: 60_000 },
+			);
+			const terminal = records.find(
+				(record) =>
+					record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled",
+			);
+			expect(records.some((record) => record.type === "run.started")).toBe(true);
+			expect(terminal?.type).toBe("run.completed");
+			const session = getAgentCanonicalSession(runtime.session);
+			const attemptReceipts = await session.findFoundationRecords({ objectType: "attempt_receipt" });
+			const taskResults = await session.findFoundationRecords({ objectType: "task_result" });
+			const runReceipts = await session.findFoundationRecords({ objectType: "run_receipt" });
+			expect(attemptReceipts).toHaveLength(1);
+			expect(attemptReceipts[0]).toMatchObject({
+				payload: { providerId: "fixture.external-jsonl", status: "succeeded" },
+			});
+			expect(taskResults).toHaveLength(1);
+			expect(runReceipts[0]).toMatchObject({
+				payload: { runId: started.data.runId, terminalStatus: "completed" },
+			});
+			expect(attemptReceipts[0]?.seq).toBeLessThan(taskResults[0]?.seq ?? 0);
+			expect(taskResults[0]?.seq).toBeLessThan(runReceipts[0]?.seq ?? 0);
+		} finally {
+			await controller.shutdown();
+		}
+	}, 90_000);
+
+	it.each([
+		{
+			name: "wrong digest",
+			overrides: { moduleIdentity: `sha256:${"0".repeat(64)}` },
+			message: "trusted driver file identity does not match",
+		},
+		{
+			name: "relative module path",
+			overrides: { modulePath: "relative-driver.mjs" },
+			message: "absolute path",
+		},
+		{
+			name: "missing version",
+			overrides: { version: undefined },
+			message: "version is invalid",
+		},
+	])("rejects $name from settings before launch", async ({ overrides, message }) => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-provenance-"));
+		directories.push(cwd);
+		await expect(createServices(cwd, genericSettings(cwd, overrides))).rejects.toThrow(message);
+	});
 
 	it("keeps the empty fallback and unavailable error when settings omit connectors", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-empty-"));
