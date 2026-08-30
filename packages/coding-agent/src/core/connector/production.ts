@@ -27,6 +27,7 @@ import {
 	runExternalConnectorHostDispose,
 	runExternalConnectorHostOperation,
 	externalConnectorProcessContainment,
+	type ExternalConnectorProcessController,
 	type ExternalConnectorSupervisorDeadlineOverrides,
 	type ExternalConnectorSupervisorLimits,
 } from "./supervisor.ts";
@@ -96,6 +97,18 @@ class BoundProductionExternalConnectorVendorDriver implements ExternalConnectorV
 
 	get modelSupportMatrix(): ExternalConnectorVendorDriver["modelSupportMatrix"] {
 		return this.#source.modelSupportMatrix;
+	}
+
+	get toolGatewayMcpSelection(): ExternalConnectorVendorDriver["toolGatewayMcpSelection"] {
+		return this.#source.toolGatewayMcpSelection;
+	}
+
+	/** Package-private behavior evidence for Host capability admission. */
+	get jsonlImplementedOperations(): readonly string[] | undefined {
+		const source = this.#source as ExternalConnectorVendorDriver & {
+			readonly jsonlImplementedOperations?: readonly string[];
+		};
+		return source.jsonlImplementedOperations;
 	}
 
 	spawn(...args: Parameters<ExternalConnectorVendorDriver["spawn"]>): ReturnType<ExternalConnectorVendorDriver["spawn"]> {
@@ -242,6 +255,18 @@ function bindProductionVendorDriver(
 	return binding;
 }
 
+interface ProcessControllerBoundVendorDriver {
+	readonly bindProcessController: (controller: ExternalConnectorProcessController) => void;
+}
+
+function bindProductionDriverProcessController(
+	driver: ExternalConnectorVendorDriver,
+	processController: ExternalConnectorProcessController,
+): void {
+	const candidate = driver as ExternalConnectorVendorDriver & Partial<ProcessControllerBoundVendorDriver>;
+	if (candidate.bindProcessController !== undefined) candidate.bindProcessController(processController);
+}
+
 /** Compose the production controller and restricted crash-safe private-state file. */
 export function createProductionExternalConnectorSupervision(
 	options: ProductionExternalConnectorSupervisionOptions,
@@ -280,18 +305,20 @@ export async function createProductionExternalAgentConnector(
 		options.runtimeLimits ?? runtimeLimitsFromSupervisorOptions(options.deadlines, options.limits);
 	const startupRuntimeLimits = resolveRuntimeLimitsSource(runtimeLimitsSource);
 	const driverBinding = bindProductionVendorDriver(options.driver, process);
+	const supervision = createProductionExternalConnectorSupervision({
+		privateStatePath: options.privateStatePath,
+		process: driverBinding.process,
+		runtimeLimits: startupRuntimeLimits,
+		...(options.clock === undefined ? {} : { clock: options.clock }),
+	});
+	bindProductionDriverProcessController(options.driver, supervision.processController);
 	const connector = createDurableExternalAgentConnector({
 		providerId: options.providerId,
 		capability: options.capability,
 		capabilityProbe: options.capabilityProbe,
 		store: options.store,
 		driver: driverBinding,
-		supervision: createProductionExternalConnectorSupervision({
-			privateStatePath: options.privateStatePath,
-			process: driverBinding.process,
-			runtimeLimits: startupRuntimeLimits,
-			...(options.clock === undefined ? {} : { clock: options.clock }),
-		}),
+		supervision,
 		runtimeLimits: runtimeLimitsSource,
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.operationNonce === undefined ? {} : { operationNonce: options.operationNonce }),

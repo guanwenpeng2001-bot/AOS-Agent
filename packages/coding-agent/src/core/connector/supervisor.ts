@@ -49,6 +49,16 @@ export interface ExternalConnectorProcessIdentity {
 	readonly fileIdentity: string;
 }
 
+/**
+ * Host-private byte channel exposed by the exact supervised process. The
+ * channel is deliberately line-oriented: the controller owns process
+ * containment while a vendor adapter owns JSONL framing and request routing.
+ */
+export interface ExternalConnectorProcessChannel {
+	readonly writeLine: (line: string) => void;
+	readonly readLine: (options?: { readonly signal?: AbortSignal }) => Promise<string | undefined>;
+}
+
 export interface ExternalConnectorSupervisorPrivateState {
 	readonly schemaVersion: typeof EXTERNAL_CONNECTOR_SUPERVISOR_SCHEMA_VERSION;
 	readonly reference: ExternalConnectorSupervisorReference;
@@ -111,6 +121,10 @@ export interface ExternalConnectorProcessController {
 		request: ExternalConnectorProcessLaunchRequest,
 		options?: { readonly signal?: AbortSignal },
 	): Promise<ExternalConnectorProcessHandle>;
+	/** Resolve the channel for one exact supervisor reference after activation. */
+	readonly channelFor?: (
+		reference: Pick<ExternalConnectorSupervisorReference, "supervisorRef" | "operationNonce">,
+	) => ExternalConnectorProcessChannel | undefined;
 	/** Reattach only when the nonce and full live identity match; PID-only lookup is forbidden. */
 	reattach?(
 		identity: ExternalConnectorProcessIdentity,

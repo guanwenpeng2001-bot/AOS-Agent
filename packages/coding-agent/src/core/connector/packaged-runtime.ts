@@ -24,6 +24,7 @@ import {
 	loadPackagedExternalAgentDriver,
 	packagedExternalAgentDriverProcessModulePath,
 } from "./packaged-driver.ts";
+import { JsonlProcessExternalConnectorDriver } from "./vendor/jsonl-process-driver.ts";
 import type { ExternalConnectorVendorDriver } from "./vendor/types.ts";
 
 const PACKAGED_PROVIDER_ID = "aos.fake-connector" as const;
@@ -233,26 +234,54 @@ function packagedCapability(): ConnectorCapabilitySnapshot {
 	});
 }
 
-/** Activate only the shipped fake driver; arbitrary configured targets remain fail-closed. */
+/** Derive the only runtime capability snapshot a trusted generic target may advertise. */
+function genericTargetCapability(target: ExternalConnectorResolvedTarget): ConnectorCapabilitySnapshot {
+	const modelAccess = target.capabilityCeiling.modelAccess[0];
+	if (modelAccess === undefined) throw new TypeError("External Connector target capability ceiling is empty");
+	return createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId: target.providerId,
+		revision: 1,
+		protocol: { name: target.providerId, version: target.version },
+		modelAccess,
+		resume: target.capabilityCeiling.resume,
+		toolGateway: target.capabilityCeiling.toolGateway,
+		artifacts: target.capabilityCeiling.artifacts,
+		images: target.capabilityCeiling.images,
+	});
+}
+
+function targetPrivateStatePath(target: ExternalConnectorResolvedTarget, agentDir: string): string {
+	return join(
+		agentDir,
+		"external-connectors",
+		`${createHash("sha256").update(target.targetId).digest("hex")}.json`,
+	);
+}
+
+/** Activate the shipped fake or any trusted settings-selected JSONL target. */
 export async function createPackagedExternalConnectorRegistryFactory(options: {
 	readonly target: ExternalConnectorResolvedTarget;
 	readonly agentDir: string;
 }): Promise<ExternalConnectorRegistryFactory | undefined> {
-	if (!matchesPackagedTarget(options.target)) return undefined;
-	loadPackagedExternalAgentDriver("fake-connector");
+	const packaged = matchesPackagedTarget(options.target);
+	if (packaged) loadPackagedExternalAgentDriver("fake-connector");
 	const store = new SessionBoundExternalConnectorStore();
-	const capability = packagedCapability();
+	const capability = packaged ? packagedCapability() : genericTargetCapability(options.target);
+	const driver: ExternalConnectorVendorDriver = packaged
+		? new PackagedExternalConnectorVendorDriver(store)
+		: new JsonlProcessExternalConnectorDriver({
+			providerId: options.target.providerId,
+			version: options.target.version,
+			capability,
+		});
 	const connector = await createProductionExternalAgentConnector({
-		providerId: PACKAGED_PROVIDER_ID,
+		providerId: options.target.providerId,
 		capability,
 		capabilityProbe: async () => Result.ok(capability),
 		store,
-		driver: new PackagedExternalConnectorVendorDriver(store),
-		privateStatePath: join(
-			options.agentDir,
-			"external-connectors",
-			`${createHash("sha256").update(options.target.targetId).digest("hex")}.json`,
-		),
+		driver,
+		privateStatePath: targetPrivateStatePath(options.target, options.agentDir),
 		target: options.target,
 	});
 	const registry = createExternalConnectorRegistry();
@@ -260,7 +289,7 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 		{
 			descriptor: {
 				schemaVersion: 1,
-				providerId: PACKAGED_PROVIDER_ID,
+				providerId: options.target.providerId,
 				providerClass: PROVIDER_CLASS.externalConnector,
 				revision: capability.revision,
 				capabilitySnapshotDigest: capability.digest,
