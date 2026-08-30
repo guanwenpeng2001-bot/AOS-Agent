@@ -40,6 +40,7 @@ export interface ConnectorRetryPolicy {
 	readonly baseDelayMs: number;
 	readonly maxDelayMs: number;
 	readonly totalRetryTimeMs: number;
+	/** Wire/ledger field name; jitter is measured in permille (0–1000). */
 	readonly jitterPermille: number;
 	readonly failureThreshold: number;
 	readonly openDurationMs: number;
