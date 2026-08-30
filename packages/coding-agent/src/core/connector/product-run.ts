@@ -1120,10 +1120,10 @@ export async function recoverExternalConnectorProductRun(
 					"External Connector durable policy authority does not match its AgentBinding",
 				);
 			}
-			const durablePolicyBinding = createPolicyBindingLedgerRecord(
+			const policy = createPolicyBindingLedgerRecord(
 				policyPayload as unknown as PolicyBinding,
 			) as PolicyBinding;
-			if (durablePolicyBinding.id !== durableBinding.policyRevision.id || durablePolicyBinding.runId !== input.runId) {
+			if (policy.id !== durableBinding.policyRevision.id || policy.runId !== input.runId) {
 				throw new ExternalConnectorProductError(
 					"external_binding_invalid",
 					"External Connector durable policy authority does not match its Run",
@@ -1147,7 +1147,7 @@ export async function recoverExternalConnectorProductRun(
 						},
 					},
 					workspace: durableTask.workspace,
-					policyBinding: durablePolicyBinding,
+					policyBinding: policy,
 					...(durableGatewayModelRoute === undefined ? {} : { gatewayModelRoute: durableGatewayModelRoute }),
 					...(input.signal === undefined ? {} : { signal: input.signal }),
 				},

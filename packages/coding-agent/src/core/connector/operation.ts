@@ -1148,13 +1148,13 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 				correlation: proposed.correlation,
 			},
 		);
-		const checkedPersisted = cloneExternalConnectorOperation(persisted.payload);
-		if (!operationMatches(checkedPersisted, proposed)) {
+		const persistedOperation = cloneExternalConnectorOperation(persisted.payload);
+		if (!operationMatches(persistedOperation, proposed)) {
 			throw new FoundationError("session_ledger_corrupt", "Persisted external connector operation changed shape", {
 				details: { attemptId: proposed.attemptId },
 			});
 		}
-		return checkedPersisted;
+		return persistedOperation;
 	}
 
 	async readMapping(attemptId: string): Promise<CanonicalExternalConnectorMapping | undefined> {

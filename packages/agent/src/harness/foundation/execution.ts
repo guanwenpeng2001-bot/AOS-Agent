@@ -204,18 +204,18 @@ export async function executeDispatch(input: DispatchExecutionInput): Promise<Re
 	try {
 		const started = await startDispatchAttempt(input);
 		if (!started.ok) return started;
-		const checkedAttempt = started.value.attempt;
+		const attempt = started.value.attempt;
 		if (input.beforeRunAttempt !== undefined) {
-			const persisted = await input.beforeRunAttempt(checkedAttempt);
+			const persisted = await input.beforeRunAttempt(attempt);
 			if (!persisted.ok) return persisted;
 		}
-		const settled = await input.provider.runAttempt(checkedAttempt, { correlation: input.correlation, ...(input.signal === undefined ? {} : { signal: input.signal }) });
+		const settled = await input.provider.runAttempt(attempt, { correlation: input.correlation, ...(input.signal === undefined ? {} : { signal: input.signal }) });
 		if (!settled.ok) return settled;
 		const checkedReceipt = validateAttemptReceiptForProvider(settled.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
 		if (!checkedReceipt.ok) return checkedReceipt;
-		const receiptCorrelation = validateReceiptCorrelation(checkedReceipt.value, checkedAttempt, input);
+		const receiptCorrelation = validateReceiptCorrelation(checkedReceipt.value, attempt, input);
 		if (!receiptCorrelation.ok) return receiptCorrelation;
-		return Result.ok({ attempt: cloneDeepFrozen(checkedAttempt), receipt: cloneDeepFrozen(checkedReceipt.value), providerId: input.provider.providerId, providerClass: input.provider.providerClass });
+		return Result.ok({ attempt: cloneDeepFrozen(attempt), receipt: cloneDeepFrozen(checkedReceipt.value), providerId: input.provider.providerId, providerClass: input.provider.providerClass });
 	} catch (error) {
 		return providerError(error, "TaskExecutor provider threw while consuming a Dispatch");
 	}

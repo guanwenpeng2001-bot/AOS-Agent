@@ -1016,9 +1016,9 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			) {
 				throw new TypeError("Candidate canonical storage is unavailable");
 			}
-			const checkedStorage = candidateStorage as { drain(): Promise<void> };
-			const drain = checkedStorage.drain.bind(checkedStorage);
-			vi.spyOn(checkedStorage, "drain").mockImplementation(async () => {
+			const storage = candidateStorage as { drain(): Promise<void> };
+			const drain = storage.drain.bind(storage);
+			vi.spyOn(storage, "drain").mockImplementation(async () => {
 				candidateDrainEntered.resolve();
 				await releaseCandidateDrain.promise;
 				await drain();

@@ -1807,19 +1807,19 @@ export class FoundationControlPlane {
 				throw externalToolGatewayDenied();
 			}
 			if (!isPolicyBindingPayload(policyRecord.payload)) throw externalToolGatewayDenied();
-			const durablePolicyBinding = policyRecord.payload;
+			const policy = policyRecord.payload;
 			if (
-				durablePolicyBinding.id !== policyReference.id ||
-				durablePolicyBinding.runId !== request.context.operationId ||
+				policy.id !== policyReference.id ||
+				policy.runId !== request.context.operationId ||
 				this.policyProfile === undefined ||
 				this.policyBinding === undefined ||
-				durablePolicyBinding.profileId !== this.policyProfile.id ||
-				durablePolicyBinding.profileRevision !== this.policyBinding.profileRevision ||
-				durablePolicyBinding.workspaceIdentity !== this.policyBinding.workspaceIdentity ||
-				durablePolicyBinding.enforcement !== this.policyBinding.enforcement ||
-				durablePolicyBinding.sandboxProviderId !== this.policyBinding.sandboxProviderId ||
-				(durablePolicyBinding.capabilityBindingId !== undefined &&
-					durablePolicyBinding.capabilityBindingId !== this.capabilityBinding?.id)
+				policy.profileId !== this.policyProfile.id ||
+				policy.profileRevision !== this.policyBinding.profileRevision ||
+				policy.workspaceIdentity !== this.policyBinding.workspaceIdentity ||
+				policy.enforcement !== this.policyBinding.enforcement ||
+				policy.sandboxProviderId !== this.policyBinding.sandboxProviderId ||
+				(policy.capabilityBindingId !== undefined &&
+					policy.capabilityBindingId !== this.capabilityBinding?.id)
 			) {
 				throw externalToolGatewayDenied();
 			}
@@ -1869,7 +1869,7 @@ export class FoundationControlPlane {
 			});
 			const initialDecision = authorizePolicyOperation({
 				profile: this.policyProfile,
-				binding: durablePolicyBinding,
+				binding: policy,
 				operation,
 				capabilityBinding: this.policyCapabilityBinding(),
 			});
@@ -1879,12 +1879,12 @@ export class FoundationControlPlane {
 				initialDecision.scopeDigest !== undefined
 					? authorizePolicyOperation({
 						profile: this.policyProfile,
-						binding: durablePolicyBinding,
+						binding: policy,
 						operation,
 						capabilityBinding: this.policyCapabilityBinding(),
 						reviewEvidence: this.policyLedger.reviewEvidence({
 							requestId: initialDecision.requestId,
-							bindingId: durablePolicyBinding.id,
+							bindingId: policy.id,
 							scopeDigest: initialDecision.scopeDigest,
 						}),
 					})
