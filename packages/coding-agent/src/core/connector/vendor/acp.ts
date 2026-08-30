@@ -17,6 +17,7 @@ import {
 	client,
 	type AnyMessage,
 	type ClientConnection,
+	type ContentBlock,
 	type CreateTerminalRequest,
 	type InitializeResponse,
 	type KillTerminalRequest,
@@ -50,6 +51,10 @@ import {
 	createDurableExternalAgentConnector,
 	type ExternalAgentConnectorRuntimeOptions,
 } from "../durable-connector.ts";
+import type {
+	CanonicalExternalAgentArtifactReference,
+	CanonicalExternalAgentInput,
+} from "../input.ts";
 import {
 	isExternalConnectorMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
@@ -87,6 +92,21 @@ const ACP_SIDE_EFFECTING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	ACP_TOOL_NAMES.createTerminal,
 	ACP_TOOL_NAMES.releaseTerminal,
 	ACP_TOOL_NAMES.killTerminal,
+]);
+const ACP_IMAGE_MEDIA_TYPES: ReadonlySet<string> = new Set([
+	"image/gif",
+	"image/jpeg",
+	"image/png",
+	"image/webp",
+]);
+const ACP_TEXT_RESOURCE_MEDIA_TYPES: ReadonlySet<string> = new Set([
+	"application/json",
+	"text/markdown",
+	"text/plain",
+]);
+const ACP_BLOB_RESOURCE_MEDIA_TYPES: ReadonlySet<string> = new Set([
+	"application/octet-stream",
+	"application/pdf",
 ]);
 
 export const PRIVATE_ACP_STABLE_V1_LIMITS = Object.freeze({
@@ -683,8 +703,7 @@ function validateCapability(providerId: string, capability: ConnectorCapabilityS
 		capability.protocol.version !== "1" ||
 		capability.resume !== true ||
 		capability.toolGateway !== true ||
-		capability.artifacts ||
-		capability.images ||
+		(capability.images && !capability.artifacts) ||
 		(capability.modelAccess !== "agent_owned" && capability.modelAccess !== "none")
 	) {
 		throw new PrivateAcpStableV1Error("external_protocol_unsupported");
@@ -1019,7 +1038,26 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
 		validateCapability(this.#providerId, request.capability);
-		if (request.input.artifacts.length > 0) throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+		if (request.capability.artifacts && this.#artifactStore === undefined) {
+			throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+		}
+		if (request.modelProjection !== undefined || request.modelTranslation !== undefined) {
+			throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+		}
+		const imageCount = request.input.artifacts.filter((artifact) => artifact.kind === "image").length;
+		if (
+			(request.input.artifacts.length > 0 && (!request.capability.artifacts || this.#artifactStore === undefined)) ||
+			(imageCount > 0 && !request.capability.images) ||
+			request.input.artifacts.some((artifact) =>
+				artifact.readHandle.kind !== "artifact_store" ||
+				(artifact.kind === "image"
+					? !ACP_IMAGE_MEDIA_TYPES.has(artifact.mediaType)
+					: !ACP_TEXT_RESOURCE_MEDIA_TYPES.has(artifact.mediaType) &&
+						!ACP_BLOB_RESOURCE_MEDIA_TYPES.has(artifact.mediaType))
+			)
+		) {
+			throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+		}
 		const authority = authorityFor(request);
 		const operation = await this.#openOperation({
 			mode: "start",
@@ -1039,6 +1077,7 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 				clientInfo: { name: "aos-agent-private-acp", version: "1" },
 			}, request.signal);
 			validateInitializeResponse(initialized, this.#mcpServers);
+			const prompt = await this.#promptBlocks(request.input, initialized, request.signal);
 			const cwd = await canonicalWorkspace(this.#cwd, this.#roots);
 			const session = await this.#request<NewSessionResponse>(operation, AGENT_METHODS.session_new, {
 				cwd,
@@ -1057,7 +1096,7 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 				externalTurnId: operation.handle.externalTurnId,
 				producedAt: this.#now(),
 			});
-			void this.#prompt(operation, request.input.text, request.signal);
+			void this.#prompt(operation, prompt, request.signal);
 			return operation.handle;
 		} catch (error) {
 			await this.#closeOperation(operation);
@@ -1295,13 +1334,13 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 		);
 	}
 
-	async #prompt(operation: AcpOperation, text: string, signal?: AbortSignal): Promise<void> {
+	async #prompt(operation: AcpOperation, prompt: readonly ContentBlock[], signal?: AbortSignal): Promise<void> {
 		try {
 			const response = await this.#request<{
 				readonly stopReason: "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
 			}>(operation, AGENT_METHODS.session_prompt, {
 				sessionId: operation.sessionId,
-				prompt: [{ type: "text", text }],
+				prompt: [...prompt],
 				_meta: {
 					"aos.operationNonce": operation.handle.operationNonce,
 					"aos.turnId": operation.handle.externalTurnId,
@@ -1315,6 +1354,72 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 			operation.events.fail(error);
 			operation.terminal.reject(error);
 		}
+	}
+
+	async #promptBlocks(
+		input: CanonicalExternalAgentInput,
+		initialized: InitializeResponse,
+		signal?: AbortSignal,
+	): Promise<readonly ContentBlock[]> {
+		const prompt: ContentBlock[] = [{ type: "text", text: input.text }];
+		for (const artifact of input.artifacts) {
+			if (signal?.aborted === true) throw signal.reason;
+			const bytes = await this.#readInputArtifact(artifact);
+			const uri = `urn:sha256:${artifact.digest.slice("sha256:".length)}`;
+			if (artifact.kind === "image") {
+				if (initialized.agentCapabilities?.promptCapabilities?.image !== true) {
+					throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+				}
+				prompt.push({
+					type: "image",
+					data: Buffer.from(bytes).toString("base64"),
+					mimeType: artifact.mediaType,
+					uri,
+				});
+				continue;
+			}
+			if (initialized.agentCapabilities?.promptCapabilities?.embeddedContext !== true) {
+				throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+			}
+			if (ACP_TEXT_RESOURCE_MEDIA_TYPES.has(artifact.mediaType)) {
+				let text: string;
+				try {
+					text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+				} catch {
+					throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+				}
+				prompt.push({
+					type: "resource",
+					resource: { uri, mimeType: artifact.mediaType, text },
+				});
+				continue;
+			}
+			prompt.push({
+				type: "resource",
+				resource: {
+					uri,
+					mimeType: artifact.mediaType,
+					blob: Buffer.from(bytes).toString("base64"),
+				},
+			});
+		}
+		return prompt;
+	}
+
+	async #readInputArtifact(reference: CanonicalExternalAgentArtifactReference): Promise<Uint8Array> {
+		if (this.#artifactStore === undefined || reference.readHandle.kind !== "artifact_store") {
+			throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+		}
+		const loaded = await this.#artifactStore.get(reference.readHandle.ref);
+		const expectedDigest = reference.digest.slice("sha256:".length);
+		if (
+			!loaded.ok ||
+			loaded.value.byteLength !== reference.sizeBytes ||
+			createHash("sha256").update(loaded.value).digest("hex") !== expectedDigest
+		) {
+			throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+		}
+		return loaded.value;
 	}
 
 	#acceptSessionUpdate(operation: AcpOperation, notification: SessionNotification): void {
@@ -1569,6 +1674,9 @@ export function createPrivateAcpExternalAgentConnector(
 	options: PrivateAcpExternalAgentConnectorOptions,
 ) {
 	validateCapability(options.providerId, options.capability);
+	if (options.capability.artifacts && options.artifactStore === undefined) {
+		throw new PrivateAcpStableV1Error("external_protocol_unsupported");
+	}
 	const driver = new PrivateAcpStableV1Driver(options);
 	return createDurableExternalAgentConnector({
 		providerId: options.providerId,

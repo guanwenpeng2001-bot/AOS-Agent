@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -22,6 +24,7 @@ import {
 	Session,
 	SessionLedger,
 	ContextLedger,
+	Result,
 	TOOL_EXECUTION_RESULT_MAX_BYTES,
 	createConnectorCapabilitySnapshot,
 	validateToolExecutionResult,
@@ -39,6 +42,7 @@ import {
 	isHostSupervisedExternalAgentConnector,
 } from "../../src/core/connector/durable-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../../src/core/connector/input.ts";
 import { classifyExternalToolPolicyOperation } from "../../src/core/connector/tool-policy.ts";
 import { classifyProtectedPathOperation } from "../../src/core/policy/protected-path.ts";
 import type { CanonicalExternalConnectorMapping } from "../../src/core/connector/session-mapping.ts";
@@ -95,6 +99,18 @@ const capability: ConnectorCapabilitySnapshot = createConnectorCapabilitySnapsho
 	toolGateway: true,
 	artifacts: false,
 	images: false,
+});
+
+const artifactCapability: ConnectorCapabilitySnapshot = createConnectorCapabilitySnapshot({
+	schemaVersion: 1,
+	providerId,
+	revision: 2,
+	protocol: { name: "acp", version: "1" },
+	modelAccess: "agent_owned",
+	resume: true,
+	toolGateway: true,
+	artifacts: true,
+	images: true,
 });
 
 const temporaryDirectories: string[] = [];
@@ -226,6 +242,24 @@ function spawnRequest(overrides: Partial<ExternalConnectorDriverSpawnRequest> = 
 	};
 }
 
+function artifactReference(
+	bytes: Uint8Array,
+	kind: CanonicalExternalAgentArtifactReference["kind"],
+	mediaType: string,
+): CanonicalExternalAgentArtifactReference {
+	const artifactId = createHash("sha256").update(bytes).digest("hex");
+	return {
+		schemaVersion: 1,
+		artifactId,
+		kind,
+		digest: `sha256:${artifactId}`,
+		mediaType,
+		sizeBytes: bytes.byteLength,
+		provenance: { source: "artifact_store", producer: "acp-test", trust: "trusted" },
+		readHandle: { kind: "artifact_store", ref: artifactId },
+	};
+}
+
 function mapping(): CanonicalExternalConnectorMapping {
 	return {
 		schemaVersion: 1,
@@ -350,6 +384,127 @@ function rawProtocolTransport(
 }
 
 describe("private ACP stable-v1 connector driver", () => {
+	it("maps declared artifact and image support to ACP-native prompt blocks", async () => {
+		const cwd = await workspace();
+		const textBytes = new TextEncoder().encode("artifact context");
+		const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+		const textArtifact = artifactReference(textBytes, "file", "text/plain");
+		const imageArtifact = artifactReference(imageBytes, "image", "image/png");
+		const artifacts = new Map([
+			[textArtifact.artifactId, textBytes],
+			[imageArtifact.artifactId, imageBytes],
+		]);
+		let promptRequest: PromptRequest | undefined;
+		const fixture = fakeAgent({
+			initializeResponse: {
+				protocolVersion: 1,
+				agentCapabilities: {
+					loadSession: true,
+					promptCapabilities: { embeddedContext: true, image: true },
+				},
+			},
+			onPrompt: ({ params }) => {
+				promptRequest = params;
+				return Promise.resolve({ stopReason: "end_turn" });
+			},
+		});
+		const driver = new PrivateAcpStableV1Driver(driverOptions(cwd, transportFactory(fixture.app), {
+			artifactStore: {
+				get: async (ref) => Result.ok(artifacts.get(ref)!),
+			},
+		}));
+		const handle = await driver.spawn(spawnRequest({
+			capability: artifactCapability,
+			input: {
+				schemaVersion: 1,
+				text: "Use the attached context",
+				artifacts: [textArtifact, imageArtifact],
+			},
+		}));
+
+		await expect(driver.read(handle)).resolves.toMatchObject({ status: "succeeded" });
+		expect(artifactCapability).toMatchObject({ artifacts: true, images: true });
+		expect(promptRequest?.prompt).toEqual([
+			{ type: "text", text: "Use the attached context" },
+			{
+				type: "resource",
+				resource: {
+					uri: `urn:sha256:${textArtifact.artifactId}`,
+					mimeType: "text/plain",
+					text: "artifact context",
+				},
+			},
+			{
+				type: "image",
+				data: Buffer.from(imageBytes).toString("base64"),
+				mimeType: "image/png",
+				uri: `urn:sha256:${imageArtifact.artifactId}`,
+			},
+		]);
+		await driver.dispose();
+	});
+
+	it("rejects unsupported artifact media before opening the ACP transport", async () => {
+		const cwd = await workspace();
+		const bytes = Uint8Array.from([1, 2, 3]);
+		const unsupported = artifactReference(bytes, "file", "audio/wav");
+		let transportOpens = 0;
+		const fixture = fakeAgent();
+		const driver = new PrivateAcpStableV1Driver(driverOptions(
+			cwd,
+			transportFactory(fixture.app, () => {
+				transportOpens += 1;
+			}),
+			{ artifactStore: { get: async () => Result.ok(bytes) } },
+		));
+
+		await expect(driver.spawn(spawnRequest({
+			capability: artifactCapability,
+			input: { schemaVersion: 1, text: "unsupported", artifacts: [unsupported] },
+		}))).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+		expect(transportOpens).toBe(0);
+		await driver.dispose();
+	});
+
+	it("keeps aos_gateway fail-closed because stable-v1 has no exact model projection", async () => {
+		const cwd = await workspace();
+		let transportOpens = 0;
+		const fixture = fakeAgent();
+		const driver = new PrivateAcpStableV1Driver(driverOptions(
+			cwd,
+			transportFactory(fixture.app, () => {
+				transportOpens += 1;
+			}),
+		));
+		const gatewayCapability = createConnectorCapabilitySnapshot({
+			schemaVersion: 1,
+			providerId,
+			revision: 1,
+			protocol: { name: "acp", version: "1" },
+			modelAccess: "aos_gateway",
+			resume: true,
+			toolGateway: true,
+			artifacts: false,
+			images: false,
+		});
+
+		expect("modelSupportMatrix" in driver).toBe(false);
+		await expect(driver.spawn(spawnRequest({
+			capability: gatewayCapability,
+			modelProjection: {
+				schemaVersion: 1,
+				provider: "provider-a",
+				model: "model-a",
+				effort: "high",
+				serviceTier: "priority",
+				fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+				bindingDigest: { algorithm: "sha256", value: "b".repeat(64) },
+			},
+		}))).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+		expect(transportOpens).toBe(0);
+		await driver.dispose();
+	});
+
 	it("runs stable initialize, session/new, update, permission, filesystem, terminal, and prompt through one driver", async () => {
 		const cwd = await workspace();
 		const target = path.join(cwd, "result.txt");
