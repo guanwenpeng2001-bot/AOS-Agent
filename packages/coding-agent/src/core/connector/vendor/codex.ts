@@ -11,6 +11,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import {
+	canonicalFoundationJson,
 	type ConnectorCapabilitySnapshot,
 	type FoundationJsonValue,
 	Result,
@@ -26,7 +27,15 @@ import {
 	type CanonicalExternalConnectorMapping,
 	isExternalConnectorMappingIdentifier,
 } from "../session-mapping.ts";
+import type {
+	ExternalModelFieldSupport,
+	ExternalModelSupportMatrix,
+} from "../model-projection.ts";
 import { assertPathInsideWorkspace, type HostFilesystemRoots, resolveHostPathForPolicy } from "../../policy/filesystem.ts";
+import {
+	validateOperationWorkerLeaseProjection,
+	type SafeLeaseProjection,
+} from "../../worker/protocol.ts";
 import type {
 	ExternalConnectorDriverEvent,
 	ExternalConnectorDriverHandle,
@@ -91,6 +100,8 @@ export interface PrivateCodexAppServerTransportRequest {
 	readonly mode: "start" | "resume";
 	readonly supervisorRef: string;
 	readonly operationNonce: string;
+	/** Material-free authority for transport activation; never a provider key. */
+	readonly credential?: SafeLeaseProjection;
 	readonly signal?: AbortSignal;
 }
 
@@ -378,13 +389,46 @@ function validateCapability(providerId: string, capability: ConnectorCapabilityS
 		capability.protocol.version !== PRIVATE_CODEX_APP_SERVER_IDENTITY.cliVersion ||
 		capability.resume !== true ||
 		capability.toolGateway !== true ||
-		capability.artifacts ||
-		capability.images ||
-		(capability.modelAccess !== "agent_owned" && capability.modelAccess !== "none")
+		(capability.images && !capability.artifacts) ||
+		(capability.modelAccess !== "agent_owned" &&
+			capability.modelAccess !== "none" &&
+			capability.modelAccess !== "aos_gateway")
 	) {
 		throw new PrivateCodexAppServerError("external_protocol_unsupported");
 	}
 }
+
+const CODEX_IMAGE_MEDIA_TYPES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp"]);
+const CODEX_FILE_MEDIA_TYPES = new Set([
+	"application/json",
+	"application/octet-stream",
+	"application/pdf",
+	"text/markdown",
+	"text/plain",
+]);
+const MODEL_VALUE_CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+
+function exactModelField(
+	targetField: string,
+): Extract<ExternalModelFieldSupport, { readonly supported: true }> {
+	return Object.freeze({
+		supported: true,
+		targetField,
+		accepts: (value: string) =>
+			value.length > 0 && value.length <= 4_096 && !MODEL_VALUE_CONTROL_CHARACTER_PATTERN.test(value),
+		translate: (value: string) => Object.freeze({ kind: "exact", value }),
+	});
+}
+
+/** Exact request fields proven by the pinned app-server v2 schema. */
+export const PRIVATE_CODEX_MODEL_SUPPORT_MATRIX = Object.freeze({
+	provider: exactModelField("modelProvider"),
+	model: exactModelField("model"),
+	effort: exactModelField("effort"),
+	serviceTier: exactModelField("serviceTier"),
+	fallbackDecision: exactModelField("aosFallbackDecision"),
+	bindingDigest: exactModelField("aosBindingDigest"),
+}) satisfies ExternalModelSupportMatrix;
 
 const CODEX_NAME = /^[a-zA-Z0-9_-]+$/;
 const RESERVED_NAMESPACES = new Set([
@@ -739,7 +783,7 @@ const THREAD_KEYS = new Set([
 ]);
 const TURN_KEYS = new Set(["id", "items", "itemsView", "status", "error", "startedAt", "completedAt", "durationMs"]);
 
-function isNullableString(value: unknown): boolean {
+function isNullableString(value: unknown): value is string | null {
 	return value === null || typeof value === "string";
 }
 
@@ -978,7 +1022,7 @@ function validateInitialize(value: unknown): void {
 	}
 }
 
-function validateThread(value: unknown, expectedId?: string): string {
+function validateThread(value: unknown, expectedId?: string): { readonly id: string; readonly modelProvider: string } {
 	if (
 		!isRecord(value) ||
 		!hasExactKeys(value, THREAD_KEYS) ||
@@ -1016,10 +1060,18 @@ function validateThread(value: unknown, expectedId?: string): string {
 	validateThreadStatus(value.status);
 	validateSessionSource(value.source);
 	validateGitInfo(value.gitInfo);
-	return value.id;
+	return { id: value.id, modelProvider: value.modelProvider };
 }
 
-function validateThreadResponse(value: unknown, resumeId?: string): string {
+interface ValidatedThreadResponse {
+	readonly id: string;
+	readonly model: string;
+	readonly modelProvider: string;
+	readonly serviceTier: string | null;
+	readonly reasoningEffort: string | null;
+}
+
+function validateThreadResponse(value: unknown, resumeId?: string): ValidatedThreadResponse {
 	const keys = resumeId === undefined ? THREAD_RESPONSE_KEYS : RESUME_RESPONSE_KEYS;
 	if (
 		!isRecord(value) ||
@@ -1080,7 +1132,15 @@ function validateThreadResponse(value: unknown, resumeId?: string): string {
 			for (const turn of value.initialTurnsPage.data) validateTurn(turn);
 		}
 	}
-	return validateThread(value.thread, resumeId);
+	const thread = validateThread(value.thread, resumeId);
+	if (thread.modelProvider !== value.modelProvider) throw eventInvalidError();
+	return {
+		id: thread.id,
+		model: value.model,
+		modelProvider: value.modelProvider,
+		serviceTier: value.serviceTier,
+		reasoningEffort: value.reasoningEffort,
+	};
 }
 
 function validateTurn(value: unknown, expectedId?: string): { readonly id: string; readonly status: string } {
@@ -1163,6 +1223,7 @@ function exactServerResponse(
 
 /** @internal Package-private frozen Codex app-server protocol driver. */
 export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDriver {
+	readonly modelSupportMatrix = PRIVATE_CODEX_MODEL_SUPPORT_MATRIX;
 	readonly #providerId: string;
 	readonly #transportFactory: PrivateCodexAppServerTransportFactory;
 	readonly #cwd: string;
@@ -1194,29 +1255,111 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
 		validateCapability(this.#providerId, request.capability);
+		if (request.input.artifacts.length > 0 && !request.capability.artifacts) {
+			throw new PrivateCodexAppServerError("external_protocol_unsupported");
+		}
+		const codexInput: FoundationJsonValue[] = [
+			{ type: "text", text: request.input.text, text_elements: [] },
+		];
+		for (const artifact of request.input.artifacts) {
+			if (artifact.readHandle.kind !== "workspace_relative") {
+				throw new PrivateCodexAppServerError("external_protocol_unsupported");
+			}
+			if (artifact.kind === "image") {
+				if (!request.capability.images || !CODEX_IMAGE_MEDIA_TYPES.has(artifact.mediaType)) {
+					throw new PrivateCodexAppServerError("external_protocol_unsupported");
+				}
+				codexInput.push({ type: "localImage", path: artifact.readHandle.relativePath });
+				continue;
+			}
+			if (!CODEX_FILE_MEDIA_TYPES.has(artifact.mediaType)) {
+				throw new PrivateCodexAppServerError("external_protocol_unsupported");
+			}
+			codexInput.push({
+				type: "mention",
+				name: path.posix.basename(artifact.readHandle.relativePath),
+				path: artifact.readHandle.relativePath,
+			});
+		}
+
+		const gatewayModel = request.capability.modelAccess === "aos_gateway";
 		if (
-			request.input.artifacts.length > 0 ||
-			request.modelProjection !== undefined ||
-			request.modelTranslation !== undefined
+			gatewayModel !== (request.modelProjection !== undefined) ||
+			gatewayModel !== (request.modelTranslation !== undefined) ||
+			gatewayModel !== (request.credential !== undefined)
 		) {
 			throw new PrivateCodexAppServerError("external_protocol_unsupported");
+		}
+		let modelRouting:
+			| {
+					readonly provider: string;
+					readonly model: string;
+					readonly effort: string;
+					readonly serviceTier: string;
+			  }
+			| undefined;
+		if (
+			request.modelProjection !== undefined &&
+			request.modelTranslation !== undefined &&
+			request.credential !== undefined
+		) {
+			const projection = request.modelProjection;
+			const translation = request.modelTranslation;
+			const fields = translation.fields;
+			if (
+				!validateOperationWorkerLeaseProjection(request.credential) ||
+				request.credential.bindingId !== request.attempt.bindingId ||
+				projection.bindingDigest.value !== request.bindingDigest ||
+				canonicalFoundationJson(translation.sourceBindingDigest) !==
+					canonicalFoundationJson(projection.bindingDigest) ||
+				fields.provider.targetField !== PRIVATE_CODEX_MODEL_SUPPORT_MATRIX.provider.targetField ||
+				fields.provider.value !== projection.provider ||
+				fields.model.targetField !== PRIVATE_CODEX_MODEL_SUPPORT_MATRIX.model.targetField ||
+				fields.model.value !== projection.model ||
+				fields.effort.targetField !== PRIVATE_CODEX_MODEL_SUPPORT_MATRIX.effort.targetField ||
+				fields.effort.value !== projection.effort ||
+				fields.serviceTier.targetField !== PRIVATE_CODEX_MODEL_SUPPORT_MATRIX.serviceTier.targetField ||
+				fields.serviceTier.value !== projection.serviceTier ||
+				fields.fallbackDecision.targetField !==
+					PRIVATE_CODEX_MODEL_SUPPORT_MATRIX.fallbackDecision.targetField ||
+				fields.fallbackDecision.value !== canonicalFoundationJson(projection.fallbackDecision) ||
+				fields.bindingDigest.targetField !== PRIVATE_CODEX_MODEL_SUPPORT_MATRIX.bindingDigest.targetField ||
+				fields.bindingDigest.value !== canonicalFoundationJson(projection.bindingDigest)
+			) {
+				throw new PrivateCodexAppServerError("external_protocol_unsupported");
+			}
+			modelRouting = {
+				provider: fields.provider.value,
+				model: fields.model.value,
+				effort: fields.effort.value,
+				serviceTier: fields.serviceTier.value,
+			};
 		}
 		const operation = await this.#openOperation({
 			mode: "start",
 			supervisorRef: request.supervisorRef,
 			operationNonce: request.operationNonce,
+			...(request.credential === undefined ? {} : { credential: request.credential }),
 			authority: authorityFor(request),
 			signal: request.signal,
 		});
 		try {
 			await this.#initialize(operation, request.signal);
 			const cwd = await canonicalWorkspace(this.#cwd, this.#roots);
-			const threadId = validateThreadResponse(
+			const threadResponse = validateThreadResponse(
 				await this.#request(
 					operation,
 					"thread/start",
 					{
 						cwd,
+						...(modelRouting === undefined
+							? {}
+							: {
+								modelProvider: modelRouting.provider,
+								model: modelRouting.model,
+								serviceTier: modelRouting.serviceTier,
+								allowProviderModelFallback: false,
+							}),
 						approvalPolicy: this.#approvalPolicy,
 						approvalsReviewer: this.#approvalsReviewer,
 						sandbox: this.#sandbox,
@@ -1225,6 +1368,15 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 					request.signal,
 				),
 			);
+			if (
+				modelRouting !== undefined &&
+				(threadResponse.modelProvider !== modelRouting.provider ||
+					threadResponse.model !== modelRouting.model ||
+					threadResponse.serviceTier !== modelRouting.serviceTier)
+			) {
+				throw new PrivateCodexAppServerError("external_protocol_unsupported");
+			}
+			const threadId = threadResponse.id;
 			operation.threadId = threadId;
 			operation.handle = Object.freeze({ ...operation.handle, externalSessionId: threadId });
 			this.#operations.set(threadId, operation);
@@ -1234,7 +1386,14 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 					"turn/start",
 					{
 						threadId,
-						input: [{ type: "text", text: request.input.text, text_elements: [] }],
+						input: codexInput,
+						...(modelRouting === undefined
+							? {}
+							: {
+								model: modelRouting.model,
+								effort: modelRouting.effort,
+								serviceTier: modelRouting.serviceTier,
+							}),
 					},
 					request.signal,
 				),
@@ -1434,6 +1593,7 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 		readonly externalSessionId?: string;
 		readonly externalTurnId?: string;
 		readonly authority?: CodexExecutionAuthority;
+		readonly credential?: SafeLeaseProjection;
 		readonly signal?: AbortSignal;
 	}): Promise<CodexOperation> {
 		const transport = await withTimeout(
@@ -1441,6 +1601,7 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 				mode: input.mode,
 				supervisorRef: input.supervisorRef,
 				operationNonce: input.operationNonce,
+				...(input.credential === undefined ? {} : { credential: Object.freeze({ ...input.credential }) }),
 				signal: input.signal,
 			}),
 			this.#limits.requestTimeoutMs,
