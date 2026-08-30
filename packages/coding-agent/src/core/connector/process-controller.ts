@@ -4,8 +4,10 @@ import { createHash } from "node:crypto";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import {
 	externalConnectorProcessContainment,
+	type ExternalConnectorProcessChannel,
 	type ExternalConnectorProcessController,
 	type ExternalConnectorProcessHandle,
 	type ExternalConnectorProcessIdentity,
@@ -14,11 +16,13 @@ import {
 	type ExternalConnectorProcessTerminationRequest,
 	type ExternalConnectorProcessTerminationResult,
 	type ExternalConnectorProcessTerminationOptions,
+	type ExternalConnectorSupervisorReference,
 } from "./supervisor.ts";
 import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock } from "../runtime/clock.ts";
 
 const ACTIVATION_TIMEOUT_MS = 10_000;
 const PROTOCOL_LIMIT_BYTES = 4_096;
+const PROCESS_CHANNEL_MAX_LINE_BYTES = 256 * 1024;
 const NONCE_MARKER_PREFIX = "AOS_EXTERNAL_CONNECTOR_NONCE=";
 const PROVENANCE_DIGEST_CACHE = new Map<string, string>();
 
@@ -27,6 +31,7 @@ const { spawn } = require("node:child_process");
 const marker = process.argv[1];
 let active = false;
 let input = "";
+let child;
 const terminateGroup = () => {
 	try {
 		process.kill(-process.pid, "SIGKILL");
@@ -37,7 +42,14 @@ const terminateGroup = () => {
 process.stdout.write("READY " + marker + "\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
-	if (active) return;
+	if (active) {
+		if (child?.stdin?.writable !== true || !child.stdin.write(chunk)) terminateGroup();
+		return;
+	}
+	if (child !== undefined) {
+		input += chunk;
+		return;
+	}
 	input += chunk;
 	const newline = input.indexOf("\n");
 	if (newline < 0) return;
@@ -50,44 +62,69 @@ process.stdin.on("data", (chunk) => {
 	} catch {
 		process.exit(74);
 	}
-	active = true;
-	const child = spawn(processSpec.executablePath, processSpec.arguments, {
+	input = input.slice(newline + 1);
+	child = spawn(processSpec.executablePath, processSpec.arguments, {
 		cwd: processSpec.cwd,
 		detached: false,
 		env: processSpec.environment,
 		shell: false,
-		stdio: "ignore",
+		stdio: ["pipe", "pipe", "ignore"],
 		windowsHide: true,
 	});
-	child.once("spawn", () => process.stdout.write("ACTIVE " + marker + "\n"));
+	child.once("spawn", () => {
+		active = true;
+		process.stdout.write("ACTIVE " + marker + "\n");
+		child.stdout.on("data", (output) => process.stdout.write(output));
+		child.stdin.once("error", terminateGroup);
+		const remainder = input;
+		input = "";
+		if (remainder.length > 0 && child.stdin.writable === true) child.stdin.write(remainder);
+	});
 	child.once("error", terminateGroup);
 	child.once("exit", terminateGroup);
 });
 process.stdin.on("end", () => {
 	if (!active) process.exit(73);
+	if (child?.stdin?.writable === true) child.stdin.end();
 });
 `;
 
-const WINDOWS_JOB_GUARDIAN_SOURCE = String.raw`
+const WINDOWS_JOB_GUARDIAN_SOURCE = `
 $ErrorActionPreference = "Stop"
 $marker = $args[0]
 $source = @'
 using System;
 using System.ComponentModel;
+using Microsoft.Win32.SafeHandles;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 public sealed class AosExternalConnectorJobHandle {
     public IntPtr Job { get; private set; }
     public IntPtr Process { get; private set; }
+    public IntPtr StandardInput { get; private set; }
+    public IntPtr StandardOutput { get; private set; }
+    public IntPtr StandardError { get; private set; }
 
-    public AosExternalConnectorJobHandle(IntPtr job, IntPtr process) {
+    public AosExternalConnectorJobHandle(IntPtr job, IntPtr process, IntPtr standardInput, IntPtr standardOutput, IntPtr standardError) {
         Job = job;
         Process = process;
+        StandardInput = standardInput;
+        StandardOutput = standardOutput;
+        StandardError = standardError;
     }
 }
 
 public static class AosExternalConnectorJob {
+    private const uint HANDLE_FLAG_INHERIT = 0x00000001;
+    private const uint STARTF_USESTDHANDLES = 0x00000100;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private const uint CREATE_SUSPENDED = 0x00000004;
+    private const uint CREATE_NO_WINDOW = 0x08000000;
+    private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
         public long PerProcessUserTimeLimit;
@@ -121,34 +158,41 @@ public static class AosExternalConnectorJob {
         public UIntPtr PeakJobMemoryUsed;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SECURITY_ATTRIBUTES {
+        public int Length;
+        public IntPtr SecurityDescriptor;
+        public int InheritHandle;
+    }
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct STARTUPINFO {
-        public uint cb;
-        public string lpReserved;
-        public string lpDesktop;
-        public string lpTitle;
-        public uint dwX;
-        public uint dwY;
-        public uint dwXSize;
-        public uint dwYSize;
-        public uint dwXCountChars;
-        public uint dwYCountChars;
-        public uint dwFillAttribute;
-        public uint dwFlags;
-        public ushort wShowWindow;
-        public ushort cbReserved2;
-        public IntPtr lpReserved2;
-        public IntPtr hStdInput;
-        public IntPtr hStdOutput;
-        public IntPtr hStdError;
+        public uint Cb;
+        public string Reserved;
+        public string Desktop;
+        public string Title;
+        public uint X;
+        public uint Y;
+        public uint XSize;
+        public uint YSize;
+        public uint XCountChars;
+        public uint YCountChars;
+        public uint FillAttribute;
+        public uint Flags;
+        public ushort ShowWindow;
+        public ushort Reserved2;
+        public IntPtr Reserved2Pointer;
+        public IntPtr StandardInput;
+        public IntPtr StandardOutput;
+        public IntPtr StandardError;
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PROCESS_INFORMATION {
-        public IntPtr hProcess;
-        public IntPtr hThread;
-        public uint dwProcessId;
-        public uint dwThreadId;
+        public IntPtr Process;
+        public IntPtr Thread;
+        public uint ProcessId;
+        public uint ThreadId;
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -161,6 +205,17 @@ public static class AosExternalConnectorJob {
         IntPtr information,
         uint informationLength
     );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CreatePipe(
+        out IntPtr readPipe,
+        out IntPtr writePipe,
+        ref SECURITY_ATTRIBUTES attributes,
+        uint size
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateProcess(
@@ -180,10 +235,10 @@ public static class AosExternalConnectorJob {
     private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint ResumeThread(IntPtr thread);
+    public static extern bool CloseHandle(IntPtr handle);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool CloseHandle(IntPtr handle);
+    private static extern uint ResumeThread(IntPtr thread);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateProcess(IntPtr process, uint exitCode);
@@ -191,38 +246,70 @@ public static class AosExternalConnectorJob {
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 
+    public static void StartRelay(AosExternalConnectorJobHandle handle) {
+        var output = new Thread(() => {
+            try {
+                using (var source = new FileStream(new SafeFileHandle(handle.StandardOutput, true), FileAccess.Read)) {
+                    source.CopyTo(Console.OpenStandardOutput());
+                }
+            }
+            catch { }
+        });
+        output.IsBackground = true;
+        output.Start();
+        var input = new Thread(() => {
+            try {
+                using (var destination = new FileStream(new SafeFileHandle(handle.StandardInput, true), FileAccess.Write)) {
+                    string line;
+                    while ((line = Console.ReadLine()) != null) {
+                        byte[] bytes = Encoding.UTF8.GetBytes(line + "\\n");
+                        destination.Write(bytes, 0, bytes.Length);
+                        destination.Flush();
+                    }
+                }
+            } catch { }
+        });
+        input.IsBackground = true;
+        input.Start();
+        var error = new Thread(() => {
+            try {
+                using (var source = new FileStream(new SafeFileHandle(handle.StandardError, true), FileAccess.Read)) {
+                    source.CopyTo(Stream.Null);
+                }
+            } catch { }
+        });
+        error.IsBackground = true;
+        error.Start();
+    }
+
     private static string QuoteArgument(string argument) {
-        if (argument.Length > 0 && argument.IndexOfAny(new[] { ' ', '\t', '\n', '\v', '"' }) < 0) {
+        if (argument.Length > 0 && argument.IndexOfAny(new[] { ' ', '\\t', '\\n', '\\v', '"' }) < 0) {
             return argument;
         }
         var quoted = new StringBuilder();
         quoted.Append('"');
         int backslashes = 0;
         foreach (char character in argument) {
-            if (character == '\\') {
+            if (character == '\\\\') {
                 backslashes++;
                 continue;
             }
             if (character == '"') {
-                quoted.Append('\\', backslashes * 2 + 1);
+                quoted.Append('\\\\', backslashes * 2 + 1);
                 quoted.Append('"');
                 backslashes = 0;
                 continue;
             }
-            quoted.Append('\\', backslashes);
+            quoted.Append('\\\\', backslashes);
             backslashes = 0;
             quoted.Append(character);
         }
-        quoted.Append('\\', backslashes * 2);
+        quoted.Append('\\\\', backslashes * 2);
         quoted.Append('"');
         return quoted.ToString();
     }
 
     public static AosExternalConnectorJobHandle Start(string executablePath, string[] arguments, string[] environment, string cwd) {
-        const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
-        const uint CREATE_SUSPENDED = 0x00000004;
-        const uint CREATE_NO_WINDOW = 0x08000000;
-        const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         IntPtr job = CreateJobObject(IntPtr.Zero, null);
         if (job == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
 
@@ -239,53 +326,98 @@ public static class AosExternalConnectorJob {
             Marshal.FreeHGlobal(limitsPointer);
         }
 
-        var startup = new STARTUPINFO();
-        startup.cb = (uint)Marshal.SizeOf(startup);
-        PROCESS_INFORMATION process;
-        var commandLine = new StringBuilder(QuoteArgument(executablePath));
+        var attributes = new SECURITY_ATTRIBUTES {
+            Length = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)),
+            SecurityDescriptor = IntPtr.Zero,
+            InheritHandle = 1,
+        };
+        var commandLine = new StringBuilder();
+        commandLine.Append(QuoteArgument(executablePath));
         foreach (string argument in arguments) {
             commandLine.Append(' ');
             commandLine.Append(QuoteArgument(argument));
         }
-        string environmentBlock = String.Join("\0", environment) + "\0\0";
+        IntPtr childInput = IntPtr.Zero;
+        IntPtr parentInput = IntPtr.Zero;
+        IntPtr parentOutput = IntPtr.Zero;
+        IntPtr childOutput = IntPtr.Zero;
+        IntPtr parentError = IntPtr.Zero;
+        IntPtr childError = IntPtr.Zero;
+        if (!CreatePipe(out childInput, out parentInput, ref attributes, 0) ||
+            !CreatePipe(out parentOutput, out childOutput, ref attributes, 0) ||
+            !CreatePipe(out parentError, out childError, ref attributes, 0) ||
+            !SetHandleInformation(parentInput, HANDLE_FLAG_INHERIT, 0) ||
+            !SetHandleInformation(parentOutput, HANDLE_FLAG_INHERIT, 0) ||
+            !SetHandleInformation(parentError, HANDLE_FLAG_INHERIT, 0)) {
+            CloseHandle(childInput);
+            CloseHandle(parentInput);
+            CloseHandle(parentOutput);
+            CloseHandle(childOutput);
+            CloseHandle(parentError);
+            CloseHandle(childError);
+            CloseHandle(job);
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        var startup = new STARTUPINFO();
+        startup.Cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
+        startup.Flags = STARTF_USESTDHANDLES;
+        startup.StandardInput = childInput;
+        startup.StandardOutput = childOutput;
+        startup.StandardError = childError;
+        var environmentBlock = String.Join("\\0", environment) + "\\0\\0";
         IntPtr environmentPointer = Marshal.StringToHGlobalUni(environmentBlock);
+        PROCESS_INFORMATION process;
         try {
             if (!CreateProcess(
                 executablePath,
                 commandLine,
                 IntPtr.Zero,
                 IntPtr.Zero,
-                false,
+                true,
                 CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
                 environmentPointer,
                 cwd,
                 ref startup,
                 out process
             )) {
-                CloseHandle(job);
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
+        } catch {
+            CloseHandle(childInput);
+            CloseHandle(parentInput);
+            CloseHandle(parentOutput);
+            CloseHandle(childOutput);
+            CloseHandle(parentError);
+            CloseHandle(childError);
+            CloseHandle(job);
+            throw;
         } finally {
             Marshal.FreeHGlobal(environmentPointer);
         }
 
         try {
-            if (!AssignProcessToJobObject(job, process.hProcess)) {
-                TerminateProcess(process.hProcess, 74);
+            CloseHandle(childInput);
+            CloseHandle(childOutput);
+            CloseHandle(childError);
+            if (!AssignProcessToJobObject(job, process.Process)) {
+                TerminateProcess(process.Process, 74);
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
-            if (ResumeThread(process.hThread) == 0xffffffff) {
-                TerminateProcess(process.hProcess, 75);
+            if (ResumeThread(process.Thread) == 0xffffffff) {
+                TerminateProcess(process.Process, 75);
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
         } catch {
-            CloseHandle(process.hProcess);
+            CloseHandle(process.Process);
             CloseHandle(job);
+            CloseHandle(parentInput);
+            CloseHandle(parentOutput);
+            CloseHandle(parentError);
             throw;
         } finally {
-            CloseHandle(process.hThread);
+            CloseHandle(process.Thread);
         }
-        return new AosExternalConnectorJobHandle(job, process.hProcess);
+        return new AosExternalConnectorJobHandle(job, process.Process, parentInput, parentOutput, parentError);
     }
 }
 '@
@@ -299,6 +431,7 @@ $processSpec = $processSpecJson | ConvertFrom-Json
 $environment = @($processSpec.environment.PSObject.Properties | ForEach-Object { $_.Name + "=" + [string]$_.Value })
 $contained = [AosExternalConnectorJob]::Start([string]$processSpec.executablePath, [string[]]@($processSpec.arguments), [string[]]$environment, [string]$processSpec.cwd)
 [Console]::Out.WriteLine("ACTIVE " + $marker)
+[AosExternalConnectorJob]::StartRelay($contained)
 try {
 	while ([AosExternalConnectorJob]::WaitForSingleObject($contained.Process, 3600000) -eq 258) {}
 	exit 76
@@ -409,6 +542,10 @@ function supportedPlatform(platform: string): SupportedExternalConnectorPlatform
 
 function nonceMarker(nonce: string): string {
 	return `${NONCE_MARKER_PREFIX}${nonce}`;
+}
+
+function processChannelKey(supervisorRef: string, operationNonce: string): string {
+	return `${supervisorRef}\0${operationNonce}`;
 }
 
 function sameIdentity(left: ExternalConnectorProcessIdentity, right: ExternalConnectorProcessIdentity): boolean {
@@ -696,62 +833,148 @@ function isMissingProcessError(error: unknown): boolean {
 	);
 }
 
-function waitForProtocolLine(
-	child: ChildProcessWithoutNullStreams,
+interface ProcessChannelLineWaiter {
+	readonly resolve: (line: string | undefined) => void;
+	readonly reject: (error: unknown) => void;
+	readonly signal?: AbortSignal;
+	readonly onAbort?: () => void;
+}
+
+/**
+ * A lossless line reader over the guardian's stdout. Activation and driver
+ * frames share this stream, so consuming only the first control line would
+ * otherwise drop a frame emitted in the same stdout chunk.
+ */
+class ProductionExternalConnectorProcessChannel implements ExternalConnectorProcessChannel {
+	readonly #input: ChildProcessWithoutNullStreams["stdin"];
+	readonly #decoder = new StringDecoder("utf8");
+	readonly #lines: string[] = [];
+	#partial = "";
+	#waiter: ProcessChannelLineWaiter | undefined;
+	#closed = false;
+	#error: Error | undefined;
+	#stderrOutput = "";
+
+	constructor(child: ChildProcessWithoutNullStreams) {
+		this.#input = child.stdin;
+		child.stdout.on("data", (chunk: Buffer | string) => this.#onData(chunk));
+		child.stdout.once("end", () => {
+			const trailing = this.#decoder.end();
+			if (trailing.length > 0) this.#fail(new Error("External Connector process channel ended with a partial frame"));
+			else this.#close();
+		});
+		child.stdout.once("error", (error) => this.#fail(error));
+		child.stderr.on("data", (chunk: Buffer | string) => {
+			const output = String(chunk);
+			this.#stderrOutput += output;
+			if (Buffer.byteLength(this.#stderrOutput, "utf8") > PROTOCOL_LIMIT_BYTES) {
+				this.#fail(new Error("External Connector containment helper error output exceeded its limit"));
+			}
+		});
+		child.stdin.once("error", (error) => this.#fail(error));
+		child.once("error", (error) => this.#fail(error));
+		child.once("exit", () => this.#close());
+	}
+
+	writeLine(line: string): void {
+		if (this.#closed || this.#error !== undefined) throw this.#error ?? new Error("External Connector process channel is closed");
+		if (
+			line.includes("\r") ||
+			line.includes("\n") ||
+			Buffer.byteLength(line, "utf8") > PROCESS_CHANNEL_MAX_LINE_BYTES
+		) {
+			throw new Error("External Connector process frame is invalid or oversized");
+		}
+		this.#input.write(`${line}\n`);
+	}
+
+	readLine(options?: { readonly signal?: AbortSignal }): Promise<string | undefined> {
+		if (this.#lines.length > 0) return Promise.resolve(this.#lines.shift());
+		if (this.#error !== undefined) return Promise.reject(this.#error);
+		if (this.#closed) return Promise.resolve(undefined);
+		if (this.#waiter !== undefined) throw new Error("External Connector process channel has concurrent readers");
+		return new Promise<string | undefined>((resolve, reject) => {
+			const onAbort = (): void => {
+				if (this.#waiter?.resolve !== resolve) return;
+				this.#waiter = undefined;
+				reject(new Error("External Connector process channel read was aborted"));
+			};
+			this.#waiter = { resolve, reject, signal: options?.signal, onAbort };
+			if (options?.signal?.aborted === true) onAbort();
+			else options?.signal?.addEventListener("abort", onAbort, { once: true });
+		});
+	}
+
+	#onData(chunk: Buffer | string): void {
+		if (this.#closed || this.#error !== undefined) return;
+		this.#partial += this.#decoder.write(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+		for (;;) {
+			const newline = this.#partial.indexOf("\n");
+			if (newline < 0) {
+				if (Buffer.byteLength(this.#partial, "utf8") > PROCESS_CHANNEL_MAX_LINE_BYTES) {
+					this.#fail(new Error("External Connector process frame exceeded its limit"));
+				}
+				return;
+			}
+			const line = this.#partial.slice(0, newline);
+			this.#partial = this.#partial.slice(newline + 1);
+			if (Buffer.byteLength(line, "utf8") > PROCESS_CHANNEL_MAX_LINE_BYTES) {
+				this.#fail(new Error("External Connector process frame exceeded its limit"));
+				return;
+			}
+			this.#deliver(line);
+		}
+	}
+
+	#deliver(line: string): void {
+		const waiter = this.#waiter;
+		if (waiter === undefined) {
+			this.#lines.push(line);
+			return;
+		}
+		this.#waiter = undefined;
+		if (waiter.signal !== undefined && waiter.onAbort !== undefined) {
+			waiter.signal.removeEventListener("abort", waiter.onAbort);
+		}
+		waiter.resolve(line);
+	}
+
+	#close(): void {
+		if (this.#closed) return;
+		if (this.#error === undefined && this.#stderrOutput.length > 0) {
+			this.#fail(new Error("External Connector containment helper exited with an error"));
+		}
+		this.#closed = true;
+		const waiter = this.#waiter;
+		this.#waiter = undefined;
+		if (waiter === undefined) return;
+		if (waiter.signal !== undefined && waiter.onAbort !== undefined) {
+			waiter.signal.removeEventListener("abort", waiter.onAbort);
+		}
+		waiter.resolve(undefined);
+	}
+
+	#fail(error: unknown): void {
+		this.#error = error instanceof Error ? error : new Error(String(error));
+		const waiter = this.#waiter;
+		this.#waiter = undefined;
+		if (waiter === undefined) return;
+		if (waiter.signal !== undefined && waiter.onAbort !== undefined) {
+			waiter.signal.removeEventListener("abort", waiter.onAbort);
+		}
+		waiter.reject(this.#error);
+	}
+}
+
+async function waitForProtocolLine(
+	channel: ExternalConnectorProcessChannel,
 	expected: string,
 	signal?: AbortSignal,
 ): Promise<void> {
-	return new Promise((resolve, reject) => {
-		let output = "";
-		let errorOutput = "";
-		const timer = setTimeout(
-			() => finish(new Error("External Connector containment helper timed out")),
-			ACTIVATION_TIMEOUT_MS,
-		);
-		timer.unref();
-		const onOutput = (chunk: Buffer): void => {
-			output += chunk.toString("utf8");
-			if (Buffer.byteLength(output, "utf8") > PROTOCOL_LIMIT_BYTES) {
-				finish(new Error("External Connector containment helper output exceeded its limit"));
-				return;
-			}
-			const newline = output.indexOf("\n");
-			if (newline < 0) return;
-			if (output.slice(0, newline).trimEnd() !== expected) {
-				finish(new Error("External Connector containment helper protocol was invalid"));
-				return;
-			}
-			finish();
-		};
-		const onErrorOutput = (chunk: Buffer): void => {
-			errorOutput += chunk.toString("utf8");
-			if (Buffer.byteLength(errorOutput, "utf8") > PROTOCOL_LIMIT_BYTES) {
-				finish(new Error("External Connector containment helper error output exceeded its limit"));
-			}
-		};
-		const onError = (error: Error): void => finish(error);
-		const onExit = (): void => finish(new Error("External Connector containment helper exited early"));
-		const onAbort = (): void => finish(new Error("External Connector containment helper operation was aborted"));
-		const cleanup = (): void => {
-			clearTimeout(timer);
-			child.stdout.off("data", onOutput);
-			child.stderr.off("data", onErrorOutput);
-			child.off("error", onError);
-			child.off("exit", onExit);
-			signal?.removeEventListener("abort", onAbort);
-		};
-		const finish = (error?: Error): void => {
-			cleanup();
-			if (error === undefined) resolve();
-			else reject(error);
-		};
-		child.stdout.on("data", onOutput);
-		child.stderr.on("data", onErrorOutput);
-		child.once("error", onError);
-		child.once("exit", onExit);
-		if (signal?.aborted === true) onAbort();
-		else signal?.addEventListener("abort", onAbort, { once: true });
-	});
+	const line = await channel.readLine({ signal });
+	if (line === undefined || Buffer.byteLength(line, "utf8") > PROTOCOL_LIMIT_BYTES || line.trimEnd() !== expected) {
+		throw new Error("External Connector containment helper protocol was invalid");
+	}
 }
 
 class ProductionExternalConnectorProcessHandle implements ExternalConnectorProcessHandle {
@@ -823,6 +1046,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 	readonly #setsidPath: string | undefined;
 	readonly #processSpec: string;
 	readonly #clock: RuntimeClock;
+	readonly #channels = new Map<string, ExternalConnectorProcessChannel>();
 
 	constructor(options: ProductionExternalConnectorProcessControllerOptions) {
 		this.#platform = supportedPlatform(options.platform ?? process.platform);
@@ -842,6 +1066,12 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		}
 	}
 
+	channelFor(
+		reference: Pick<ExternalConnectorSupervisorReference, "supervisorRef" | "operationNonce">,
+	): ExternalConnectorProcessChannel | undefined {
+		return this.#channels.get(processChannelKey(reference.supervisorRef, reference.operationNonce));
+	}
+
 	async launch(
 		request: ExternalConnectorProcessLaunchRequest,
 		options?: { readonly signal?: AbortSignal },
@@ -850,22 +1080,29 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		if (options?.signal?.aborted === true) throw new Error("External Connector process launch was aborted");
 		const marker = nonceMarker(request.operationNonce);
 		const child = this.#spawnGuardian(marker);
+		const channel = new ProductionExternalConnectorProcessChannel(child);
+		const channelKey = processChannelKey(request.supervisorRef, request.operationNonce);
+		this.#channels.set(channelKey, channel);
 		try {
-			await waitForProtocolLine(child, `READY ${marker}`, options?.signal);
+			await waitForProtocolLine(channel, `READY ${marker}`, options?.signal);
 			const inspection = this.#inspect(child.pid!, request.operationNonce);
 			if (inspection.status !== "live" || !inspection.value.nonceMarkerPresent) {
 				throw new Error("External Connector containment helper identity was ambiguous");
 			}
 			const identity = inspection.value.identity;
+			const exited = this.#monitorContainmentExit(identity.pid);
+			void exited.finally(() => {
+				if (this.#channels.get(channelKey) === channel) this.#channels.delete(channelKey);
+			});
 			return new ProductionExternalConnectorProcessHandle({
 				operationNonce: request.operationNonce,
 				containment: request.containment,
 				identity,
-				exited: this.#monitorContainmentExit(identity.pid),
+				exited,
 				activated: false,
 				activate: async () => {
-					const active = waitForProtocolLine(child, `ACTIVE ${marker}`, options?.signal);
-					child.stdin.end(`ACTIVATE ${marker} ${this.#processSpec}\n`);
+					const active = waitForProtocolLine(channel, `ACTIVE ${marker}`, options?.signal);
+					channel.writeLine(`ACTIVATE ${marker} ${this.#processSpec}`);
 					await active;
 				},
 				forceTerminate: (termination) => this.#forceTerminate(identity, request.operationNonce, termination),
@@ -873,6 +1110,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 					this.#forceTerminateBounded(identity, request.operationNonce, termination, terminationOptions),
 			});
 		} catch (error) {
+			this.#channels.delete(channelKey);
 			child.kill("SIGKILL");
 			throw error;
 		}
