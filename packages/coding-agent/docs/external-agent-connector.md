@@ -149,7 +149,7 @@ out the row-specific request id or stream id and operation correlation.
 
 | Frame | Direction | Required fields | Optional fields | Correlation and stable rejection |
 | --- | --- | --- | --- | --- |
-| handshake | Host -> driver | schemaVersion, type: "handshake", requestId, supervisorRef, operationNonce, protocolVersion: 1, providerId, version, capability | None | requestId, supervisorRef, and operationNonce are current Host values. A bad line or size is external_event_invalid or external_frame_oversize; unsupported protocol is external_protocol_unsupported. |
+| handshake | Host -> driver | schemaVersion, type: "handshake", requestId, supervisorRef, operationNonce, protocolVersion: 1, providerId, version, capability | None | requestId, supervisorRef, and operationNonce are current Host values. Host validation failures are external_event_invalid; a Host-written oversized frame is external_frame_oversize. Unsupported protocol is external_protocol_unsupported. |
 | handshake_result | Driver -> Host | schemaVersion, type: "handshake_result", requestId, supervisorRef, operationNonce, protocolVersion: 1, providerId, version, capability, implementedOperations | None | Echo all three ids. Protocol, identity, capability, or operation drift is external_capability_mismatch; a malformed response is external_event_invalid. |
 | request | Host -> driver | schemaVersion, type: "request", requestId, operation, supervisorRef, operationNonce, payload | None | The response must use the same requestId, operation, ref, and nonce. The driver returns an error frame for a rejected request. |
 | response | Driver -> Host | schemaVersion, type: "response", requestId, operation, supervisorRef, operationNonce, result | None | Unknown, duplicate, late, or operation-mismatched responses are external_event_invalid. Result shape is checked after request correlation. |
@@ -166,12 +166,20 @@ redacted:
 | Malformed JSON, unknown fields, invalid typed payload, wrong ref/nonce, duplicate or late response/event | external_event_invalid |
 | Unsupported JSONL protocol version | external_protocol_unsupported |
 | Mismatched provider/version/capability digest or missing required behavior | external_capability_mismatch or external_connector_not_ready |
-| Frame or supervised item exceeds a bound | external_frame_oversize or external_resource_limit_exceeded |
+| Host outbound JSONL frame exceeds its bound | external_frame_oversize |
+| Supervised item exceeds a runtime resource bound | external_resource_limit_exceeded |
 | Process channel is absent or unavailable | external_connector_unavailable |
 | Host route is outside the frozen Tool Gateway scope or the catalog changed | external_tool_route_denied |
 | Required external lease is absent, expired, or revoked | external_credential_unavailable |
 | Terminal state or process cleanup cannot be proven | external_terminal_ambiguous or side_effect_unknown |
 | Target settings or provenance are invalid | external_connector_config_invalid or external_connector_executable_untrusted |
+
+Error-code direction matters. The Host JSONL `#send` path raises
+`external_frame_oversize` when an outbound frame exceeds its bound. An inbound
+line that exceeds the process-channel limit fails that channel with an ordinary
+`Error`; if an inbound line is delivered but JSON parsing or frame validation
+fails, the JSONL pump folds it into `external_event_invalid`. An inbound
+oversized line is not stably mapped to `external_frame_oversize`.
 
 These codes describe Host-visible outcomes as well as driver error responses;
 the Host may replace an unsafe vendor error with the corresponding fixed
@@ -202,13 +210,19 @@ toolGateway is true it must also contain both tool_gateway_request and
 tool_gateway_result; entries must be known and unique.
 
 Capability flags are claims, not permissions. Registration and every selection
-recheck require evidence for every true behavior. In particular,
-toolGateway: true requires both the handshake operation evidence and a Host
-behavior manifest containing the tool_gateway_request event and
-tool_gateway_result write behavior. A missing, stale, or changed declaration
-fails closed before a provider effect with external_connector_not_ready or
-external_capability_mismatch; the Host never waits for an event to decide
-whether a capability was real.
+recheck use the Host adapter behavior manifest as the capability evidence for
+each true behavior. In particular, `toolGateway: true` requires a manifest
+containing the `tool_gateway_request` event and `tool_gateway_result` write
+behavior. The Host binds and checks this manifest before registration and
+rechecks it during selection; settings registration does not start the process.
+
+Separately, after the persist-before-activate boundary, the process JSONL
+handshake returns `implementedOperations` before the first `spawn`, `connect`,
+or `lookup`. This runtime declaration is checked against the trusted
+capability; it is not the registration-time behavior evidence. A missing,
+stale, or changed declaration fails closed before a provider effect with
+`external_connector_not_ready` or `external_capability_mismatch`; the Host
+never waits for an event to decide whether a capability was real.
 
 ### Operation requests and responses
 
@@ -391,9 +405,12 @@ persisted -> credential issue and delivery facts persisted -> supervised launch
 handle/mapping persisted -> running -> events/read -> canonical AttemptReceipt
 -> lease release -> process dispose
 
-runAttempt is the only path that sends spawn. A resumed Attempt reattaches the
-exact persisted process and sends connect; reconciliation sends lookup. Resume
-and reconciliation never start a new driver process. A missing, reused, or
+runAttempt is the only path that sends spawn. Within the same Host lifecycle, a
+resumed Attempt reattaches the persisted process identity and sends `connect`
+through the active stdio channel; reconciliation sends `lookup`. Resume and
+reconciliation never start a new driver process. After a Host restart, the
+stdio JSONL channel is not restored with the persisted process handle, so the
+same channel cannot be rebuilt to continue `connect`. A missing, reused, or
 ambiguous process identity is quarantined and cannot fabricate a mapping or
 receipt. After the Host persists the mapping, it validates every event,
 terminal result, and write-back against the same supervisorRef + operationNonce
