@@ -36,8 +36,10 @@ export interface ExternalConnectorReadinessSnapshot {
 	readonly schemaVersion: 1;
 	readonly providerId: string;
 	readonly trust: "host_configured";
+	/** Wire field for probe availability. */
 	readonly status: "ready" | "not_ready" | "quarantined";
 	readonly reasonCode: ExternalConnectorReadinessReasonCode;
+	/** Wire field for snapshot currency or quarantine, distinct from probe availability. */
 	readonly state: "current" | "quarantined";
 	readonly configuration: ExternalConnectorRevisionDigest;
 	readonly capability: ExternalConnectorRevisionDigest;

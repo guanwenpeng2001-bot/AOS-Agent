@@ -264,10 +264,13 @@ async function registerSelectedExternalConnector(options: {
 	}
 	const descriptor = descriptors[0]!;
 	const readiness = readinessSnapshots[0]!;
+	// wire/ledger field name; local alias below
+	const readinessStatus = readiness.status;
+	const snapshotState = readiness.state;
 	if (
 		descriptor.providerClass !== "external_connector" ||
-		readiness.status !== "ready" ||
-		readiness.state !== "current" ||
+		readinessStatus !== "ready" ||
+		snapshotState !== "current" ||
 		readiness.capability.revision !== descriptor.revision ||
 		readiness.capability.digest.value !== descriptor.capabilitySnapshotDigest.value
 	) {
@@ -346,13 +349,13 @@ async function registerSelectedExternalConnector(options: {
 		runtimeSnapshot: runtimeSnapshot.value,
 	});
 	if (!registered.ok) throw registered.error;
-	const currentReadiness = options.registry
+	const readinessAfterRegistration = options.registry
 		.readinessSnapshots()
 		.filter(({ providerId }) => providerId === options.target.providerId);
 	const reselected = await options.registry.select(selection);
 	if (
-		currentReadiness.length !== 1 ||
-		currentReadiness[0]!.snapshotDigest.value !== readiness.snapshotDigest.value ||
+		readinessAfterRegistration.length !== 1 ||
+		readinessAfterRegistration[0]!.snapshotDigest.value !== readiness.snapshotDigest.value ||
 		!reselected.ok ||
 		reselected.value.capabilitySnapshot.digest.value !== selected.value.capabilitySnapshot.digest.value
 	) {

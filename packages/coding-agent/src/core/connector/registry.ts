@@ -1644,8 +1644,8 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			}
 			return Result.ok(cloneDeepFrozen(checkedResult.value));
 		};
-		const currentReadiness = this.#resolvePublishedReadiness(registered, true, false, readinessSnapshot);
-		if (!currentReadiness.ok) return currentReadiness;
+		const readinessAfterSelection = this.#resolvePublishedReadiness(registered, true, false, readinessSnapshot);
+		if (!readinessAfterSelection.ok) return readinessAfterSelection;
 		const resolvedSelection: ExternalConnectorResolvedSelection = Object.freeze({
 			descriptor: registered.descriptor,
 			connector: selectedConnector,
