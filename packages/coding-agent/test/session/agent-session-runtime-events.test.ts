@@ -1007,7 +1007,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		runtimeHost.setPrepareSessionRebind((candidate) => {
 			const delegate: unknown = Reflect.get(candidate, "delegate");
 			if (typeof delegate !== "object" || delegate === null) throw new TypeError("Candidate delegate is unavailable");
-			const candidateStorage: unknown = Reflect.get(delegate, "canonicalStorage");
+			const candidateStorage: unknown = Reflect.get(delegate, "storage");
 			if (
 				typeof candidateStorage !== "object" ||
 				candidateStorage === null ||
