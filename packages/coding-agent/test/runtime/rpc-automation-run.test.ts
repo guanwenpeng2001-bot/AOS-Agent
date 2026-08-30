@@ -57,6 +57,7 @@ import {
 } from "../../src/core/connector/product-run.ts";
 import { cloneCanonicalExternalConnectorMapping } from "../../src/core/connector/session-mapping.ts";
 import type { ExternalModelSupportMatrix } from "../../src/core/connector/model-projection.ts";
+import { bindExternalConnectorVendorBehaviorManifest } from "../../src/core/connector/tool-gateway-binding.ts";
 import type { Extension, ExtensionContext, ToolDefinition } from "../../src/core/extensions/index.ts";
 import type { ModelRuntime } from "../../src/core/runtime/model-runtime.ts";
 import type { ResourceLoader } from "../../src/core/runtime/resource-loader.ts";
@@ -774,6 +775,14 @@ async function installRpcExternalConnector(
 		now: () => "2026-08-27T00:00:00.000Z",
 		operationNonce: () => "rpc-operation-nonce",
 	});
+	if (snapshot.toolGateway) {
+		bindExternalConnectorVendorBehaviorManifest(connector, () => ({
+			schemaVersion: 1,
+			revision: snapshot.revision,
+			events: ["tool_gateway_request"],
+			writes: ["tool_gateway_result"],
+		}));
+	}
 	const compositionState = rpcCompositionToolGatewayStates.get(runtimeHost.session.sessionId);
 	if (options.toolGateway === true && compositionState === undefined) {
 		throw new Error("RPC composition Tool Gateway state is missing");
