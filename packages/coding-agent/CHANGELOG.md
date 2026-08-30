@@ -20,6 +20,10 @@
 ### Added
 
 - Trusted External Connector targets can now be registered in settings for standard CLI, RPC, and SDK Sessions; project and Role selections require project trust and can only narrow global targets.
+- Documented the External Connector driver SPI as a bounded JSONL process contract, including lifecycle, provenance, capability negotiation, and safe failure behavior.
+- Added trusted generic modulePath targets for settings-selected external connectors, with pre-launch provenance checks and supervised process execution.
+- Added Host-scoped Tool Gateway consumption for external connector drivers, including route filtering and durable result write-back.
+- Added external connector credential targets with material-free lease projections and durable issue, renew, and revoke handling.
 - Private, explicit-opt-in ACP stable-v1 driver support uses the pinned official SDK and the durable External Connector and Tool Gateway/Policy path. Transport is bounded, workspace paths are canonical, and ACP is not activated by default or exposed as a public export.
 - External Connector registry support admits trusted constructed instances, pins descriptor revisions and capability digests, requires handler evidence, and provides provider-neutral selection and conformance.
 - Public RuntimeSession surface adapters for TUI, print, headless JSON, RPC, SDK, and Automation Host. Each adapter delegates to the same canonical AgentSession and records its surface on the durable ProductPrompt ingress fact before the existing Task, Binding, Dispatch, AttemptReceipt, TaskResult, and RunReceipt chain.
