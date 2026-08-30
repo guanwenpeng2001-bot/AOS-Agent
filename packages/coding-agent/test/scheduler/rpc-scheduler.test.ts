@@ -7,7 +7,7 @@ import type {
 	RpcSchedulerCommandType,
 	RpcSchedulerResponse,
 	SchedulerStatusData,
-} from "../../src/index.ts";
+} from "../../src/modes/index.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTestSession, type TestSessionContext } from "../utilities.ts";
 

@@ -190,8 +190,8 @@ const LEGACY_EXTERNAL_AGENT_ERROR_CODES = [
 	"external_agent_persistence_failed",
 ] as const;
 
-function inspectPublicEntrypoint(): { checker: ts.TypeChecker; symbol: ts.Symbol } {
-	const sourcePath = fileURLToPath(new URL("../../src/index.ts", import.meta.url));
+function inspectPublicEntrypoint(relativePath: string): { checker: ts.TypeChecker; symbol: ts.Symbol } {
+	const sourcePath = fileURLToPath(new URL(relativePath, import.meta.url));
 	const program = ts.createProgram({
 		rootNames: [sourcePath],
 		options: {
@@ -210,12 +210,12 @@ function inspectPublicEntrypoint(): { checker: ts.TypeChecker; symbol: ts.Symbol
 }
 
 function publicExportNames(): readonly string[] {
-	const { checker, symbol } = inspectPublicEntrypoint();
+	const { checker, symbol } = inspectPublicEntrypoint("../../src/external-connector.ts");
 	return checker.getExportsOfModule(symbol).map((entry) => entry.name);
 }
 
 function publicAutomationErrorCodes(): readonly string[] {
-	const { checker, symbol } = inspectPublicEntrypoint();
+	const { checker, symbol } = inspectPublicEntrypoint("../../src/modes/index.ts");
 	const exported = checker.getExportsOfModule(symbol).find((entry) => entry.name === "AutomationErrorCode");
 	if (exported === undefined) throw new Error("AutomationErrorCode is not publicly exported");
 	const declared = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
@@ -229,7 +229,7 @@ function publicAutomationErrorCodes(): readonly string[] {
 }
 
 function publicTypePropertyNames(exportName: string): readonly string[] {
-	const { checker, symbol } = inspectPublicEntrypoint();
+	const { checker, symbol } = inspectPublicEntrypoint("../../src/external-connector.ts");
 	const exported = checker.getExportsOfModule(symbol).find((entry) => entry.name === exportName);
 	if (exported === undefined) throw new Error(`${exportName} is not publicly exported`);
 	const declared = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
@@ -240,10 +240,12 @@ describe("External Connector public exports", () => {
 	it("exports only the current connector contract and safe input gates", () => {
 		expect(typeof publicApi.createExternalConnectorRegistry).toBe("function");
 		expect(typeof publicApi.createAgentRuntimeCompositionFactory).toBe("function");
-		expect(typeof publicApi.gateCanonicalExternalAgentInputBeforeAcceptance).toBe("function");
-		expect(typeof publicApi.projectExternalModelForExecution).toBe("function");
-		expect(typeof publicApi.loadPackagedExternalAgentDriver).toBe("function");
-		expect(typeof publicApi.runPackagedExternalAgentDriverFixture).toBe("function");
+		expect(typeof externalConnectorApi.gateCanonicalExternalAgentInputBeforeAcceptance).toBe("function");
+		expect(typeof externalConnectorApi.projectExternalModelForExecution).toBe("function");
+		expect(typeof externalConnectorApi.loadPackagedExternalAgentDriver).toBe("function");
+		expect(typeof externalConnectorApi.runPackagedExternalAgentDriverFixture).toBe("function");
+		expect("gateCanonicalExternalAgentInputBeforeAcceptance" in publicApi).toBe(false);
+		expect("projectExternalModelForExecution" in publicApi).toBe(false);
 		expect(typeof externalConnectorApi.loadPackagedExternalAgentDriver).toBe("function");
 		expect(typeof externalConnectorApi.runPackagedExternalAgentDriverFixture).toBe("function");
 	});

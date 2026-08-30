@@ -9,9 +9,11 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 	createAgentRuntimeCompositionFactory,
+} from "../../src/index.ts";
+import {
 	createWorkerSandboxComposition,
 	type AgentRuntimeCompositionFactory,
-} from "../../src/index.ts";
+} from "../../src/core/runtime/composition.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import { ModelRuntime } from "../../src/core/runtime/model-runtime.ts";
 import { DefaultResourceLoader } from "../../src/core/runtime/resource-loader.ts";

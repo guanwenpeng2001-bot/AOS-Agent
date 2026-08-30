@@ -37,15 +37,15 @@ import {
 import { DeterministicClock } from "../support/deterministic-clock.ts";
 import { repoRoot } from "../support/public-roots.ts";
 import * as CodingAgent from "../../src/index.ts";
+import { createAgentRuntimeCompositionFactory } from "../../src/index.ts";
 import {
-	createAgentRuntimeCompositionFactory,
 	buildExternalConnectorTargetConfig,
-	createExternalConnectorRegistry,
-	type AgentRuntimeCompositionContext,
 	type ExternalConnectorCapabilityCeiling,
 	type ExternalConnectorResolvedTarget,
 	type ExternalConnectorTargetDefinition,
-} from "../../src/index.ts";
+} from "../../src/external-connector.ts";
+import { createExternalConnectorRegistry } from "../../src/core/connector/registry.ts";
+import type { AgentRuntimeCompositionContext } from "../../src/core/runtime/composition.ts";
 import type { ExternalConnectorVendorDriver } from "../../src/core/connector/vendor/types.ts";
 
 const processOptions = {

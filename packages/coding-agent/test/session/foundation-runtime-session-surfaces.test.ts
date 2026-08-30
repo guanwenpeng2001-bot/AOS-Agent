@@ -12,10 +12,12 @@ import type {
 import { fakeAssistantMessage, registerFakeProvider, type AssistantMessage } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	RUNTIME_SESSION_SURFACES,
 	createAgentSession,
-	createRuntimeSessionSurfaceAdapter,
 } from "../../src/index.ts";
+import {
+	RUNTIME_SESSION_SURFACES,
+	createRuntimeSessionSurfaceAdapter,
+} from "../../src/core/runtime/session-surface.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../../src/core/session/facade.ts";
 import type { AgentSession } from "../../src/core/session/agent-session.ts";

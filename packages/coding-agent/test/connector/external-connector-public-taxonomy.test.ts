@@ -1,6 +1,7 @@
 import { validateEventPayloadForCategory } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
 import * as publicApi from "../../src/index.ts";
+import * as externalConnectorApi from "../../src/external-connector.ts";
 import type { ExternalAgentConnector } from "../../src/index.ts";
 import { SUBAGENT_PROVIDER_KINDS } from "../../src/core/subagent/lifecycle.ts";
 
@@ -10,7 +11,7 @@ function acceptsExternalConnector(connector: ExternalAgentConnector): ExternalAg
 
 describe("External Connector public taxonomy", () => {
 	it("exports one open connector contract and registry factory without vendor drivers", () => {
-		expect(publicApi.EXTERNAL_CONNECTOR_PROVIDER_CLASSES).toEqual(["external_connector"]);
+		expect(externalConnectorApi.EXTERNAL_CONNECTOR_PROVIDER_CLASSES).toEqual(["external_connector"]);
 		expect(typeof publicApi.createExternalConnectorRegistry).toBe("function");
 		expect(publicApi.createExternalConnectorRegistry().list()).toEqual([]);
 		expect(typeof acceptsExternalConnector).toBe("function");

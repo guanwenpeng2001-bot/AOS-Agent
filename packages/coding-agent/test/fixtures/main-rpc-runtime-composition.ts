@@ -26,12 +26,14 @@ import {
 import {
 	createAgentRuntimeCompositionFactory,
 	createExternalConnectorRegistry,
+} from "../../src/index.ts";
+import { main } from "../../src/main.ts";
+import { SchedulerExecutorRegistry } from "../../src/core/scheduler/executors.ts";
+import {
 	createWorkerSandboxComposition,
-	main,
-	SchedulerExecutorRegistry,
 	type AgentRuntimeCompositionContext,
 	type SchedulerRuntimeOptions,
-} from "../../src/index.ts";
+} from "../../src/core/runtime/composition.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";
 import {

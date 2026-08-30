@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ImageContent } from "@aos-agent/ai";
 import { AutomationRpcError, RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import type { RpcRunStreamEvent } from "../src/modes/rpc/rpc-client.ts";
-import type { CanonicalExternalAgentArtifactReference } from "../src/index.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../src/external-connector.ts";
 
 type RpcClientPrivate = {
 	send: (command: { type: string }) => Promise<unknown>;

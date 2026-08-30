@@ -9,28 +9,32 @@ import {
 	TASK_CREDENTIAL_STATUS,
 	TaskCredentialError,
 	createTaskCredentialNullTarget,
-	type RpcTaskCredentialCommandType,
 	type TaskCredentialDeliveryReceipt,
 	type TaskCredentialErrorCode,
-	type TaskCredentialGetData,
 	type TaskCredentialGrant,
-	type TaskCredentialHeartbeatData,
-	type TaskCredentialIssueData,
 	type TaskCredentialIssueRequest,
 	type TaskCredentialIssuer,
-	type TaskCredentialListData,
 	type TaskCredentialProvider,
 	type TaskCredentialProviderReceipt,
-	type TaskCredentialRevokeData,
 	type TaskCredentialScope,
-	type TaskCredentialServiceRevokeInput,
-	type TaskCredentialServiceSettleInput,
-	type TaskCredentialSettleData,
 	type TaskCredentialTarget,
 	type TaskCredentialTargetCapabilities,
 	type TaskCredentialTtlBounds,
 	type TaskExecutionBinding,
-} from "../../src/index.ts";
+} from "../../src/core/index.ts";
+import type {
+	RpcTaskCredentialCommandType,
+	TaskCredentialGetData,
+	TaskCredentialHeartbeatData,
+	TaskCredentialIssueData,
+	TaskCredentialListData,
+	TaskCredentialRevokeData,
+	TaskCredentialSettleData,
+} from "../../src/modes/index.ts";
+import type {
+	TaskCredentialServiceRevokeInput,
+	TaskCredentialServiceSettleInput,
+} from "../../src/core/policy/task-credential-service.ts";
 // The modes entry must expose the same RPC command/response union surface.
 import type { RpcTaskCredentialCommandType as ModesRpcTaskCredentialCommandType } from "../../src/modes/index.ts";
 
@@ -98,8 +102,8 @@ function validCapabilities(): TaskCredentialTargetCapabilities {
 	};
 }
 
-describe("Task Credential / Lease v1 public entry exports", () => {
-	it("exposes only the intended safe contract through the package entry", () => {
+describe("Task Credential / Lease internal contracts", () => {
+	it("keeps the contract available internally and out of the package entry", () => {
 		expect(typeof TaskCredentialError).toBe("function");
 		expect(typeof createTaskCredentialNullTarget).toBe("function");
 		expect(TASK_CREDENTIAL_SCHEMA_VERSION).toBe(1);
@@ -116,6 +120,8 @@ describe("Task Credential / Lease v1 public entry exports", () => {
 		expect(TASK_CREDENTIAL_DELIVERY_STATUS).toEqual(["succeeded", "failed", "unknown"]);
 		expect(TASK_CREDENTIAL_ERROR_CODES).toContain("task_credential_revocation_unknown");
 		expect(TASK_CREDENTIAL_ERROR_CODES).toContain("task_lease_heartbeat_invalid");
+		expect("TASK_CREDENTIAL_SCHEMA_VERSION" in packageEntry).toBe(false);
+		expect("TaskCredentialError" in packageEntry).toBe(false);
 		// Material-bearing internals stay module-private: the test provider
 		// (which seeds sentinel material), the material-receiving target
 		// request, the material target, and the store implementation are not

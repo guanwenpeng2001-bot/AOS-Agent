@@ -36,10 +36,8 @@ import {
 	type ExecutionPolicyProfile,
 } from "../../src/core/policy/execution.ts";
 import { classifyExternalToolPolicyOperation } from "../../src/core/connector/tool-policy.ts";
-import {
-	createExternalConnectorRegistry,
-	type ExternalConnectorRegistration,
-} from "../../src/index.ts";
+import { createExternalConnectorRegistry } from "../../src/index.ts";
+import type { ExternalConnectorRegistration } from "../../src/core/connector/registry.ts";
 import type { ExternalConnectorActivationSource } from "../../src/core/connector/readiness.ts";
 import {
 	executeExternalConnectorProductRun,

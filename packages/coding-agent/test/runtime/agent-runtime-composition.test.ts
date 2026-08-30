@@ -45,26 +45,32 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	createRpcHostController,
-	createWorkerSandboxComposition,
-	buildExternalConnectorTargetConfig,
-	ExternalConnectorTargetConfigError,
 	InteractiveMode,
 	runPrintMode,
-	SchedulerExecutorRegistry,
+	type CreateAgentSessionRuntimeFactory,
+} from "../../src/index.ts";
+import { createRpcHostController } from "../../src/modes/rpc/rpc-host.ts";
+import {
+	buildExternalConnectorTargetConfig,
+	ExternalConnectorTargetConfigError,
+	type ExternalConnectorResolvedTarget,
+	type ExternalConnectorTargetConfigErrorReason,
+	type ExternalConnectorTargetDefinition,
+} from "../../src/external-connector.ts";
+import {
+	createWorkerSandboxComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionContext,
 	type AgentRuntimeCompositionFactory,
 	type AgentRuntimeCompositionOptions,
-	type CreateAgentSessionRuntimeFactory,
-	type TaskCredentialProvider,
 	type SchedulerRuntimeOptions,
+} from "../../src/core/runtime/composition.ts";
+import {
+	createExternalConnectorRegistry,
 	type ExternalConnectorRegistry,
-	type ExternalConnectorTargetConfigErrorReason,
-	type ExternalConnectorTargetDefinition,
-	type ExternalConnectorResolvedTarget,
-} from "../../src/index.ts";
-import { createExternalConnectorRegistry } from "../../src/core/connector/registry.ts";
+} from "../../src/core/connector/registry.ts";
+import type { TaskCredentialProvider } from "../../src/core/policy/task-credential-provider.ts";
+import { SchedulerExecutorRegistry } from "../../src/core/scheduler/executors.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import { AgentSession } from "../../src/core/session/agent-session.ts";
 import { getAgentCanonicalSession } from "../../src/core/session/facade.ts";

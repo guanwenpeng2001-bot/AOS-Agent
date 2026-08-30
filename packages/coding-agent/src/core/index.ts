@@ -1,4 +1,5 @@
 /**
+ * package-internal barrel, not part of the published API.
  * Core modules shared between all run modes.
  */
 

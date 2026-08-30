@@ -19,10 +19,10 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	createRpcHostController,
 	ModelRuntime,
 	SettingsManager,
 } from "../../src/index.ts";
+import { createRpcHostController } from "../../src/modes/rpc/rpc-host.ts";
 
 describe("RPC initialize external connector readiness projection", () => {
 	it("projects public readiness details without effects or private connector values", async () => {

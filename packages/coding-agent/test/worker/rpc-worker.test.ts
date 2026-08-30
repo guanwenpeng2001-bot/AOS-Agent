@@ -19,8 +19,8 @@ import type { WorkerLifecycleStatus, WorkerRecord } from "../../src/core/worker/
 import {
 	createAgentRuntimeCompositionFactory,
 	createAgentSession,
-	createWorkerSandboxComposition,
 } from "../../src/index.ts";
+import { createWorkerSandboxComposition } from "../../src/core/runtime/composition.ts";
 import type { WorkerSandboxProvider } from "../../src/core/worker/sandbox-provider.ts";
 import { attachJsonlLineReader } from "../../src/modes/rpc/jsonl.ts";
 import { RpcHostController, type RpcWorkerRegistry } from "../../src/modes/rpc/rpc-host.ts";

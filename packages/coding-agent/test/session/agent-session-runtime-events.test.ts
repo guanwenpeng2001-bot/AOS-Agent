@@ -25,7 +25,7 @@ import type {
 	SessionBeforeSwitchEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
-} from "../../src/index.ts";
+} from "../../src/core/extensions/index.ts";
 
 type RecordedSessionEvent =
 	| SessionBeforeSwitchEvent

@@ -13,10 +13,8 @@ import {
 	type FoundationJsonValue,
 } from "@aos-agent/agent-core";
 import { describe, expect, it } from "vitest";
-import {
-	createExternalConnectorRegistry,
-	type CanonicalExternalAgentInput,
-} from "../../src/index.ts";
+import { createExternalConnectorRegistry } from "../../src/index.ts";
+import type { CanonicalExternalAgentInput } from "../../src/external-connector.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import {
 	executeExternalConnectorProductRun as executeExternalConnectorProductRunWithPolicy,

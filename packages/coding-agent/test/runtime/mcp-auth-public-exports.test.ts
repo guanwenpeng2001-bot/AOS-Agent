@@ -1,22 +1,26 @@
 import { describe, expect, it } from "vitest";
 import * as packageEntry from "../../src/index.ts";
 import {
-	McpAuthRpcError,
-	McpContentRpcError,
 	RpcClient,
-	type MCPAuthCallbackMode,
 	type MCPAuthStartOptions,
 	type MCPAuthStartResult,
+} from "../../src/index.ts";
+import {
+	McpAuthRpcError,
+	McpContentRpcError,
 	type RpcMcpAuthInteraction,
 	type RpcMcpAuthInteractiveOptions,
-} from "../../src/index.ts";
+} from "../../src/modes/index.ts";
+import type { MCPAuthCallbackMode } from "../../src/core/runtime/sdk.ts";
 
-describe("MCP OAuth interactive public entry exports", () => {
-	it("exposes the interactive bridge through the package entry without starting a process or socket", () => {
+describe("MCP OAuth interactive contracts", () => {
+	it("keeps the RPC implementation available without starting a process or socket", () => {
 		// Value exports: the client and the documented rejection classes.
 		expect(typeof RpcClient).toBe("function");
 		expect(typeof McpAuthRpcError).toBe("function");
 		expect(typeof McpContentRpcError).toBe("function");
+		expect("McpAuthRpcError" in packageEntry).toBe(false);
+		expect("McpContentRpcError" in packageEntry).toBe(false);
 		// Constructing a client never spawns a child process or opens a socket;
 		// start() is the only method that does.
 		const client = new RpcClient();
