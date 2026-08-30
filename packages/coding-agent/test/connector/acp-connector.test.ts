@@ -734,12 +734,12 @@ describe("private ACP stable-v1 connector driver", () => {
 	it("canonicalizes encoded absolute paths and symlinks before ToolIntent and preserves protected review", async () => {
 		const cwd = await workspace();
 		await mkdir(path.join(cwd, "protected"));
-		const target = path.join(cwd, "protected", "result.txt");
+		const sourceTarget = path.join(cwd, "protected", "result.txt");
 		const fixture = fakeAgent({
 			onPrompt: async ({ client }) => {
 				await client.request(CLIENT_METHODS.fs_write_text_file, {
 					sessionId,
-					path: encodeURI(target),
+					path: encodeURI(sourceTarget),
 					content: "protected",
 				});
 				return { stopReason: "end_turn" };
@@ -750,8 +750,8 @@ describe("private ACP stable-v1 connector driver", () => {
 		const iterator = driver.events(handle)[Symbol.asyncIterator]();
 		expect((await nextDriverEvent(iterator)).type).toBe("started");
 		const event = await nextToolEvent(iterator);
-		const canonicalTarget = path.join(await realpath(cwd), "protected", "result.txt");
-		expect(event.request.originalArguments).toMatchObject({ path: canonicalTarget });
+		const target = path.join(await realpath(cwd), "protected", "result.txt");
+		expect(event.request.originalArguments).toMatchObject({ path: target });
 		const route: ToolGatewayRoute = {
 			kind: "local",
 			namespace: "acp",

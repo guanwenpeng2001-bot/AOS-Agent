@@ -1024,9 +1024,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		for (const p of [...primary, ...additional]) {
 			const resolved = this.resolveResourcePath(p);
-			const canonicalPath = canonicalizePath(resolved);
-			if (seen.has(canonicalPath)) continue;
-			seen.add(canonicalPath);
+			const path = canonicalizePath(resolved);
+			if (seen.has(path)) continue;
+			seen.add(path);
 			merged.push(resolved);
 		}
 

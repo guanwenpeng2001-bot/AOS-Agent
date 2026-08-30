@@ -546,7 +546,7 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		const physical = this.physicalEntries();
 		const byPhysicalId = new Map(physical.map((entry) => [entry.id, entry]));
 		const visibleByPhysicalId = new Map<string, Entry>();
-		const canonicalById = new Map<string, Entry>();
+		const byId = new Map<string, Entry>();
 		const visibleCanonicalIds = new Set<string>();
 		const projected: SessionEntry[] = [];
 		for (let index = 0; index < physical.length; index += 1) {
@@ -556,13 +556,13 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 			if (foundation?.kind === "entry") {
 				const parentId = this.resolveVisibleCanonicalParent(
 					foundation.entry.parentId,
-					canonicalById,
+					byId,
 					visibleCanonicalIds,
 				);
 				const entry = foundation.entry.parentId === parentId
 					? foundation.entry
 					: { ...foundation.entry, parentId };
-				canonicalById.set(entry.id, entry);
+				byId.set(entry.id, entry);
 				if (foundation.entry.type === "active_tools_change") continue;
 				visibleByPhysicalId.set(physicalEntry.id, entry);
 				visibleCanonicalIds.add(entry.id);
@@ -651,14 +651,14 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 				projected.push(customMessage);
 				const canonical = legacyCustomMessageToCanonical(physicalEntry, index + 1, parentId);
 				visibleByPhysicalId.set(physicalEntry.id, canonical);
-				canonicalById.set(canonical.id, canonical);
+				byId.set(canonical.id, canonical);
 				visibleCanonicalIds.add(canonical.id);
 				continue;
 			}
 			const entry = legacyEntryToCanonical(physicalEntry, index + 1, parentId);
 			if (entry !== undefined) {
 				visibleByPhysicalId.set(physicalEntry.id, entry);
-				canonicalById.set(entry.id, entry);
+				byId.set(entry.id, entry);
 				visibleCanonicalIds.add(entry.id);
 				const timestamp = new Date(entry.timestamp).toISOString();
 				if (entry.type === "message") projected.push({ type: "message", id: entry.id, parentId: entry.parentId, timestamp, message: clone(entry.message) });

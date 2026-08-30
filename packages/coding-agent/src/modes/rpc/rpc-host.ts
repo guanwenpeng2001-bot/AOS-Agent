@@ -2617,12 +2617,12 @@ export class RpcHostController {
 						),
 					);
 				}
-				const canonicalInput: CanonicalExternalAgentInput = {
+				const input: CanonicalExternalAgentInput = {
 					schemaVersion: 1,
 					text: message,
 					artifacts: artifacts ?? [],
 				};
-				const admitted = await gateCanonicalExternalAgentInputBeforeAcceptance(canonicalInput, {
+				const admitted = await gateCanonicalExternalAgentInputBeforeAcceptance(input, {
 					capabilities: {
 						artifacts: selected.value.capabilitySnapshot.artifacts,
 						images: selected.value.capabilitySnapshot.images,

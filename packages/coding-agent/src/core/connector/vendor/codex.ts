@@ -1789,8 +1789,8 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 				) {
 					throw eventInvalidError();
 				}
-				const canonicalCwd = await canonicalApprovalPath(params.cwd, "read", this.#cwd, this.#roots);
-				argumentsValue = { ...(argumentsValue as Record<string, FoundationJsonValue>), cwd: canonicalCwd ?? null };
+				const cwd = await canonicalApprovalPath(params.cwd, "read", this.#cwd, this.#roots);
+				argumentsValue = { ...(argumentsValue as Record<string, FoundationJsonValue>), cwd: cwd ?? null };
 				route = PRIVATE_CODEX_SERVER_REQUEST_ROUTES.commandApproval;
 				responseKind = "command_approval";
 				sideEffecting = true;
@@ -1838,8 +1838,8 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 				) {
 					throw eventInvalidError();
 				}
-				const canonicalCwd = await canonicalApprovalPath(params.cwd, "read", this.#cwd, this.#roots);
-				argumentsValue = { ...(argumentsValue as Record<string, FoundationJsonValue>), cwd: canonicalCwd ?? null };
+				const cwd = await canonicalApprovalPath(params.cwd, "read", this.#cwd, this.#roots);
+				argumentsValue = { ...(argumentsValue as Record<string, FoundationJsonValue>), cwd: cwd ?? null };
 				route = PRIVATE_CODEX_SERVER_REQUEST_ROUTES.permissionsApproval;
 				responseKind = "permissions_approval";
 				sideEffecting = true;

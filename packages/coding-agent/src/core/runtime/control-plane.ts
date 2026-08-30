@@ -1006,7 +1006,7 @@ function rawCommandPolicyOperation(input: {
 
 export class FoundationControlPlane {
 	private readonly harness: AgentHarness;
-	private readonly canonicalSession: Session | undefined;
+	private readonly session: Session | undefined;
 	private readonly sessionManager: SessionManager;
 	private readonly sessionLedger: NonNullable<FoundationControlPlaneOptions["sessionLedger"]>;
 	private readonly settingsManager: SettingsManager;
@@ -1079,7 +1079,7 @@ export class FoundationControlPlane {
 
 	constructor(options: FoundationControlPlaneOptions) {
 		this.harness = options.harness;
-		this.canonicalSession = options.canonicalSession;
+		this.session = options.canonicalSession;
 		this.sessionManager = options.sessionManager;
 		this.sessionLedger = options.sessionLedger ?? {
 			getSessionId: () => this.sessionManager.getSessionId(),
@@ -1764,14 +1764,14 @@ export class FoundationControlPlane {
 	): Promise<void> {
 		try {
 			if (
-				this.canonicalSession === undefined ||
+				this.session === undefined ||
 				request.context.attemptId === undefined ||
 				request.context.operationId === undefined
 			) {
 				throw externalToolGatewayDenied();
 			}
 			await this.ensurePolicyReady(request.context.operationId, undefined, false);
-			const bindingRecord = await this.canonicalSession.getFoundationObject("agent_binding", request.context.bindingId);
+			const bindingRecord = await this.session.getFoundationObject("agent_binding", request.context.bindingId);
 			if (bindingRecord === undefined || bindingRecord.kind !== "fact") throw externalToolGatewayDenied();
 			const checkedBinding = validateAgentBinding(bindingRecord.payload);
 			if (
@@ -1783,7 +1783,7 @@ export class FoundationControlPlane {
 				throw externalToolGatewayDenied();
 			}
 			const binding = checkedBinding.value;
-			const epochRecord = await this.canonicalSession.getFoundationObject("binding_epoch", request.context.bindingEpochId);
+			const epochRecord = await this.session.getFoundationObject("binding_epoch", request.context.bindingEpochId);
 			if (epochRecord === undefined || epochRecord.kind !== "fact") throw externalToolGatewayDenied();
 			const checkedEpoch = validateBindingEpoch(epochRecord.payload);
 			if (
@@ -1801,7 +1801,7 @@ export class FoundationControlPlane {
 			) {
 				throw externalToolGatewayDenied();
 			}
-			const policyRecord = await this.canonicalSession.getFoundationObject("policy_binding", policyReference.id);
+			const policyRecord = await this.session.getFoundationObject("policy_binding", policyReference.id);
 			if (policyRecord === undefined || policyRecord.kind !== "fact") throw externalToolGatewayDenied();
 			if (fingerprintFoundationValue(policyRecord.payload).value !== policyReference.fingerprint.value) {
 				throw externalToolGatewayDenied();
@@ -2963,7 +2963,7 @@ export class FoundationControlPlane {
 			if (!isCanonicalWorkerTimestamp(event.value.timestamp)) {
 				throw new FoundationError("worker_persistence_failed", "Historical Operation Worker event timestamp is invalid");
 			}
-			const canonicalEnvelope = canonicalFoundationJson(event.value);
+			const envelope = canonicalFoundationJson(event.value);
 			const eventPayload = event.value.payload;
 			if (
 				event.value.correlation.sessionId !== sessionId ||
@@ -2974,12 +2974,12 @@ export class FoundationControlPlane {
 			}
 			const seenPrevious = seen.get(eventId);
 			if (seenPrevious !== undefined) {
-				if (seenPrevious.customType !== entry.customType || seenPrevious.canonicalEnvelope !== canonicalEnvelope) {
+				if (seenPrevious.customType !== entry.customType || seenPrevious.canonicalEnvelope !== envelope) {
 					throw new FoundationError("worker_persistence_failed", "Historical Operation Worker event identity conflicts");
 				}
 				continue;
 			}
-			seen.set(eventId, { customType: entry.customType, canonicalEnvelope });
+			seen.set(eventId, { customType: entry.customType, canonicalEnvelope: envelope });
 			if (event.value.category === "worker.operation_recorded") {
 				const correlation = event.value.correlation;
 				const payload = event.value.payload;
@@ -3560,13 +3560,13 @@ export class FoundationControlPlane {
 
 	private hasPersistedWorkerFact(customType: string, event: FoundationEventEnvelope): boolean {
 		const entries = this.sessionManager.getPhysicalEntries();
-		const canonicalEnvelope = canonicalFoundationJson(event);
+		const envelope = canonicalFoundationJson(event);
 		const cached = this.persistedWorkerFacts.get(event.eventId);
 		if (
 			cached !== undefined &&
 			cached.entryCount === entries.length &&
 			cached.customType === customType &&
-			cached.canonicalEnvelope === canonicalEnvelope
+			cached.canonicalEnvelope === envelope
 		) {
 			return true;
 		}
@@ -3583,13 +3583,13 @@ export class FoundationControlPlane {
 			if (
 				entry.customType !== customType ||
 				entry.customType !== event.category ||
-				candidateCanonical !== canonicalEnvelope
+				candidateCanonical !== envelope
 			) {
 				throw new FoundationError("worker_persistence_failed", "Operation Worker event identity conflicts");
 			}
 			persisted = true;
 		}
-		if (persisted) this.markWorkerFactPersisted(event.eventId, customType, canonicalEnvelope);
+		if (persisted) this.markWorkerFactPersisted(event.eventId, customType, envelope);
 		return persisted;
 	}
 

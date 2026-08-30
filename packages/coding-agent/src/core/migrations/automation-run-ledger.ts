@@ -1057,7 +1057,7 @@ export function reconcileLegacyAutomationRunLedger(
 	canonicalRuns: readonly CanonicalAutomationRunProjection[],
 ): ReconciledAutomationRunLedgerMigrationResult {
 	const historical = migrateLegacyAutomationRunLedger(sessionId, source);
-	const canonicalByRunId = new Map<string, CanonicalAutomationRunProjection>();
+	const byRunId = new Map<string, CanonicalAutomationRunProjection>();
 	for (const canonical of canonicalRuns) {
 		if (
 			canonical.canonicalResult === undefined ||
@@ -1072,17 +1072,17 @@ export function reconcileLegacyAutomationRunLedger(
 		) {
 			throw new PrivateMigrationError("Canonical Automation Run projection is invalid for legacy reconciliation");
 		}
-		const existing = canonicalByRunId.get(canonical.id);
+		const existing = byRunId.get(canonical.id);
 		if (existing !== undefined && !canonicalEqual(existing, canonical)) {
 			throw new PrivateMigrationError(`Canonical Automation Run projection conflicts for run ${canonical.id}`);
 		}
-		canonicalByRunId.set(canonical.id, canonical);
+		byRunId.set(canonical.id, canonical);
 	}
 
-	const runs = new Map<string, AutomationRunProjection>(canonicalByRunId);
+	const runs = new Map<string, AutomationRunProjection>(byRunId);
 	const evidence: LegacyAutomationRunMigrationEvidence[] = [];
 	for (const legacy of historical.runs) {
-		const canonical = canonicalByRunId.get(legacy.runId);
+		const canonical = byRunId.get(legacy.runId);
 		if (canonical !== undefined) {
 			assertEquivalentCanonicalRun(legacy, canonical);
 			evidence.push({

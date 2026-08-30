@@ -2571,9 +2571,9 @@ export class DefaultPackageManager implements PackageManager {
 
 			const seen = new Set<string>();
 			return resolved.filter((entry) => {
-				const canonicalPath = canonicalizePath(entry.path);
-				if (seen.has(canonicalPath)) return false;
-				seen.add(canonicalPath);
+				const path = canonicalizePath(entry.path);
+				if (seen.has(path)) return false;
+				seen.add(path);
 				return true;
 			});
 		};

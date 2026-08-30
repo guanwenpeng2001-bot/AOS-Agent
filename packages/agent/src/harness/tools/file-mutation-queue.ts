@@ -19,10 +19,10 @@ function getState(env: ExecutionEnv): MutationQueueState {
 
 async function getMutationQueueKey(env: ExecutionEnv, path: string): Promise<string> {
 	const absolutePath = getOrThrow(await env.absolutePath(path));
-	const canonicalPath = await env.canonicalPath(absolutePath);
-	if (canonicalPath.ok) return canonicalPath.value;
-	if (canonicalPath.error.code === "not_found" || canonicalPath.error.code === "not_supported") return absolutePath;
-	throw canonicalPath.error;
+	const pathResult = await env.canonicalPath(absolutePath);
+	if (pathResult.ok) return pathResult.value;
+	if (pathResult.error.code === "not_found" || pathResult.error.code === "not_supported") return absolutePath;
+	throw pathResult.error;
 }
 
 /** Serialize file mutations targeting the same environment and canonical path. */

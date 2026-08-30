@@ -2437,10 +2437,10 @@ function legacyMigrationSource(
 function projectRunSources(sessionId: string, entries: ReadonlyArray<SessionEntry>): RunSourceProjection {
 	try {
 		const facts = selectFoundationFacts(sessionId, entries);
-		const canonicalSources = canonicalRunSources(sessionId, facts);
+		const sources = canonicalRunSources(sessionId, facts);
 		const canonical = projectAutomationRuns({
-			canonicalRuns: canonicalSources.results,
-			events: canonicalSources.events,
+			canonicalRuns: sources.results,
+			events: sources.events,
 		});
 		const legacyEntries = legacyRunEntries(entries);
 		const reconciled = reconcileLegacyAutomationRunLedger(
@@ -2448,13 +2448,13 @@ function projectRunSources(sessionId: string, entries: ReadonlyArray<SessionEntr
 			legacyMigrationSource(legacyEntries),
 			canonical,
 		);
-		const canonicalByRunId = new Map<string, CanonicalAuditRunSource>();
+		const byRunId = new Map<string, CanonicalAuditRunSource>();
 		for (const projection of canonical) {
-			const source = canonicalSources.sourcesByRunId.get(projection.id);
+			const source = sources.sourcesByRunId.get(projection.id);
 			if (source === undefined) return failRunProjection();
-			canonicalByRunId.set(projection.id, { ...source, projection });
+			byRunId.set(projection.id, { ...source, projection });
 		}
-		return { canonicalByRunId, legacyEntries, projections: reconciled.runs };
+		return { canonicalByRunId: byRunId, legacyEntries, projections: reconciled.runs };
 	} catch (error) {
 		if (error instanceof ExecutionAuditError) throw error;
 		if (error instanceof AutomationRunProjectionError) throw new ExecutionAuditError("audit_replay_incomplete");

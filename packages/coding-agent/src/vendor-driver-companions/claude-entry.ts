@@ -109,13 +109,13 @@ function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
 		skills: [],
 		strictMcpConfig: true,
 		tools: [],
-		canUseTool: async (toolName, input, permission) => {
+		canUseTool: async (toolName, sourceInput, permission) => {
 			if (!selectedNames.has(toolName)) {
 				return { behavior: "deny", message: "Tool is not in the exact AOS MCP selection." };
 			}
-			let canonicalInput: FoundationJsonValue;
+			let input: FoundationJsonValue;
 			try {
-				canonicalInput = asFoundationJson(input);
+				input = asFoundationJson(sourceInput);
 			} catch {
 				return { behavior: "deny", message: "Tool input is malformed." };
 			}
@@ -123,11 +123,11 @@ function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
 				requestId: permission.requestId,
 				toolUseId: permission.toolUseID,
 				toolName,
-				input: canonicalInput,
+				input,
 				signal: permission.signal,
 			});
 			return decision === "allow"
-				? { behavior: "allow", updatedInput: input, toolUseID: permission.toolUseID }
+				? { behavior: "allow", updatedInput: sourceInput, toolUseID: permission.toolUseID }
 				: { behavior: "deny", message: "AOS policy denied the tool request.", toolUseID: permission.toolUseID };
 		},
 	};

@@ -437,12 +437,12 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 			if (schedulerWriter !== undefined && schedulerWriter.session !== publicContext.session) {
 				throw new TypeError("Trusted Subagent writer must belong to the canonical Session");
 			}
-			const canonicalSchedulerOwnerId = schedulerWriter?.ownerId ?? `scheduler:${publicContext.sessionId}`;
+			const ownerId = schedulerWriter?.ownerId ?? `scheduler:${publicContext.sessionId}`;
 			const schedulerSelectionReservations =
 				snapshot.scheduler === undefined
 					? undefined
 					: new SchedulerSelectionReservationStore(publicContext.session, {
-							ownerId: canonicalSchedulerOwnerId,
+							ownerId,
 							...(schedulerWriter === undefined ? {} : { writer: schedulerWriter }),
 							maxBacklog: runtimeLimits.values.maxBacklog,
 						});

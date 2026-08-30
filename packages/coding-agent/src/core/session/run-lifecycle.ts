@@ -2932,14 +2932,14 @@ function legacyRunLedgerSource(session: RunLedgerSession): LegacyAutomationRunLe
 
 /** Reconcile canonical terminal truth with private legacy migration input. */
 function reconciledSessionRunState(session: RunLedgerSession): ReconciledSessionRunState {
-	const canonicalResults = canonicalRunResultsFromSession(session);
-	const canonicalProjections = projectAutomationRuns({ canonicalRuns: canonicalResults });
+	const results = canonicalRunResultsFromSession(session);
+	const projections = projectAutomationRuns({ canonicalRuns: results });
 	const reconciliation = reconcileLegacyAutomationRunLedger(
 		session.getSessionId(),
 		legacyRunLedgerSource(session),
-		canonicalProjections,
+		projections,
 	);
-	return { canonicalResults, canonicalProjections, projections: reconciliation.runs };
+	return { canonicalResults: results, canonicalProjections: projections, projections: reconciliation.runs };
 }
 
 function projectCanonicalRun(result: CanonicalRunResult): CanonicalAutomationRunProjection {
@@ -3501,7 +3501,7 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 	private readonly policyLedger: ReturnType<typeof createExecutionPolicyLedger>;
 	private readonly runs = new Map<RunId, RunHandleImpl>();
 	private readonly diagnosedEntries = new Set<string>();
-	private readonly canonicalDiagnostics = new Set<RunId | "*">();
+	private readonly diagnosticRuns = new Set<RunId | "*">();
 	private readonly _diagnostics: LedgerDiagnostic[] = [];
 	private _capabilityBindings = new Map<string, CapabilityBindingLedgerRecord>();
 	private readonly _requestIndex = new Map<string, { runId: RunId; requestFingerprint: string }>();
@@ -3695,19 +3695,19 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 		}
 		try {
 			const reconciled = reconciledSessionRunState(this.session);
-			const canonicalByRunId = new Map(
+			const byRunId = new Map(
 				reconciled.canonicalProjections.map((projection) => [projection.id, projection]),
 			);
 			for (const projection of reconciled.projections) {
 				const result = results.get(projection.id);
 				if (result === undefined) continue;
-				const canonical = canonicalByRunId.get(projection.id);
+				const canonical = byRunId.get(projection.id);
 				if (canonical === undefined) applyLegacyMigrationProjectionToResult(result, projection);
 				else applyCanonicalProjectionToResult(result, canonical);
 			}
 		} catch (error) {
-			if (!this.canonicalDiagnostics.has("*")) {
-				this.canonicalDiagnostics.add("*");
+			if (!this.diagnosticRuns.has("*")) {
+				this.diagnosticRuns.add("*");
 				this.recordDiagnostic({ kind: "canonical-terminal-invalid" });
 			}
 			throw error;
@@ -3974,8 +3974,8 @@ class RunLifecycleCoordinatorImpl implements RunLifecycleCoordinator {
 				(result) => result.runReceipt.runId === runId,
 			);
 		} catch (error) {
-			if (!this.canonicalDiagnostics.has(runId)) {
-				this.canonicalDiagnostics.add(runId);
+			if (!this.diagnosticRuns.has(runId)) {
+				this.diagnosticRuns.add(runId);
 				this.recordDiagnostic({ kind: "canonical-terminal-invalid", runId });
 			}
 			throw error;

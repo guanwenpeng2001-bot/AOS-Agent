@@ -68,21 +68,21 @@ const settleRunAtHost = async () => {
 	throw new Error("The main RPC composition fixture contains no graph work");
 };
 
-let canonicalContext: AgentRuntimeCompositionContext | undefined;
-let canonicalToolGateway: ToolGateway | undefined;
+let compositionContext: AgentRuntimeCompositionContext | undefined;
+let composedToolGateway: ToolGateway | undefined;
 
 function requireCanonicalContext(context: AgentRuntimeCompositionContext): void {
-	if (canonicalContext === undefined || context.session !== canonicalContext.session) {
-		canonicalContext = context;
-		canonicalToolGateway = undefined;
+	if (compositionContext === undefined || context.session !== compositionContext.session) {
+		compositionContext = context;
+		composedToolGateway = undefined;
 		return;
 	}
 	if (
-		context !== canonicalContext ||
-		context.session !== canonicalContext.session ||
-		context.harness !== canonicalContext.harness ||
-		context.sessionId !== canonicalContext.sessionId ||
-		context.models !== canonicalContext.models
+		context !== compositionContext ||
+		context.session !== compositionContext.session ||
+		context.harness !== compositionContext.harness ||
+		context.sessionId !== compositionContext.sessionId ||
+		context.models !== compositionContext.models
 	) {
 		throw new Error("main RPC providers did not receive one canonical runtime composition context");
 	}
@@ -178,7 +178,7 @@ function schedulerBinding(task: TaskEnvelope, sessionId: string): AgentBinding {
 }
 
 function createSubagents(context: AgentRuntimeCompositionContext): SubagentCompositionOptions {
-	const toolGateway = canonicalToolGateway;
+	const toolGateway = composedToolGateway;
 	if (toolGateway === undefined) throw new Error("main RPC Tool Gateway was not composed before Subagent");
 	const memoryLedger = new ContextLedger(context.session, {
 		writer: context.harness.ledger.writer,
@@ -473,8 +473,8 @@ function createConnectorRegistry(context: AgentRuntimeCompositionContext, toolGa
 const runtimeComposition = createAgentRuntimeCompositionFactory({
 	toolGateway: (context) => {
 		requireCanonicalContext(context);
-		canonicalToolGateway = createGateway(context);
-		return canonicalToolGateway;
+		composedToolGateway = createGateway(context);
+		return composedToolGateway;
 	},
 	trustedWorkerSandboxFactory: (context) => {
 		requireCanonicalContext(context);
@@ -505,9 +505,9 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 		requireCanonicalContext(context);
 		const subagents = createSubagents(context);
 		if (
-			subagents.session !== canonicalContext?.session ||
-			subagents.toolGateway !== canonicalToolGateway ||
-			subagents.writer !== canonicalContext.harness.ledger.writer
+			subagents.session !== compositionContext?.session ||
+			subagents.toolGateway !== composedToolGateway ||
+			subagents.writer !== compositionContext.harness.ledger.writer
 		) {
 			throw new Error("main RPC Subagent did not share the canonical Session, Tool Gateway, and Harness writer");
 		}
@@ -517,7 +517,7 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 		requireCanonicalContext(context);
 		const scheduler = createScheduler(context, selectionReservations);
 		if (
-			scheduler.sourceSession !== canonicalContext?.session ||
+			scheduler.sourceSession !== compositionContext?.session ||
 			scheduler.gateLookup !== schedulerAdmissionGate ||
 			scheduler.settleRunAtHost !== settleRunAtHost
 		) {
@@ -527,7 +527,7 @@ const runtimeComposition = createAgentRuntimeCompositionFactory({
 	},
 	externalConnectorRegistry: (context, toolGateway) => {
 		requireCanonicalContext(context);
-		if (toolGateway === undefined || toolGateway === canonicalToolGateway) {
+		if (toolGateway === undefined || toolGateway === composedToolGateway) {
 			throw new Error("main RPC External registry did not share the canonical Tool Gateway");
 		}
 		return createConnectorRegistry(context, toolGateway);

@@ -1405,9 +1405,9 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 		params: ReadTextFileRequest,
 		signal: AbortSignal,
 	): Promise<{ readonly content: string }> {
-		const canonicalPath = await canonicalAbsolutePath(params.path, "read", this.#cwd, this.#roots);
+		const path = await canonicalAbsolutePath(params.path, "read", this.#cwd, this.#roots);
 		const result = requireSuccessfulToolResult(await this.#requestGateway(operation, ACP_TOOL_NAMES.readTextFile, {
-			path: canonicalPath,
+			path,
 			...(params.line == null ? {} : { line: params.line }),
 			...(params.limit == null ? {} : { limit: params.limit }),
 		}));
@@ -1415,9 +1415,9 @@ export class PrivateAcpStableV1Driver implements ExternalConnectorVendorDriver {
 	}
 
 	async #writeTextFile(operation: AcpOperation, params: WriteTextFileRequest): Promise<Record<string, never>> {
-		const canonicalPath = await canonicalAbsolutePath(params.path, "write", this.#cwd, this.#roots);
+		const path = await canonicalAbsolutePath(params.path, "write", this.#cwd, this.#roots);
 		requireSuccessfulToolResult(await this.#requestGateway(operation, ACP_TOOL_NAMES.writeTextFile, {
-			path: canonicalPath,
+			path,
 			content: params.content,
 		}));
 		return {};

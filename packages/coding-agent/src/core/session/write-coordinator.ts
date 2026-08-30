@@ -103,13 +103,13 @@ function validateSessionPath(sessionFile: string, sessionRoot: string): { file: 
 		);
 	}
 
-	let canonicalFile = resolve(realParent, basename(file));
+	let resolvedFile = resolve(realParent, basename(file));
 	let fileExists = false;
 	try {
 		const fileStat = lstatSync(file);
 		fileExists = true;
 		if (fileStat.isSymbolicLink()) {
-			canonicalFile = realpathSync(file);
+			resolvedFile = realpathSync(file);
 		} else if (!fileStat.isFile()) {
 			throw new Error("session path is not a regular file");
 		}
@@ -123,7 +123,7 @@ function validateSessionPath(sessionFile: string, sessionRoot: string): { file: 
 		}
 	}
 
-	if (!isPathWithinRoot(root, canonicalFile)) {
+	if (!isPathWithinRoot(root, resolvedFile)) {
 		throw new SessionWriteCoordinationError(
 			"session_write_path_invalid",
 			file,
@@ -131,7 +131,7 @@ function validateSessionPath(sessionFile: string, sessionRoot: string): { file: 
 		);
 	}
 
-	const lockFile = `${canonicalFile}.lock`;
+	const lockFile = `${resolvedFile}.lock`;
 	let lockExists = false;
 	try {
 		const lockStat = lstatSync(lockFile);

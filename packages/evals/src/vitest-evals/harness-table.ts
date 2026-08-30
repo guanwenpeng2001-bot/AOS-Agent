@@ -97,14 +97,14 @@ function canonicalizeJson(value: unknown, ancestors: WeakSet<object>): JsonValue
 	}
 }
 
-function deriveInputKey(input: unknown): string {
-	if (typeof input === "object" && input !== null && !Array.isArray(input) && "id" in input) {
-		const id = input.id;
+function deriveInputKey(sourceInput: unknown): string {
+	if (typeof sourceInput === "object" && sourceInput !== null && !Array.isArray(sourceInput) && "id" in sourceInput) {
+		const id = sourceInput.id;
 		if (typeof id === "string" && id.trim()) return id.trim();
 	}
-	const canonicalInput = JSON.stringify(canonicalizeJson(input, new WeakSet()));
-	if (canonicalInput === undefined) throw new TypeError("Eval input must be JSON-serializable.");
-	return createHash("sha256").update(canonicalInput).digest("hex");
+	const input = JSON.stringify(canonicalizeJson(sourceInput, new WeakSet()));
+	if (input === undefined) throw new TypeError("Eval input must be JSON-serializable.");
+	return createHash("sha256").update(input).digest("hex");
 }
 
 export function deriveEvalGroupKey(input: unknown, repetition: number): string {

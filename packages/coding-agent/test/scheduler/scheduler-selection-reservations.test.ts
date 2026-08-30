@@ -268,16 +268,16 @@ describe("Session-backed Scheduler selection reservation lifecycle", () => {
 			const configured = await configuredRegistry(session, quota, `owner-${reason}`, `provider.${reason}`);
 			const selected = await reserve(configured.registry, configured.bindingValue, `queue_${reason}`);
 			expect(selected.ok, reason).toBe(true);
-			const canonicalUsage = {
+			const usage = {
 				inputTokens: 1,
 				outputTokens: 2,
 				cacheReadInputTokens: 3,
 				cacheCreationInputTokens: 4,
 				costUsd: 0.5,
 			};
-			const usage = reason === "succeeded" || reason === "failed" ? canonicalUsage : {};
-			const first = await configured.registry.settleSelection(`queue_${reason}`, reason, usage);
-			const second = await configured.registry.settleSelection(`queue_${reason}`, reason, usage);
+			const settlementUsage = reason === "succeeded" || reason === "failed" ? usage : {};
+			const first = await configured.registry.settleSelection(`queue_${reason}`, reason, settlementUsage);
+			const second = await configured.registry.settleSelection(`queue_${reason}`, reason, settlementUsage);
 			expect(first.ok, reason).toBe(true);
 			expect(second.ok, reason).toBe(true);
 			expect(quota.reserveCount, reason).toBe(1);

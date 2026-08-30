@@ -91,13 +91,13 @@ export function findExactModelReferenceMatch(
 
 	const normalizedReference = trimmedReference.toLowerCase();
 
-	const canonicalMatches = availableModels.filter(
+	const matches = availableModels.filter(
 		(model) => `${model.provider}/${model.id}`.toLowerCase() === normalizedReference,
 	);
-	if (canonicalMatches.length === 1) {
-		return canonicalMatches[0];
+	if (matches.length === 1) {
+		return matches[0];
 	}
-	if (canonicalMatches.length > 1) {
+	if (matches.length > 1) {
 		return undefined;
 	}
 

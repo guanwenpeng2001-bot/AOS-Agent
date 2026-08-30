@@ -160,14 +160,14 @@ describe("CapabilityPublicIdentity", () => {
 		expect(shortError.message).not.toContain(statePath);
 		expect(existsSync(statePath)).toBe(false);
 
-		const canonicalSecret = randomBytes(32).toString("base64url");
-		writeFileSync(statePath, JSON.stringify({ version: 1, secret: `${canonicalSecret}=` }), "utf8");
+		const secret = randomBytes(32).toString("base64url");
+		writeFileSync(statePath, JSON.stringify({ version: 1, secret: `${secret}=` }), "utf8");
 		const nonCanonicalError = await loadError(agentDir);
 		expect(nonCanonicalError).toMatchObject({ code: "control_state_corrupt" });
-		expect(nonCanonicalError.message).not.toContain(canonicalSecret);
+		expect(nonCanonicalError.message).not.toContain(secret);
 		expect(existsSync(statePath)).toBe(false);
 
-		writeFileSync(statePath, JSON.stringify({ version: 2, secret: canonicalSecret }), "utf8");
+		writeFileSync(statePath, JSON.stringify({ version: 2, secret }), "utf8");
 		const versionError = await loadError(agentDir);
 		expect(versionError).toMatchObject({ code: "control_state_corrupt" });
 		expect(versionError.message).not.toContain(privatePathMarker);

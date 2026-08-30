@@ -1063,9 +1063,9 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 	private entriesReadProjection: (() => SessionEntry[]) | undefined;
+	private legacyLeafIdReadProjection: (() => string | null) | undefined;
 	private leafIdReadProjection: (() => string | null) | undefined;
-	private canonicalLeafIdReadProjection: (() => string | null) | undefined;
-	private canonicalLanesReadProjection: (() => ReadonlyMap<string, string | null>) | undefined;
+	private lanesReadProjection: (() => ReadonlyMap<string, string | null>) | undefined;
 	private writesPaused = false;
 	private writesRetired = false;
 	private detachedSource: SessionManager | undefined;
@@ -1473,16 +1473,16 @@ export class SessionManager {
 	// =========================================================================
 
 	getLeafId(): string | null {
-		return this.leafIdReadProjection?.() ?? this.leafId;
+		return this.legacyLeafIdReadProjection?.() ?? this.leafId;
 	}
 
 	/** Return the canonical main-lane leaf, including compatibility-hidden entries. */
 	getCanonicalMainLaneLeafId(): string | null {
-		return this.canonicalLeafIdReadProjection?.() ?? this.leafId;
+		return this.leafIdReadProjection?.() ?? this.leafId;
 	}
 
 	private getCanonicalLaneLeafIds(): Map<string, string | null> {
-		return new Map(this.canonicalLanesReadProjection?.() ?? [["main", this.leafId]]);
+		return new Map(this.lanesReadProjection?.() ?? [["main", this.leafId]]);
 	}
 
 	getLeafEntry(): SessionEntry | undefined {
@@ -1616,9 +1616,9 @@ export class SessionManager {
 		canonicalLanesProjection?: () => ReadonlyMap<string, string | null>,
 	): void {
 		this.entriesReadProjection = projection;
-		this.leafIdReadProjection = leafIdProjection;
-		this.canonicalLeafIdReadProjection = canonicalLeafIdProjection;
-		this.canonicalLanesReadProjection = canonicalLanesProjection;
+		this.legacyLeafIdReadProjection = leafIdProjection;
+		this.leafIdReadProjection = canonicalLeafIdProjection;
+		this.lanesReadProjection = canonicalLanesProjection;
 	}
 
 	/**

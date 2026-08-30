@@ -670,18 +670,18 @@ export function transitionExternalConnectorOperation(
 		readonly reconcileReason?: ExternalConnectorReconcileReason;
 	},
 ): ExternalConnectorOperation {
-	const canonicalCurrent = cloneExternalConnectorOperation(current);
+	const operation = cloneExternalConnectorOperation(current);
 	if (!EXTERNAL_CONNECTOR_OPERATION_STATUSES.includes(status)) {
 		throw new FoundationError("scheduler_attempt_recovery_failed", "External connector operation status is invalid", {
-			details: { attemptId: canonicalCurrent.attemptId },
+			details: { attemptId: operation.attemptId },
 		});
 	}
-	if (!OPERATION_TRANSITIONS[canonicalCurrent.status].has(status)) {
+	if (!OPERATION_TRANSITIONS[operation.status].has(status)) {
 		throw new FoundationError(
 			"scheduler_attempt_recovery_failed",
 			"External connector operation transition is invalid",
 			{
-				details: { attemptId: canonicalCurrent.attemptId, from: canonicalCurrent.status, to: status },
+				details: { attemptId: operation.attemptId, from: operation.status, to: status },
 			},
 		);
 	}
@@ -690,7 +690,7 @@ export function transitionExternalConnectorOperation(
 			"scheduler_attempt_recovery_failed",
 			"Terminal external connector operation requires a receipt",
 			{
-				details: { attemptId: canonicalCurrent.attemptId },
+				details: { attemptId: operation.attemptId },
 			},
 		);
 	}
@@ -699,7 +699,7 @@ export function transitionExternalConnectorOperation(
 			"scheduler_attempt_recovery_failed",
 			"External connector reconciliation requires a reason",
 			{
-				details: { attemptId: canonicalCurrent.attemptId },
+				details: { attemptId: operation.attemptId },
 			},
 		);
 	}
@@ -711,34 +711,34 @@ export function transitionExternalConnectorOperation(
 			"scheduler_attempt_recovery_failed",
 			"External connector transition metadata is invalid",
 			{
-				details: { attemptId: canonicalCurrent.attemptId, status },
+				details: { attemptId: operation.attemptId, status },
 			},
 		);
 	}
 	return cloneExternalConnectorOperation({
-		schemaVersion: canonicalCurrent.schemaVersion,
-		providerId: canonicalCurrent.providerId,
-		attemptId: canonicalCurrent.attemptId,
-		bindingId: canonicalCurrent.bindingId,
-		bindingEpochId: canonicalCurrent.bindingEpochId,
-		bindingDigest: canonicalCurrent.bindingDigest,
-		bindingRevision: canonicalCurrent.bindingRevision,
-		capabilityDigest: canonicalCurrent.capabilityDigest,
-		capabilityRevision: canonicalCurrent.capabilityRevision,
-		operationNonce: canonicalCurrent.operationNonce,
-		correlation: canonicalCurrent.correlation,
+		schemaVersion: operation.schemaVersion,
+		providerId: operation.providerId,
+		attemptId: operation.attemptId,
+		bindingId: operation.bindingId,
+		bindingEpochId: operation.bindingEpochId,
+		bindingDigest: operation.bindingDigest,
+		bindingRevision: operation.bindingRevision,
+		capabilityDigest: operation.capabilityDigest,
+		capabilityRevision: operation.capabilityRevision,
+		operationNonce: operation.operationNonce,
+		correlation: operation.correlation,
 		status,
-		revision: canonicalCurrent.revision + 1,
+		revision: operation.revision + 1,
 		updatedAt: options.now,
-		...(canonicalCurrent.credentialRequirement === undefined
+		...(operation.credentialRequirement === undefined
 			? {}
-			: { credentialRequirement: canonicalCurrent.credentialRequirement }),
-		...(canonicalCurrent.credential === undefined ? {} : { credential: canonicalCurrent.credential }),
+			: { credentialRequirement: operation.credentialRequirement }),
+		...(operation.credential === undefined ? {} : { credential: operation.credential }),
 		...(status === "terminal" && options.receiptId !== undefined ? { receiptId: options.receiptId } : {}),
 		...(status === "reconcile_required" && options.reconcileReason !== undefined
 			? { reconcileReason: options.reconcileReason }
-			: status === "terminal" && canonicalCurrent.reconcileReason !== undefined
-				? { reconcileReason: canonicalCurrent.reconcileReason }
+			: status === "terminal" && operation.reconcileReason !== undefined
+				? { reconcileReason: operation.reconcileReason }
 				: {}),
 	});
 }
@@ -746,31 +746,31 @@ export function transitionExternalConnectorOperation(
 /** Persist a confirmed material-free lease before the vendor start boundary. */
 export function attachExternalConnectorCredentialLease(
 	current: ExternalConnectorOperation,
-	credential: ExternalConnectorCredentialLease,
+	lease: ExternalConnectorCredentialLease,
 	now: string,
 ): ExternalConnectorOperation {
-	const canonicalCurrent = cloneExternalConnectorOperation(current);
-	const canonicalCredential = cloneExternalConnectorCredentialLease(credential);
-	const requirement = canonicalCurrent.credentialRequirement;
+	const operation = cloneExternalConnectorOperation(current);
+	const credential = cloneExternalConnectorCredentialLease(lease);
+	const requirement = operation.credentialRequirement;
 	if (
-		canonicalCurrent.status !== "start_intent" ||
-		canonicalCurrent.credential !== undefined ||
+		operation.status !== "start_intent" ||
+		operation.credential !== undefined ||
 		requirement === undefined ||
-		canonicalCredential.targetId !== requirement.targetId ||
-		canonicalCredential.targetKind !== requirement.targetKind ||
-		canonicalCredential.projection.scopeDigest !== requirement.scopeDigest ||
-		canonicalCredential.scopeCount !== requirement.scopeCount
+		credential.targetId !== requirement.targetId ||
+		credential.targetKind !== requirement.targetKind ||
+		credential.projection.scopeDigest !== requirement.scopeDigest ||
+		credential.scopeCount !== requirement.scopeCount
 	) {
 		throw new FoundationError(
 			"scheduler_attempt_recovery_failed",
 			"External connector credential lease does not match its durable requirement",
-			{ details: { attemptId: canonicalCurrent.attemptId } },
+			{ details: { attemptId: operation.attemptId } },
 		);
 	}
 	return cloneExternalConnectorOperation({
-		...canonicalCurrent,
-		credential: canonicalCredential,
-		revision: canonicalCurrent.revision + 1,
+		...operation,
+		credential,
+		revision: operation.revision + 1,
 		updatedAt: now,
 	});
 }

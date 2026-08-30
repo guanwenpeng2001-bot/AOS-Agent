@@ -297,7 +297,7 @@ interface CanonicalReviewFixture {
 async function createCanonicalReviewFixture(): Promise<CanonicalReviewFixture> {
 	const workspace = await mkdtemp(join(tmpdir(), "aos-review-canonical-session-"));
 	const sessionDir = join(workspace, "sessions");
-	const canonicalProfile: ExecutionPolicyProfile = {
+	const reviewProfile: ExecutionPolicyProfile = {
 		...profile,
 		// Managed locks are host/system policy input; the production SettingsManager
 		// only accepts user/global profiles, so keep the team requirement without
@@ -306,8 +306,8 @@ async function createCanonicalReviewFixture(): Promise<CanonicalReviewFixture> {
 	};
 	const settingsManager = SettingsManager.inMemory({
 		executionPolicy: {
-			defaultProfile: canonicalProfile.id,
-			profiles: { [canonicalProfile.id]: canonicalProfile },
+		defaultProfile: reviewProfile.id,
+		profiles: { [reviewProfile.id]: reviewProfile },
 		},
 	});
 	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
@@ -355,7 +355,7 @@ async function createCanonicalReviewFixture(): Promise<CanonicalReviewFixture> {
 		services,
 		sessionManager,
 		model: fakeModel,
-		policyProfile: canonicalProfile.id,
+		policyProfile: reviewProfile.id,
 		noTools: "all",
 	});
 	await created.session.whenCapabilitiesReady("run-product-policy");
@@ -363,9 +363,9 @@ async function createCanonicalReviewFixture(): Promise<CanonicalReviewFixture> {
 	if (policyBinding === undefined || policyBinding.runId !== "run-product-policy") {
 		throw new Error("canonical AgentSession did not materialize the review policy binding");
 	}
-	const canonicalSession = getAgentCanonicalSession(created.session);
-	expect(canonicalSession).toBe(created.runtimeComposition.harness.ledger.session);
-	const ledger = new SessionLedger(canonicalSession, { writer: created.runtimeComposition.harness.ledger.writer });
+	const session = getAgentCanonicalSession(created.session);
+	expect(session).toBe(created.runtimeComposition.harness.ledger.session);
+	const ledger = new SessionLedger(session, { writer: created.runtimeComposition.harness.ledger.writer });
 	const facts = createGatewayFoundationFacts(policyBinding);
 	const correlation = {
 		operationId: policyBinding.runId,
@@ -1043,8 +1043,8 @@ describe("Foundation reviewer evidence integration", () => {
 			});
 			expect((await gateway.execute(team)).ok).toBe(true);
 
-			const canonicalSession = getAgentCanonicalSession(fixture.created.session);
-			const persistedApprovals = await canonicalSession.findEntries({
+			const session = getAgentCanonicalSession(fixture.created.session);
+			const persistedApprovals = await session.findEntries({
 				type: "custom",
 				customType: POLICY_APPROVAL_CUSTOM_TYPE,
 				order: "oldestFirst",

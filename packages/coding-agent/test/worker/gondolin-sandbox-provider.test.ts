@@ -348,7 +348,7 @@ describe("Gondolin guest filesystem and process operations", () => {
 
 	it("routes bounded find and grep through the guest and returns host-coordinate labels", async () => {
 		const test = await prepared();
-		const canonicalWorkspace = await realpath(test.workspace);
+		const workspace = await realpath(test.workspace);
 		const find = await test.handle.execute({
 			bindingId: "policy-binding:gondolin-test",
 			resource: "filesystem.find",
@@ -371,7 +371,7 @@ describe("Gondolin guest filesystem and process operations", () => {
 			.split("\n")
 			.map((line) => JSON.parse(line) as { readonly data: { readonly path: { readonly text: string } } });
 		expect(records).toHaveLength(2);
-		expect(records.every((record) => record.data.path.text.startsWith(canonicalWorkspace))).toBe(true);
+		expect(records.every((record) => record.data.path.text.startsWith(workspace))).toBe(true);
 		expect(records.some((record) => record.data.path.text.endsWith(path.join("src", "main.ts")))).toBe(true);
 		await test.provider.dispose(test.handle);
 	});

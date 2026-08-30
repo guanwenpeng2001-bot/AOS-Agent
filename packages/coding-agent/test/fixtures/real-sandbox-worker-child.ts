@@ -16,7 +16,7 @@ const runId = process.env.AOS_WORKER_RUN_ID;
 if (root === undefined || runId === undefined || !isAbsolute(root)) {
 	throw new Error("Trusted real-sandbox Worker composition is incomplete");
 }
-const canonicalRoot = await realpath(root);
+const resolvedRoot = await realpath(root);
 
 const profile: ExecutionPolicyProfile = {
 	id: "real-worker-sandbox",
@@ -46,8 +46,8 @@ if (!resolved.ok) throw resolved.error;
 
 function sandboxPath(requestedPath: string | undefined): string {
 	if (requestedPath === undefined || requestedPath.length === 0) throw new Error("Sandbox path is required");
-	const target = resolve(canonicalRoot, requestedPath);
-	const relation = relative(canonicalRoot, target);
+	const target = resolve(resolvedRoot, requestedPath);
+	const relation = relative(resolvedRoot, target);
 	if (relation.startsWith("..") || isAbsolute(relation)) throw new Error("Sandbox path escaped the workspace");
 	return target;
 }
@@ -92,7 +92,7 @@ function resultBytes(result: SandboxOperationResult): Buffer {
 const policy = createBuiltinToolPolicy({
 	profile,
 	binding: resolved.binding,
-	roots: { workspace: canonicalRoot },
+	roots: { workspace: resolvedRoot },
 	sandbox: handle,
 	source: "builtin",
 });

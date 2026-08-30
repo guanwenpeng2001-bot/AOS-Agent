@@ -2020,20 +2020,20 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 	});
 
 	it("startup-reaps exact private trees despite missing or drifted canonical state", async () => {
-		for (const canonicalState of ["missing_operation", "missing_mapping", "capability_and_mapping_drift"] as const) {
+		for (const state of ["missing_operation", "missing_mapping", "capability_and_mapping_drift"] as const) {
 			const value = await fixture();
 			persistAttempt(value);
-			if (canonicalState !== "missing_operation") {
+			if (state !== "missing_operation") {
 				value.store.operations.set(
 					value.attempt.attemptId,
 					operationFor(
 						value,
 						"running",
-						canonicalState === "capability_and_mapping_drift" ? capability(true, 2) : value.snapshot,
+						state === "capability_and_mapping_drift" ? capability(true, 2) : value.snapshot,
 					),
 				);
 			}
-			if (canonicalState === "capability_and_mapping_drift") {
+			if (state === "capability_and_mapping_drift") {
 				value.store.mappings.set(value.attempt.attemptId, mappingFor(value));
 			}
 			await persistSupervisorIdentity(value);
@@ -2056,7 +2056,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 				cancel: 0,
 				dispose: 0,
 			});
-			if (canonicalState !== "missing_operation") {
+			if (state !== "missing_operation") {
 				expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
 					status: "reconcile_required",
 					reconcileReason: "driver_failure",

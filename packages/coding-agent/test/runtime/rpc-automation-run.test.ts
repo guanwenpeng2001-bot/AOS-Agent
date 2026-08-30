@@ -718,30 +718,30 @@ async function installRpcExternalConnector(
 		artifacts: options.artifacts ?? false,
 		images: options.images ?? false,
 	});
-	const canonicalStore = new SessionExternalConnectorDurableStore(
+	const durableStore = new SessionExternalConnectorDurableStore(
 		new SessionLedger(getAgentCanonicalSession(runtimeHost.session), {
 			writer: runtimeHost.session.agentRuntimeComposition.harness.ledger.writer,
 		}),
 	);
 	const store: ExternalConnectorDurableStore = {
-		readAttempt: (attemptId) => canonicalStore.readAttempt(attemptId),
-		readBinding: (bindingId) => canonicalStore.readBinding(bindingId),
+		readAttempt: (attemptId) => durableStore.readAttempt(attemptId),
+		readBinding: (bindingId) => durableStore.readBinding(bindingId),
 		readExecutionInput: async (taskId) => {
 			if (options.executionInputGate !== undefined) await options.executionInputGate;
 			if (options.executionInputDelayMs !== undefined) await sleep(options.executionInputDelayMs);
-			return canonicalStore.readExecutionInput(taskId);
+			return durableStore.readExecutionInput(taskId);
 		},
-		readOperation: (attemptId) => canonicalStore.readOperation(attemptId),
-		writeOperation: (operation) => canonicalStore.writeOperation(operation),
-		readMapping: (attemptId) => canonicalStore.readMapping(attemptId),
-		writeMapping: (mapping, correlation) => canonicalStore.writeMapping(mapping, correlation),
-		readReceipt: (attemptId) => canonicalStore.readReceipt(attemptId),
-		writeReceipt: (receipt) => canonicalStore.writeReceipt(receipt),
+		readOperation: (attemptId) => durableStore.readOperation(attemptId),
+		writeOperation: (operation) => durableStore.writeOperation(operation),
+		readMapping: (attemptId) => durableStore.readMapping(attemptId),
+		writeMapping: (mapping, correlation) => durableStore.writeMapping(mapping, correlation),
+		readReceipt: (attemptId) => durableStore.readReceipt(attemptId),
+		writeReceipt: (receipt) => durableStore.writeReceipt(receipt),
 		readToolGatewayExecution: (attemptId, toolCallId) =>
-			canonicalStore.readToolGatewayExecution(attemptId, toolCallId),
-		listToolGatewayExecutions: (attemptId) => canonicalStore.listToolGatewayExecutions(attemptId),
-		writeToolGatewayIntent: (value) => canonicalStore.writeToolGatewayIntent(value),
-		writeToolGatewayTerminal: (value) => canonicalStore.writeToolGatewayTerminal(value),
+			durableStore.readToolGatewayExecution(attemptId, toolCallId),
+		listToolGatewayExecutions: (attemptId) => durableStore.listToolGatewayExecutions(attemptId),
+		writeToolGatewayIntent: (value) => durableStore.writeToolGatewayIntent(value),
+		writeToolGatewayTerminal: (value) => durableStore.writeToolGatewayTerminal(value),
 	};
 	const driver = new RpcExternalConnectorDriver(
 		options.modelAccess === "aos_gateway" ? rpcExactModelSupportMatrix(options.unsupportedServiceTier) : undefined,
@@ -828,8 +828,8 @@ async function seedRpcExternalRecovery(
 	if (policyBinding === undefined || policyBinding.runId !== runId) {
 		await runtimeHost.session.whenCapabilitiesReady(runId);
 	}
-	const canonicalPolicyBinding = runtimeHost.session.getActiveExecutionPolicyBinding();
-	if (canonicalPolicyBinding === undefined || canonicalPolicyBinding.runId !== runId) {
+	const activePolicyBinding = runtimeHost.session.getActiveExecutionPolicyBinding();
+	if (activePolicyBinding === undefined || activePolicyBinding.runId !== runId) {
 		throw new Error("RPC External Connector fixture requires the canonical Run policy binding");
 	}
 	const admission = await prepareExternalConnectorProductRun({
@@ -844,7 +844,7 @@ async function seedRpcExternalRecovery(
 			inspectArtifact: rpcArtifactInspection,
 		},
 		workspace: runtimeHost.session.cwd,
-		policyBinding: canonicalPolicyBinding,
+		policyBinding: activePolicyBinding,
 		...(fixture.snapshot.toolGateway
 			? { capabilityBinding: runtimeHost.session.getActiveCapabilityBinding()! }
 			: {}),
@@ -2279,7 +2279,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(reloaded.runtimeHost.session).not.toBe(initialSession);
 			expect(reloaded.runtimeHost.session.agentRuntimeComposition).not.toBe(initialComposition);
 			const identity = externalConnectorProductIdentity(sourceRunId, fixture.selection.providerId);
-			const canonicalRequest: ToolGatewayRequest = {
+			const request: ToolGatewayRequest = {
 				...gatewayRequest,
 				context: {
 					schemaVersion: 1,
@@ -2293,7 +2293,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				},
 			};
 			const secondCanonicalRequest: ToolGatewayRequest = {
-				...canonicalRequest,
+				...request,
 				toolCallId: "rpc-composition-crash-second-call",
 				originalArguments: { path: "docs/composition-second.txt" },
 			};
@@ -2301,7 +2301,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				modelAccess: "none",
 				resume: true,
 				toolGateway: true,
-				connectorToolGatewayCanonicalRequests: [canonicalRequest, secondCanonicalRequest],
+				connectorToolGatewayCanonicalRequests: [request, secondCanonicalRequest],
 				supervision: fixture.supervision,
 			});
 			await reloaded.controller.handleCommand({
@@ -2321,7 +2321,7 @@ describe("RPC Automation Host run lifecycle", () => {
 					modelAccess: "none",
 					resume: true,
 					toolGateway: true,
-					connectorToolGatewayCanonicalRequests: [canonicalRequest, secondCanonicalRequest],
+					connectorToolGatewayCanonicalRequests: [request, secondCanonicalRequest],
 					supervision: fixture.supervision,
 					supervisionDeadlines: recoveryDeadlines,
 				});
@@ -2389,7 +2389,7 @@ describe("RPC Automation Host run lifecycle", () => {
 							?.toolCallId;
 					}),
 				),
-			).toEqual(new Set([canonicalRequest.toolCallId, secondCanonicalRequest.toolCallId]));
+			).toEqual(new Set([request.toolCallId, secondCanonicalRequest.toolCallId]));
 
 			const replay = await reloaded.controller.dispatch({
 				id: "rpc-composition-crash-replay",
@@ -3677,7 +3677,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				sourceRunId = acceptedRunId as string;
 			}
 			const identity = externalConnectorProductIdentity(sourceRunId, fixture.selection.providerId);
-			const canonicalGatewayRequest: ToolGatewayRequest = {
+			const request: ToolGatewayRequest = {
 				...gatewayRequest,
 				context: {
 					schemaVersion: 1,
@@ -3691,7 +3691,7 @@ describe("RPC Automation Host run lifecycle", () => {
 				},
 			};
 			const secondCanonicalGatewayRequest: ToolGatewayRequest = {
-				...canonicalGatewayRequest,
+				...request,
 				toolCallId: `tool-${testCase.cutpoint}-second`,
 				originalArguments: { path: "docs/second.txt", mode: "metadata" },
 			};
@@ -3705,7 +3705,7 @@ describe("RPC Automation Host run lifecycle", () => {
 						async () => {
 							expect(fixture.driver.spawnCalls).toBe(1);
 							expect(fixture.driver.readCalls).toBe(1);
-							expect(fixture.toolGatewayRequests).toEqual([canonicalGatewayRequest]);
+							expect(fixture.toolGatewayRequests).toEqual([request]);
 							expect(fixture.driver.writes).toEqual([
 								{
 									schemaVersion: 1,
@@ -3713,11 +3713,11 @@ describe("RPC Automation Host run lifecycle", () => {
 									operationNonce: "rpc-operation-nonce",
 									result: {
 										schemaVersion: 1,
-										toolCallId: canonicalGatewayRequest.toolCallId,
-										toolName: canonicalGatewayRequest.toolName,
+										toolCallId: request.toolCallId,
+										toolName: request.toolName,
 										ok: true,
 										sideEffectState: "none",
-										toolReceiptRef: `rpc-tool-receipt-${canonicalGatewayRequest.toolCallId}`,
+										toolReceiptRef: `rpc-tool-receipt-${request.toolCallId}`,
 									},
 								},
 							]);
@@ -3736,14 +3736,14 @@ describe("RPC Automation Host run lifecycle", () => {
 					await recoveryStore.writeToolGatewayIntent({
 						schemaVersion: 1,
 						type: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
-						id: externalConnectorToolGatewayExchangeId(identity.attemptId, canonicalGatewayRequest.toolCallId),
+						id: externalConnectorToolGatewayExchangeId(identity.attemptId, request.toolCallId),
 						phase: "intent",
 						providerId: fixture.selection.providerId,
 						attemptId: identity.attemptId,
 						bindingId: identity.bindingId,
 						bindingEpochId: identity.bindingEpochId,
-						correlation: { ...operation.correlation, toolCallId: canonicalGatewayRequest.toolCallId },
-						request: canonicalGatewayRequest,
+						correlation: { ...operation.correlation, toolCallId: request.toolCallId },
+						request,
 						createdAt: "2026-08-27T00:00:00.000Z",
 					});
 				}
@@ -3779,8 +3779,8 @@ describe("RPC Automation Host run lifecycle", () => {
 					artifacts: true,
 					images: true,
 					connectorToolGatewayCanonicalRequests: testCase.persistTerminal
-						? [canonicalGatewayRequest, secondCanonicalGatewayRequest]
-						: [canonicalGatewayRequest],
+						? [request, secondCanonicalGatewayRequest]
+						: [request],
 					supervision: fixture.supervision,
 					...(testCase.persistTerminal ? { supervisionDeadlines: recoveryDeadlines } : {}),
 				});
@@ -3832,11 +3832,11 @@ describe("RPC Automation Host run lifecycle", () => {
 								operationNonce: "rpc-operation-nonce",
 								result: {
 									schemaVersion: 1,
-									toolCallId: canonicalGatewayRequest.toolCallId,
-									toolName: canonicalGatewayRequest.toolName,
+									toolCallId: request.toolCallId,
+									toolName: request.toolName,
 									ok: true,
 									sideEffectState: "none",
-									toolReceiptRef: `rpc-tool-receipt-${canonicalGatewayRequest.toolCallId}`,
+									toolReceiptRef: `rpc-tool-receipt-${request.toolCallId}`,
 								},
 							},
 							{

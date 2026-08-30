@@ -227,7 +227,7 @@ export class DurableRoleRegistry {
 		const modelProfile = await this.findDurableModelProfile(input.modelProfile.modelProfileId, input.modelProfile.revision);
 		if (modelProfile === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution ModelProfile must resolve from a durable registry fact", { details: { modelProfileId: input.modelProfile.modelProfileId, revision: input.modelProfile.revision } }));
 		const records = await this.loadRecords();
-		const canonicalOverrides: RoleResolutionOverride[] = [];
+		const overrides: RoleResolutionOverride[] = [];
 		for (const override of input.overrides ?? []) {
 			const roleRevision = override.roleRevision === undefined ? undefined : findRoleRevision(records, override.roleRevision.roleRevisionId, override.roleRevision.revision);
 			if (override.roleRevision !== undefined && roleRevision === undefined) return Result.err(new FoundationError("binding_required_fact", "Role resolution RoleRevision override must resolve from a durable registry fact", { details: { roleRevisionId: override.roleRevision.roleRevisionId, revision: override.roleRevision.revision } }));
@@ -237,7 +237,7 @@ export class DurableRoleRegistry {
 			}
 			const overrideWithoutRoute = { ...override };
 			delete overrideWithoutRoute.modelRoute;
-			canonicalOverrides.push({
+			overrides.push({
 				...overrideWithoutRoute,
 				...(roleRevision === undefined ? {} : { roleRevision }),
 				...(modelProfile === undefined ? {} : { modelProfile }),
@@ -268,7 +268,7 @@ export class DurableRoleRegistry {
 				if (source === undefined || source.kind !== "fact" || !durableReferenceMatches(reference, source.payload)) return Result.err(new FoundationError("binding_required_fact", "Role resolution override source does not match its durable Session fact", { details: { objectType, objectId: reference.id, revision: reference.revision } }));
 			}
 		}
-		return Result.ok({ ...input, task: task.value, modelProfile, overrides: canonicalOverrides });
+		return Result.ok({ ...input, task: task.value, modelProfile, overrides });
 	}
 
 	private async findDurableModelProfile(modelProfileId: string, revision: number): Promise<ModelProfile | undefined> {

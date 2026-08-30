@@ -263,7 +263,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const current = await fixture();
 		// wire/ledger field name; local alias below
 		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
-		const canonicalInput: CanonicalExternalAgentInput = {
+		const input: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "execute externally",
 			artifacts: [],
@@ -278,15 +278,15 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-product",
-			message: canonicalInput.text,
-			canonicalInput,
+			message: input.text,
+			canonicalInput: input,
 			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 			workspace: "workspace-ref",
 			now: () => NOW,
 		});
 
 		expect(current.driver.spawnedAttempt?.attemptId).toBe(execution.attemptReceipt.attemptId);
-		expect(current.driver.spawnedRequest?.input).toEqual(canonicalInput);
+		expect(current.driver.spawnedRequest?.input).toEqual(input);
 		expect(execution.attemptReceipt.provenance.producerKind).toBe("external_connector");
 		expect(execution.taskResult.sourceAttemptReceiptIds).toEqual([execution.attemptReceipt.attemptReceiptId]);
 		expect(execution.runReceipt.taskResultId).toBe(execution.taskResult.taskResultId);
@@ -319,8 +319,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const vendorArtifactId = "artifact-hunter2-at-opt-private";
 		const vendorProducer = "producer-hunter2-at-opt-private";
 		const vendorProvenance = "provenance-hunter2-at-opt-private";
-		const artifactDigest = "a".repeat(64);
-		const canonicalArtifactDigest = "b".repeat(64);
+		const sourceArtifactDigest = "a".repeat(64);
+		const artifactDigest = "b".repeat(64);
 		const current = await fixture({ artifacts: true });
 		// wire/ledger field name; local alias below
 		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
@@ -334,21 +334,21 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			schemaVersion: 1 as const,
 			artifactId: vendorArtifactId,
 			mediaType: "text/plain",
-			digest: `sha256:${artifactDigest}`,
+			digest: `sha256:${sourceArtifactDigest}`,
 			producer: vendorProducer,
 			sizeBytes: 42,
 			localPath: "/opt/private",
 			provenance: { source: vendorProvenance, message: vendorMessage },
 		};
-		const canonicalArtifact = {
+		const artifact = {
 			schemaVersion: 1 as const,
-			artifactId: canonicalArtifactDigest,
+			artifactId: artifactDigest,
 			mediaType: "image/png",
-			digest: `sha256:${canonicalArtifactDigest}`,
+			digest: `sha256:${artifactDigest}`,
 			sizeBytes: 84,
 		};
-		current.driver.terminalArtifacts = [untrustedArtifact, canonicalArtifact];
-		const canonicalInput: CanonicalExternalAgentInput = {
+		current.driver.terminalArtifacts = [untrustedArtifact, artifact];
+		const input: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "redact terminal evidence",
 			artifacts: [],
@@ -363,8 +363,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-error-redaction",
-			message: canonicalInput.text,
-			canonicalInput,
+			message: input.text,
+			canonicalInput: input,
 			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 			workspace: "workspace-ref",
 			now: () => NOW,
@@ -377,16 +377,16 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		};
 		const expectedArtifact = {
 			schemaVersion: 1,
-			artifactId: artifactDigest,
+			artifactId: sourceArtifactDigest,
 			mediaType: "text/plain",
-			digest: `sha256:${artifactDigest}`,
+			digest: `sha256:${sourceArtifactDigest}`,
 			sizeBytes: 42,
 		};
 		const expectedCanonicalArtifact = {
 			schemaVersion: 1,
-			artifactId: canonicalArtifactDigest,
+			artifactId: artifactDigest,
 			mediaType: "image/png",
-			digest: `sha256:${canonicalArtifactDigest}`,
+			digest: `sha256:${artifactDigest}`,
 			sizeBytes: 84,
 		};
 		expect(execution.attemptReceipt.error).toEqual(expectedError);
@@ -495,7 +495,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			});
 			// wire/ledger field name; local alias below
 			const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
-			const canonicalInput: CanonicalExternalAgentInput = {
+			const input: CanonicalExternalAgentInput = {
 				schemaVersion: 1,
 				text: "validate supervised terminal propagation",
 				artifacts: [],
@@ -510,8 +510,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 					capabilitySnapshotDigest: capabilityDigest,
 				},
 				runId: `run-${testCase.code}`,
-				message: canonicalInput.text,
-				canonicalInput,
+				message: input.text,
+				canonicalInput: input,
 				inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 				workspace: "workspace-ref",
 				now: () => NOW,
@@ -542,7 +542,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const current = await fixture();
 		// wire/ledger field name; local alias below
 		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
-		const canonicalInput: CanonicalExternalAgentInput = {
+		const input: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "persist before restart",
 			artifacts: [],
@@ -557,8 +557,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-restart",
-			message: canonicalInput.text,
-			canonicalInput,
+			message: input.text,
+			canonicalInput: input,
 			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 			workspace: "workspace-ref",
 			now: () => NOW,
@@ -592,7 +592,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const current = await fixture();
 		// wire/ledger field name; local alias below
 		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
-		const canonicalInput: CanonicalExternalAgentInput = {
+		const input: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "complete before cancellation",
 			artifacts: [],
@@ -607,8 +607,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-cancel-after-terminal",
-			message: canonicalInput.text,
-			canonicalInput,
+			message: input.text,
+			canonicalInput: input,
 			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 			workspace: "workspace-ref",
 			now: () => NOW,
@@ -623,7 +623,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		// wire/ledger field name; local alias below
 		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		const digestValue = "1".repeat(64);
-		const canonicalInput: CanonicalExternalAgentInput = {
+		const input: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "inspect the image reference",
 			artifacts: [{
@@ -647,8 +647,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-artifact-input",
-			message: canonicalInput.text,
-			canonicalInput,
+			message: input.text,
+			canonicalInput: input,
 			inputAdmission: {
 				inspectArtifact: (reference) => ({
 					artifactId: reference.artifactId,
@@ -663,7 +663,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			workspace: "workspace-ref",
 			now: () => NOW,
 		});
-		expect(current.driver.spawnedRequest?.input).toEqual(canonicalInput);
+		expect(current.driver.spawnedRequest?.input).toEqual(input);
 	});
 
 	it("rejects unsafe product resources before Goal, Task, Attempt, process, or driver side effects", async () => {
@@ -740,7 +740,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			const current = await fixture(testCase.capabilities);
 			// wire/ledger field name; local alias below
 			const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
-			const canonicalInput = testCase.input as CanonicalExternalAgentInput;
+			const input = testCase.input as CanonicalExternalAgentInput;
 			await expect(executeExternalConnectorProductRun({
 				session: current.session,
 				writer: current.ledger.writer,
@@ -751,8 +751,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 					capabilitySnapshotDigest: capabilityDigest,
 				},
 				runId: `run-reject-${testCase.name.replaceAll(" ", "-")}`,
-				message: canonicalInput.text,
-				canonicalInput,
+				message: input.text,
+				canonicalInput: input,
 				inputAdmission: {
 					inspectArtifact: (reference) => ({
 						artifactId: reference.artifactId,
@@ -779,7 +779,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const current = await fixture({ modelAccess: "aos_gateway" });
 		// wire/ledger field name; local alias below
 		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
-		const canonicalInput: CanonicalExternalAgentInput = {
+		const input: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "use the projected gateway route",
 			artifacts: [],
@@ -795,8 +795,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-model-gateway",
-			message: canonicalInput.text,
-			canonicalInput,
+			message: input.text,
+			canonicalInput: input,
 			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 			workspace: "workspace-ref",
 			gatewayModelRoute: {
@@ -848,7 +848,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const current = await fixture({ modelAccess: "aos_gateway" });
 		// wire/ledger field name; local alias below
 		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
-		const canonicalInput: CanonicalExternalAgentInput = {
+		const input: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "use the selected gateway fallback",
 			artifacts: [],
@@ -864,8 +864,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-model-fallback",
-			message: canonicalInput.text,
-			canonicalInput,
+			message: input.text,
+			canonicalInput: input,
 			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 			workspace: "workspace-ref",
 			gatewayModelRoute: {
@@ -909,7 +909,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const current = await fixture({ modelAccess: "aos_gateway", unsupportedModelField: "serviceTier" });
 		// wire/ledger field name; local alias below
 		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
-		const canonicalInput: CanonicalExternalAgentInput = {
+		const input: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "reject unsupported translation",
 			artifacts: [],
@@ -924,8 +924,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-model-unsupported",
-			message: canonicalInput.text,
-			canonicalInput,
+			message: input.text,
+			canonicalInput: input,
 			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 			workspace: "workspace-ref",
 			gatewayModelRoute: {
@@ -949,7 +949,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const current = await fixture({ throwOnModelMatrixRead: true });
 		// wire/ledger field name; local alias below
 		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
-		const canonicalInput: CanonicalExternalAgentInput = {
+		const input: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "agent chooses model",
 			artifacts: [],
@@ -964,8 +964,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-agent-owned-no-matrix",
-			message: canonicalInput.text,
-			canonicalInput,
+			message: input.text,
+			canonicalInput: input,
 			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 			workspace: "workspace-ref",
 			now: () => NOW,

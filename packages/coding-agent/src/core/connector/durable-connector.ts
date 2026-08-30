@@ -2696,9 +2696,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			bindingEpochId,
 			providerId: this.providerId,
 		};
-		const canonicalChecked = validateExecutionCorrelation(canonical);
-		return canonicalChecked.ok
-			? Result.ok(canonicalChecked.value)
+		const validated = validateExecutionCorrelation(canonical);
+		return validated.ok
+			? Result.ok(validated.value)
 			: Result.err(
 					externalFailure(
 						"invalid_correlation",
@@ -2709,13 +2709,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	}
 
 	async #requireFrozenFacts(
-		operation: ExternalConnectorOperation,
+		sourceOperation: ExternalConnectorOperation,
 		attempt: Attempt,
 		binding: AgentBinding,
 	): Promise<ResultValue<RuntimeLimitsOperationNonce, FoundationError>> {
-		let canonicalOperation: ExternalConnectorOperation;
+		let operation: ExternalConnectorOperation;
 		try {
-			canonicalOperation = cloneExternalConnectorOperation(operation);
+			operation = cloneExternalConnectorOperation(sourceOperation);
 		} catch {
 			return Result.err(
 				externalFailure(
@@ -2725,49 +2725,49 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				),
 			);
 		}
-		const runtimeLimits = this.#decodeOperationRuntimeLimits(canonicalOperation);
+		const runtimeLimits = this.#decodeOperationRuntimeLimits(operation);
 		if (!runtimeLimits.ok) {
-			await this.#markReconcile(canonicalOperation, "capability_drift");
+			await this.#markReconcile(operation, "capability_drift");
 			return runtimeLimits;
 		}
 		if (
-			canonicalOperation.providerId !== this.providerId ||
-			canonicalOperation.attemptId !== attempt.attemptId ||
-			canonicalOperation.bindingId !== attempt.bindingId ||
-			canonicalOperation.bindingEpochId !== attempt.bindingEpochIds[0] ||
-			canonicalOperation.bindingId !== binding.bindingId ||
-			canonicalOperation.bindingRevision !== binding.contextRevision.revision ||
-			!sameFingerprint(canonicalOperation.bindingDigest, binding.fingerprint) ||
-			canonicalOperation.correlation.taskId !== attempt.taskId ||
-			canonicalOperation.correlation.dispatchId !== attempt.dispatchId ||
-			canonicalOperation.correlation.attemptId !== attempt.attemptId ||
-			canonicalOperation.correlation.bindingId !== attempt.bindingId ||
-			canonicalOperation.correlation.bindingEpochId !== attempt.bindingEpochIds[0] ||
-			canonicalOperation.correlation.providerId !== this.providerId ||
-			canonicalOperation.correlation.agentInstanceId !== undefined ||
-			(canonicalOperation.credentialRequirement !== undefined &&
-				(canonicalOperation.credentialRequirement.capabilityBindingId !== binding.capabilityRevision.id ||
-					canonicalOperation.credentialRequirement.policyBindingId !== binding.policyRevision.id))
+			operation.providerId !== this.providerId ||
+			operation.attemptId !== attempt.attemptId ||
+			operation.bindingId !== attempt.bindingId ||
+			operation.bindingEpochId !== attempt.bindingEpochIds[0] ||
+			operation.bindingId !== binding.bindingId ||
+			operation.bindingRevision !== binding.contextRevision.revision ||
+			!sameFingerprint(operation.bindingDigest, binding.fingerprint) ||
+			operation.correlation.taskId !== attempt.taskId ||
+			operation.correlation.dispatchId !== attempt.dispatchId ||
+			operation.correlation.attemptId !== attempt.attemptId ||
+			operation.correlation.bindingId !== attempt.bindingId ||
+			operation.correlation.bindingEpochId !== attempt.bindingEpochIds[0] ||
+			operation.correlation.providerId !== this.providerId ||
+			operation.correlation.agentInstanceId !== undefined ||
+			(operation.credentialRequirement !== undefined &&
+				(operation.credentialRequirement.capabilityBindingId !== binding.capabilityRevision.id ||
+					operation.credentialRequirement.policyBindingId !== binding.policyRevision.id))
 		) {
-			await this.#markReconcile(canonicalOperation, "binding_drift");
+			await this.#markReconcile(operation, "binding_drift");
 			return Result.err(
 				externalFailure(
 					"external_binding_invalid",
 					"External connector binding drift requires reconciliation",
-					canonicalOperation.attemptId,
+					operation.attemptId,
 				),
 			);
 		}
 		if (
-			canonicalOperation.capabilityRevision !== this.#capability.revision ||
-			!sameFingerprint(canonicalOperation.capabilityDigest, this.#capability.digest)
+			operation.capabilityRevision !== this.#capability.revision ||
+			!sameFingerprint(operation.capabilityDigest, this.#capability.digest)
 		) {
-			await this.#markReconcile(canonicalOperation, "capability_drift");
+			await this.#markReconcile(operation, "capability_drift");
 			return Result.err(
 				externalFailure(
 					"external_capability_mismatch",
 					"External connector capability drift requires reconciliation",
-					canonicalOperation.attemptId,
+					operation.attemptId,
 				),
 			);
 		}
@@ -2837,7 +2837,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		attempt: Attempt,
 		operation: ExternalConnectorOperation,
 		mapping: CanonicalExternalConnectorMapping,
-		evidence: ExternalConnectorTerminalEvidence,
+		sourceEvidence: ExternalConnectorTerminalEvidence,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		const priorReceipt = await this.#requirePriorReceipt(attempt);
 		if (!priorReceipt.ok) return priorReceipt;
@@ -2859,9 +2859,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			await this.#markReconcile(operation, "capability_drift");
 			return runtimeLimits;
 		}
-		let canonicalEvidence: ExternalConnectorTerminalEvidence;
+		let evidence: ExternalConnectorTerminalEvidence;
 		try {
-			canonicalEvidence = cloneExternalConnectorTerminalEvidence(evidence);
+			evidence = cloneExternalConnectorTerminalEvidence(sourceEvidence);
 		} catch {
 			await this.#markReconcile(operation, "mapping_conflict");
 			return Result.err(
@@ -2873,10 +2873,10 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			);
 		}
 		if (
-			canonicalEvidence.externalSessionId !== mapping.externalSessionId ||
-			(canonicalEvidence.externalTurnId ?? undefined) !== (mapping.externalTurnId ?? undefined) ||
-			canonicalEvidence.operationNonce !== runtimeLimits.value.processNonce ||
-			canonicalEvidence.operationNonce !== mapping.supervisor.nonce
+			evidence.externalSessionId !== mapping.externalSessionId ||
+			(evidence.externalTurnId ?? undefined) !== (mapping.externalTurnId ?? undefined) ||
+			evidence.operationNonce !== runtimeLimits.value.processNonce ||
+			evidence.operationNonce !== mapping.supervisor.nonce
 		) {
 			await this.#markReconcile(operation, "mapping_conflict");
 			return Result.err(
@@ -2889,7 +2889,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		}
 		this.#releaseCredential(
 			operation,
-			credentialReasonForTerminal(canonicalEvidence.status, canonicalEvidence.error?.code),
+			credentialReasonForTerminal(evidence.status, evidence.error?.code),
 		);
 		const receiptId = `attempt_receipt_${attempt.attemptId}`;
 		const receipt: AttemptReceipt = {
@@ -2901,18 +2901,18 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			providerId: this.providerId,
 			bindingId: attempt.bindingId,
 			bindingEpochIds: [...attempt.bindingEpochIds],
-			status: canonicalEvidence.status,
+			status: evidence.status,
 			workerReceiptRefs: [],
-			artifacts: [...(canonicalEvidence.artifacts ?? [])],
-			...(canonicalEvidence.usage === undefined ? {} : { usage: canonicalEvidence.usage }),
-			...(canonicalEvidence.error === undefined ? {} : { error: canonicalEvidence.error }),
+			artifacts: [...(evidence.artifacts ?? [])],
+			...(evidence.usage === undefined ? {} : { usage: evidence.usage }),
+			...(evidence.error === undefined ? {} : { error: evidence.error }),
 			provenance: {
 				producerKind: "external_connector",
 				providerId: this.providerId,
-				producedAt: canonicalEvidence.producedAt,
+				producedAt: evidence.producedAt,
 				correlation: { ...operation.correlation, attemptReceiptId: receiptId },
 			},
-			sideEffectState: canonicalEvidence.sideEffectState,
+			sideEffectState: evidence.sideEffectState,
 		};
 		const checked = validateAttemptReceiptForProvider(receipt, {
 			providerId: this.providerId,

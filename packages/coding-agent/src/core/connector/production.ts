@@ -222,21 +222,21 @@ function sameProductionDriverProcess(
 
 function bindProductionVendorDriver(
 	driver: ExternalConnectorVendorDriver,
-	process: ProductionExternalConnectorProcessWithProvenance,
+	sourceProcess: ProductionExternalConnectorProcessWithProvenance,
 ): BoundProductionExternalConnectorVendorDriver {
-	const provenance = resolveProductionExternalConnectorDriverProvenance(process);
+	const provenance = resolveProductionExternalConnectorDriverProvenance(sourceProcess);
 	if (provenance === undefined) {
 		throw new TypeError("Production External Connector requires trusted driver provenance");
 	}
-	const canonicalProcess = canonicalProductionDriverProcess(process, provenance);
+	const process = canonicalProductionDriverProcess(sourceProcess, provenance);
 	const existing = PRODUCTION_VENDOR_DRIVER_BINDING.get(driver);
 	if (existing !== undefined) {
-		if (!sameProductionDriverProcess(existing.process, canonicalProcess)) {
+		if (!sameProductionDriverProcess(existing.process, process)) {
 			throw new TypeError("External Connector vendor driver is already bound to another trusted process target");
 		}
 		return existing;
 	}
-	const binding = new BoundProductionExternalConnectorVendorDriver(driver, canonicalProcess, provenance);
+	const binding = new BoundProductionExternalConnectorVendorDriver(driver, process, provenance);
 	PRODUCTION_VENDOR_DRIVER_BINDING.set(driver, binding);
 	PRODUCTION_VENDOR_DRIVER_BINDING.set(binding, binding);
 	return binding;

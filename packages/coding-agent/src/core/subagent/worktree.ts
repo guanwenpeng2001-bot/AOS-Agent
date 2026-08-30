@@ -293,12 +293,12 @@ async function persistQuarantineFact(
 			const payload = existing.kind === "fact" && existing.payload !== null && typeof existing.payload === "object" && !Array.isArray(existing.payload)
 				? existing.payload as Record<string, unknown>
 				: undefined;
-			let canonicalAt = false;
+			let validTimestamp = false;
 			if (typeof payload?.at === "string") {
 				try {
-					canonicalAt = new Date(payload.at).toISOString() === payload.at;
+					validTimestamp = new Date(payload.at).toISOString() === payload.at;
 				} catch {
-					canonicalAt = false;
+					validTimestamp = false;
 				}
 			}
 			if (
@@ -318,7 +318,7 @@ async function persistQuarantineFact(
 				payload.childAgentInstanceId !== value.childAgentInstanceId ||
 				payload.attemptId !== value.attemptId ||
 				payload.reason !== reason ||
-				!canonicalAt
+				!validTimestamp
 			) return closeUnknown("Child worktree quarantine fact conflicts with its durable identity");
 			return Result.ok(undefined);
 		}

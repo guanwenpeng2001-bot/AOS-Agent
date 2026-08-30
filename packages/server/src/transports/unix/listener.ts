@@ -25,8 +25,8 @@ export function validateUnixSocketPath(path: string, description = "Unix socket 
 
 /** @internal Derive the stable Windows named-pipe address for a configured Unix path. */
 export function getWindowsPipePath(path: string): string {
-	const canonicalPath = resolve(path).toLowerCase();
-	const suffix = createHash("sha256").update(canonicalPath).digest("hex").slice(0, 32);
+	const resolvedPath = resolve(path).toLowerCase();
+	const suffix = createHash("sha256").update(resolvedPath).digest("hex").slice(0, 32);
 	return `${WINDOWS_PIPE_PREFIX}${suffix}`;
 }
 

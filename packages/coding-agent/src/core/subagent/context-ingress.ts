@@ -147,15 +147,15 @@ export function sanitizeChildMailboxContext(
 	) {
 		return untrusted("Child mailbox structured body has an invalid exact shape");
 	}
-	const items = body.items;
-	if (items.length > SUBAGENT_CONTEXT_MAX_ITEMS) {
+	const sourceItems = body.items;
+	if (sourceItems.length > SUBAGENT_CONTEXT_MAX_ITEMS) {
 		return untrusted("Child mailbox structured body exceeds its item-count cap");
 	}
 	const text = canonicalText(body.text);
-	const canonicalItems = items.map(canonicalText);
+	const items = sourceItems.map(canonicalText);
 	if (
 		byteLength(text) > SUBAGENT_CONTEXT_TEXT_MAX_BYTES ||
-		canonicalItems.some((item) => byteLength(item) > SUBAGENT_CONTEXT_ITEM_MAX_BYTES)
+		items.some((item) => byteLength(item) > SUBAGENT_CONTEXT_ITEM_MAX_BYTES)
 	) {
 		return untrusted("Child mailbox structured body exceeds its field byte cap");
 	}
@@ -167,7 +167,7 @@ export function sanitizeChildMailboxContext(
 			schemaVersion: 1,
 			kind: messageValue.kind,
 			text,
-			items: canonicalItems,
+			items,
 		});
 	} catch {
 		return untrusted("Child mailbox structured body is not canonical JSON");

@@ -1576,7 +1576,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			toolGatewayCatalog = captured.value;
 		}
 		const executeToolGateway = async (
-			request: ToolGatewayRequest,
+			sourceRequest: ToolGatewayRequest,
 			options?: { readonly signal?: AbortSignal },
 		): Promise<ResultValue<ToolExecutionResult, FoundationError>> => {
 			const current = await this.#verifyRegisteredConnector(
@@ -1590,9 +1590,9 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			if (!current.value.truth.capabilities.toolGateway) {
 				return Result.err(connectorRegistryError("External connector does not support the Tool Gateway bridge."));
 			}
-			const checkedRequest = validateToolGatewayRequest(request);
+			const checkedRequest = validateToolGatewayRequest(sourceRequest);
 			if (!checkedRequest.ok) return checkedRequest;
-			const canonicalRequest = cloneDeepFrozen(checkedRequest.value);
+			const request = cloneDeepFrozen(checkedRequest.value);
 			const toolGateway = this.#options.toolGateway;
 			if (toolGateway === undefined) {
 				return Result.err(connectorRegistryError("External connector Tool Gateway handler is unavailable."));
@@ -1604,7 +1604,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			}
 			let result: unknown;
 			try {
-				result = await Reflect.apply(toolGateway.execute, toolGateway, [canonicalRequest, options ?? {}]);
+				result = await Reflect.apply(toolGateway.execute, toolGateway, [request, options ?? {}]);
 			} catch {
 				return Result.err(
 					new FoundationError("provider_spawn_failed", "External connector Tool Gateway handler failed."),
@@ -1622,7 +1622,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 					);
 				}
 				return EXTERNAL_CONNECTOR_TOOL_GATEWAY_ROUTE_DENIAL_CODES.has(result.error.code)
-					? Result.ok(externalConnectorToolGatewayDeniedResult(canonicalRequest))
+					? Result.ok(externalConnectorToolGatewayDeniedResult(request))
 					: Result.err(result.error);
 			}
 			if (!hasExactConnectorKeys(result, RESULT_OK_KEYS)) {
@@ -1633,8 +1633,8 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			const checkedResult = validateToolExecutionResult(result.value);
 			if (!checkedResult.ok) return checkedResult;
 			if (
-				checkedResult.value.toolCallId !== canonicalRequest.toolCallId ||
-				checkedResult.value.toolName !== canonicalRequest.toolName
+				checkedResult.value.toolCallId !== request.toolCallId ||
+				checkedResult.value.toolName !== request.toolName
 			) {
 				return Result.err(
 					connectorRegistryError("External connector Tool Gateway result does not match its request."),
@@ -1645,7 +1645,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 				checkedResult.value.error !== undefined &&
 				EXTERNAL_CONNECTOR_TOOL_GATEWAY_POLICY_DENIAL_CODES.has(checkedResult.value.error.code)
 			) {
-				return Result.ok(externalConnectorToolGatewayDeniedResult(canonicalRequest));
+				return Result.ok(externalConnectorToolGatewayDeniedResult(request));
 			}
 			return Result.ok(cloneDeepFrozen(checkedResult.value));
 		};

@@ -306,8 +306,8 @@ function syntheticModelError(model: Model<Api>, errorMessage: string, aborted = 
 }
 
 function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): CanonicalAgentSessionOptions {
-	const canonicalStorage = new SessionManagerStorage(options.sessionManager);
-	const canonicalSession = new Session(canonicalStorage);
+	const storage = new SessionManagerStorage(options.sessionManager);
+	const session = new Session(storage);
 	const legacyAgent = options.agent;
 	const harnessModels = typeof options.modelRuntime.getModel === "function"
 		? options.modelRuntime
@@ -374,7 +374,7 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		});
 	};
 	const harness = AgentHarness.createUnrestored({
-		session: canonicalSession,
+		session,
 		models: harnessModels,
 		model: legacyAgent.state.model as Model<Api>,
 		thinkingLevel: legacyAgent.state.thinkingLevel,
@@ -400,15 +400,15 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		followUpMode: options.settingsManager.getFollowUpMode(),
 		retry: options.settingsManager.getRetrySettings(),
 		compaction: options.settingsManager.getCompactionSettings(),
-		compatibilityWriter: createHarnessCompatibilityWriter(canonicalSession, canonicalStorage),
+		compatibilityWriter: createHarnessCompatibilityWriter(session, storage),
 		...(options.sessionManager.isPersisted()
 			? {}
 			: { ledgerOptions: { artifactBlobStore: new InMemoryArtifactBlobStore() } }),
 	});
 	return {
 		harness,
-		canonicalSession,
-		canonicalStorage,
+		canonicalSession: session,
+		canonicalStorage: storage,
 		systemPrompt: legacyAgent.state.systemPrompt,
 		sessionManager: options.sessionManager,
 		settingsManager: options.settingsManager,
@@ -597,7 +597,7 @@ export class CanonicalAgentSessionServices {
 	private readonly sessionReadProjection: AgentSessionReadProjection;
 	readonly canonicalSession: Session<CodingAgentSessionMetadata>;
 	readonly runtimeComposition: AgentRuntimeComposition;
-	private readonly canonicalStorage: SessionManagerStorage;
+	private readonly storage: SessionManagerStorage;
 	private readonly _resourceLoader: ResourceLoader;
 	private readonly _modelRuntime: ModelRuntime;
 	private readonly _modelBroker: ModelBroker;
@@ -640,15 +640,15 @@ export class CanonicalAgentSessionServices {
 		const canonical: CanonicalAgentSessionOptions = "harness" in options && "canonicalSession" in options
 			? options
 			: createCanonicalOptionsFromLegacy(options);
-		const canonicalStorage = canonical.canonicalStorage ?? new SessionManagerStorage(canonical.sessionManager);
+		const storage = canonical.canonicalStorage ?? new SessionManagerStorage(canonical.sessionManager);
 		this.harness = canonical.harness;
 		this.canonicalSession = canonical.canonicalSession;
-		this.canonicalStorage = canonicalStorage;
+		this.storage = storage;
 		this.sessionManager = canonical.sessionManager;
 		this.sessionReadProjection = createAgentSessionReadProjection(canonical.sessionManager);
 		this.sessionLedger = {
 			getEntries: () => this.sessionRead.getEntries(),
-			getPhysicalEntries: () => this.canonicalStorage.getAuditEntriesSnapshot(),
+			getPhysicalEntries: () => this.storage.getAuditEntriesSnapshot(),
 			getSessionId: () => this.sessionRead.getSessionId(),
 			getSessionFile: () => this.sessionRead.getSessionFile(),
 			appendCustomEntry: (customType: string, data: unknown) => this.harness.recordCustomEntry(customType, data),
@@ -1911,7 +1911,7 @@ export class CanonicalAgentSessionServices {
 	}
 
 	private canonicalEntriesSnapshot(): Entry[] {
-		return this.canonicalStorage?.getEntriesSnapshot() ?? [];
+		return this.storage?.getEntriesSnapshot() ?? [];
 	}
 
 	get steeringMode(): QueueMode {
@@ -2467,7 +2467,7 @@ export class CanonicalAgentSessionServices {
 	/** @internal Drain canonical agent and storage work without awaiting the caller that initiated a transition. */
 	async drainAcceptedWrites(): Promise<void> {
 		await this.waitForIdle();
-		await this.canonicalStorage.drain();
+		await this.storage.drain();
 	}
 
 	/** @internal Re-open a scope whose replacement failed before publication. */
@@ -2946,7 +2946,7 @@ export class CanonicalAgentSessionServices {
 
 	setSessionName(name: string): void {
 		const normalizedName = normalizeSessionName(name);
-		if (this.canonicalStorage === undefined) {
+		if (this.storage === undefined) {
 			throw new Error("Canonical session storage is required for session name changes");
 		}
 		// Startup may persist --name before runtime construction so validation
@@ -3731,7 +3731,7 @@ export class CanonicalAgentSessionServices {
 		await this.controlPlane.dispose();
 		this.flushPendingExternalMessages();
 		await this.harness.close();
-		await this.canonicalStorage.drain();
+		await this.storage.drain();
 	}
 }
 

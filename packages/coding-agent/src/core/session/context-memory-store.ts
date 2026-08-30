@@ -342,10 +342,10 @@ export class ContextMemoryStore {
 		// Refuse paths that would write under the project working directory.
 		const projectRoot = resolvePath(input.projectRoot);
 		const storePath = getProjectMemoryFilePath(projectRoot, this.agentDir);
-		const canonicalProject = canonicalizePath(projectRoot).replace(/\\/g, "/");
-		const canonicalStore = canonicalizePath(storePath).replace(/\\/g, "/");
-		const comparableProject = process.platform === "win32" ? canonicalProject.toLowerCase() : canonicalProject;
-		const comparableStore = process.platform === "win32" ? canonicalStore.toLowerCase() : canonicalStore;
+		const project = canonicalizePath(projectRoot).replace(/\\/g, "/");
+		const store = canonicalizePath(storePath).replace(/\\/g, "/");
+		const comparableProject = process.platform === "win32" ? project.toLowerCase() : project;
+		const comparableStore = process.platform === "win32" ? store.toLowerCase() : store;
 		if (comparableStore === comparableProject || comparableStore.startsWith(`${comparableProject}/`)) {
 			throw new Error("project memory store must not write into the project working directory");
 		}

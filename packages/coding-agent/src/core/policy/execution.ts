@@ -1810,7 +1810,7 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 	if (id !== undefined && !isSafeOpaqueId(id)) return undefined;
 	if (scope !== undefined && !isWorkspaceScope(scope)) return undefined;
 	if (capabilityId !== undefined && !isSafeText(capabilityId)) return undefined;
-	const path = value.path === undefined ? undefined : isSafeText(value.path) ? value.path : undefined;
+	const requestedPath = value.path === undefined ? undefined : isSafeText(value.path) ? value.path : undefined;
 	const targetPath = value.targetPath === undefined ? undefined : isSafeText(value.targetPath) ? value.targetPath : undefined;
 	const effects = value.effects;
 	const parsedEffects = effects === undefined
@@ -1818,25 +1818,25 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 		: Array.isArray(effects) && effects.length > 0 && effects.every(isPolicyEffect)
 			? uniqueInOrder(effects)
 			: undefined;
-	const canonicalPath = value.canonicalPath === undefined
+	const path = value.canonicalPath === undefined
 		? undefined
 		: isCanonicalWorkspaceRelativePath(value.canonicalPath)
 			? value.canonicalPath
 			: undefined;
-	const canonicalPaths = value.canonicalPaths;
-	const parsedCanonicalPaths = canonicalPaths === undefined
+	const paths = value.canonicalPaths;
+	const parsedCanonicalPaths = paths === undefined
 		? undefined
-		: Array.isArray(canonicalPaths) && canonicalPaths.every(isCanonicalWorkspaceRelativePath)
-			? uniqueSorted(canonicalPaths)
+		: Array.isArray(paths) && paths.every(isCanonicalWorkspaceRelativePath)
+			? uniqueSorted(paths)
 			: undefined;
 	const command = value.command === undefined ? undefined : isSafeText(value.command) ? value.command : undefined;
 	const cwd = value.cwd === undefined ? undefined : isSafeText(value.cwd) ? value.cwd : undefined;
 	const destination = value.destination === undefined ? undefined : isSafeText(value.destination) ? value.destination : undefined;
 	if (
-		(value.path !== undefined && path === undefined) ||
+		(value.path !== undefined && requestedPath === undefined) ||
 		(value.targetPath !== undefined && targetPath === undefined) ||
 		(value.effects !== undefined && parsedEffects === undefined) ||
-		(value.canonicalPath !== undefined && canonicalPath === undefined) ||
+		(value.canonicalPath !== undefined && path === undefined) ||
 		(value.canonicalPaths !== undefined && parsedCanonicalPaths === undefined) ||
 		(value.command !== undefined && command === undefined) ||
 		(value.cwd !== undefined && cwd === undefined) ||
@@ -1873,10 +1873,10 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 		...(id === undefined ? {} : { id }),
 		...(scope === undefined ? {} : { scope }),
 		...(capabilityId === undefined ? {} : { capabilityId }),
-		...(path === undefined ? {} : { path }),
+		...(requestedPath === undefined ? {} : { path: requestedPath }),
 		...(targetPath === undefined ? {} : { targetPath }),
 		...(parsedEffects === undefined ? {} : { effects: parsedEffects }),
-		...(canonicalPath === undefined ? {} : { canonicalPath }),
+		...(path === undefined ? {} : { canonicalPath: path }),
 		...(parsedCanonicalPaths === undefined ? {} : { canonicalPaths: parsedCanonicalPaths }),
 		...(command === undefined ? {} : { command }),
 		...(args === undefined ? {} : { args: args.map((arg) => String(arg)) }),

@@ -483,19 +483,19 @@ async function resolveKind(
 	diagnostics: SkillDiagnostic[],
 ): Promise<"file" | "directory" | undefined> {
 	if (info.kind === "file" || info.kind === "directory") return info.kind;
-	const canonicalPath = await env.canonicalPath(info.path);
-	if (!canonicalPath.ok) {
-		if (canonicalPath.error.code !== "not_found") {
+	const pathResult = await env.canonicalPath(info.path);
+	if (!pathResult.ok) {
+		if (pathResult.error.code !== "not_found") {
 			diagnostics.push({
 				type: "warning",
 				code: "file_info_failed",
-				message: canonicalPath.error.message,
+				message: pathResult.error.message,
 				path: info.path,
 			});
 		}
 		return undefined;
 	}
-	const target = await env.fileInfo(canonicalPath.value);
+	const target = await env.fileInfo(pathResult.value);
 	if (!target.ok) {
 		if (target.error.code !== "not_found") {
 			diagnostics.push({

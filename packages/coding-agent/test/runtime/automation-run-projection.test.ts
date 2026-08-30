@@ -266,12 +266,12 @@ describe("canonical Automation Run projection", () => {
 			error: receiptError,
 			terminalErrorCode: receiptError.code,
 		});
-		const canonicalRun: CanonicalRunResult = {
+		const run: CanonicalRunResult = {
 			...fixture.canonicalRun,
 			taskResult: { ...fixture.canonicalRun.taskResult!, error: lowerError },
 			attemptReceipts: fixture.canonicalRun.attemptReceipts.map((attempt) => ({ ...attempt, error: lowerError })),
 		};
-		expect(projectAutomationRuns({ canonicalRuns: [canonicalRun], events: fixture.events })[0]?.terminalError)
+		expect(projectAutomationRuns({ canonicalRuns: [run], events: fixture.events })[0]?.terminalError)
 			.toEqual(receiptError);
 	});
 
@@ -380,19 +380,19 @@ describe("canonical Automation Run projection", () => {
 
 	it("fails closed when a canonical result reference is missing", () => {
 		const fixture = chain();
-		const canonicalRun = { ...fixture.canonicalRun, attemptReceipts: [] };
-		expect(() => projectAutomationRuns({ canonicalRuns: [canonicalRun], events: fixture.events }))
+		const run = { ...fixture.canonicalRun, attemptReceipts: [] };
+		expect(() => projectAutomationRuns({ canonicalRuns: [run], events: fixture.events }))
 			.toThrow(/missing or duplicate AttemptReceipt references/u);
 	});
 
 	it("requires usage on the final canonical RunReceipt", () => {
 		const fixture = chain();
 		const { usage: _usage, ...withoutUsage } = fixture.runReceipt;
-		const canonicalRun: CanonicalRunResult = {
+		const run: CanonicalRunResult = {
 			...fixture.canonicalRun,
 			runReceipt: withoutUsage as unknown as RunReceipt,
 		};
-		expect(() => projectAutomationRuns({ canonicalRuns: [canonicalRun], events: fixture.events }))
+		expect(() => projectAutomationRuns({ canonicalRuns: [run], events: fixture.events }))
 			.toThrow(AutomationRunProjectionError);
 	});
 
@@ -405,11 +405,11 @@ describe("canonical Automation Run projection", () => {
 			error: { code: "canonical_failure", message: "failure", retryable: false },
 			terminalErrorCode: "canonical_failure",
 		});
-		const canonicalRun: CanonicalRunResult = {
+		const run: CanonicalRunResult = {
 			...fixture.canonicalRun,
 			runReceipt: { ...fixture.runReceipt, terminalErrorCode: "different_failure" },
 		};
-		expect(() => projectAutomationRuns({ canonicalRuns: [canonicalRun], events: fixture.events }))
+		expect(() => projectAutomationRuns({ canonicalRuns: [run], events: fixture.events }))
 			.toThrow(AutomationRunProjectionError);
 	});
 });

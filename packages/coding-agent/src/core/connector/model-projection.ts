@@ -515,12 +515,12 @@ export function translateExternalModelProjection(
 		if (targetFields.has(support.targetField)) {
 			return failure("external_binding_invalid", "model_support_matrix_invalid", field);
 		}
-		const canonicalValue = canonicalProjectionFieldValue(projectionValue, field);
+		const value = canonicalProjectionFieldValue(projectionValue, field);
 		let accepted = false;
 		let translated: ExternalModelExactTranslation | undefined;
 		try {
-			accepted = support.accepts(canonicalValue);
-			if (accepted) translated = support.translate(canonicalValue);
+			accepted = support.accepts(value);
+			if (accepted) translated = support.translate(value);
 		} catch {
 			return failure("external_binding_invalid", "model_field_translation_failed", field);
 		}

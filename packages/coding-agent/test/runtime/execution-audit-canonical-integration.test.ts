@@ -559,12 +559,12 @@ describe("canonical Execution Audit integration", () => {
 
 	it("keeps an equal legacy terminal private behind the canonical projection", () => {
 		const fixture = canonicalFixture(scenarios[0]!);
-		const canonicalOnly = new ExecutionAuditAdapter(auditSession(fixture.entries)).replay(fixture.runId);
+		const replay = new ExecutionAuditAdapter(auditSession(fixture.entries)).replay(fixture.runId);
 		const reconciled = new ExecutionAuditAdapter(
 			auditSession([...fixture.entries, ...legacyTerminalEntries(fixture.runId, 21)]),
 		).replay(fixture.runId);
 
-		expect(reconciled).toEqual(canonicalOnly);
+		expect(reconciled).toEqual(replay);
 		expect(AUDIT_SOURCE_CUSTOM_TYPES).not.toContain("automation.run");
 		expect(reconciled.run).not.toHaveProperty("attempt");
 		expect(reconciled.run).not.toHaveProperty("model");

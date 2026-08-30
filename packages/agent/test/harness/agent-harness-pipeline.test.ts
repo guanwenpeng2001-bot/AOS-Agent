@@ -491,8 +491,8 @@ describe("T4 public AgentHarness tool consumer", () => {
 		expect(artifacts.gets()).toBeGreaterThan(1);
 		const toolResultMessages = contexts().flatMap((context) => context.messages.filter((message) => message.role === "toolResult"));
 		expect(toolResultMessages.length).toBeGreaterThanOrEqual(2);
-		const canonicalToolResult = (message: (typeof toolResultMessages)[number]): string => canonicalFoundationJson({ toolCallId: message.toolCallId, toolName: message.toolName, content: message.content, details: message.details, isError: message.isError, ...(message.usage === undefined ? {} : { usage: message.usage }) });
-		expect(canonicalToolResult(toolResultMessages[0]!)).toBe(canonicalToolResult(toolResultMessages.at(-1)!));
+		const toolResultFingerprint = (message: (typeof toolResultMessages)[number]): string => canonicalFoundationJson({ toolCallId: message.toolCallId, toolName: message.toolName, content: message.content, details: message.details, isError: message.isError, ...(message.usage === undefined ? {} : { usage: message.usage }) });
+		expect(toolResultFingerprint(toolResultMessages[0]!)).toBe(toolResultFingerprint(toolResultMessages.at(-1)!));
 		expect(JSON.stringify(contexts())).not.toContain("caller override");
 		const allEntries = await session.findEntries({ order: "oldestFirst" });
 		const allRecords = await session.findRecords({ order: "oldestFirst" });

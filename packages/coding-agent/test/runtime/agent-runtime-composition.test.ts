@@ -1036,7 +1036,7 @@ describe("AgentRuntimeComposition", () => {
 		let schedulerWake: (() => void) | undefined;
 		let schedulerRegistry: SchedulerExecutorRegistry | undefined;
 		let compositionGateway: ToolGateway | undefined;
-		let canonicalWriter: AgentHarness["ledger"]["writer"] | undefined;
+		let writer: AgentHarness["ledger"]["writer"] | undefined;
 		const factory = createAgentRuntimeCompositionFactory({
 			toolGateway: (context) => {
 				compositionGateway = createGateway(context.sessionId);
@@ -1045,7 +1045,7 @@ describe("AgentRuntimeComposition", () => {
 			subagents: (context) => {
 				const gateway = compositionGateway;
 				if (gateway === undefined) throw new Error("Native Scheduler Tool Gateway is missing");
-				canonicalWriter = context.harness.ledger.writer;
+				writer = context.harness.ledger.writer;
 				return createSubagents(context, gateway, async (input) => ({
 					promptOnLane: async () => Result.ok({
 						runId: `native-run-${input.agentInstance.agentInstanceId}`,
@@ -1114,12 +1114,12 @@ describe("AgentRuntimeComposition", () => {
 						if (run === undefined) {
 							return Result.err(new FoundationError("scheduler_not_found", "Native Scheduler Run is missing"));
 						}
-						if (canonicalWriter === undefined) {
+						if (writer === undefined) {
 							return Result.err(new FoundationError("scheduler_executor_unavailable", "Canonical Scheduler writer is missing"));
 						}
 						const terminal = await observeCanonicalTerminal(sessionManager, run, {
 							outcome: input.taskResult === undefined ? "failed" : "completed",
-							writer: canonicalWriter,
+							writer,
 						});
 						if (terminal.event === undefined) {
 							return Result.err(new FoundationError("run_terminal_authority_invalid", "Canonical Run terminal was not projected"));

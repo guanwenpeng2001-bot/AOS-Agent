@@ -157,9 +157,9 @@ export async function resolveHostPathForPolicy(input: {
 	const targetPath = parseWirePath(input.targetPath);
 	const workspaceRealPath = await requiredRealpath(path.resolve(input.roots.workspace));
 	const cwdResolution = await resolveExistingAncestor(path.resolve(input.cwd));
-	const canonicalCwd = path.resolve(cwdResolution.realPath, ...cwdResolution.suffix);
-	if (!isSameOrChild(canonicalCwd, workspaceRealPath)) throw new PolicyError("workspace_boundary_violation");
-	const absolutePath = path.resolve(canonicalCwd, targetPath);
+	const cwd = path.resolve(cwdResolution.realPath, ...cwdResolution.suffix);
+	if (!isSameOrChild(cwd, workspaceRealPath)) throw new PolicyError("workspace_boundary_violation");
+	const absolutePath = path.resolve(cwd, targetPath);
 	const ancestor = await resolveExistingAncestor(absolutePath);
 	const realPath = path.resolve(ancestor.realPath, ...ancestor.suffix);
 	const roots = await realRoots(input.roots, workspaceRealPath);
@@ -178,7 +178,7 @@ export async function resolveHostPathForPolicy(input: {
 	const realParentPath = ancestor.targetExists
 		? await requiredRealpath(path.dirname(absolutePath))
 		: ancestor.realPath;
-	const canonicalPath = scope === "workspace" ? canonicalWorkspacePath(realPath, workspaceRealPath) : undefined;
+	const workspacePath = scope === "workspace" ? canonicalWorkspacePath(realPath, workspaceRealPath) : undefined;
 	return {
 		requestedPath: input.targetPath,
 		absolutePath,
@@ -186,7 +186,7 @@ export async function resolveHostPathForPolicy(input: {
 		realPath,
 		realParentPath,
 		scope,
-		...(canonicalPath === undefined ? {} : { canonicalPath, workspaceRelativePath: canonicalPath }),
+		...(workspacePath === undefined ? {} : { canonicalPath: workspacePath, workspaceRelativePath: workspacePath }),
 	};
 }
 

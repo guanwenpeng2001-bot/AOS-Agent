@@ -66,31 +66,31 @@ function isDirectoryTarget(originalPath: string, repositoryPath: string): boolea
 	return !basename.includes(".");
 }
 
-function normalizeChangelogLinkTarget(target: string, tag: string): string {
-	let canonicalTarget = target.replace(LEGACY_REPO_RE, `https://github.com/${GITHUB_REPO}`);
+function normalizeChangelogLinkTarget(sourceTarget: string, tag: string): string {
+	let target = sourceTarget.replace(LEGACY_REPO_RE, `https://github.com/${GITHUB_REPO}`);
 	const repoUrl = `https://github.com/${GITHUB_REPO}`;
 
 	for (const route of ["blob", "tree"]) {
 		for (const branch of ["main", "master"]) {
 			const floatingRefPrefix = `${repoUrl}/${route}/${branch}/`;
-			if (canonicalTarget.startsWith(floatingRefPrefix)) {
-				canonicalTarget = `${repoUrl}/${route}/${tag}/${canonicalTarget.slice(floatingRefPrefix.length)}`;
+			if (target.startsWith(floatingRefPrefix)) {
+				target = `${repoUrl}/${route}/${tag}/${target.slice(floatingRefPrefix.length)}`;
 			}
 		}
 	}
 
-	if (canonicalTarget.startsWith("#") || canonicalTarget.startsWith("//") || URL_SCHEME_RE.test(canonicalTarget)) {
-		return canonicalTarget;
+	if (target.startsWith("#") || target.startsWith("//") || URL_SCHEME_RE.test(target)) {
+		return target;
 	}
 
-	const { fragment, pathPart, query } = splitLocalTarget(canonicalTarget);
+	const { fragment, pathPart, query } = splitLocalTarget(target);
 	if (!pathPart) {
-		return canonicalTarget;
+		return target;
 	}
 
 	const repositoryPath = resolveRepositoryPath(pathPart);
 	if (!repositoryPath) {
-		return canonicalTarget;
+		return target;
 	}
 
 	const route = isDirectoryTarget(pathPart, repositoryPath) ? "tree" : "blob";

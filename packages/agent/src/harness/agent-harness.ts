@@ -3527,8 +3527,8 @@ export class AgentHarness implements AgentLane {
 			intents.push(checked.value);
 		}
 		if (intents.length === 0) return Result.err(new FoundationError("side_effect_unknown", "Durable tool intent is missing"));
-		const canonicalIntents = intents.map((intent) => canonicalFoundationJson(intent));
-		if (canonicalIntents.some((value) => value !== canonicalIntents[0])) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool intents conflict for one execution identity"));
+		const intentRepresentations = intents.map((intent) => canonicalFoundationJson(intent));
+		if (intentRepresentations.some((value) => value !== intentRepresentations[0])) return Result.err(new FoundationError("session_ledger_conflict", "Durable tool intents conflict for one execution identity"));
 		const ordered = [...intents].sort((left, right) => canonicalFoundationJson(left).localeCompare(canonicalFoundationJson(right)));
 		return Result.ok(ordered[0]!);
 	}
@@ -3580,8 +3580,8 @@ export class AgentHarness implements AgentLane {
 		if (receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" && receipt.result === undefined) {
 			throw new HarnessToolPipelineError("Durable tool result payload is missing", "side_effect_unknown");
 		}
-		const canonicalReceiptResult = !terminalToolFailure && receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" ? receipt.result : undefined;
-		const useCanonicalReceipt = canonicalReceiptResult !== undefined;
+		const receiptResult = !terminalToolFailure && receipt?.outcome === "succeeded" && receipt.sideEffectState === "none" ? receipt.result : undefined;
+		const useCanonicalReceipt = receiptResult !== undefined;
 		const receiptFailureMessage: ToolResultMessage | undefined = receipt === undefined
 			? undefined
 			: {
@@ -3610,7 +3610,7 @@ export class AgentHarness implements AgentLane {
 				toolCallId: message.toolCallId,
 				toolName: message.toolName,
 				isError: false,
-				result: canonicalReceiptResult,
+				result: receiptResult,
 			};
 			target = {
 				type: "custom",

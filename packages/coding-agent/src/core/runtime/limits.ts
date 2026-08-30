@@ -205,12 +205,12 @@ function applyRuntimeLimitLayer(
 	return cloneRuntimeLimitValues(next);
 }
 
-function createRuntimeLimitsSnapshot(values: RuntimeLimitValues): RuntimeLimitsSnapshot {
-	const canonicalValues = cloneRuntimeLimitValues(values);
-	const digest = fingerprintFoundationValue({ schemaVersion: 1, values: canonicalValues });
+function createRuntimeLimitsSnapshot(sourceValues: RuntimeLimitValues): RuntimeLimitsSnapshot {
+	const values = cloneRuntimeLimitValues(sourceValues);
+	const digest = fingerprintFoundationValue({ schemaVersion: 1, values });
 	return Object.freeze({
 		schemaVersion: 1,
-		values: canonicalValues,
+		values,
 		digest: Object.freeze({ ...digest }),
 	});
 }

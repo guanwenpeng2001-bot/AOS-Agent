@@ -161,7 +161,7 @@ function makeSession(): SessionManager {
 }
 
 const runSessions = new Map<string, SessionManager>();
-const canonicalResults = new WeakMap<RunHandle, Awaited<ReturnType<typeof observeCanonicalTerminal>>["canonical"]>();
+const results = new WeakMap<RunHandle, Awaited<ReturnType<typeof observeCanonicalTerminal>>["canonical"]>();
 
 interface CanonicalSettlementInput {
 	readonly outcome: CanonicalTerminalOutcome;
@@ -170,7 +170,7 @@ interface CanonicalSettlementInput {
 }
 
 async function settleRun(run: RunHandle, input: CanonicalSettlementInput) {
-	const existing = canonicalResults.get(run);
+	const existing = results.get(run);
 	if (existing !== undefined) return run.observeCanonicalResult(existing);
 	const session = runSessions.get(run.sessionId);
 	if (session === undefined) throw new Error(`Missing SessionManager for ${run.sessionId}`);
@@ -182,7 +182,7 @@ async function settleRun(run: RunHandle, input: CanonicalSettlementInput) {
 				: { terminalErrorCode: input.terminalError.code }),
 			...(input.currentUsage === undefined ? {} : { usage: run.computeUsageDelta(input.currentUsage) }),
 		});
-	canonicalResults.set(run, observed.canonical);
+	results.set(run, observed.canonical);
 	return observed.event;
 }
 
