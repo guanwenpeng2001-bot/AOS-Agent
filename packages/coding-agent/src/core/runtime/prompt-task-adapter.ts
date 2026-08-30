@@ -282,9 +282,9 @@ function validateCompositionRootDependencies(dependencies: PromptTaskComposition
 
 function validateDependencyResolution(name: PromptTaskDependencyName, declaredRevision: number, value: PromptTaskDependencyResolution): PromptTaskDependencyResolution {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned no immutable binding fact`, name);
-	const checkedReference = validateVersionedReference(value.reference);
-	if (!checkedReference.ok) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned an invalid revision reference`, name, checkedReference.error);
-	const reference = checkedReference.value;
+	const referenceResult = validateVersionedReference(value.reference);
+	if (!referenceResult.ok) throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned an invalid revision reference`, name, referenceResult.error);
+	const reference = referenceResult.value;
 	if (reference.revision === undefined || reference.revision !== declaredRevision || reference.revision < 1 || reference.fingerprint === undefined || reference.type !== PROMPT_TASK_DEPENDENCY_FACT_TYPES[name]) {
 		throw new PromptTaskCompositionError("prompt_task_dependency_invalid", `Prompt Task ${name} dependency returned the wrong immutable fact type or revision`, name);
 	}
@@ -537,17 +537,17 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 				? undefined
 				: selectSubagentRole(options.subagentRoles, input.prompt);
 			const childExecutionConfigured = selectedRole !== undefined || options.subagentRoles?.compose !== undefined;
-			const checkedRole = validateRoleRevision(input.roleRevision);
-			if (!checkedRole.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task RoleRevision is invalid", undefined, checkedRole.error);
-			const { fingerprint: _roleFingerprint, ...roleBase } = checkedRole.value;
-			if (fingerprintFoundationValue(roleBase).value !== checkedRole.value.fingerprint.value) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task RoleRevision fingerprint is invalid");
-			const checkedProfile = validateSecretFreeModelProfile(input.modelProfile);
-			if (!checkedProfile.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task ModelProfile is invalid", undefined, checkedProfile.error);
-			const normalizedInput = { ...input, roleRevision: checkedRole.value, modelProfile: checkedProfile.value };
+			const roleResult = validateRoleRevision(input.roleRevision);
+			if (!roleResult.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task RoleRevision is invalid", undefined, roleResult.error);
+			const { fingerprint: _roleFingerprint, ...roleBase } = roleResult.value;
+			if (fingerprintFoundationValue(roleBase).value !== roleResult.value.fingerprint.value) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task RoleRevision fingerprint is invalid");
+			const profileResult = validateSecretFreeModelProfile(input.modelProfile);
+			if (!profileResult.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task ModelProfile is invalid", undefined, profileResult.error);
+			const normalizedInput = { ...input, roleRevision: roleResult.value, modelProfile: profileResult.value };
 			const task = createTask(normalizedInput, timestamp);
 			const persistedTask = await persistTaskEnvelopeBeforeResolver(options.harness.session, task, { ownerId: options.ownerId, writer: options.writer });
 			if (!persistedTask.ok) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task TaskEnvelope could not be persisted before resolution", undefined, persistedTask.error);
-			const resolved = await resolveDependencies(options.dependencies, { prompt: input.prompt, task: persistedTask.value, roleRevision: checkedRole.value, modelProfile: checkedProfile.value });
+			const resolved = await resolveDependencies(options.dependencies, { prompt: input.prompt, task: persistedTask.value, roleRevision: roleResult.value, modelProfile: profileResult.value });
 			if (resolved.adapter.reference.providerId !== options.provider.providerId) {
 				throw new PromptTaskCompositionError("prompt_task_dependency_invalid", "Prompt Task Adapter binding does not match the trusted execution provider", "adapter");
 			}
@@ -585,8 +585,8 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 			if (childExecutionConfigured && options.subagentRoles !== undefined) {
 				if (input.runId === undefined) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Selected Child Agent execution requires a stable runId");
 				if (identity.agentInstance === undefined) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent execution requires a parent AgentInstance");
-				const checkedSelectedRole = selectedRole === undefined ? undefined : validateRoleRevision(selectedRole);
-				if (checkedSelectedRole !== undefined && !checkedSelectedRole.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent RoleRevision is invalid", undefined, checkedSelectedRole.error);
+				const selectedRoleResult = selectedRole === undefined ? undefined : validateRoleRevision(selectedRole);
+				if (selectedRoleResult !== undefined && !selectedRoleResult.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent RoleRevision is invalid", undefined, selectedRoleResult.error);
 				const metadata = await options.harness.session.getMetadata();
 				const parentCorrelation: ExecutionCorrelation = {
 					sessionId: metadata.id,
@@ -619,10 +619,10 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					});
 					if (!started.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Parent Attempt could not be persisted before Child Agent spawn", undefined, started.error);
 					const durableParent = await options.harness.session.getFoundationObject("agent_instance", identity.agentInstance.agentInstanceId);
-					const checkedDurableParent = durableParent?.kind === "fact"
+					const parentResult = durableParent?.kind === "fact"
 						? validateAgentInstance(durableParent.payload)
 						: undefined;
-					if (checkedDurableParent === undefined || !checkedDurableParent.ok) {
+					if (parentResult === undefined || !parentResult.ok) {
 						throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Parent AgentInstance proof is not durable before Child Agent spawn");
 					}
 					const childInput: PromptTaskSubagentCompositionInput = {
@@ -631,11 +631,11 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 						prompt: input.prompt,
 						parentTask: persistedTask.value,
 						parentBinding: binding,
-						parentRoleRevision: checkedRole.value,
-						parentModelProfile: checkedProfile.value,
+						parentRoleRevision: roleResult.value,
+						parentModelProfile: profileResult.value,
 						parentDispatch: dispatch,
 						parentBindingEpoch: identity.epoch,
-						parentAgentInstance: checkedDurableParent.value,
+						parentAgentInstance: parentResult.value,
 						parentCorrelation,
 						...(input.signal === undefined ? {} : { signal: input.signal }),
 						...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs }),
@@ -645,10 +645,10 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					if (options.subagentRoles.compose !== undefined) {
 						spawned = await options.subagentRoles.compose(childInput);
 					} else {
-						if (checkedSelectedRole === undefined || !checkedSelectedRole.ok) {
+						if (selectedRoleResult === undefined || !selectedRoleResult.ok) {
 							throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent RoleRevision is missing");
 						}
-						spawned = await options.subagentRoles.spawn({ ...childInput, selectedRoleRevision: checkedSelectedRole.value });
+						spawned = await options.subagentRoles.spawn({ ...childInput, selectedRoleRevision: selectedRoleResult.value });
 					}
 					if (!spawned.ok) throw new PromptTaskCompositionError("prompt_task_binding_invalid", "Selected Child Agent execution failed", undefined, spawned.error);
 					if (

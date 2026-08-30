@@ -247,19 +247,19 @@ export class SchedulerFanInController {
 	async settle(
 		request: SchedulerFanInSettleRequest,
 	): Promise<ResultValue<SchedulerFanInSettlement, FoundationError>> {
-		const checkedTask = validateTaskEnvelope(request.task);
-		if (!checkedTask.ok) return checkedTask;
-		if (request.nodeRef.taskId !== checkedTask.value.taskId || !uniqueNonEmpty(request.currentAttemptReceiptIds)) {
+		const taskResult = validateTaskEnvelope(request.task);
+		if (!taskResult.ok) return taskResult;
+		if (request.nodeRef.taskId !== taskResult.value.taskId || !uniqueNonEmpty(request.currentAttemptReceiptIds)) {
 			return fail("scheduler_fanin_invalid");
 		}
 		const joinId = request.plan?.joinId ?? schedulerNodeJoinId(request.nodeRef);
 		if (request.plan !== undefined) {
-			const checkedPlan = parseSchedulerJoinPlan(request.plan);
+			const planResult = parseSchedulerJoinPlan(request.plan);
 			if (
-				!checkedPlan.ok ||
-				checkedPlan.value.taskId !== checkedTask.value.taskId ||
-				checkedPlan.value.nodeRef?.nodeId !== request.nodeRef.nodeId ||
-				checkedPlan.value.nodeRef?.graphRevision !== request.nodeRef.graphRevision
+				!planResult.ok ||
+				planResult.value.taskId !== taskResult.value.taskId ||
+				planResult.value.nodeRef?.nodeId !== request.nodeRef.nodeId ||
+				planResult.value.nodeRef?.graphRevision !== request.nodeRef.graphRevision
 			) {
 				return fail("scheduler_fanin_invalid");
 			}
@@ -276,9 +276,9 @@ export class SchedulerFanInController {
 		const base = {
 			schemaVersion: 1 as const,
 			joinId,
-			taskId: checkedTask.value.taskId,
+			taskId: taskResult.value.taskId,
 			taskResultId,
-			taskFingerprint: fingerprintFoundationValue(checkedTask.value),
+			taskFingerprint: fingerprintFoundationValue(taskResult.value),
 			policy: collected.value.policy,
 			predecessorNodeIds: [...collected.value.predecessorNodeIds],
 			predecessorTaskResultIds: [...collected.value.predecessorTaskResultIds],
@@ -317,7 +317,7 @@ export class SchedulerFanInController {
 					sessionId: this.sessionId,
 					laneId: this.laneId,
 					revision: 1,
-					taskId: checkedTask.value.taskId,
+					taskId: taskResult.value.taskId,
 					taskResultId,
 				},
 			};
@@ -330,7 +330,7 @@ export class SchedulerFanInController {
 					{
 						clientRequestId: `scheduler.join_snapshot:${joinId}`,
 						expectedRevision: 0,
-						correlation: { taskId: checkedTask.value.taskId, taskResultId },
+						correlation: { taskId: taskResult.value.taskId, taskResultId },
 					},
 				);
 				snapshot = copySnapshot(written.payload);
@@ -341,7 +341,7 @@ export class SchedulerFanInController {
 		}
 		const settled = await this.settlement.settle({
 			taskResultId: snapshot.taskResultId,
-			task: checkedTask.value,
+			task: taskResult.value,
 			sourceAttemptReceiptIds: snapshot.sourceAttemptReceiptIds,
 			summary: snapshot.summary,
 			artifacts: snapshot.artifacts,

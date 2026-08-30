@@ -332,12 +332,12 @@ function validateDurableFact(value: unknown): ResultValue<SchedulerDurableSelect
 		return Result.err(invalidShape("Scheduler durable selection fact has an invalid shape."));
 	}
 	if (candidate.quotaReservation !== undefined) {
-		const checkedQuota = validateQuotaReservation(candidate.quotaReservation);
-		if (!checkedQuota.ok) return checkedQuota;
+		const quotaResult = validateQuotaReservation(candidate.quotaReservation);
+		if (!quotaResult.ok) return quotaResult;
 		if (
-			checkedQuota.value.attribution.taskId !== candidate.taskId ||
-			checkedQuota.value.attribution.attemptId !== candidate.attemptId ||
-			checkedQuota.value.attribution.providerId !== candidate.chosenProviderId
+			quotaResult.value.attribution.taskId !== candidate.taskId ||
+			quotaResult.value.attribution.attemptId !== candidate.attemptId ||
+			quotaResult.value.attribution.providerId !== candidate.chosenProviderId
 		) {
 			return Result.err(invalidShape("Scheduler quota reservation does not match its immutable selection."));
 		}
@@ -515,18 +515,18 @@ export class SchedulerSelectionReservationStore {
 		maxConcurrency: number,
 	): Promise<ResultValue<SchedulerSelectionReservationRecord, FoundationError>> {
 		return this.mutate(async () => {
-			const checkedFact = validateDurableFact(fact);
-			if (!checkedFact.ok) return checkedFact;
+			const factResult = validateDurableFact(fact);
+			if (!factResult.ok) return factResult;
 			if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
 				return Result.err(invalidShape("Scheduler executor maxConcurrency must be a positive integer."));
 			}
 			const loaded = await this.load();
 			if (!loaded.ok) return loaded;
 			const existing = loaded.value.aggregate.records.find(
-				(record) => record.fact.queueEntryId === checkedFact.value.queueEntryId,
+				(record) => record.fact.queueEntryId === factResult.value.queueEntryId,
 			);
 			if (existing !== undefined) {
-				return canonicalFoundationJson(existing.fact) === canonicalFoundationJson(checkedFact.value)
+				return canonicalFoundationJson(existing.fact) === canonicalFoundationJson(factResult.value)
 					? Result.ok(existing)
 					: Result.err(selectionConflict());
 			}
@@ -540,20 +540,20 @@ export class SchedulerSelectionReservationStore {
 			}
 			const active = retained.records.filter(
 				(record) =>
-					record.status === "reserved" && record.fact.chosenProviderId === checkedFact.value.chosenProviderId,
+					record.status === "reserved" && record.fact.chosenProviderId === factResult.value.chosenProviderId,
 			).length;
 			if (active >= maxConcurrency) return Result.err(capacityExhausted());
 			const record = deepFreeze({
 				schemaVersion: 1 as const,
-				fact: checkedFact.value,
+				fact: factResult.value,
 				status: "reserved" as const,
 				updatedAt: this.now(),
 			});
 			const persisted = await this.persist(
 				loaded.value,
 				replaceRecord(retained, record),
-				checkedFact.value.taskId,
-				`reserve:${checkedFact.value.reservationId}`,
+				factResult.value.taskId,
+				`reserve:${factResult.value.reservationId}`,
 			);
 			return persisted.ok ? Result.ok(record) : persisted;
 		});
@@ -587,8 +587,8 @@ export class SchedulerSelectionReservationStore {
 		usage: BudgetUsage = {},
 	): Promise<ResultValue<SchedulerSelectionBeginSettlement, FoundationError>> {
 		return this.mutate<SchedulerSelectionBeginSettlement>(async () => {
-			const checkedUsage = validateBudgetUsage(usage);
-			if (!checkedUsage.ok) return checkedUsage;
+			const usageResult = validateBudgetUsage(usage);
+			if (!usageResult.ok) return usageResult;
 			const loaded = await this.load();
 			if (!loaded.ok) return loaded;
 			const existing = loaded.value.aggregate.records.find((record) => record.fact.queueEntryId === queueEntryId);
@@ -604,7 +604,7 @@ export class SchedulerSelectionReservationStore {
 				...existing,
 				status: "settling" as const,
 				settlementReason: reason,
-				usage: checkedUsage.value,
+				usage: usageResult.value,
 				updatedAt: this.now(),
 			});
 			const persisted = await this.persist(

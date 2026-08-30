@@ -116,13 +116,13 @@ async function persistWorkerToolExecution(
 	receipt: WorkerReceipt,
 	result: ToolExecutionResult,
 ): Promise<void> {
-	const checkedReceipt = validateWorkerReceipt(receipt);
-	if (!checkedReceipt.ok) throw checkedReceipt.error;
-	const conformedReceipt = validateWorkerReceiptForProvider(checkedReceipt.value, { providerId, providerClass: "operation_worker" });
+	const receiptResult = validateWorkerReceipt(receipt);
+	if (!receiptResult.ok) throw receiptResult.error;
+	const conformedReceipt = validateWorkerReceiptForProvider(receiptResult.value, { providerId, providerClass: "operation_worker" });
 	if (!conformedReceipt.ok) throw conformedReceipt.error;
 	if (conformedReceipt.value.taskId !== request.taskId || conformedReceipt.value.dispatchId !== request.dispatchId || conformedReceipt.value.attemptId !== request.attemptId) throw new FoundationError("invalid_correlation", "WorkerReceipt does not match the exact Host execution identity");
-	const checkedResult = validateToolExecutionResult(result);
-	if (!checkedResult.ok) throw checkedResult.error;
+	const toolResult = validateToolExecutionResult(result);
+	if (!toolResult.ok) throw toolResult.error;
 	const metadata = await session.getMetadata();
 	const receiptCorrelation = conformedReceipt.value.provenance.correlation;
 	if (
@@ -152,7 +152,7 @@ async function persistWorkerToolExecution(
 		bindingId: request.bindingId as string,
 		bindingEpochId: request.bindingEpochId as string,
 		...(request.agentInstanceId === undefined ? {} : { agentInstanceId: request.agentInstanceId }),
-		result: checkedResult.value,
+		result: toolResult.value,
 	};
 	const ledger = new SessionLedger(session, { ownerId: `coding-agent-worker-receipt:${providerId}`, writer });
 	await appendImmutableWorkerFact(ledger, "worker_receipt", conformedReceipt.value.workerReceiptId, conformedReceipt.value, {
@@ -424,22 +424,22 @@ async function createCodingAgentHarnessInternal(options: InternalCreateCodingAge
 			}
 			if (attemptRecord?.kind === "fact") {
 				const attemptFact = attemptRecord;
-				const checkedAttempt = validateAttempt(attemptFact.payload);
+				const attemptResult = validateAttempt(attemptFact.payload);
 				const attemptCorrelation = attemptFact.correlation;
 				if (
-					attemptFact.revision !== 1 || !checkedAttempt.ok || attemptCorrelation.revision !== attemptFact.revision || attemptCorrelation.sessionId !== sessionMetadata.id || attemptCorrelation.laneId !== "main" ||
+					attemptFact.revision !== 1 || !attemptResult.ok || attemptCorrelation.revision !== attemptFact.revision || attemptCorrelation.sessionId !== sessionMetadata.id || attemptCorrelation.laneId !== "main" ||
 					attemptCorrelation.taskId !== taskId || attemptCorrelation.dispatchId !== dispatchId || attemptCorrelation.attemptId !== attemptId || attemptCorrelation.bindingId !== bindingId ||
 					attemptCorrelation.bindingEpochId !== bindingEpochId || attemptCorrelation.agentInstanceId !== request.agentInstanceId || attemptCorrelation.runId !== undefined ||
 					attemptCorrelation.operationId !== undefined || attemptCorrelation.providerId !== undefined || attemptCorrelation.toolCallId !== undefined ||
-					checkedAttempt.value.attemptId !== attemptId || checkedAttempt.value.taskId !== taskId || checkedAttempt.value.dispatchId !== dispatchId || checkedAttempt.value.bindingId !== bindingId ||
-					checkedAttempt.value.bindingEpochIds[0] !== bindingEpochId || checkedAttempt.value.agentInstanceId !== request.agentInstanceId
+					attemptResult.value.attemptId !== attemptId || attemptResult.value.taskId !== taskId || attemptResult.value.dispatchId !== dispatchId || attemptResult.value.bindingId !== bindingId ||
+					attemptResult.value.bindingEpochIds[0] !== bindingEpochId || attemptResult.value.agentInstanceId !== request.agentInstanceId
 				) return Result.err(new FoundationError("invalid_correlation", "Sandbox Worker Attempt fact does not match the request"));
 				const intents = await options.session.findFoundationRecords({ kind: "intent", objectType: "attempt", includePruned: true, order: "oldestFirst" });
 				const matchingIntents = intents.filter((record) => {
 					if (record.kind !== "intent" || record.payload === undefined || record.payload === null || typeof record.payload !== "object" || Array.isArray(record.payload)) return false;
 					const payload = record.payload as { readonly attemptId?: unknown; readonly taskId?: unknown; readonly dispatchId?: unknown; readonly bindingId?: unknown; readonly bindingEpochIds?: unknown; readonly agentInstanceId?: unknown; readonly runId?: unknown };
 					const candidateRunId = payload.runId;
-					return record.revision === 1 && typeof candidateRunId === "string" && record.objectId === `attempt_${candidateRunId}` && record.clientRequestId === `harness:intent:${candidateRunId}` && record.correlation.sessionId === sessionMetadata.id && record.correlation.laneId === "main" && record.correlation.revision === record.revision && record.correlation.runId === candidateRunId && record.correlation.operationId === candidateRunId && record.correlation.taskId === checkedAttempt.value.taskId && record.correlation.dispatchId === checkedAttempt.value.dispatchId && record.correlation.attemptId === record.objectId && record.correlation.bindingId === checkedAttempt.value.bindingId && record.correlation.bindingEpochId === checkedAttempt.value.bindingEpochIds[0] && record.correlation.agentInstanceId === checkedAttempt.value.agentInstanceId && record.correlation.providerId === checkedAttempt.value.providerId && record.correlation.toolCallId === undefined && payload.attemptId === record.objectId && payload.taskId === checkedAttempt.value.taskId && payload.dispatchId === checkedAttempt.value.dispatchId && payload.bindingId === checkedAttempt.value.bindingId && Array.isArray(payload.bindingEpochIds) && payload.bindingEpochIds[0] === checkedAttempt.value.bindingEpochIds[0] && payload.agentInstanceId === checkedAttempt.value.agentInstanceId;
+					return record.revision === 1 && typeof candidateRunId === "string" && record.objectId === `attempt_${candidateRunId}` && record.clientRequestId === `harness:intent:${candidateRunId}` && record.correlation.sessionId === sessionMetadata.id && record.correlation.laneId === "main" && record.correlation.revision === record.revision && record.correlation.runId === candidateRunId && record.correlation.operationId === candidateRunId && record.correlation.taskId === attemptResult.value.taskId && record.correlation.dispatchId === attemptResult.value.dispatchId && record.correlation.attemptId === record.objectId && record.correlation.bindingId === attemptResult.value.bindingId && record.correlation.bindingEpochId === attemptResult.value.bindingEpochIds[0] && record.correlation.agentInstanceId === attemptResult.value.agentInstanceId && record.correlation.providerId === attemptResult.value.providerId && record.correlation.toolCallId === undefined && payload.attemptId === record.objectId && payload.taskId === attemptResult.value.taskId && payload.dispatchId === attemptResult.value.dispatchId && payload.bindingId === attemptResult.value.bindingId && Array.isArray(payload.bindingEpochIds) && payload.bindingEpochIds[0] === attemptResult.value.bindingEpochIds[0] && payload.agentInstanceId === attemptResult.value.agentInstanceId;
 				});
 				const matchingIntent = matchingIntents[0];
 				if (matchingIntents.length !== 1 || matchingIntent?.kind !== "intent" || matchingIntent.payload === undefined || matchingIntent.payload === null || typeof matchingIntent.payload !== "object" || Array.isArray(matchingIntent.payload)) return Result.err(new FoundationError("invalid_correlation", "Sandbox Worker Attempt requires exactly one matching Harness intent"));

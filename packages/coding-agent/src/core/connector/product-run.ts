@@ -1103,7 +1103,7 @@ export async function recoverExternalConnectorProductRun(
 			durableExecutionInput !== undefined
 		) {
 			const metadata = await input.session.getMetadata();
-			const durableGatewayModelRoute = gatewayModelRouteFromDurableInput(durableExecutionInput);
+			const gatewayModelRoute = gatewayModelRouteFromDurableInput(durableExecutionInput);
 			const policyRecord = await ledger.get("policy_binding", durableBinding.policyRevision.id);
 			const policyPayload = requireFactPayload(
 				policyRecord,
@@ -1148,7 +1148,7 @@ export async function recoverExternalConnectorProductRun(
 					},
 					workspace: durableTask.workspace,
 					policyBinding: policy,
-					...(durableGatewayModelRoute === undefined ? {} : { gatewayModelRoute: durableGatewayModelRoute }),
+					...(gatewayModelRoute === undefined ? {} : { gatewayModelRoute }),
 					...(input.signal === undefined ? {} : { signal: input.signal }),
 				},
 				selected,

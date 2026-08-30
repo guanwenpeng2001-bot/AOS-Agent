@@ -630,15 +630,15 @@ export class SchedulerComposition {
 					this.clock,
 				),
 			);
-			const durableSelectionsEnabled = options.registry.durableSelectionsEnabled();
-			if (initializeBeforeStart === undefined && !durableSelectionsEnabled) {
+			const selectionPersistenceEnabled = options.registry.durableSelectionsEnabled();
+			if (initializeBeforeStart === undefined && !selectionPersistenceEnabled) {
 				this.initializationComplete = true;
 				this.start();
 			} else {
 				const initialization = Promise.resolve()
 					.then(async () => {
 						await initializeBeforeStart?.();
-						if (!durableSelectionsEnabled) return;
+						if (!selectionPersistenceEnabled) return;
 						// Providers must be re-registered before recovery because cancelAttempt may rebuild a
 						// durable attempt. Recovery and reservation reconciliation must finish before start()
 						// schedules the first tick, so new dispatch cannot race leaked capacity or quota.
@@ -1773,24 +1773,24 @@ export class FoundationControlPlane {
 			await this.ensurePolicyReady(request.context.operationId, undefined, false);
 			const bindingRecord = await this.session.getFoundationObject("agent_binding", request.context.bindingId);
 			if (bindingRecord === undefined || bindingRecord.kind !== "fact") throw externalToolGatewayDenied();
-			const checkedBinding = validateAgentBinding(bindingRecord.payload);
+			const bindingResult = validateAgentBinding(bindingRecord.payload);
 			if (
-				!checkedBinding.ok ||
-				checkedBinding.value.bindingId !== request.context.bindingId ||
-				checkedBinding.value.taskId !== request.context.taskId ||
-				checkedBinding.value.capabilitySelector.policy === "none"
+				!bindingResult.ok ||
+				bindingResult.value.bindingId !== request.context.bindingId ||
+				bindingResult.value.taskId !== request.context.taskId ||
+				bindingResult.value.capabilitySelector.policy === "none"
 			) {
 				throw externalToolGatewayDenied();
 			}
-			const binding = checkedBinding.value;
+			const binding = bindingResult.value;
 			const epochRecord = await this.session.getFoundationObject("binding_epoch", request.context.bindingEpochId);
 			if (epochRecord === undefined || epochRecord.kind !== "fact") throw externalToolGatewayDenied();
-			const checkedEpoch = validateBindingEpoch(epochRecord.payload);
+			const epochResult = validateBindingEpoch(epochRecord.payload);
 			if (
-				!checkedEpoch.ok ||
-				checkedEpoch.value.taskId !== binding.taskId ||
-				checkedEpoch.value.bindingId !== binding.bindingId ||
-				checkedEpoch.value.attemptId !== request.context.attemptId
+				!epochResult.ok ||
+				epochResult.value.taskId !== binding.taskId ||
+				epochResult.value.bindingId !== binding.bindingId ||
+				epochResult.value.attemptId !== request.context.attemptId
 			) {
 				throw externalToolGatewayDenied();
 			}

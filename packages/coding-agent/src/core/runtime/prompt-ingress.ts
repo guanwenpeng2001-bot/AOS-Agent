@@ -203,13 +203,13 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 		const byId = new Map<string, WorkerReceiptRef>();
 		for (const record of executionRecords) {
 			if (record.kind !== "fact") continue;
-			const durableCorrelationBelongsToAttempt =
+			const correlationBelongsToAttempt =
 				record.correlation.sessionId === correlation.sessionId && record.correlation.laneId === correlation.laneId &&
 				record.correlation.runId === correlation.runId && record.correlation.taskId === attempt.taskId &&
 				record.correlation.dispatchId === attempt.dispatchId && record.correlation.attemptId === attempt.attemptId &&
 				record.correlation.bindingId === attempt.bindingId && record.correlation.bindingEpochId === attempt.bindingEpochIds[0] &&
 				record.correlation.agentInstanceId === attempt.agentInstanceId;
-			if (!durableCorrelationBelongsToAttempt) continue;
+			if (!correlationBelongsToAttempt) continue;
 			const currentExecution = await this.session.getFoundationObject(WORKER_TOOL_EXECUTION_OBJECT_TYPE, record.objectId);
 			if (
 				currentExecution === undefined || currentExecution.kind !== "fact" || currentExecution.objectType !== WORKER_TOOL_EXECUTION_OBJECT_TYPE ||
@@ -234,14 +234,14 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			) {
 				return Result.err(new FoundationError("invalid_correlation", "Durable Worker ToolExecutionResult does not match the current Attempt"));
 			}
-			const checkedResult = validateToolExecutionResult(fact.result);
-			if (!checkedResult.ok || checkedResult.value.toolReceiptRef === undefined) {
+			const toolResult = validateToolExecutionResult(fact.result);
+			if (!toolResult.ok || toolResult.value.toolReceiptRef === undefined) {
 				return Result.err(new FoundationError("worker_receipt_invalid", "Durable Worker ToolExecutionResult has no validated receipt reference"));
 			}
-			const stored = await this.session.getFoundationObject("worker_receipt", checkedResult.value.toolReceiptRef);
+			const stored = await this.session.getFoundationObject("worker_receipt", toolResult.value.toolReceiptRef);
 			if (
 				stored === undefined || stored.kind !== "fact" || stored.objectType !== "worker_receipt" || stored.revision !== 1 ||
-				stored.objectId !== checkedResult.value.toolReceiptRef
+				stored.objectId !== toolResult.value.toolReceiptRef
 			) {
 				return Result.err(new FoundationError("worker_receipt_invalid", "ToolExecutionResult references no durable WorkerReceipt"));
 			}
@@ -252,13 +252,13 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			if (worker.value.taskId !== fact.taskId || worker.value.dispatchId !== fact.dispatchId || worker.value.attemptId !== fact.attemptId) return Result.err(new FoundationError("invalid_correlation", "Durable WorkerReceipt does not match the current Attempt"));
 			const workerCorrelation = worker.value.provenance.correlation;
 			if (
-				worker.value.workerReceiptId !== checkedResult.value.toolReceiptRef ||
+				worker.value.workerReceiptId !== toolResult.value.toolReceiptRef ||
 				worker.value.operationId !== fact.operationId ||
 				workerCorrelation === undefined || workerCorrelation.sessionId !== correlation.sessionId || workerCorrelation.laneId !== correlation.laneId ||
 				workerCorrelation.runId !== correlation.runId ||
 				workerCorrelation.operationId !== fact.operationId ||
 				(workerCorrelation.providerId !== undefined && workerCorrelation.providerId !== fact.providerId) ||
-				(workerCorrelation.toolCallId !== undefined && workerCorrelation.toolCallId !== checkedResult.value.toolCallId) ||
+				(workerCorrelation.toolCallId !== undefined && workerCorrelation.toolCallId !== toolResult.value.toolCallId) ||
 				(workerCorrelation.taskId !== undefined && workerCorrelation.taskId !== attempt.taskId) ||
 				(workerCorrelation.dispatchId !== undefined && workerCorrelation.dispatchId !== attempt.dispatchId) ||
 				(workerCorrelation.attemptId !== undefined && workerCorrelation.attemptId !== attempt.attemptId) ||
@@ -267,7 +267,7 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 				workerCorrelation.agentInstanceId !== undefined ||
 				stored.correlation.sessionId !== workerCorrelation.sessionId || stored.correlation.laneId !== workerCorrelation.laneId ||
 				stored.correlation.runId !== fact.runId || stored.correlation.operationId !== fact.operationId ||
-				stored.correlation.providerId !== fact.providerId || stored.correlation.toolCallId !== checkedResult.value.toolCallId ||
+				stored.correlation.providerId !== fact.providerId || stored.correlation.toolCallId !== toolResult.value.toolCallId ||
 				stored.correlation.taskId !== fact.taskId || stored.correlation.dispatchId !== fact.dispatchId ||
 				stored.correlation.attemptId !== fact.attemptId || stored.correlation.bindingId !== fact.bindingId ||
 				stored.correlation.bindingEpochId !== fact.bindingEpochId || stored.correlation.agentInstanceId !== fact.agentInstanceId

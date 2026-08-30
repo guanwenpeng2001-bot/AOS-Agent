@@ -751,9 +751,9 @@ export class SchedulerExecutorRegistry {
 		}
 		let runtimeSnapshot: SchedulerExecutorRuntimeSnapshot | undefined;
 		if (registration.runtimeSnapshot !== undefined) {
-			const checkedRuntime = validateSchedulerExecutorRuntimeSnapshotV1(registration.runtimeSnapshot);
-			if (!checkedRuntime.ok) return checkedRuntime;
-			if (checkedRuntime.value.capabilitySnapshot.providerId !== parsed.value.descriptor.providerId) {
+			const runtimeResult = validateSchedulerExecutorRuntimeSnapshotV1(registration.runtimeSnapshot);
+			if (!runtimeResult.ok) return runtimeResult;
+			if (runtimeResult.value.capabilitySnapshot.providerId !== parsed.value.descriptor.providerId) {
 				return Result.err(
 					new FoundationError(
 						"foundation_schema_invalid_shape",
@@ -761,7 +761,7 @@ export class SchedulerExecutorRegistry {
 					),
 				);
 			}
-			runtimeSnapshot = checkedRuntime.value;
+			runtimeSnapshot = runtimeResult.value;
 		}
 		if (this.reservationStore !== undefined && runtimeSnapshot === undefined) {
 			return schedulerFail("scheduler_no_executor");
@@ -1133,7 +1133,7 @@ export class SchedulerExecutorRegistry {
 				attemptId: input.exactRequirements.attemptId,
 			}).value
 		}`;
-		const durableFact = createSchedulerDurableSelectionFact({
+		const factResult = createSchedulerDurableSelectionFact({
 			schemaVersion: 1,
 			queueEntryId: queue.value.queueEntryId,
 			taskId: queue.value.taskId,
@@ -1154,19 +1154,19 @@ export class SchedulerExecutorRegistry {
 			...(quotaReservation === undefined ? {} : { quotaReservation }),
 			decidedAt: input.decidedAt,
 		});
-		if (!durableFact.ok) {
+		if (!factResult.ok) {
 			if (quotaReservation !== undefined) await this.releaseUnpersistedQuota(registration, quotaReservation);
-			return durableFact;
+			return factResult;
 		}
 		const reserved = await store.reserve(
-			durableFact.value,
+			factResult.value,
 			registration.maxConcurrency ?? SCHEDULER_SESSION_MAX_ACTIVE_ATTEMPTS,
 		);
 		if (!reserved.ok) {
 			if (quotaReservation !== undefined) await this.releaseUnpersistedQuota(registration, quotaReservation);
 			return reserved;
 		}
-		return this.selectionResultFromDurable(durableFact.value, registration);
+		return this.selectionResultFromDurable(factResult.value, registration);
 	}
 
 	private async replayDurableSelection(
@@ -1405,12 +1405,12 @@ export class SchedulerInProcessTaskExecutorProvider implements SchedulerTaskExec
 			providerId: this.providerId,
 			ownerKind: schedulerQuotaOwnerKind(this.providerClass),
 		};
-		const checkedAttribution = validateQuotaAttribution(attribution);
-		if (!checkedAttribution.ok) return checkedAttribution;
+		const attributionResult = validateQuotaAttribution(attribution);
+		if (!attributionResult.ok) return attributionResult;
 		let reserved: ResultValue<QuotaReservation, FoundationError>;
 		try {
 			reserved = await this.quota.reserve(
-				checkedAttribution.value,
+				attributionResult.value,
 				this.budget,
 				options?.signal === undefined ? {} : { signal: options.signal },
 			);

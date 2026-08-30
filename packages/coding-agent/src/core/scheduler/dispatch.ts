@@ -397,11 +397,11 @@ export function assembleSchedulerDispatch(
 	if (!parsedEntry.ok) return parsedEntry;
 	const parsedClaim = parseSchedulerClaim(input.claim);
 	if (!parsedClaim.ok) return parsedClaim;
-	const checkedBinding = validateImmutableAgentBinding(input.binding);
-	if (!checkedBinding.ok) return checkedBinding;
+	const bindingResult = validateImmutableAgentBinding(input.binding);
+	if (!bindingResult.ok) return bindingResult;
 	const entry = parsedEntry.value;
 	const claim = parsedClaim.value;
-	const binding = checkedBinding.value;
+	const binding = bindingResult.value;
 	if (entry.sessionId !== input.sessionId) return fail("scheduler_queue_invalid");
 	if (claim.queueEntryId !== entry.queueEntryId || claim.taskId !== entry.taskId)
 		return fail("scheduler_queue_invalid");
@@ -432,8 +432,8 @@ export function assembleSchedulerDispatch(
 		createdAt: input.now,
 		...(entry.deadlineAt === undefined ? {} : { deadlineAt: entry.deadlineAt }),
 	};
-	const checkedDispatch = validateDispatch(dispatchCandidate);
-	if (!checkedDispatch.ok) return checkedDispatch;
+	const dispatchResult = validateDispatch(dispatchCandidate);
+	if (!dispatchResult.ok) return dispatchResult;
 	if (input.providerClass === "agent") {
 		const nativeAgent = input.nativeAgent;
 		if (nativeAgent === undefined) {
@@ -563,7 +563,7 @@ export function assembleSchedulerDispatch(
 		);
 	}
 	return Result.ok({
-		dispatch: checkedDispatch.value,
+		dispatch: dispatchResult.value,
 		initialBindingEpoch: epoch.value,
 		correlation,
 		dispatchId: ids.dispatchId,
@@ -699,16 +699,16 @@ export async function bindSchedulerInProcessTaskExecutor(
 	options: SchedulerInProcessHostBindingOptions,
 ): Promise<ResultValue<SchedulerExecutorEntry, FoundationError>> {
 	const nowIso = (options.now ?? (() => new Date().toISOString()))();
-	const durableSelection = registry.durableSelectionsEnabled();
+	const selectionPersistenceEnabled = registry.durableSelectionsEnabled();
 	let runtimeSnapshot = options.runtimeSnapshot;
-	if (durableSelection && runtimeSnapshot === undefined && options.allowFailClosedRegistration === true) {
+	if (selectionPersistenceEnabled && runtimeSnapshot === undefined && options.allowFailClosedRegistration === true) {
 		const created = failClosedInProcessRuntimeSnapshot(nowIso);
 		if (!created.ok) return created;
 		runtimeSnapshot = created.value;
 	}
 	const provider = new SchedulerInProcessTaskExecutorProvider({
 		hostAttemptRunner: options.hostAttemptRunner,
-		...(options.quota === undefined || durableSelection ? {} : { quota: options.quota }),
+		...(options.quota === undefined || selectionPersistenceEnabled ? {} : { quota: options.quota }),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.budget === undefined ? {} : { budget: options.budget }),
 	});
@@ -736,8 +736,8 @@ export async function bindSchedulerInProcessTaskExecutor(
 		trusted: options.trusted ?? true,
 		latencyMs: options.latencyMs ?? 0,
 		...(runtimeSnapshot === undefined ? {} : { runtimeSnapshot }),
-		...(durableSelection && options.quota !== undefined ? { quota: options.quota } : {}),
-		...(durableSelection && options.quota !== undefined && options.budget !== undefined
+		...(selectionPersistenceEnabled && options.quota !== undefined ? { quota: options.quota } : {}),
+		...(selectionPersistenceEnabled && options.quota !== undefined && options.budget !== undefined
 			? { budget: options.budget }
 			: {}),
 	});
@@ -1559,87 +1559,91 @@ export class SchedulerDispatchController {
 		}
 		const attemptRecord = await this.session.getFoundationObject("attempt", attemptId);
 		if (attemptRecord === undefined || attemptRecord.kind !== "fact") return fail("scheduler_not_found");
-		const checkedAttempt = validateAttempt(attemptRecord.payload);
-		if (!checkedAttempt.ok) return checkedAttempt;
+		const attemptResult = validateAttempt(attemptRecord.payload);
+		if (!attemptResult.ok) return attemptResult;
+		const attempt = attemptResult.value;
 		if (
-			checkedAttempt.value.taskId !== queueEntry.taskId ||
-			checkedAttempt.value.dispatchId !== queueDispatch.dispatchId ||
-			checkedAttempt.value.providerId !== queueDispatch.providerId
+			attempt.taskId !== queueEntry.taskId ||
+			attempt.dispatchId !== queueDispatch.dispatchId ||
+			attempt.providerId !== queueDispatch.providerId
 		) {
 			return fail("scheduler_dispatch_invalid");
 		}
 		let agentInstance: AgentInstance | undefined;
 		if (queueDispatch.providerClass === "agent") {
-			if (checkedAttempt.value.agentInstanceId === undefined) {
+			if (attempt.agentInstanceId === undefined) {
 				return Result.err(
 					new FoundationError(
 						"agent_instance_required_for_agent_provider",
 						"Durable Scheduler agent Attempt is missing its AgentInstance",
-						{ details: { attemptId: checkedAttempt.value.attemptId } },
+						{ details: { attemptId: attempt.attemptId } },
 					),
 				);
 			}
 			const agentRecord = await this.session.getFoundationObject(
 				"agent_instance",
-				checkedAttempt.value.agentInstanceId,
+				attempt.agentInstanceId,
 			);
 			if (agentRecord === undefined || agentRecord.kind !== "fact") {
 				return Result.err(
 					new FoundationError(
 						"agent_instance_required_for_agent_provider",
 						"Durable Scheduler agent Attempt cannot resolve its AgentInstance",
-						{ details: { attemptId: checkedAttempt.value.attemptId } },
+						{ details: { attemptId: attempt.attemptId } },
 					),
 				);
 			}
-			const checkedAgent = validateAgentInstance(agentRecord.payload);
-			if (!checkedAgent.ok) return checkedAgent;
+			const agentResult = validateAgentInstance(agentRecord.payload);
+			if (!agentResult.ok) return agentResult;
+			const agent = agentResult.value;
 			if (
-				checkedAgent.value.agentInstanceId !== checkedAttempt.value.agentInstanceId ||
-				checkedAgent.value.providerId !== checkedAttempt.value.providerId ||
-				checkedAgent.value.taskId !== checkedAttempt.value.taskId
+				agent.agentInstanceId !== attempt.agentInstanceId ||
+				agent.providerId !== attempt.providerId ||
+				agent.taskId !== attempt.taskId
 			) {
 				return fail("scheduler_dispatch_invalid");
 			}
-			agentInstance = checkedAgent.value;
-		} else if (checkedAttempt.value.agentInstanceId !== undefined) {
+			agentInstance = agent;
+		} else if (attempt.agentInstanceId !== undefined) {
 			return Result.err(
 				new FoundationError(
 					"agent_instance_forbidden_for_provider",
 					"Non-agent Attempt cannot carry an AgentInstance",
-					{ details: { attemptId: checkedAttempt.value.attemptId } },
+					{ details: { attemptId: attempt.attemptId } },
 				),
 			);
 		}
-		const dispatchRecord = await this.session.getFoundationObject("dispatch", checkedAttempt.value.dispatchId);
+		const dispatchRecord = await this.session.getFoundationObject("dispatch", attempt.dispatchId);
 		if (dispatchRecord === undefined || dispatchRecord.kind !== "fact") return fail("scheduler_not_found");
-		const checkedDispatch = validateDispatch(dispatchRecord.payload);
-		if (!checkedDispatch.ok) return checkedDispatch;
+		const dispatchResult = validateDispatch(dispatchRecord.payload);
+		if (!dispatchResult.ok) return dispatchResult;
+		const dispatch = dispatchResult.value;
 		if (
-			checkedDispatch.value.taskId !== queueEntry.taskId ||
-			checkedDispatch.value.taskExecutorProviderId !== queueDispatch.providerId ||
-			checkedDispatch.value.deadlineAt !== queueEntry.deadlineAt
+			dispatch.taskId !== queueEntry.taskId ||
+			dispatch.taskExecutorProviderId !== queueDispatch.providerId ||
+			dispatch.deadlineAt !== queueEntry.deadlineAt
 		) {
 			return fail("scheduler_dispatch_invalid");
 		}
-		const bindingRecord = await this.session.getFoundationObject("agent_binding", checkedAttempt.value.bindingId);
+		const bindingRecord = await this.session.getFoundationObject("agent_binding", attempt.bindingId);
 		if (bindingRecord === undefined || bindingRecord.kind !== "fact") {
 			return Result.err(
 				new FoundationError("binding_required_fact", "Agent execution references a binding that is not durable", {
-					details: { bindingId: checkedAttempt.value.bindingId, taskId: checkedAttempt.value.taskId },
+					details: { bindingId: attempt.bindingId, taskId: attempt.taskId },
 				}),
 			);
 		}
-		const checkedBinding = validateImmutableAgentBinding(bindingRecord.payload);
-		if (!checkedBinding.ok) return checkedBinding;
+		const bindingResult = validateImmutableAgentBinding(bindingRecord.payload);
+		if (!bindingResult.ok) return bindingResult;
+		const binding = bindingResult.value;
 		if (
-			checkedBinding.value.taskId !== queueEntry.taskId ||
-			checkedBinding.value.bindingId !== checkedDispatch.value.bindingId ||
-			(queueEntry.goalId !== undefined && checkedBinding.value.goalId !== queueEntry.goalId)
+			binding.taskId !== queueEntry.taskId ||
+			binding.bindingId !== dispatch.bindingId ||
+			(queueEntry.goalId !== undefined && binding.goalId !== queueEntry.goalId)
 		) {
 			return fail("scheduler_dispatch_invalid");
 		}
-		const epochId = checkedAttempt.value.bindingEpochIds[0];
+		const epochId = attempt.bindingEpochIds[0];
 		if (epochId === undefined) return fail("scheduler_dispatch_invalid");
 		const epochRecord = await this.session.getFoundationObject("binding_epoch", epochId);
 		if (epochRecord === undefined || epochRecord.kind !== "fact") return fail("scheduler_not_found");
@@ -1647,16 +1651,16 @@ export class SchedulerDispatchController {
 		if (!stored.ok) return stored;
 		if (
 			stored.value.bindingEpochId !== epochId ||
-			stored.value.attemptId !== checkedAttempt.value.attemptId ||
-			stored.value.taskId !== checkedAttempt.value.taskId ||
-			stored.value.bindingId !== checkedAttempt.value.bindingId ||
+			stored.value.attemptId !== attempt.attemptId ||
+			stored.value.taskId !== attempt.taskId ||
+			stored.value.bindingId !== attempt.bindingId ||
 			stored.value.ordinal !== 0 ||
 			stored.value.activationReason !== "attempt_started" ||
 			stored.value.agentInstanceId !== agentInstance?.agentInstanceId
 		) {
 			return fail("scheduler_dispatch_invalid");
 		}
-		const registered = this.registry.get(checkedAttempt.value.providerId);
+		const registered = this.registry.get(attempt.providerId);
 		if (registered === undefined) return fail("scheduler_executor_unavailable");
 		if (
 			registered.entry.descriptor.providerClass !== queueDispatch.providerClass ||
@@ -1671,15 +1675,15 @@ export class SchedulerDispatchController {
 			queueDispatch.providerClass === "agent" ? identity.laneId : this.laneId,
 			{
 				revision: 1,
-				roleRevisionId: checkedBinding.value.roleRevision.id,
-				modelProfileId: checkedBinding.value.modelProfileRevision.id,
-				modelProfileRevisionId: checkedBinding.value.modelProfileRevision.id,
-				taskId: checkedAttempt.value.taskId,
-				dispatchId: checkedAttempt.value.dispatchId,
-				attemptId: checkedAttempt.value.attemptId,
-				bindingId: checkedAttempt.value.bindingId,
+				roleRevisionId: binding.roleRevision.id,
+				modelProfileId: binding.modelProfileRevision.id,
+				modelProfileRevisionId: binding.modelProfileRevision.id,
+				taskId: attempt.taskId,
+				dispatchId: attempt.dispatchId,
+				attemptId: attempt.attemptId,
+				bindingId: attempt.bindingId,
 				bindingEpochId: epochId,
-				providerId: checkedAttempt.value.providerId,
+				providerId: attempt.providerId,
 				...(agentInstance === undefined
 					? {}
 					: {
@@ -1691,16 +1695,16 @@ export class SchedulerDispatchController {
 								? {}
 								: { ancestorIds: agentInstance.lineage.ancestorIds }),
 						}),
-				...(queueEntry.goalId === undefined && checkedBinding.value.goalId === undefined
+				...(queueEntry.goalId === undefined && binding.goalId === undefined
 					? {}
-					: { goalId: queueEntry.goalId ?? checkedBinding.value.goalId }),
+					: { goalId: queueEntry.goalId ?? binding.goalId }),
 			},
 		);
 		return Result.ok({
 			queueEntryId: queueEntry.queueEntryId,
 			provider: registered.provider,
-			dispatch: checkedDispatch.value,
-			binding: checkedBinding.value,
+			dispatch,
+			binding,
 			initialBindingEpoch: stored.value,
 			correlation,
 			...(agentInstance === undefined ? {} : { agentInstance }),

@@ -1009,8 +1009,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				externalFailure("invalid_correlation", "External connector Dispatch and binding do not match"),
 			);
 		}
-		const checkedBinding = validateImmutableAgentBinding(binding);
-		if (!checkedBinding.ok) return checkedBinding;
+		const bindingResult = validateImmutableAgentBinding(binding);
+		if (!bindingResult.ok) return bindingResult;
 		if (context === undefined) {
 			return Result.err(
 				externalFailure("binding_epoch_mismatch", "External connector Attempt requires its initial BindingEpoch"),
@@ -1786,13 +1786,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			}
 		}
 
-		const checkedHandle = this.#requireAuthoritativeDriverHandle(handle, supervisor);
-		if (!checkedHandle.ok) {
+		const handleResult = this.#requireAuthoritativeDriverHandle(handle, supervisor);
+		if (!handleResult.ok) {
 			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
 			await this.#markReconcile(operation, "mapping_conflict");
-			return Result.err(checkedHandle.error);
+			return Result.err(handleResult.error);
 		}
-		handle = checkedHandle.value;
+		handle = handleResult.value;
 		let mapping: CanonicalExternalConnectorMapping;
 		try {
 			mapping = cloneCanonicalExternalConnectorMapping({
@@ -1960,13 +1960,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				(signal) => this.#driver.connect(mapping.value, { signal }),
 				options?.signal,
 			);
-			const checkedHandle = this.#requireAuthoritativeDriverHandle(connected, supervisor, mapping.value);
-			if (!checkedHandle.ok) {
+			const handleResult = this.#requireAuthoritativeDriverHandle(connected, supervisor, mapping.value);
+			if (!handleResult.ok) {
 				await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
 				await this.#markReconcile(operation, "mapping_conflict");
-				return Result.err(checkedHandle.error);
+				return Result.err(handleResult.error);
 			}
-			handle = checkedHandle.value;
+			handle = handleResult.value;
 			this.#driverHandles.set(attempt.attemptId, handle);
 			const evidence = await this.#observeToReceipt(operation, supervisor, handle, options?.signal);
 			await this.#releaseSupervisor(attempt.attemptId, supervisor);
@@ -2180,13 +2180,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				transitionExternalConnectorOperation(operation, "running", { now: this.#now() }),
 			);
 		}
-		const checkedHandle = this.#requireAuthoritativeDriverHandle(lookup.handle, supervisor, mapping.value);
-		if (!checkedHandle.ok) {
+		const handleResult = this.#requireAuthoritativeDriverHandle(lookup.handle, supervisor, mapping.value);
+		if (!handleResult.ok) {
 			await this.#releaseSupervisor(attempt.attemptId, supervisor).catch(() => undefined);
 			await this.#markReconcile(operation, "mapping_conflict");
-			return Result.err(checkedHandle.error);
+			return Result.err(handleResult.error);
 		}
-		const handle = checkedHandle.value;
+		const handle = handleResult.value;
 		this.#driverHandles.set(attempt.attemptId, handle);
 		try {
 			const evidence = await this.#observeToReceipt(operation, supervisor, handle, options?.signal);
@@ -2316,13 +2316,13 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			const connected =
 				activeHandle ??
 				(await supervisor.run("start", (signal) => this.#driver.connect(mapping.value, { signal })));
-			const checkedHandle = this.#requireAuthoritativeDriverHandle(connected, supervisor, mapping.value);
-			if (!checkedHandle.ok) {
+			const handleResult = this.#requireAuthoritativeDriverHandle(connected, supervisor, mapping.value);
+			if (!handleResult.ok) {
 				await this.#releaseSupervisor(attemptId, supervisor).catch(() => undefined);
 				await this.#markReconcile(operation, "mapping_conflict");
-				return Result.err(checkedHandle.error);
+				return Result.err(handleResult.error);
 			}
-			const handle = checkedHandle.value;
+			const handle = handleResult.value;
 			const evidence = await supervisor.run(
 				"cancel",
 				(signal) => this.#driver.cancel(handle, { signal }),

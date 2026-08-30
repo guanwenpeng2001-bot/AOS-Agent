@@ -91,18 +91,19 @@ export function withRemoteCatalog(
 				signal: context.signal,
 			});
 			if (context.signal.aborted) return;
-			const checkedAt = Date.now();
+			// wire/ledger field name; local alias below
+			const refreshedAt = Date.now();
 			// Unchanged: dynamicModels already holds the stored overlay, so only the
 			// freshness window moves.
 			if (response.status === 304 && stored) {
-				await context.publish({ persist: { ...stored, checkedAt } });
+				await context.publish({ persist: { ...stored, checkedAt: refreshedAt } });
 				return;
 			}
 			if (response.status === 404 || response.status === 501) {
 				await context.publish({
 					persist: {
 						...(stored ?? { models: [] }),
-						checkedAt,
+						checkedAt: refreshedAt,
 						lastModified: 0,
 						etag: undefined,
 					},
@@ -112,7 +113,7 @@ export function withRemoteCatalog(
 			if (!response.ok) {
 				// Transient failure: the cached body and its validator stay valid, so keep the
 				// etag and let the next refresh revalidate instead of downloading the catalog.
-				await context.publish({ persist: { ...(stored ?? { models: [] }), checkedAt } });
+				await context.publish({ persist: { ...(stored ?? { models: [] }), checkedAt: refreshedAt } });
 				throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
 			}
 			const refreshed = parseCatalog(provider.id, await response.json());
@@ -120,7 +121,7 @@ export function withRemoteCatalog(
 			if (context.signal.aborted) return;
 			const entry = {
 				models: refreshed,
-				checkedAt,
+				checkedAt: refreshedAt,
 				lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
 				etag: response.headers.get("etag") ?? undefined,
 			};
