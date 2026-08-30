@@ -461,9 +461,9 @@ export class ConsumerToolGatewayFake implements ToolGateway, FoundationProvider 
 
 	async execute(request: ToolGatewayRequest, options: { signal?: AbortSignal } = {}): Promise<ResultValue<ToolExecutionResult, FoundationError>> {
 		if (this.disposed) return Result.err(new FoundationError("invalid_identifier", "consumer ToolGateway fake is disposed"));
-		const checkedRequest = validateToolGatewayRequest(request);
-		if (!checkedRequest.ok) return checkedRequest;
-		const value = checkedRequest.value;
+		const requestResult = validateToolGatewayRequest(request);
+		if (!requestResult.ok) return requestResult;
+		const value = requestResult.value;
 		const settle = (result: ToolExecutionResult): ResultValue<ToolExecutionResult, FoundationError> => {
 			const checked = validateToolExecutionResult(result);
 			if (!checked.ok) return checked;

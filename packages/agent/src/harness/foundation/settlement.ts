@@ -365,20 +365,20 @@ function parseSpawnIntent(record: FoundationIntentRecord, spawnId: string, provi
 }
 
 function canonicalizeSpawnResult(result: ChildSpawnResult, request: ChildSpawnRequest, providerId: string, role: RoleRevision): ResultValue<ChildSpawnResult, FoundationError> {
-	const checkedAttempt = validateAttempt(result.attempt);
-	if (!checkedAttempt.ok) return checkedAttempt;
-	const checkedAgent = validateAgentInstance(result.agentInstance);
-	if (!checkedAgent.ok) return checkedAgent;
-	const checkedEpoch = validateBindingEpoch(result.initialBindingEpoch);
-	if (!checkedEpoch.ok) return checkedEpoch;
-	if (checkedAttempt.value.providerId !== providerId || checkedAttempt.value.taskId !== request.taskEnvelope.taskId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt does not match its provider or canonical TaskEnvelope", { details: { spawnId: request.spawnId } }));
-	if (checkedAgent.value.providerId !== providerId || checkedAgent.value.taskId !== checkedAttempt.value.taskId || checkedAgent.value.agentInstanceId !== checkedAttempt.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn must bind one AgentInstance to its Attempt", { details: { spawnId: request.spawnId } }));
-	if (checkedAgent.value.roleRevision.id !== role.roleRevisionId || checkedAgent.value.roleRevision.revision !== role.revision) return Result.err(new FoundationError("invalid_correlation", "Agent spawn AgentInstance must retain the canonical durable RoleRevision", { details: { spawnId: request.spawnId } }));
-	if (checkedEpoch.value.ordinal !== 0 || checkedEpoch.value.attemptId !== checkedAttempt.value.attemptId || checkedEpoch.value.taskId !== checkedAttempt.value.taskId || checkedEpoch.value.bindingId !== checkedAttempt.value.bindingId || checkedEpoch.value.agentInstanceId !== checkedAgent.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn epoch does not match its Attempt or AgentInstance", { details: { spawnId: request.spawnId } }));
-	if (!checkedAttempt.value.bindingEpochIds.includes(checkedEpoch.value.bindingEpochId)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt omitted its initial BindingEpoch", { details: { spawnId: request.spawnId } }));
+	const attemptResult = validateAttempt(result.attempt);
+	if (!attemptResult.ok) return attemptResult;
+	const agentResult = validateAgentInstance(result.agentInstance);
+	if (!agentResult.ok) return agentResult;
+	const epochResult = validateBindingEpoch(result.initialBindingEpoch);
+	if (!epochResult.ok) return epochResult;
+	if (attemptResult.value.providerId !== providerId || attemptResult.value.taskId !== request.taskEnvelope.taskId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt does not match its provider or canonical TaskEnvelope", { details: { spawnId: request.spawnId } }));
+	if (agentResult.value.providerId !== providerId || agentResult.value.taskId !== attemptResult.value.taskId || agentResult.value.agentInstanceId !== attemptResult.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn must bind one AgentInstance to its Attempt", { details: { spawnId: request.spawnId } }));
+	if (agentResult.value.roleRevision.id !== role.roleRevisionId || agentResult.value.roleRevision.revision !== role.revision) return Result.err(new FoundationError("invalid_correlation", "Agent spawn AgentInstance must retain the canonical durable RoleRevision", { details: { spawnId: request.spawnId } }));
+	if (epochResult.value.ordinal !== 0 || epochResult.value.attemptId !== attemptResult.value.attemptId || epochResult.value.taskId !== attemptResult.value.taskId || epochResult.value.bindingId !== attemptResult.value.bindingId || epochResult.value.agentInstanceId !== agentResult.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn epoch does not match its Attempt or AgentInstance", { details: { spawnId: request.spawnId } }));
+	if (!attemptResult.value.bindingEpochIds.includes(epochResult.value.bindingEpochId)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt omitted its initial BindingEpoch", { details: { spawnId: request.spawnId } }));
 	if (request.parentSpawn !== undefined && (request.parentSpawn.parentTaskId === request.taskEnvelope.taskId || request.parentSpawn.newTaskEnvelopeRef.id !== request.taskEnvelope.taskId)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent intent does not identify a distinct requested child TaskEnvelope", { details: { spawnId: request.spawnId } }));
-	if (request.parentAgentInstanceId !== undefined && checkedAgent.value.lineage.parentId !== request.parentAgentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn child AgentInstance lineage does not identify its parent", { details: { spawnId: request.spawnId } }));
-	return Result.ok({ schemaVersion: 1, attempt: checkedAttempt.value, agentInstance: { ...checkedAgent.value, roleRevision: { schemaVersion: 1, type: "role_revision", id: role.roleRevisionId, revision: role.revision, fingerprint: role.fingerprint } }, initialBindingEpoch: checkedEpoch.value });
+	if (request.parentAgentInstanceId !== undefined && agentResult.value.lineage.parentId !== request.parentAgentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn child AgentInstance lineage does not identify its parent", { details: { spawnId: request.spawnId } }));
+	return Result.ok({ schemaVersion: 1, attempt: attemptResult.value, agentInstance: { ...agentResult.value, roleRevision: { schemaVersion: 1, type: "role_revision", id: role.roleRevisionId, revision: role.revision, fingerprint: role.fingerprint } }, initialBindingEpoch: epochResult.value });
 }
 
 async function requireDurableRevisionFact(ledger: SessionLedger, objectType: string, reference: AgentBinding["contextRevision"]): Promise<void> {
@@ -429,38 +429,38 @@ export class LayeredResultSettlement {
 
 	/** Persist the provider-created Attempt before any provider run side effect. */
 	async startDispatch(input: DispatchExecutionInput & { readonly agentInstance?: AgentInstance }): Promise<ResultValue<DispatchStartResult, FoundationError>> {
-		const checkedDispatch = validateDispatch(input.dispatch);
-		if (!checkedDispatch.ok) return checkedDispatch;
-		const checkedBinding = validateImmutableAgentBinding(input.binding);
-		if (!checkedBinding.ok) return checkedBinding;
-		const checkedEpoch = validateBindingEpoch(input.initialBindingEpoch);
-		if (!checkedEpoch.ok) return checkedEpoch;
+		const dispatchResult = validateDispatch(input.dispatch);
+		if (!dispatchResult.ok) return dispatchResult;
+		const bindingResult = validateImmutableAgentBinding(input.binding);
+		if (!bindingResult.ok) return bindingResult;
+		const epochResult = validateBindingEpoch(input.initialBindingEpoch);
+		if (!epochResult.ok) return epochResult;
 		if (input.provider.providerClass === "agent") {
 			if (input.agentInstance === undefined) return Result.err(new FoundationError("agent_instance_required_for_agent_provider", "Agent provider execution requires a durable AgentInstance", { details: { providerId: input.provider.providerId } }));
-			const checkedAgent = validateAgentInstance(input.agentInstance);
-			if (!checkedAgent.ok) return checkedAgent;
-			if (checkedAgent.value.agentInstanceId !== checkedEpoch.value.agentInstanceId || checkedAgent.value.taskId !== checkedDispatch.value.taskId || checkedAgent.value.providerId !== input.provider.providerId) return Result.err(new FoundationError("invalid_correlation", "AgentInstance does not match the dispatch epoch", { details: { dispatchId: checkedDispatch.value.dispatchId } }));
+			const agentResult = validateAgentInstance(input.agentInstance);
+			if (!agentResult.ok) return agentResult;
+			if (agentResult.value.agentInstanceId !== epochResult.value.agentInstanceId || agentResult.value.taskId !== dispatchResult.value.taskId || agentResult.value.providerId !== input.provider.providerId) return Result.err(new FoundationError("invalid_correlation", "AgentInstance does not match the dispatch epoch", { details: { dispatchId: dispatchResult.value.dispatchId } }));
 		} else if (input.agentInstance !== undefined) {
 			return Result.err(new FoundationError("agent_instance_forbidden_for_provider", "Non-agent provider execution cannot carry an AgentInstance", { details: { providerId: input.provider.providerId } }));
 		}
 		try {
-			await this.requireExistingTask(checkedDispatch.value.taskId);
-			const durableFacts = await this.requireExistingBindingFacts(checkedBinding.value, checkedDispatch.value.taskId);
-			const binding = canonicalBindingFromFacts(checkedBinding.value, durableFacts);
+			await this.requireExistingTask(dispatchResult.value.taskId);
+			const durableFacts = await this.requireExistingBindingFacts(bindingResult.value, dispatchResult.value.taskId);
+			const binding = canonicalBindingFromFacts(bindingResult.value, durableFacts);
 			const agent = input.agentInstance === undefined ? undefined : canonicalAgentInstanceRole(input.agentInstance, durableFacts.roleRevision);
 			if (agent !== undefined && !agent.ok) return agent;
 			await this.persistFact("agent_binding", binding.bindingId, binding, { taskId: binding.taskId, bindingId: binding.bindingId }, { immutable: true });
-			await this.persistFact("binding_epoch", checkedEpoch.value.bindingEpochId, checkedEpoch.value, { taskId: checkedEpoch.value.taskId, attemptId: checkedEpoch.value.attemptId, bindingId: checkedEpoch.value.bindingId, bindingEpochId: checkedEpoch.value.bindingEpochId, agentInstanceId: checkedEpoch.value.agentInstanceId }, { immutable: true });
+			await this.persistFact("binding_epoch", epochResult.value.bindingEpochId, epochResult.value, { taskId: epochResult.value.taskId, attemptId: epochResult.value.attemptId, bindingId: epochResult.value.bindingId, bindingEpochId: epochResult.value.bindingEpochId, agentInstanceId: epochResult.value.agentInstanceId }, { immutable: true });
 			if (agent?.ok) await this.persistFact("agent_instance", agent.value.agentInstanceId, agent.value, { taskId: agent.value.taskId, agentInstanceId: agent.value.agentInstanceId }, { immutable: true });
-			await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, {
-				taskId: checkedDispatch.value.taskId,
-				dispatchId: checkedDispatch.value.dispatchId,
-				bindingId: checkedDispatch.value.bindingId,
+			await this.persistFact("dispatch", dispatchResult.value.dispatchId, dispatchResult.value, {
+				taskId: dispatchResult.value.taskId,
+				dispatchId: dispatchResult.value.dispatchId,
+				bindingId: dispatchResult.value.bindingId,
 				...(agent?.ok ? { agentInstanceId: agent.value.agentInstanceId } : {}),
 			}, { immutable: true });
-			const replayed = await this.findDurableDispatchExecution(checkedDispatch.value, binding, checkedEpoch.value, input.provider);
+			const replayed = await this.findDurableDispatchExecution(dispatchResult.value, binding, epochResult.value, input.provider);
 			if (replayed !== undefined) return Result.ok({ ...replayed, receipt: replayed.receipt });
-			const existingAttempt = await this.findDurableAttempt(checkedDispatch.value, binding, checkedEpoch.value, input.provider);
+			const existingAttempt = await this.findDurableAttempt(dispatchResult.value, binding, epochResult.value, input.provider);
 			const started = await startDispatchAttempt({
 				...input,
 				binding,
@@ -552,25 +552,25 @@ export class LayeredResultSettlement {
 	}
 
 	async executeAgentSpawn(input: ChildSpawnExecutionInput): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
-		const checkedRequest = validateChildSpawnRequest(input.request);
-		if (!checkedRequest.ok) return checkedRequest;
+		const requestResult = validateChildSpawnRequest(input.request);
+		if (!requestResult.ok) return requestResult;
 		if (input.provider.providerClass !== "agent") return Result.err(new FoundationError("agent_instance_not_agent_provider", "Agent spawn requires an Agent provider", { details: { providerId: input.provider.providerId } }));
 		try {
-			const validatedRequest = checkedRequest.value;
+			const validatedRequest = requestResult.value;
 			if (!spawnCorrelationValid(input.correlation, validatedRequest)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn requires a complete child Task and AgentInstance correlation", { details: { spawnId: validatedRequest.spawnId } }));
 			if (validatedRequest.parentSpawn === undefined) return Result.err(new FoundationError("role_resolver_task_required", "Agent spawn requires a durable parent Task and Context", { details: { spawnId: validatedRequest.spawnId } }));
 			const prevalidatedIntent = validateSpawnAgentIntent(validatedRequest.parentSpawn);
 			if (!prevalidatedIntent.ok) return prevalidatedIntent;
-			const checkedParentIntent = validateSpawnIntentIdentity(validatedRequest.parentSpawn, validatedRequest, input.provider.providerId);
-			if (!checkedParentIntent.ok) return checkedParentIntent;
-			const parentTask = await this.requireExistingTask(checkedParentIntent.value.parentTaskId);
-			const parentContext = await this.requireParentSpawnContext(checkedParentIntent.value, parentTask, validatedRequest);
-			await this.validateChildTaskReference(validatedRequest, checkedParentIntent.value);
+			const parentIntentResult = validateSpawnIntentIdentity(validatedRequest.parentSpawn, validatedRequest, input.provider.providerId);
+			if (!parentIntentResult.ok) return parentIntentResult;
+			const parentTask = await this.requireExistingTask(parentIntentResult.value.parentTaskId);
+			const parentContext = await this.requireParentSpawnContext(parentIntentResult.value, parentTask, validatedRequest);
+			await this.validateChildTaskReference(validatedRequest, parentIntentResult.value);
 			const durableSources = await this.requireDurableSpawnSources(validatedRequest.roleRevision, validatedRequest.modelProfile);
-			const durableTask = await this.persistFact("task", validatedRequest.taskEnvelope.taskId, validatedRequest.taskEnvelope, { taskId: validatedRequest.taskEnvelope.taskId }, { immutable: true });
-			const persistedIntent = validateSpawnAgentIntent(checkedParentIntent.value, { taskExists: (taskId) => taskId === (durableTask.payload as TaskEnvelope).taskId });
+			const taskRecord = await this.persistFact("task", validatedRequest.taskEnvelope.taskId, validatedRequest.taskEnvelope, { taskId: validatedRequest.taskEnvelope.taskId }, { immutable: true });
+			const persistedIntent = validateSpawnAgentIntent(parentIntentResult.value, { taskExists: (taskId) => taskId === (taskRecord.payload as TaskEnvelope).taskId });
 			if (!persistedIntent.ok) return persistedIntent;
-			const request = cloneDeepFrozen({ ...validatedRequest, taskEnvelope: durableTask.payload as TaskEnvelope, roleRevision: durableSources.roleRevision, modelProfile: durableSources.modelProfile });
+			const request = cloneDeepFrozen({ ...validatedRequest, taskEnvelope: taskRecord.payload as TaskEnvelope, roleRevision: durableSources.roleRevision, modelProfile: durableSources.modelProfile });
 			const existingFact = await this.ledger.get(AGENT_SPAWN_OBJECT_TYPE, request.spawnId);
 			if (existingFact?.kind === "fact") {
 				const fact = parseSpawnFact(existingFact.payload, request.spawnId, input.provider.providerId);
@@ -678,9 +678,9 @@ export class LayeredResultSettlement {
 		if (!context.ok) throw context.error;
 		if (context.value.taskId !== request.taskEnvelope.taskId || context.value.spawnId !== request.spawnId) throw new FoundationError("invalid_correlation", "Agent spawn child Context does not match the child Task or spawn identity", { details: { spawnId: request.spawnId, contextId } });
 		const childDispatch: Dispatch = { schemaVersion: 1, dispatchId: spawned.attempt.dispatchId, taskId: spawned.attempt.taskId, bindingId: spawned.attempt.bindingId, taskExecutorProviderId: spawned.attempt.providerId, status: "pending", createdAt: spawned.attempt.startedAt };
-		const checkedDispatch = validateDispatch(childDispatch);
-		if (!checkedDispatch.ok) throw checkedDispatch.error;
-		await this.persistFact("dispatch", checkedDispatch.value.dispatchId, checkedDispatch.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, bindingId: checkedDispatch.value.bindingId, agentInstanceId: spawned.agentInstance.agentInstanceId }, { immutable: true });
+		const dispatchResult = validateDispatch(childDispatch);
+		if (!dispatchResult.ok) throw dispatchResult.error;
+		await this.persistFact("dispatch", dispatchResult.value.dispatchId, dispatchResult.value, { taskId: dispatchResult.value.taskId, dispatchId: dispatchResult.value.dispatchId, bindingId: dispatchResult.value.bindingId, agentInstanceId: spawned.agentInstance.agentInstanceId }, { immutable: true });
 		await this.persistFact("agent_instance", spawned.agentInstance.agentInstanceId, spawned.agentInstance, { taskId: spawned.agentInstance.taskId, agentInstanceId: spawned.agentInstance.agentInstanceId }, { immutable: true });
 		await this.persistFact("binding_epoch", spawned.initialBindingEpoch.bindingEpochId, spawned.initialBindingEpoch, { taskId: spawned.initialBindingEpoch.taskId, attemptId: spawned.initialBindingEpoch.attemptId, bindingId: spawned.initialBindingEpoch.bindingId, bindingEpochId: spawned.initialBindingEpoch.bindingEpochId, agentInstanceId: spawned.initialBindingEpoch.agentInstanceId }, { immutable: true });
 		await this.persistFact("attempt", spawned.attempt.attemptId, spawned.attempt, { taskId: spawned.attempt.taskId, dispatchId: spawned.attempt.dispatchId, attemptId: spawned.attempt.attemptId, bindingId: spawned.attempt.bindingId, bindingEpochId: spawned.attempt.bindingEpochIds[0], agentInstanceId: spawned.attempt.agentInstanceId }, { immutable: true });
@@ -696,14 +696,14 @@ export class LayeredResultSettlement {
 			await this.requireExistingAgentInstance(input.currentEpoch);
 			const attemptRecord = await this.ledger.get("attempt", input.currentEpoch.attemptId);
 			if (attemptRecord === undefined || attemptRecord.kind !== "fact") throw new FoundationError("binding_required_fact", "Mode switch requires the current Attempt to be durable", { details: { attemptId: input.currentEpoch.attemptId } });
-			const checkedAttempt = validateAttempt(attemptRecord.payload);
-			if (!checkedAttempt.ok || checkedAttempt.value.taskId !== input.currentEpoch.taskId || checkedAttempt.value.bindingId !== input.currentEpoch.bindingId || !checkedAttempt.value.bindingEpochIds.includes(input.currentEpoch.bindingEpochId)) throw new FoundationError("binding_epoch_mismatch", "Mode switch current BindingEpoch is not part of the durable Attempt chain", { details: { attemptId: input.currentEpoch.attemptId, bindingEpochId: input.currentEpoch.bindingEpochId } });
+			const attemptResult = validateAttempt(attemptRecord.payload);
+			if (!attemptResult.ok || attemptResult.value.taskId !== input.currentEpoch.taskId || attemptResult.value.bindingId !== input.currentEpoch.bindingId || !attemptResult.value.bindingEpochIds.includes(input.currentEpoch.bindingEpochId)) throw new FoundationError("binding_epoch_mismatch", "Mode switch current BindingEpoch is not part of the durable Attempt chain", { details: { attemptId: input.currentEpoch.attemptId, bindingEpochId: input.currentEpoch.bindingEpochId } });
 			await this.requireExistingBindingFacts(input.nextBinding);
 			await this.persistFact("agent_binding", input.nextBinding.bindingId, input.nextBinding, { taskId: input.nextBinding.taskId, bindingId: input.nextBinding.bindingId }, { immutable: true });
 			await this.persistFact("binding_epoch", switched.value.bindingEpochId, switched.value, { taskId: switched.value.taskId, attemptId: switched.value.attemptId, bindingId: switched.value.bindingId, bindingEpochId: switched.value.bindingEpochId, agentInstanceId: switched.value.agentInstanceId }, { immutable: true });
-			const nextAttempt: Attempt = checkedAttempt.value.bindingEpochIds.includes(switched.value.bindingEpochId)
-				? checkedAttempt.value
-				: { ...checkedAttempt.value, bindingEpochIds: [...checkedAttempt.value.bindingEpochIds, switched.value.bindingEpochId] };
+			const nextAttempt: Attempt = attemptResult.value.bindingEpochIds.includes(switched.value.bindingEpochId)
+				? attemptResult.value
+				: { ...attemptResult.value, bindingEpochIds: [...attemptResult.value.bindingEpochIds, switched.value.bindingEpochId] };
 			await this.persistFact("attempt", nextAttempt.attemptId, nextAttempt, { taskId: nextAttempt.taskId, dispatchId: nextAttempt.dispatchId, attemptId: nextAttempt.attemptId, bindingId: nextAttempt.bindingId, bindingEpochId: switched.value.bindingEpochId, agentInstanceId: nextAttempt.agentInstanceId }, { expectedRevision: attemptRecord.revision });
 			await this.persistFact("binding.activated", switched.value.bindingEpochId, switched.value, { taskId: switched.value.taskId, attemptId: switched.value.attemptId, bindingId: switched.value.bindingId, bindingEpochId: switched.value.bindingEpochId, agentInstanceId: switched.value.agentInstanceId }, { immutable: true });
 			return switched;
@@ -756,20 +756,20 @@ export class LayeredResultSettlement {
 			for (const id of input.attemptReceiptIds) {
 				const stored = await this.ledger.get("attempt_receipt", id);
 				if (stored === undefined || stored.kind !== "fact") return Result.err(new FoundationError("task_result_no_source_receipts", "Run finalization references an AttemptReceipt not accepted by a provider consumer", { details: { runId: input.runId, attemptReceiptId: id } }));
-				const checkedAttempt = validateAttemptReceipt(stored.payload);
-				if (!checkedAttempt.ok) return Result.err(checkedAttempt.error);
-				if (checkedAttempt.value.attemptReceiptId !== id) return Result.err(new FoundationError("invalid_correlation", "Run finalization source identity does not match its durable key", { details: { runId: input.runId, attemptReceiptId: id } }));
-				sourceTaskId ??= checkedAttempt.value.taskId;
-				sourceAttempts.push(checkedAttempt.value);
+				const attemptReceiptResult = validateAttemptReceipt(stored.payload);
+				if (!attemptReceiptResult.ok) return Result.err(attemptReceiptResult.error);
+				if (attemptReceiptResult.value.attemptReceiptId !== id) return Result.err(new FoundationError("invalid_correlation", "Run finalization source identity does not match its durable key", { details: { runId: input.runId, attemptReceiptId: id } }));
+				sourceTaskId ??= attemptReceiptResult.value.taskId;
+				sourceAttempts.push(attemptReceiptResult.value);
 			}
 			const taskResultRecord = input.taskResultId === undefined ? undefined : await this.ledger.get("task_result", input.taskResultId);
 			if (input.taskResultId !== undefined && (taskResultRecord === undefined || taskResultRecord.kind !== "fact")) return Result.err(new FoundationError("task_result_terminal_requires_task_result", "Run finalization references a TaskResult that has not crossed the Host settlement gate", { details: { runId: input.runId, taskResultId: input.taskResultId } }));
 			let taskResult: TaskResult | undefined;
 			if (taskResultRecord?.kind === "fact") {
-				const checkedTaskResult = validateTaskResult(taskResultRecord.payload);
-				if (!checkedTaskResult.ok) return checkedTaskResult;
-				if (checkedTaskResult.value.taskResultId !== input.taskResultId || sourceTaskId !== undefined && checkedTaskResult.value.taskId !== sourceTaskId) return Result.err(new FoundationError("invalid_correlation", "Run finalization TaskResult does not match its durable key or source Task", { details: { runId: input.runId, taskResultId: checkedTaskResult.value.taskResultId } }));
-				taskResult = checkedTaskResult.value;
+				const taskResultResult = validateTaskResult(taskResultRecord.payload);
+				if (!taskResultResult.ok) return taskResultResult;
+				if (taskResultResult.value.taskResultId !== input.taskResultId || sourceTaskId !== undefined && taskResultResult.value.taskId !== sourceTaskId) return Result.err(new FoundationError("invalid_correlation", "Run finalization TaskResult does not match its durable key or source Task", { details: { runId: input.runId, taskResultId: taskResultResult.value.taskResultId } }));
+				taskResult = taskResultResult.value;
 			}
 			const crossTaskAttempts = sourceAttempts.filter((receipt) => receipt.taskId !== sourceTaskId);
 			if (
@@ -967,18 +967,18 @@ export class LayeredResultSettlement {
 			if (!genericReceipt.ok) continue;
 			if (genericReceipt.value.attemptId !== epoch.attemptId) continue;
 			if (genericReceipt.value.taskId !== dispatch.taskId || genericReceipt.value.dispatchId !== dispatch.dispatchId || genericReceipt.value.bindingId !== binding.bindingId || genericReceipt.value.bindingEpochIds[0] !== epoch.bindingEpochId) throw new FoundationError("invalid_correlation", "Durable AttemptReceipt does not match the replayed Dispatch", { details: { attemptReceiptId: genericReceipt.value.attemptReceiptId, dispatchId: dispatch.dispatchId } });
-			const checkedReceipt = validateAttemptReceiptForProvider(genericReceipt.value, { providerId: provider.providerId, providerClass: provider.providerClass });
-			if (!checkedReceipt.ok) {
+			const receiptResult = validateAttemptReceiptForProvider(genericReceipt.value, { providerId: provider.providerId, providerClass: provider.providerClass });
+			if (!receiptResult.ok) {
 				if (genericReceipt.value.providerId !== provider.providerId) throw new FoundationError("session_ledger_conflict", "Existing AttemptReceipt conflicts with its deterministic reconstruction", { details: { attemptReceiptId: genericReceipt.value.attemptReceiptId, expectedProviderId: provider.providerId, actualProviderId: genericReceipt.value.providerId } });
-				throw checkedReceipt.error;
+				throw receiptResult.error;
 			}
 			const attemptRecord = await this.ledger.get("attempt", epoch.attemptId);
-			if (attemptRecord === undefined || attemptRecord.kind !== "fact") throw new FoundationError("invalid_correlation", "Durable AttemptReceipt is missing its Attempt fact", { details: { attemptReceiptId: checkedReceipt.value.attemptReceiptId, attemptId: epoch.attemptId } });
-			const checkedAttempt = validateAttempt(attemptRecord.payload);
-			if (!checkedAttempt.ok) throw checkedAttempt.error;
-			if (checkedAttempt.value.taskId !== dispatch.taskId || checkedAttempt.value.dispatchId !== dispatch.dispatchId || checkedAttempt.value.bindingId !== binding.bindingId || checkedAttempt.value.providerId !== provider.providerId || !checkedAttempt.value.bindingEpochIds.includes(epoch.bindingEpochId) || checkedAttempt.value.agentInstanceId !== epoch.agentInstanceId) throw new FoundationError("invalid_correlation", "Durable Attempt does not match the replayed Dispatch", { details: { attemptId: checkedAttempt.value.attemptId, dispatchId: dispatch.dispatchId } });
-			await this.requireWorkerReceiptRefs(checkedReceipt.value);
-			return { attempt: cloneDeepFrozen(checkedAttempt.value), receipt: cloneDeepFrozen(checkedReceipt.value), providerId: provider.providerId, providerClass: provider.providerClass };
+			if (attemptRecord === undefined || attemptRecord.kind !== "fact") throw new FoundationError("invalid_correlation", "Durable AttemptReceipt is missing its Attempt fact", { details: { attemptReceiptId: receiptResult.value.attemptReceiptId, attemptId: epoch.attemptId } });
+			const attemptResult = validateAttempt(attemptRecord.payload);
+			if (!attemptResult.ok) throw attemptResult.error;
+			if (attemptResult.value.taskId !== dispatch.taskId || attemptResult.value.dispatchId !== dispatch.dispatchId || attemptResult.value.bindingId !== binding.bindingId || attemptResult.value.providerId !== provider.providerId || !attemptResult.value.bindingEpochIds.includes(epoch.bindingEpochId) || attemptResult.value.agentInstanceId !== epoch.agentInstanceId) throw new FoundationError("invalid_correlation", "Durable Attempt does not match the replayed Dispatch", { details: { attemptId: attemptResult.value.attemptId, dispatchId: dispatch.dispatchId } });
+			await this.requireWorkerReceiptRefs(receiptResult.value);
+			return { attempt: cloneDeepFrozen(attemptResult.value), receipt: cloneDeepFrozen(receiptResult.value), providerId: provider.providerId, providerClass: provider.providerClass };
 		}
 		return undefined;
 	}

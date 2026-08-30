@@ -141,8 +141,8 @@ export function finalizeRunReceipt(input: FinalizeRunReceiptInput): ResultValue<
 		const terminalError = validatePublicExecutionError(input.terminalError);
 		if (!terminalError.ok || input.terminalErrorCode !== undefined && input.terminalErrorCode !== terminalError.value.code) return Result.err(new FoundationError("run_terminal_authority_invalid", "Run terminal error code and detail must agree", { details: { runId: input.runId } }));
 	}
-	const checkedUsage = validateRunReceiptUsage(input.usage);
-	if (!checkedUsage.ok) return checkedUsage;
+	const usageResult = validateRunReceiptUsage(input.usage);
+	if (!usageResult.ok) return usageResult;
 	if (input.taskResult !== undefined) {
 		const taskResult = validateTaskResult(input.taskResult);
 		if (!taskResult.ok || taskResult.value.provenance.producerKind !== "host") return Result.err(new FoundationError("task_result_validation_failed", "Run terminal gate requires an exact host TaskResult", { details: { runId: input.runId } }));
@@ -151,7 +151,7 @@ export function finalizeRunReceipt(input: FinalizeRunReceiptInput): ResultValue<
 	if (input.attemptReceiptIds.length === 0) return Result.err(new FoundationError("task_result_no_source_receipts", "Run receipt requires source AttemptReceipt ids", { details: { runId: input.runId } }));
 	if (input.attemptReceiptIds.some((id) => id.length === 0) || new Set(input.attemptReceiptIds).size !== input.attemptReceiptIds.length) return Result.err(new FoundationError("task_result_validation_failed", "Run receipt source AttemptReceipt ids must be unique and non-empty", { details: { runId: input.runId } }));
 	if (input.taskResult?.sourceAttemptReceiptIds.some((id) => !input.attemptReceiptIds.includes(id))) return Result.err(new FoundationError("task_result_validation_failed", "Run receipt sources must include every TaskResult source receipt", { details: { runId: input.runId } }));
-	return Result.ok({ schemaVersion: 1, runReceiptId: input.runReceiptId, runId: input.runId, terminalStatus: input.terminalStatus, attemptReceiptIds: [...input.attemptReceiptIds], ...(input.taskResult === undefined ? {} : { taskResultId: input.taskResult.taskResultId }), usage: checkedUsage.value, ...(input.terminalErrorCode === undefined ? {} : { terminalErrorCode: input.terminalErrorCode }), ...(input.terminalError === undefined ? {} : { terminalError: input.terminalError }), completedAt: input.completedAt ?? new Date().toISOString() });
+	return Result.ok({ schemaVersion: 1, runReceiptId: input.runReceiptId, runId: input.runId, terminalStatus: input.terminalStatus, attemptReceiptIds: [...input.attemptReceiptIds], ...(input.taskResult === undefined ? {} : { taskResultId: input.taskResult.taskResultId }), usage: usageResult.value, ...(input.terminalErrorCode === undefined ? {} : { terminalErrorCode: input.terminalErrorCode }), ...(input.terminalError === undefined ? {} : { terminalError: input.terminalError }), completedAt: input.completedAt ?? new Date().toISOString() });
 }
 
 const validationSchema = Type.Object({ name: Type.String({ minLength: 1 }), required: Type.Boolean(), status: Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped"), Type.Literal("pending")]), summary: Type.Optional(Type.String()), evidenceRefs: Type.Optional(Type.Array(ArtifactRefSchema)) }, { additionalProperties: false });

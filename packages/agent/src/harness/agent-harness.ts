@@ -932,15 +932,15 @@ async function foundationToolResultPayload(
 			return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put failed"));
 		}
 		if (!stored.ok) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put failed"));
-		const checkedPut = validateArtifactPutResult(stored.value);
-		if (!checkedPut.ok || checkedPut.value.ref !== checkedDescriptor.value.artifactId || checkedPut.value.sizeBytes !== bytes.byteLength) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put returned an unverifiable reference"));
-		const checkedArtifact = validateArtifactRef({ schemaVersion: 1, artifactId: checkedPut.value.ref, mediaType: item.mimeType, digest: checkedDescriptor.value.digest, producer: producerId, sizeBytes: bytes.byteLength });
-		if (!checkedArtifact.ok) {
+		const putResult = validateArtifactPutResult(stored.value);
+		if (!putResult.ok || putResult.value.ref !== checkedDescriptor.value.artifactId || putResult.value.sizeBytes !== bytes.byteLength) return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore put returned an unverifiable reference"));
+		const artifactResult = validateArtifactRef({ schemaVersion: 1, artifactId: putResult.value.ref, mediaType: item.mimeType, digest: checkedDescriptor.value.digest, producer: producerId, sizeBytes: bytes.byteLength });
+		if (!artifactResult.ok) {
 			return Result.err(new FoundationError("side_effect_unknown", "image ArtifactStore returned an unverifiable ArtifactRef"));
 		}
-		const integrity = await verifyArtifactStoreRef(artifactStore, checkedArtifact.value);
+		const integrity = await verifyArtifactStoreRef(artifactStore, artifactResult.value);
 		if (!integrity.ok) return integrity;
-		content.push({ type: "image", artifact: checkedArtifact.value });
+		content.push({ type: "image", artifact: artifactResult.value });
 	}
 	const payload: ToolResultPayload = {
 		schemaVersion: 1,
@@ -967,9 +967,9 @@ async function foundationToolResultPayload(
 		...(result.addedToolNames === undefined ? {} : { addedToolNames: [...result.addedToolNames] }),
 		...(result.terminate === undefined ? {} : { terminate: result.terminate }),
 	};
-	const checkedPayload = validateToolResultPayload(payload);
-	if (!checkedPayload.ok) return checkedPayload;
-	return Result.ok({ result: checkedPayload.value, artifacts: foundationToolResultArtifacts(checkedPayload.value) });
+	const payloadResult = validateToolResultPayload(payload);
+	if (!payloadResult.ok) return payloadResult;
+	return Result.ok({ result: payloadResult.value, artifacts: foundationToolResultArtifacts(payloadResult.value) });
 }
 
 async function restoreFoundationToolResult(payload: ToolResultPayload | undefined, artifactStore: ArtifactStoreProvider | undefined): Promise<ResultValue<AgentToolResult<unknown>, FoundationError>> {
@@ -1049,8 +1049,8 @@ async function verifyArtifactStoreRef(
 	if (verified === null || typeof verified !== "object" || !("ok" in verified) || verified.ok !== true || !("value" in verified)) {
 		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
 	}
-	const checkedVerify = validateArtifactVerifyResult(verified.value);
-	if (!checkedVerify.ok || !checkedVerify.value.digestValid) {
+	const verifyResult = validateArtifactVerifyResult(verified.value);
+	if (!verifyResult.ok || !verifyResult.value.digestValid) {
 		return Result.err(new FoundationError("side_effect_unknown", "durable image artifact failed integrity verification"));
 	}
 	return Result.ok(bytes);
@@ -1594,46 +1594,46 @@ export class AgentHarness implements AgentLane {
 	private async initializeFoundationExecution(): Promise<void> {
 		const execution = this.foundationExecution;
 		if (execution === undefined) return;
-		const checkedTask = validateTaskEnvelope(execution.task);
-		if (!checkedTask.ok) throw new HarnessFault("Foundation execution task is not an established TaskEnvelope", checkedTask.error);
-		const persistedTask = await persistTaskEnvelopeBeforeResolver(this.durableSession, checkedTask.value, { ownerId: this.foundationOwnerId, writer: this.ledger.writer });
+		const taskResult = validateTaskEnvelope(execution.task);
+		if (!taskResult.ok) throw new HarnessFault("Foundation execution task is not an established TaskEnvelope", taskResult.error);
+		const persistedTask = await persistTaskEnvelopeBeforeResolver(this.durableSession, taskResult.value, { ownerId: this.foundationOwnerId, writer: this.ledger.writer });
 		if (!persistedTask.ok) throw new HarnessFault("Foundation execution TaskEnvelope could not be durably established before binding resolution", persistedTask.error);
-		const checkedDispatch = validateDispatch(execution.dispatch);
-		if (!checkedDispatch.ok) throw new HarnessFault("Foundation execution dispatch is not an established Dispatch", checkedDispatch.error);
-		const checkedBinding = validateImmutableAgentBinding(execution.binding);
-		if (!checkedBinding.ok) throw new HarnessFault("Foundation execution binding is not an established immutable AgentBinding", checkedBinding.error);
-		const durableBinding = await validateDurableBindingSources(this.durableSession, checkedBinding.value, persistedTask.value);
-		if (!durableBinding.ok) throw new HarnessFault("Foundation execution binding does not resolve from durable registry and source facts", durableBinding.error);
-		const checkedEpoch = validateBindingEpoch(execution.initialBindingEpoch);
-		if (!checkedEpoch.ok) throw new HarnessFault("Foundation execution epoch is not an established BindingEpoch", checkedEpoch.error);
-		const checkedAgent = execution.agentInstance === undefined ? undefined : validateAgentInstance(execution.agentInstance);
-		if (checkedAgent !== undefined && !checkedAgent.ok) throw new HarnessFault("Foundation execution AgentInstance is not established", checkedAgent.error);
+		const dispatchResult = validateDispatch(execution.dispatch);
+		if (!dispatchResult.ok) throw new HarnessFault("Foundation execution dispatch is not an established Dispatch", dispatchResult.error);
+		const bindingResult = validateImmutableAgentBinding(execution.binding);
+		if (!bindingResult.ok) throw new HarnessFault("Foundation execution binding is not an established immutable AgentBinding", bindingResult.error);
+		const resolvedBindingResult = await validateDurableBindingSources(this.durableSession, bindingResult.value, persistedTask.value);
+		if (!resolvedBindingResult.ok) throw new HarnessFault("Foundation execution binding does not resolve from durable registry and source facts", resolvedBindingResult.error);
+		const epochResult = validateBindingEpoch(execution.initialBindingEpoch);
+		if (!epochResult.ok) throw new HarnessFault("Foundation execution epoch is not an established BindingEpoch", epochResult.error);
+		const agentResult = execution.agentInstance === undefined ? undefined : validateAgentInstance(execution.agentInstance);
+		if (agentResult !== undefined && !agentResult.ok) throw new HarnessFault("Foundation execution AgentInstance is not established", agentResult.error);
 		const provider = this.foundationProvider;
 		if (provider === undefined) throw new HarnessFault("Foundation execution requires a trusted provider consumer", undefined);
 		if (provider.providerId !== execution.providerId) throw new HarnessFault("Foundation execution provider consumer does not match providerId", undefined);
 		if ((execution.hostAuthority === undefined) !== (execution.settlement === undefined)) {
 			throw new HarnessFault("Foundation hostAuthority and settlement must be supplied together", undefined);
 		}
-		const checkedAuthority = execution.hostAuthority === undefined ? undefined : validateHostTerminalGateAuthority(execution.hostAuthority);
-		if (checkedAuthority !== undefined && !checkedAuthority.ok) throw new HarnessFault("Foundation host authority is not an established terminal gate", checkedAuthority.error);
-		if (execution.providerId !== checkedDispatch.value.taskExecutorProviderId) {
+		const authorityResult = execution.hostAuthority === undefined ? undefined : validateHostTerminalGateAuthority(execution.hostAuthority);
+		if (authorityResult !== undefined && !authorityResult.ok) throw new HarnessFault("Foundation host authority is not an established terminal gate", authorityResult.error);
+		if (execution.providerId !== dispatchResult.value.taskExecutorProviderId) {
 			throw new HarnessFault("Foundation execution provider does not match the Dispatch executor", undefined);
 		}
-		if (checkedDispatch.value.taskId !== checkedTask.value.taskId || checkedDispatch.value.bindingId !== checkedBinding.value.bindingId) {
+		if (dispatchResult.value.taskId !== taskResult.value.taskId || dispatchResult.value.bindingId !== bindingResult.value.bindingId) {
 			throw new HarnessFault("Foundation execution Dispatch does not match its Task or Binding", undefined);
 		}
-		if (checkedBinding.value.taskId !== checkedTask.value.taskId) {
+		if (bindingResult.value.taskId !== taskResult.value.taskId) {
 			throw new HarnessFault("Foundation execution Binding does not match its Task", undefined);
 		}
 		const normalizedExecution: AgentHarnessFoundationExecution = {
 			...execution,
-			task: structuredClone(checkedTask.value),
-			dispatch: structuredClone(checkedDispatch.value),
-			binding: cloneDeepFrozen(durableBinding.value),
-			initialBindingEpoch: structuredClone(checkedEpoch.value),
+			task: structuredClone(taskResult.value),
+			dispatch: structuredClone(dispatchResult.value),
+			binding: cloneDeepFrozen(resolvedBindingResult.value),
+			initialBindingEpoch: structuredClone(epochResult.value),
 			bindingEpochIds: [...execution.bindingEpochIds],
 			...(execution.agentInstance === undefined ? {} : { agentInstance: structuredClone(execution.agentInstance) }),
-			...(checkedAuthority === undefined ? {} : { hostAuthority: structuredClone(checkedAuthority.value) }),
+			...(authorityResult === undefined ? {} : { hostAuthority: structuredClone(authorityResult.value) }),
 			...(execution.settlement === undefined ? {} : { settlement: structuredClone(execution.settlement) }),
 		};
 		this.foundationExecution = normalizedExecution;
@@ -1650,7 +1650,7 @@ export class AgentHarness implements AgentLane {
 		if (provider.providerClass === "agent") {
 			if (normalizedExecution.agentInstanceId === undefined || normalizedExecution.agentInstanceId.length === 0 || normalizedExecution.agentInstance === undefined) throw new HarnessFault("Agent provider execution requires a durable AgentInstance", undefined);
 			if (normalizedExecution.initialBindingEpoch.agentInstanceId !== normalizedExecution.agentInstanceId) throw new HarnessFault("Foundation execution epoch does not match its AgentInstance", undefined);
-			if (checkedAgent === undefined || !checkedAgent.ok || checkedAgent.value.agentInstanceId !== normalizedExecution.agentInstanceId || checkedAgent.value.taskId !== normalizedExecution.task.taskId || checkedAgent.value.providerId !== normalizedExecution.providerId) throw new HarnessFault("Foundation execution AgentInstance does not match its provider, task, or epoch", undefined);
+			if (agentResult === undefined || !agentResult.ok || agentResult.value.agentInstanceId !== normalizedExecution.agentInstanceId || agentResult.value.taskId !== normalizedExecution.task.taskId || agentResult.value.providerId !== normalizedExecution.providerId) throw new HarnessFault("Foundation execution AgentInstance does not match its provider, task, or epoch", undefined);
 		} else if (normalizedExecution.agentInstanceId !== undefined || normalizedExecution.agentInstance !== undefined || normalizedExecution.initialBindingEpoch.agentInstanceId !== undefined) {
 			throw new HarnessFault("Operation/non-agent provider execution cannot carry an AgentInstance", undefined);
 		}
@@ -2416,15 +2416,15 @@ export class AgentHarness implements AgentLane {
 					markLedgerConflict();
 					continue;
 				}
-				const checkedEntry = validateFoundationToolResultEntry(result.data);
-				if (!checkedEntry.ok || checkedEntry.value.runId !== runId || checkedEntry.value.operationId !== runId || checkedEntry.value.toolCallId !== start.toolCallId || checkedEntry.value.toolName !== start.toolName || canonicalFoundationJson(checkedEntry.value.result) !== canonicalFoundationJson(durableResult)) {
+				const entryResult = validateFoundationToolResultEntry(result.data);
+				if (!entryResult.ok || entryResult.value.runId !== runId || entryResult.value.operationId !== runId || entryResult.value.toolCallId !== start.toolCallId || entryResult.value.toolName !== start.toolName || canonicalFoundationJson(entryResult.value.result) !== canonicalFoundationJson(durableResult)) {
 					markLedgerConflict();
 				}
 				continue;
 			}
 			if (result?.type === "custom" && result.customType === FOUNDATION_TOOL_RESULT_CUSTOM_TYPE) {
-				const checkedEntry = validateFoundationToolResultEntry(result.data);
-				if (!checkedEntry.ok || receipt?.outcome !== "succeeded" || receipt.result === undefined) markLedgerConflict();
+				const entryResult = validateFoundationToolResultEntry(result.data);
+				if (!entryResult.ok || receipt?.outcome !== "succeeded" || receipt.result === undefined) markLedgerConflict();
 				continue;
 			}
 			if (result?.type !== "message" || result.message.role !== "toolResult") {
@@ -2974,20 +2974,20 @@ export class AgentHarness implements AgentLane {
 					: "side_effect_unknown";
 				try {
 					const result = await tool.execute(options.toolCallId, args as never, options.signal, (partial) => options.onUpdate?.(partial));
-					const durableResult = await foundationToolResultPayload(result as AgentToolResult<unknown>, this.artifactStore, this.foundationExecution?.providerId, options.toolCallId);
-					if (!durableResult.ok) {
+					const payloadResult = await foundationToolResultPayload(result as AgentToolResult<unknown>, this.artifactStore, this.foundationExecution?.providerId, options.toolCallId);
+					if (!payloadResult.ok) {
 						return {
 							ok: false,
 							sideEffectState: "side_effect_unknown" as const,
-							error: durableResult.error.toPublicExecutionError(),
+							error: payloadResult.error.toPublicExecutionError(),
 						};
 					}
 					return {
 						ok: true,
 						sideEffectState: sideEffectState === "none" ? "none" : "side_effect_unknown",
 						...(result.usage === undefined ? {} : { usage: foundationToolUsage(result.usage) }),
-						...(durableResult.value.artifacts.length === 0 ? {} : { artifacts: durableResult.value.artifacts }),
-						result: durableResult.value.result,
+						...(payloadResult.value.artifacts.length === 0 ? {} : { artifacts: payloadResult.value.artifacts }),
+						result: payloadResult.value.result,
 					};
 				} catch (error) {
 					const normalized = toFoundationError(error, "tool_execution_failed");

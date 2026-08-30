@@ -484,8 +484,8 @@ export class SessionToolPipelineStorage implements ToolPipelineStorage {
 
 	async finalizeReceipt(receipt: ToolReceipt): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>> {
 		try {
-			const checkedReceipt = validateAndVerifyToolReceipt(receipt);
-			if (!checkedReceipt.ok) return checkedReceipt;
+			const receiptResult = validateAndVerifyToolReceipt(receipt);
+			if (!receiptResult.ok) return receiptResult;
 			const correlation = validateToolCorrelation(receipt, this.correlationFor("receipt", receipt), this.laneId);
 			if (!correlation.ok) return correlation;
 			const fencingToken = this.fencingToken === undefined ? undefined : await this.fencingToken();
@@ -679,8 +679,8 @@ export class InMemoryToolPipelineStorage implements ToolPipelineStorage {
 	}
 
 	async finalizeReceipt(receipt: ToolReceipt): Promise<ResultValue<{ toolReceiptRef: string }, FoundationError>> {
-		const checkedReceipt = validateAndVerifyToolReceipt(receipt);
-		if (!checkedReceipt.ok) return checkedReceipt;
+		const receiptResult = validateAndVerifyToolReceipt(receipt);
+		if (!receiptResult.ok) return receiptResult;
 		const existing = this.receiptsById.get(receipt.toolReceiptId);
 		if (existing !== undefined) {
 			return canonicalFoundationJson(existing) === canonicalFoundationJson(receipt)
@@ -972,15 +972,15 @@ export class FoundationToolPipeline {
 		}
 		const recovered: ToolReceipt[] = [];
 		for (const intent of intents) {
-			const checkedIntent = validateToolIntent(intent);
-			if (!checkedIntent.ok) return checkedIntent;
+			const intentResult = validateToolIntent(intent);
+			if (!intentResult.ok) return intentResult;
 			if (context !== undefined && !toolIdentityMatchesContext(intent, context)) continue;
 			const matching = receipts.filter((receipt) => receiptIdentityMatchesIntent(receipt, intent));
 			let foundExact = false;
 			for (const candidate of matching) {
-				const checkedReceipt = validateAndVerifyToolReceipt(candidate);
-				if (!checkedReceipt.ok) return checkedReceipt;
-				if (receiptMatchesIntent(checkedReceipt.value, intent)) {
+				const receiptResult = validateAndVerifyToolReceipt(candidate);
+				if (!receiptResult.ok) return receiptResult;
+				if (receiptMatchesIntent(receiptResult.value, intent)) {
 					foundExact = true;
 					break;
 				}
@@ -1493,20 +1493,20 @@ export class FoundationToolPipeline {
 		const keys = Object.keys(candidate);
 		if (keys.some((key) => key !== "result" && key !== "artifacts" && key !== "usage")) return Result.err(new FoundationError("tool_post_validation_failed", "post processor cannot change execution settlement fields"));
 		if (candidate.result !== undefined) {
-			const checkedResult = validateToolResultPayload(candidate.result);
-			if (!checkedResult.ok) return Result.err(this.stablePostValidationError(checkedResult.error));
+			const payloadResult = validateToolResultPayload(candidate.result);
+			if (!payloadResult.ok) return Result.err(this.stablePostValidationError(payloadResult.error));
 		}
 		if (candidate.artifacts !== undefined) {
-			const checkedArtifacts = validateExactShape<readonly ArtifactRef[]>(Type.Array(artifactRefSchema), candidate.artifacts, "tool post artifacts");
-			if (!checkedArtifacts.ok) return Result.err(this.stablePostValidationError(checkedArtifacts.error));
+			const artifactsResult = validateExactShape<readonly ArtifactRef[]>(Type.Array(artifactRefSchema), candidate.artifacts, "tool post artifacts");
+			if (!artifactsResult.ok) return Result.err(this.stablePostValidationError(artifactsResult.error));
 		}
 		const artifacts = candidate.artifacts ?? execution.artifacts;
 		const artifactCheck = validateDurableResultArtifacts(candidate.result ?? execution.result, artifacts);
 		if (!artifactCheck.ok) return Result.err(this.stablePostValidationError(artifactCheck.error));
 		if (candidate.usage !== undefined) {
-			const checkedUsage = validateExactShape<BudgetUsage>(usageSchema, candidate.usage, "tool post usage");
-			if (!checkedUsage.ok) return Result.err(this.stablePostValidationError(checkedUsage.error));
-			if (!isValidBudgetUsage(checkedUsage.value)) return Result.err(new FoundationError("tool_post_validation_failed", "post processor returned invalid usage"));
+			const usageResult = validateExactShape<BudgetUsage>(usageSchema, candidate.usage, "tool post usage");
+			if (!usageResult.ok) return Result.err(this.stablePostValidationError(usageResult.error));
+			if (!isValidBudgetUsage(usageResult.value)) return Result.err(new FoundationError("tool_post_validation_failed", "post processor returned invalid usage"));
 		}
 		return Result.ok({ ...execution, ...(candidate.result === undefined ? {} : { result: candidate.result }), ...(candidate.artifacts === undefined ? {} : { artifacts: candidate.artifacts }), ...(candidate.usage === undefined ? {} : { usage: candidate.usage }) });
 	}
@@ -1534,9 +1534,9 @@ export class FoundationToolPipeline {
 		const persistResult = state.outcome === "succeeded" && state.sideEffectState === "none";
 		const durableArtifacts = persistResult ? state.artifacts : undefined;
 		if (persistResult && state.result !== undefined) {
-			const checkedResult = validateToolResultPayload(state.result);
-			if (!checkedResult.ok) return checkedResult;
-			durableResult = checkedResult.value;
+			const payloadResult = validateToolResultPayload(state.result);
+			if (!payloadResult.ok) return payloadResult;
+			durableResult = payloadResult.value;
 		}
 		const artifactCheck = validateDurableResultArtifacts(durableResult, durableArtifacts);
 		if (!artifactCheck.ok) return artifactCheck;
@@ -2305,9 +2305,9 @@ export function validateToolReceipt(value: unknown): ResultValue<ToolReceipt, Fo
 	if (checked.value.outcome !== "succeeded" || checked.value.sideEffectState !== "none") {
 		return Result.err(new FoundationError("side_effect_unknown", "non-successful tool receipts cannot carry a durable result payload"));
 	}
-	const checkedResult = validateToolResultPayload(checked.value.result);
-	if (!checkedResult.ok) return Result.err(checkedResult.error);
-	const artifactCheck = validateDurableResultArtifacts(checkedResult.value, checked.value.artifacts);
+	const payloadResult = validateToolResultPayload(checked.value.result);
+	if (!payloadResult.ok) return Result.err(payloadResult.error);
+	const artifactCheck = validateDurableResultArtifacts(payloadResult.value, checked.value.artifacts);
 	return artifactCheck.ok ? checked : Result.err(artifactCheck.error);
 }
 export function serializeToolReceipt(value: ToolReceipt): string { return serializeExactShape(ToolReceiptSchema, value, "tool_receipt"); }

@@ -129,9 +129,9 @@ function providerError(error: unknown, message: string): ResultValue<never, Foun
 }
 
 function validateInitialEpoch(input: DispatchExecutionInput): ResultValue<void, FoundationError> {
-	const checkedEpoch = validateBindingEpoch(input.initialBindingEpoch);
-	if (!checkedEpoch.ok) return checkedEpoch;
-	const epoch = checkedEpoch.value;
+	const epochResult = validateBindingEpoch(input.initialBindingEpoch);
+	if (!epochResult.ok) return epochResult;
+	const epoch = epochResult.value;
 	if (epoch.ordinal !== 0 || epoch.activationReason !== "attempt_started" || epoch.previousBindingEpochId !== undefined) return Result.err(new FoundationError("binding_epoch_invalid_ordinal", "Dispatch consumer requires an initial attempt BindingEpoch", { details: { bindingEpochId: epoch.bindingEpochId } }));
 	if (epoch.taskId !== input.dispatch.taskId || epoch.bindingId !== input.dispatch.bindingId) return Result.err(new FoundationError("binding_epoch_mismatch", "Initial BindingEpoch does not match the Dispatch", { details: { bindingEpochId: epoch.bindingEpochId, dispatchId: input.dispatch.dispatchId } }));
 	if (input.provider.providerClass === "agent" && epoch.agentInstanceId === undefined) return Result.err(new FoundationError("agent_instance_required_for_agent_provider", "Agent provider dispatch requires an AgentInstance-bound epoch", { details: { providerId: input.provider.providerId } }));
@@ -156,19 +156,19 @@ function validateReceiptCorrelation(receipt: AttemptReceipt, attempt: Attempt, i
 }
 
 function validateDispatchInput(input: DispatchExecutionInput): ResultValue<{ readonly dispatch: Dispatch; readonly binding: AgentBinding; readonly correlation: ExecutionCorrelation }, FoundationError> {
-	const checkedDispatch = validateDispatch(input.dispatch);
-	if (!checkedDispatch.ok) return checkedDispatch;
-	const checkedBinding = validateImmutableAgentBinding(input.binding);
-	if (!checkedBinding.ok) return checkedBinding;
-	if (checkedDispatch.value.taskExecutorProviderId !== input.provider.providerId) return Result.err(new FoundationError("task_executor_invalid_provider_class", "Dispatch selected a different provider identity", { details: { dispatchId: input.dispatch.dispatchId } }));
-	if (checkedBinding.value.taskId !== input.dispatch.taskId || checkedBinding.value.bindingId !== input.dispatch.bindingId) return Result.err(new FoundationError("invalid_correlation", "Dispatch Binding does not match its Task identity", { details: { dispatchId: input.dispatch.dispatchId } }));
+	const dispatchResult = validateDispatch(input.dispatch);
+	if (!dispatchResult.ok) return dispatchResult;
+	const bindingResult = validateImmutableAgentBinding(input.binding);
+	if (!bindingResult.ok) return bindingResult;
+	if (dispatchResult.value.taskExecutorProviderId !== input.provider.providerId) return Result.err(new FoundationError("task_executor_invalid_provider_class", "Dispatch selected a different provider identity", { details: { dispatchId: input.dispatch.dispatchId } }));
+	if (bindingResult.value.taskId !== input.dispatch.taskId || bindingResult.value.bindingId !== input.dispatch.bindingId) return Result.err(new FoundationError("invalid_correlation", "Dispatch Binding does not match its Task identity", { details: { dispatchId: input.dispatch.dispatchId } }));
 	const epoch = validateInitialEpoch(input);
 	if (!epoch.ok) return epoch;
 	const correlation = validateCompleteCorrelation(input.correlation, ["sessionId", "laneId", "taskId", "dispatchId", "attemptId", "bindingId", "bindingEpochId"], input.initialBindingEpoch.attemptId);
 	if (!correlation.ok) return correlation;
-	const correlationIdentity = correlationMatchesIdentity(correlation.value, { taskId: checkedDispatch.value.taskId, dispatchId: checkedDispatch.value.dispatchId, attemptId: input.initialBindingEpoch.attemptId, bindingId: checkedBinding.value.bindingId, bindingEpochId: input.initialBindingEpoch.bindingEpochId }, input.initialBindingEpoch.attemptId);
+	const correlationIdentity = correlationMatchesIdentity(correlation.value, { taskId: dispatchResult.value.taskId, dispatchId: dispatchResult.value.dispatchId, attemptId: input.initialBindingEpoch.attemptId, bindingId: bindingResult.value.bindingId, bindingEpochId: input.initialBindingEpoch.bindingEpochId }, input.initialBindingEpoch.attemptId);
 	if (!correlationIdentity.ok) return correlationIdentity;
-	return Result.ok({ dispatch: checkedDispatch.value, binding: checkedBinding.value, correlation: correlation.value });
+	return Result.ok({ dispatch: dispatchResult.value, binding: bindingResult.value, correlation: correlation.value });
 }
 
 /** Creates or validates the first Attempt without running provider side effects. */
@@ -189,11 +189,11 @@ export async function startDispatchAttempt(input: DispatchExecutionInput): Promi
 			? await input.provider.createAttempt(checked.value.dispatch, checked.value.binding, context)
 			: Result.ok(input.existingAttempt);
 		if (!candidate.ok) return candidate;
-		const checkedAttempt = validateAttempt(candidate.value);
-		if (!checkedAttempt.ok) return checkedAttempt;
-		const attemptCorrelation = validateAttemptCorrelation(checkedAttempt.value, input);
+		const attemptResult = validateAttempt(candidate.value);
+		if (!attemptResult.ok) return attemptResult;
+		const attemptCorrelation = validateAttemptCorrelation(attemptResult.value, input);
 		if (!attemptCorrelation.ok) return attemptCorrelation;
-		return Result.ok({ attempt: cloneDeepFrozen(checkedAttempt.value), providerId: input.provider.providerId, providerClass: input.provider.providerClass });
+		return Result.ok({ attempt: cloneDeepFrozen(attemptResult.value), providerId: input.provider.providerId, providerClass: input.provider.providerClass });
 	} catch (error) {
 		return providerError(error, "TaskExecutor provider threw while creating an Attempt");
 	}
@@ -211,11 +211,11 @@ export async function executeDispatch(input: DispatchExecutionInput): Promise<Re
 		}
 		const settled = await input.provider.runAttempt(attempt, { correlation: input.correlation, ...(input.signal === undefined ? {} : { signal: input.signal }) });
 		if (!settled.ok) return settled;
-		const checkedReceipt = validateAttemptReceiptForProvider(settled.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
-		if (!checkedReceipt.ok) return checkedReceipt;
-		const receiptCorrelation = validateReceiptCorrelation(checkedReceipt.value, attempt, input);
+		const receiptResult = validateAttemptReceiptForProvider(settled.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
+		if (!receiptResult.ok) return receiptResult;
+		const receiptCorrelation = validateReceiptCorrelation(receiptResult.value, attempt, input);
 		if (!receiptCorrelation.ok) return receiptCorrelation;
-		return Result.ok({ attempt: cloneDeepFrozen(attempt), receipt: cloneDeepFrozen(checkedReceipt.value), providerId: input.provider.providerId, providerClass: input.provider.providerClass });
+		return Result.ok({ attempt: cloneDeepFrozen(attempt), receipt: cloneDeepFrozen(receiptResult.value), providerId: input.provider.providerId, providerClass: input.provider.providerClass });
 	} catch (error) {
 		return providerError(error, "TaskExecutor provider threw while consuming a Dispatch");
 	}
@@ -240,18 +240,18 @@ function validateWorkerCorrelation(receipt: WorkerReceipt, request: SandboxOpera
 /** Runs an operation worker through its public start surface and validates the WorkerReceipt. */
 export async function executeOperation(input: OperationExecutionInput): Promise<ResultValue<WorkerReceipt, FoundationError>> {
 	if (input.provider.providerClass !== "operation_worker") return Result.err(new FoundationError("worker_receipt_invalid_producer", "Operation execution requires an Operation Worker provider", { details: { providerId: input.provider.providerId } }));
-	const checkedRequest = validateSandboxOperationRequest(input.request);
-	if (!checkedRequest.ok) return checkedRequest;
+	const requestResult = validateSandboxOperationRequest(input.request);
+	if (!requestResult.ok) return requestResult;
 	try {
-		const providerCorrelation = validateCompleteCorrelation(input.correlation, ["sessionId", "laneId"], checkedRequest.value.operationId);
+		const providerCorrelation = validateCompleteCorrelation(input.correlation, ["sessionId", "laneId"], requestResult.value.operationId);
 		if (!providerCorrelation.ok) return providerCorrelation;
-		const started = await input.provider.start(checkedRequest.value, { correlation: providerCorrelation.value, ...(input.signal === undefined ? {} : { signal: input.signal }) });
+		const started = await input.provider.start(requestResult.value, { correlation: providerCorrelation.value, ...(input.signal === undefined ? {} : { signal: input.signal }) });
 		if (!started.ok) return started;
-		const checkedReceipt = validateWorkerReceiptForProvider(started.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
-		if (!checkedReceipt.ok) return checkedReceipt;
-		const receiptCorrelation = validateWorkerCorrelation(checkedReceipt.value, checkedRequest.value, input.correlation);
+		const receiptResult = validateWorkerReceiptForProvider(started.value, { providerId: input.provider.providerId, providerClass: input.provider.providerClass });
+		if (!receiptResult.ok) return receiptResult;
+		const receiptCorrelation = validateWorkerCorrelation(receiptResult.value, requestResult.value, input.correlation);
 		if (!receiptCorrelation.ok) return Result.err(receiptCorrelation.error);
-		return Result.ok(cloneDeepFrozen(checkedReceipt.value));
+		return Result.ok(cloneDeepFrozen(receiptResult.value));
 	} catch (error) {
 		return providerError(error, "Operation Worker provider threw while consuming a request");
 	}
@@ -260,31 +260,31 @@ export async function executeOperation(input: OperationExecutionInput): Promise<
 /** Validates the Agent-only spawn result; an Operation Worker has no path to this function. */
 export async function executeAgentSpawn(input: ChildSpawnExecutionInput): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 	if (input.provider.providerClass !== "agent") return Result.err(new FoundationError("agent_instance_not_agent_provider", "Agent spawn requires an Agent provider", { details: { providerId: input.provider.providerId } }));
-	const checkedRequest = validateChildSpawnRequest(input.request);
-	if (!checkedRequest.ok) return checkedRequest;
+	const requestResult = validateChildSpawnRequest(input.request);
+	if (!requestResult.ok) return requestResult;
 	try {
-		const correlation = validateCompleteCorrelation(input.correlation, ["sessionId", "laneId", "taskId", "agentInstanceId"], checkedRequest.value.spawnId);
+		const correlation = validateCompleteCorrelation(input.correlation, ["sessionId", "laneId", "taskId", "agentInstanceId"], requestResult.value.spawnId);
 		if (!correlation.ok) return correlation;
-		const spawned = await input.provider.spawn(checkedRequest.value, { correlation: correlation.value, ...(input.signal === undefined ? {} : { signal: input.signal }) });
+		const spawned = await input.provider.spawn(requestResult.value, { correlation: correlation.value, ...(input.signal === undefined ? {} : { signal: input.signal }) });
 		if (!spawned.ok) return spawned;
 		const checked = validateChildSpawnResult(spawned.value);
 		if (!checked.ok) return checked;
 		const { attempt, agentInstance, initialBindingEpoch } = checked.value;
-		const checkedAttempt = validateAttempt(attempt);
-		if (!checkedAttempt.ok) return checkedAttempt;
-		const checkedAgent = validateAgentInstance(agentInstance);
-		if (!checkedAgent.ok) return checkedAgent;
-		const checkedEpoch = validateBindingEpoch(initialBindingEpoch);
-		if (!checkedEpoch.ok) return checkedEpoch;
-		if (checkedAttempt.value.providerId !== input.provider.providerId || checkedAttempt.value.taskId !== checkedRequest.value.taskEnvelope.taskId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt does not match its provider or task", { details: { spawnId: checkedRequest.value.spawnId } }));
-		if (checkedAgent.value.providerId !== input.provider.providerId || checkedAgent.value.taskId !== checkedAttempt.value.taskId || checkedAgent.value.agentInstanceId !== checkedAttempt.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn must bind one AgentInstance to its Attempt", { details: { spawnId: checkedRequest.value.spawnId } }));
-		if (checkedAgent.value.roleRevision.id !== checkedRequest.value.roleRevision.roleRevisionId || checkedAgent.value.roleRevision.revision !== checkedRequest.value.roleRevision.revision) return Result.err(new FoundationError("invalid_correlation", "Agent spawn AgentInstance must retain the requested durable RoleRevision", { details: { spawnId: checkedRequest.value.spawnId } }));
-		if (checkedEpoch.value.ordinal !== 0 || checkedEpoch.value.attemptId !== checkedAttempt.value.attemptId || checkedEpoch.value.taskId !== checkedAttempt.value.taskId || checkedEpoch.value.bindingId !== checkedAttempt.value.bindingId || checkedEpoch.value.agentInstanceId !== checkedAgent.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn epoch does not match its Attempt or AgentInstance", { details: { spawnId: checkedRequest.value.spawnId } }));
-		if (!checkedAttempt.value.bindingEpochIds.includes(checkedEpoch.value.bindingEpochId)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt omitted its initial BindingEpoch", { details: { spawnId: checkedRequest.value.spawnId } }));
-		if (checkedRequest.value.parentSpawn !== undefined && (checkedRequest.value.parentSpawn.parentTaskId === checkedRequest.value.taskEnvelope.taskId || checkedRequest.value.parentSpawn.newTaskEnvelopeRef.id !== checkedRequest.value.taskEnvelope.taskId)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent intent does not identify a distinct requested child TaskEnvelope", { details: { spawnId: checkedRequest.value.spawnId } }));
-		if (checkedRequest.value.parentAgentInstanceId !== undefined && checkedAgent.value.lineage.parentId !== checkedRequest.value.parentAgentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn child AgentInstance lineage does not identify its parent", { details: { spawnId: checkedRequest.value.spawnId } }));
-		if (correlation.value.taskId !== checkedAttempt.value.taskId || correlation.value.agentInstanceId !== checkedAgent.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn result does not match its requested correlation", { details: { spawnId: checkedRequest.value.spawnId } }));
-		return Result.ok(cloneDeepFrozen({ schemaVersion: 1 as const, attempt: checkedAttempt.value, agentInstance: checkedAgent.value, initialBindingEpoch: checkedEpoch.value }));
+		const attemptResult = validateAttempt(attempt);
+		if (!attemptResult.ok) return attemptResult;
+		const agentResult = validateAgentInstance(agentInstance);
+		if (!agentResult.ok) return agentResult;
+		const epochResult = validateBindingEpoch(initialBindingEpoch);
+		if (!epochResult.ok) return epochResult;
+		if (attemptResult.value.providerId !== input.provider.providerId || attemptResult.value.taskId !== requestResult.value.taskEnvelope.taskId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt does not match its provider or task", { details: { spawnId: requestResult.value.spawnId } }));
+		if (agentResult.value.providerId !== input.provider.providerId || agentResult.value.taskId !== attemptResult.value.taskId || agentResult.value.agentInstanceId !== attemptResult.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn must bind one AgentInstance to its Attempt", { details: { spawnId: requestResult.value.spawnId } }));
+		if (agentResult.value.roleRevision.id !== requestResult.value.roleRevision.roleRevisionId || agentResult.value.roleRevision.revision !== requestResult.value.roleRevision.revision) return Result.err(new FoundationError("invalid_correlation", "Agent spawn AgentInstance must retain the requested durable RoleRevision", { details: { spawnId: requestResult.value.spawnId } }));
+		if (epochResult.value.ordinal !== 0 || epochResult.value.attemptId !== attemptResult.value.attemptId || epochResult.value.taskId !== attemptResult.value.taskId || epochResult.value.bindingId !== attemptResult.value.bindingId || epochResult.value.agentInstanceId !== agentResult.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn epoch does not match its Attempt or AgentInstance", { details: { spawnId: requestResult.value.spawnId } }));
+		if (!attemptResult.value.bindingEpochIds.includes(epochResult.value.bindingEpochId)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn Attempt omitted its initial BindingEpoch", { details: { spawnId: requestResult.value.spawnId } }));
+		if (requestResult.value.parentSpawn !== undefined && (requestResult.value.parentSpawn.parentTaskId === requestResult.value.taskEnvelope.taskId || requestResult.value.parentSpawn.newTaskEnvelopeRef.id !== requestResult.value.taskEnvelope.taskId)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent intent does not identify a distinct requested child TaskEnvelope", { details: { spawnId: requestResult.value.spawnId } }));
+		if (requestResult.value.parentAgentInstanceId !== undefined && agentResult.value.lineage.parentId !== requestResult.value.parentAgentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn child AgentInstance lineage does not identify its parent", { details: { spawnId: requestResult.value.spawnId } }));
+		if (correlation.value.taskId !== attemptResult.value.taskId || correlation.value.agentInstanceId !== agentResult.value.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Agent spawn result does not match its requested correlation", { details: { spawnId: requestResult.value.spawnId } }));
+		return Result.ok(cloneDeepFrozen({ schemaVersion: 1 as const, attempt: attemptResult.value, agentInstance: agentResult.value, initialBindingEpoch: epochResult.value }));
 	} catch (error) {
 		return providerError(error, "Agent provider threw while consuming a spawn request");
 	}
@@ -295,15 +295,15 @@ export function switchAgentMode(input: ModeSwitchExecutionInput): ResultValue<Bi
 	const correlation = validateCompleteCorrelation(input.correlation, ["sessionId", "laneId", "taskId", "attemptId", "bindingId", "bindingEpochId", "agentInstanceId"], input.intent.modeSwitchId);
 	if (!correlation.ok) return correlation;
 	if (input.nextBinding === undefined) return Result.err(new FoundationError("binding_required_fact", "Mode switch requires the next immutable Binding, not only its id"));
-	const checkedNextBinding = validateImmutableAgentBinding(input.nextBinding);
-	if (!checkedNextBinding.ok) return checkedNextBinding;
-	const nextBindingId = input.nextBindingId ?? checkedNextBinding.value.bindingId;
-	if (nextBindingId.length === 0 || checkedNextBinding.value.bindingId !== nextBindingId) return Result.err(new FoundationError("invalid_identifier", "Mode switch requires a new Binding identity"));
+	const bindingResult = validateImmutableAgentBinding(input.nextBinding);
+	if (!bindingResult.ok) return bindingResult;
+	const nextBindingId = input.nextBindingId ?? bindingResult.value.bindingId;
+	if (nextBindingId.length === 0 || bindingResult.value.bindingId !== nextBindingId) return Result.err(new FoundationError("invalid_identifier", "Mode switch requires a new Binding identity"));
 	if (nextBindingId === input.currentEpoch.bindingId) return Result.err(new FoundationError("binding_epoch_mismatch", "Mode switch requires a Binding identity different from the current epoch"));
 	if (input.safeBoundary === undefined || !["turn_end", "checkpoint", "provider_idle"].includes(input.safeBoundary)) return Result.err(new FoundationError("binding_epoch_invalid_ordinal", "Mode switch requires an acknowledged safe boundary"));
 	if (input.intent.taskId !== input.currentEpoch.taskId || input.intent.attemptId !== input.currentEpoch.attemptId || input.intent.bindingId !== input.currentEpoch.bindingId || input.intent.agentInstanceId !== input.currentEpoch.agentInstanceId) return Result.err(new FoundationError("binding_epoch_mismatch", "Mode switch must retain Task, Attempt, current Binding, and AgentInstance correlation", { details: { modeSwitchId: input.intent.modeSwitchId } }));
 	if (correlation.value.taskId !== input.currentEpoch.taskId || correlation.value.attemptId !== input.currentEpoch.attemptId || correlation.value.bindingId !== input.currentEpoch.bindingId || correlation.value.bindingEpochId !== input.currentEpoch.bindingEpochId || correlation.value.agentInstanceId !== input.currentEpoch.agentInstanceId) return Result.err(new FoundationError("invalid_correlation", "Mode switch correlation does not match the current BindingEpoch", { details: { modeSwitchId: input.intent.modeSwitchId } }));
-	if (checkedNextBinding.value.taskId !== input.currentEpoch.taskId) return Result.err(new FoundationError("binding_epoch_mismatch", "Mode switch next Binding must retain the current Task", { details: { modeSwitchId: input.intent.modeSwitchId } }));
+	if (bindingResult.value.taskId !== input.currentEpoch.taskId) return Result.err(new FoundationError("binding_epoch_mismatch", "Mode switch next Binding must retain the current Task", { details: { modeSwitchId: input.intent.modeSwitchId } }));
 	if (input.intent.newBindingId !== undefined && input.intent.newBindingId !== nextBindingId) return Result.err(new FoundationError("binding_epoch_mismatch", "Mode switch intent does not identify the requested next Binding", { details: { modeSwitchId: input.intent.modeSwitchId } }));
 	return createOrderedBindingEpoch({ bindingEpochId: `binding_epoch_${input.intent.modeSwitchId}`, taskId: input.currentEpoch.taskId, attemptId: input.currentEpoch.attemptId, bindingId: nextBindingId, agentInstanceId: input.currentEpoch.agentInstanceId, activationReason: "mode_switch", activatedByCommandId: input.intent.activatedByCommandId, previous: input.currentEpoch, now: input.now });
 }
