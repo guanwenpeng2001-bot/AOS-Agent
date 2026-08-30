@@ -907,6 +907,7 @@ function scopedConsumer(
 				toolName: "workspace.read",
 				providerId,
 				revision: 1,
+				operation: { resource: "filesystem.read" as const, effects: ["read" as const] },
 			})]),
 		}),
 	});
@@ -1391,7 +1392,7 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		const second = gatewayRequestFor(value, "tool-call-2", { path: "docs/two.txt" });
 		value.driver.eventValues = gatewayEventsFor(value, [first, first, second]);
 		const effects: ToolGatewayRequest[] = [];
-		const release = value.connector.bindToolGatewayConsumer(value.attempt.attemptId, scopedConsumer(value, async (request) => {
+		const consumer = scopedConsumer(value, async (request) => {
 			effects.push(request);
 			return Result.ok({
 				schemaVersion: 1,
@@ -1401,13 +1402,15 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 				sideEffectState: "none",
 				toolReceiptRef: `receipt-${request.toolCallId}`,
 			});
-		}));
+		});
+		const release = value.connector.bindToolGatewayConsumer(value.attempt.attemptId, consumer);
 		try {
 			const completed = await value.connector.runAttempt(value.attempt, {
 				correlation: gatewayCorrelation(),
 			});
 			expect(completed.ok).toBe(true);
 			if (completed.ok) expect(completed.value.status).toBe("succeeded");
+			expect(value.driver.spawnRequests[0]?.toolGatewayRoutes).toEqual(consumer.scope.routes);
 			expect(effects).toEqual([first, second]);
 			expect(value.driver.writes.map((write) => write.result.toolCallId)).toEqual([
 				"tool-call-1",
@@ -1453,6 +1456,73 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 			expect(effects).toEqual([first]);
 			expect(value.driver.writes).toHaveLength(1);
 			expect(await value.store.listToolGatewayExecutions(value.attempt.attemptId)).toHaveLength(1);
+		} finally {
+			release();
+		}
+	});
+
+	it("rejects a wrong-nonce Tool Gateway request before provider or driver write effects", async () => {
+		const value = await fixture({ toolGateway: true });
+		persistAttempt(value);
+		const request = gatewayRequestFor(value, "tool-call-wrong-nonce", { path: "docs/one.txt" });
+		value.driver.eventValues = gatewayEventsFor(value, [request]).map((event) =>
+			typeof event === "object" && event !== null && "type" in event && event.type === "tool_gateway_request"
+				? { ...event, operationNonce: "wrong-operation-nonce" }
+				: event,
+		);
+		const effects: ToolGatewayRequest[] = [];
+		const release = value.connector.bindToolGatewayConsumer(
+			value.attempt.attemptId,
+			scopedConsumer(value, async (gatewayRequest) => {
+				effects.push(gatewayRequest);
+				return Result.ok({
+					schemaVersion: 1,
+					toolCallId: gatewayRequest.toolCallId,
+					toolName: gatewayRequest.toolName,
+					ok: true,
+					sideEffectState: "none",
+					toolReceiptRef: "wrong-nonce-receipt",
+				});
+			}),
+		);
+		try {
+			const completed = await value.connector.runAttempt(value.attempt, { correlation: gatewayCorrelation() });
+			expect(completed).toMatchObject({
+				ok: true,
+				value: { status: "failed", error: { code: "external_event_invalid" } },
+			});
+			expect(effects).toEqual([]);
+			expect(value.driver.writes).toEqual([]);
+		} finally {
+			release();
+		}
+	});
+
+	it("rejects a result that does not match the exact in-flight toolCallId", async () => {
+		const value = await fixture({ toolGateway: true });
+		persistAttempt(value);
+		const request = gatewayRequestFor(value, "tool-call-in-flight", { path: "docs/one.txt" });
+		value.driver.eventValues = gatewayEventsFor(value, [request]);
+		const release = value.connector.bindToolGatewayConsumer(
+			value.attempt.attemptId,
+			scopedConsumer(value, async (gatewayRequest) =>
+				Result.ok({
+					schemaVersion: 1,
+					toolCallId: "orphan-tool-call",
+					toolName: gatewayRequest.toolName,
+					ok: true,
+					sideEffectState: "none",
+					toolReceiptRef: "orphan-result-receipt",
+				}),
+			),
+		);
+		try {
+			const completed = await value.connector.runAttempt(value.attempt, { correlation: gatewayCorrelation() });
+			expect(completed).toMatchObject({
+				ok: true,
+				value: { status: "failed", error: { code: "external_event_invalid" } },
+			});
+			expect(value.driver.writes).toEqual([]);
 		} finally {
 			release();
 		}

@@ -112,6 +112,7 @@ import type { SettingsManager } from "./settings-manager.ts";
 import type {
 	ExternalConnectorRegistry,
 } from "../connector/registry.ts";
+import { getExternalConnectorCredentialBinding } from "../connector/credential-binding.ts";
 import type { SandboxHandle, SandboxProvider, SandboxSession } from "../policy/sandbox.ts";
 import { SandboxSession as ConcreteSandboxSession } from "../policy/sandbox.ts";
 import type { ToolDefinition, ExtensionRunner } from "../extensions/index.ts";
@@ -1074,6 +1075,7 @@ export class FoundationControlPlane {
 	private sandboxHandle: SandboxHandle | undefined;
 	private authorizedMcpValues = new Map<string, { environment: Record<string, string>; headers: Record<string, string> }>();
 	private taskCredentialService: TaskCredentialService | undefined;
+	private releaseExternalConnectorCredentialService: (() => void) | undefined;
 	private taskCredentialDisposed = false;
 	private disposed = false;
 
@@ -1194,6 +1196,11 @@ export class FoundationControlPlane {
 		this.unregisterWorkerLifecycleHooks = unregisterWorkerLifecycleHooks;
 		this.unregisterSubagentLifecycleHooks = unregisterSubagentLifecycleHooks;
 		this.scheduler = scheduler;
+		const externalCredentialBinding = getExternalConnectorCredentialBinding(this.externalConnectorRegistry);
+		const taskCredentialService = externalCredentialBinding === undefined ? undefined : this.getTaskCredentialService();
+		if (externalCredentialBinding !== undefined && taskCredentialService !== undefined) {
+			this.releaseExternalConnectorCredentialService = externalCredentialBinding.bindService(taskCredentialService);
+		}
 	}
 
 	private registerConfiguredServers(): void {
@@ -2578,10 +2585,23 @@ export class FoundationControlPlane {
 			if (declaredKinds.size !== 1) return { allowed: false, error: new TaskCredentialError("task_credential_target_unavailable") };
 			targetKind = [...declaredKinds][0]!;
 		}
-		const sandboxSession = this.sandboxSession;
-		const sandboxHandle = sandboxSession?.currentHandle;
 		let sandbox: TaskCredentialSandboxPreflight | undefined;
-		if (sandboxSession !== undefined) {
+		if (input.targetKind === "external_connector" && input.binding.sandboxBindingId !== undefined) {
+			sandbox = {
+				bindingId: input.binding.sandboxBindingId,
+				status: availability.declaresDelivery ? "ready" : "unavailable",
+				capabilities: {
+					filesystem: false,
+					process: false,
+					network: false,
+					credentialIsolation: availability.declaresDelivery,
+					credentialDelivery: availability.declaresDelivery,
+				},
+				perBinding: true,
+			};
+		} else if (this.sandboxSession !== undefined) {
+			const sandboxSession = this.sandboxSession;
+			const sandboxHandle = sandboxSession.currentHandle;
 			const status: TaskCredentialSandboxPreflight["status"] = sandboxSession.currentStatus === "ready"
 				? "ready"
 				: sandboxSession.currentStatus === "failed"
@@ -2878,6 +2898,9 @@ export class FoundationControlPlane {
 			await this.externalConnectorRegistry?.dispose();
 		} catch (error) {
 			failure ??= error;
+		} finally {
+			this.releaseExternalConnectorCredentialService?.();
+			this.releaseExternalConnectorCredentialService = undefined;
 		}
 		try {
 			await this.workerSandboxProvider?.dispose();

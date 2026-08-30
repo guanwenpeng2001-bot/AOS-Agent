@@ -67,9 +67,13 @@ import {
 	type TaskCredentialScope,
 } from "../policy/task-credential-lease.ts";
 import type {
+	TaskCredentialDeliveredLeaseLookupResult,
+	TaskCredentialDeliveredLeaseReference,
+	TaskCredentialDeliveredLeaseReleaseInput,
 	TaskCredentialLifecycleReasonCode,
 	TaskCredentialRunIssueContext,
-	TaskCredentialService,
+	TaskCredentialServiceMutationResult,
+	TaskCredentialServiceIssueResult,
 	TaskCredentialWorkerTarget,
 } from "../policy/task-credential-service.ts";
 import {
@@ -79,9 +83,15 @@ import {
 	type SafeLeaseReference,
 } from "../worker/protocol.ts";
 
+export interface ExternalConnectorCredentialService {
+	issueForTaskRun(context: TaskCredentialRunIssueContext): TaskCredentialServiceIssueResult;
+	lookupDeliveredLease(input: TaskCredentialDeliveredLeaseReference): TaskCredentialDeliveredLeaseLookupResult;
+	releaseDeliveredLease(input: TaskCredentialDeliveredLeaseReleaseInput): TaskCredentialServiceMutationResult;
+}
+
 export interface ExternalConnectorCredentialRuntime {
 	/** Host-owned lifecycle authority; Connector code never receives material. */
-	readonly service: TaskCredentialService;
+	readonly service: ExternalConnectorCredentialService;
 	/** Pure exact target/binding selection for this already durable Attempt. */
 	readonly resolveIssueContext: (
 		attempt: Attempt,
@@ -536,6 +546,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly #active = new Map<string, Promise<ResultValue<AttemptReceipt, FoundationError>>>();
 	readonly #cancelling = new Map<string, Promise<ResultValue<void, FoundationError>>>();
 	readonly #toolGatewayConsumers = new Map<string, ExternalConnectorToolGatewayConsumer>();
+	readonly #toolGatewayInFlight = new Map<string, Map<string, string>>();
 	readonly #credentialLeases = new Map<string, ExternalConnectorCredentialLease>();
 	readonly #drainWaiters = new Set<() => void>();
 	#lifecycle: "accepting" | "draining" | "disposed" = "accepting";
@@ -832,20 +843,24 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		attempt: Attempt,
 		binding: AgentBinding,
 	): ResultValue<readonly ToolGatewayRoute[] | undefined, FoundationError> {
+		if (!this.#capability.toolGateway) return Result.ok(undefined);
 		const driverSelectionValue = this.#driver.toolGatewayMcpSelection;
-		if (driverSelectionValue === undefined) return Result.ok(undefined);
-		const driverSelection = validateMcpSelection(driverSelectionValue);
-		const bindingSelection = validateMcpSelection(binding.mcpSelection);
+		const driverSelection =
+			driverSelectionValue === undefined ? undefined : validateMcpSelection(driverSelectionValue);
+		const bindingSelection =
+			driverSelection === undefined ? undefined : validateMcpSelection(binding.mcpSelection);
 		const consumer = this.#toolGatewayConsumers.get(attempt.attemptId);
 		if (
-			!driverSelection.ok ||
-			!bindingSelection.ok ||
-			canonicalFoundationJson(driverSelection.value) !== canonicalFoundationJson(bindingSelection.value) ||
 			consumer === undefined ||
-			consumer.scope.bindingId !== binding.bindingId ||
-			consumer.scope.capabilityBindingId !== bindingSelection.value.capabilityBindingId ||
-			consumer.scope.mcpSelectionDigest.algorithm !== bindingSelection.value.digest.algorithm ||
-			consumer.scope.mcpSelectionDigest.value !== bindingSelection.value.digest.value
+			(driverSelection !== undefined &&
+				(bindingSelection === undefined ||
+					!driverSelection.ok ||
+					!bindingSelection.ok ||
+					canonicalFoundationJson(driverSelection.value) !== canonicalFoundationJson(bindingSelection.value) ||
+					consumer.scope.bindingId !== binding.bindingId ||
+					consumer.scope.capabilityBindingId !== bindingSelection.value.capabilityBindingId ||
+					consumer.scope.mcpSelectionDigest.algorithm !== bindingSelection.value.digest.algorithm ||
+					consumer.scope.mcpSelectionDigest.value !== bindingSelection.value.digest.value))
 		) {
 			return Result.err(
 				externalFailure(
@@ -869,6 +884,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			}
 			routeKeys.add(key);
 			if (route.kind !== "mcp") continue;
+			if (bindingSelection === undefined || !bindingSelection.ok) continue;
 			const selectedServer = bindingSelection.value.servers.find(
 				(server) => server.serverId === route.namespace,
 			);
@@ -1170,6 +1186,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			this.#pendingCancellations.clear();
 			this.#attemptRuntimeLimits.clear();
 			this.#toolGatewayConsumers.clear();
+			this.#toolGatewayInFlight.clear();
 			this.#credentialLeases.clear();
 			this.#drainWaiters.clear();
 			this.#lifecycle = "disposed";
@@ -2276,7 +2293,6 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		if (!binding.ok) return Result.err(binding.error);
 		const frozen = await this.#requireFrozenFacts(operation, attempt, binding.value);
 		if (!frozen.ok) return Result.err(frozen.error);
-		this.#releaseCredential(operation, "run_cancelled");
 		if (operation.status === "start_intent") {
 			const active = this.#active.get(attemptId);
 			if (active !== undefined) {
@@ -2301,6 +2317,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					attemptId,
 				),
 			);
+		}
+		const credential = this.#requireCredentialLease(operation);
+		if (!credential.ok) {
+			await this.#markReconcile(operation, "credential_unavailable");
+			return Result.err(credential.error);
 		}
 		const mapping = await this.#requireMapping(operation);
 		if (!mapping.ok) return Result.err(mapping.error);
@@ -2420,6 +2441,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		signal: AbortSignal,
 	): Promise<void> {
 		if (event.type !== "tool_gateway_request") return;
+		let inFlight: Map<string, string> | undefined;
+		let claimed = false;
 		try {
 			const runtimeLimits = this.#decodeOperationRuntimeLimits(operation);
 			if (!runtimeLimits.ok) throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
@@ -2447,6 +2470,16 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			if (consumer === undefined) {
 				throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
 			}
+			inFlight = this.#toolGatewayInFlight.get(operation.attemptId);
+			if (inFlight === undefined) {
+				inFlight = new Map<string, string>();
+				this.#toolGatewayInFlight.set(operation.attemptId, inFlight);
+			}
+			if (inFlight.has(request.toolCallId)) {
+				throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
+			}
+			inFlight.set(request.toolCallId, event.operationNonce);
+			claimed = true;
 			let execution = await this.#store.readToolGatewayExecution(operation.attemptId, request.toolCallId);
 			if (
 				execution !== undefined &&
@@ -2513,6 +2546,12 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			if (!terminal.result.ok && terminal.result.error?.code === "external_tool_route_denied") {
 				throw new ExternalConnectorSupervisorError("external_tool_route_denied", "event", false);
 			}
+			if (
+				inFlight.get(request.toolCallId) !== runtimeLimits.value.processNonce ||
+				terminal.result.toolCallId !== request.toolCallId
+			) {
+				throw new ExternalConnectorSupervisorError("external_event_invalid", "event", false);
+			}
 			try {
 				await this.#driver.write(
 					handle,
@@ -2530,6 +2569,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		} catch (error) {
 			if (error instanceof ExternalConnectorSupervisorError) throw error;
 			throw new ExternalConnectorSupervisorError("tool_gateway_ambiguous", "event", false);
+		} finally {
+			if (claimed && inFlight !== undefined) {
+				inFlight.delete(event.request.toolCallId);
+				if (inFlight.size === 0) this.#toolGatewayInFlight.delete(operation.attemptId);
+			}
 		}
 	}
 
