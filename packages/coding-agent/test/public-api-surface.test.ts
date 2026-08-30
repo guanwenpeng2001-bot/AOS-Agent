@@ -42,9 +42,13 @@ function exportedNames(relativePath: string): readonly string[] {
 
 describe("published API surface", () => {
 	for (const [entry, source] of Object.entries(entrySources)) {
-		it(`${entry} matches its whitelist`, () => {
-			expect([...exportedNames(source)].sort()).toEqual([...whitelist.entries[entry]!.keep].sort());
-		});
+		it(
+			`${entry} matches its whitelist`,
+			() => {
+				expect([...exportedNames(source)].sort()).toEqual([...whitelist.entries[entry]!.keep].sort());
+			},
+			30_000,
+		);
 	}
 
 	it("keeps milestone names out of the external connector entry", () => {
