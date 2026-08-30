@@ -472,10 +472,10 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 	readonly writes: ExternalConnectorDriverWriteRequest[] = [];
 	readonly #matrix: ExternalModelSupportMatrix | undefined;
 	readonly #eventValues: readonly FoundationJsonValue[];
-	readonly #connectorToolGatewayRequest: Omit<ToolGatewayRequest, "context"> | undefined;
-	readonly #connectorToolGatewayCanonicalRequest: ToolGatewayRequest | undefined;
-	readonly #connectorToolGatewayCanonicalRequests: readonly ToolGatewayRequest[] | undefined;
-	readonly #connectorToolGatewayAttemptId: string | undefined;
+	readonly #requestDescriptor: Omit<ToolGatewayRequest, "context"> | undefined;
+	readonly #gatewayRequest: ToolGatewayRequest | undefined;
+	readonly #gatewayRequests: readonly ToolGatewayRequest[] | undefined;
+	readonly #attemptId: string | undefined;
 	readonly #writeFails: boolean;
 	readonly #eventNextHangs: boolean;
 	readonly #readHangs: boolean;
@@ -506,10 +506,10 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 		this.#cooperativeCancel = options.cooperativeCancel ?? false;
 		this.#resume = options.resume ?? false;
 		this.#lookupResult = options.lookupResult ?? { status: "missing" };
-		this.#connectorToolGatewayRequest = options.connectorToolGatewayRequest;
-		this.#connectorToolGatewayCanonicalRequest = options.connectorToolGatewayCanonicalRequest;
-		this.#connectorToolGatewayCanonicalRequests = options.connectorToolGatewayCanonicalRequests;
-		this.#connectorToolGatewayAttemptId = options.connectorToolGatewayAttemptId;
+		this.#requestDescriptor = options.connectorToolGatewayRequest;
+		this.#gatewayRequest = options.connectorToolGatewayCanonicalRequest;
+		this.#gatewayRequests = options.connectorToolGatewayCanonicalRequests;
+		this.#attemptId = options.connectorToolGatewayAttemptId;
 		this.#writeFails = options.writeFails ?? false;
 	}
 
@@ -532,10 +532,10 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 	events(handle: ExternalConnectorDriverHandle): AsyncIterable<FoundationJsonValue> {
 		this.eventsCalls += 1;
 		const spawned = this.spawnedRequest;
-		const descriptor = this.#connectorToolGatewayRequest;
+		const descriptor = this.#requestDescriptor;
 		const operationId = spawned?.correlation.operationId;
 		const request =
-			this.#connectorToolGatewayCanonicalRequest ??
+			this.#gatewayRequest ??
 			(descriptor === undefined || spawned === undefined || operationId === undefined
 				? undefined
 				: {
@@ -547,11 +547,11 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 							taskId: spawned.attempt.taskId,
 							dispatchId: spawned.attempt.dispatchId,
 							providerId: spawned.capability.providerId,
-							attemptId: this.#connectorToolGatewayAttemptId ?? spawned.attempt.attemptId,
+							attemptId: this.#attemptId ?? spawned.attempt.attemptId,
 							operationId,
 						},
 					});
-		const requests = this.#connectorToolGatewayCanonicalRequests ?? (request === undefined ? [] : [request]);
+		const requests = this.#gatewayRequests ?? (request === undefined ? [] : [request]);
 		const values: readonly FoundationJsonValue[] =
 			requests.length === 0
 				? this.#eventValues
