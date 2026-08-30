@@ -50,6 +50,7 @@
 
 ### Changed
 
+- Private ACP stable-v1 connectors now accept verified Artifact Store files and images as native embedded-resource and image prompt blocks when the agent advertises those content capabilities. `aos_gateway` remains explicitly unsupported because ACP stable-v1 cannot preserve exact provider, model, effort, and service-tier selection.
 - `--help` and `--list-models` now use side-effect-free metadata startup paths that do not run migrations, load extensions, or write runtime state.
 - Restricted the current Native Subagent taxonomy, descriptors, and lifecycle validation to in-process, fork, and Agent Runtime Host providers; historical ACP/SDK placeholders remain private migration input only.
 - Updated public architecture and contract documentation to use current product names without maturity-style version labels while retaining schema, persistence, and protocol revision information.
