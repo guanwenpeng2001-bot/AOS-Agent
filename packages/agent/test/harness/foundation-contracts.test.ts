@@ -117,8 +117,8 @@ import {
 	FOUNDATION_ENTITY_KINDS,
 	validateFoundationEntityId,
 	validateFoundationEntityQuery,
-} from "../../../coding-agent/src/orchestration/query.ts";
-import { validateWorkflow } from "../../../coding-agent/src/orchestration/workflow.ts";
+} from "../../../coding-agent/src/core/orchestration/query.ts";
+import { validateWorkflow } from "../../../coding-agent/src/core/orchestration/workflow.ts";
 import { FOUNDATION_LEDGER_ERROR_CODES } from "../../src/harness/session/durable/types.ts";
 
 const correlation = createExecutionCorrelation("session-1", "main", { revision: 1 });

@@ -7,8 +7,8 @@ import {
 	WORKFLOW_STEP_TYPES,
 	WorkflowMigrationRegistry,
 	type WorkflowStep,
-} from "../../../coding-agent/src/orchestration/workflow.ts";
-import { WorkflowStore } from "../../../coding-agent/src/orchestration/workflow-store.ts";
+} from "../../../coding-agent/src/core/orchestration/workflow.ts";
+import { WorkflowStore } from "../../../coding-agent/src/core/orchestration/workflow-store.ts";
 import type { ProvisionedFoundationRecord } from "../../src/harness/session/durable/types.ts";
 import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 

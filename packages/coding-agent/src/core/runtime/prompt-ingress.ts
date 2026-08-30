@@ -29,7 +29,7 @@ import {
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model, Models } from "@aos-agent/ai";
-import { createGoalStore } from "../../orchestration/goal-store.ts";
+import { createGoalStore } from "../orchestration/goal-store.ts";
 import {
 	createPromptTaskAdapter,
 	type PromptTaskDependencyName,

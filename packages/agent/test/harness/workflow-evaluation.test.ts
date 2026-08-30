@@ -6,7 +6,7 @@ import {
 	type WorkflowEvaluationDataset,
 	type WorkflowStatus,
 	type Workflow,
-} from "../../../coding-agent/src/orchestration/workflow.ts";
+} from "../../../coding-agent/src/core/orchestration/workflow.ts";
 
 function workflow(workflowId: string, status: WorkflowStatus, revision: number): Workflow {
 	const contract = { schemaVersion: 1 as const, contractId: "none", kind: "none" as const, required: false };

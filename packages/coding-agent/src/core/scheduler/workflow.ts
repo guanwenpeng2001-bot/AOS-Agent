@@ -29,8 +29,8 @@ import type {
 	Workflow,
 	WorkflowStep,
 	WorkflowStepStatus,
-} from "../../orchestration/workflow.ts";
-import { WorkflowStore } from "../../orchestration/workflow-store.ts";
+} from "../orchestration/workflow.ts";
+import { WorkflowStore } from "../orchestration/workflow-store.ts";
 import {
 	SchedulerDispatchController,
 	type SchedulerNativeAgentBridge,
