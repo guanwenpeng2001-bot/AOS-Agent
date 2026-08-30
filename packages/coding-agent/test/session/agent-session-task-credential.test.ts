@@ -212,6 +212,7 @@ describe("AgentSession task credential service ownership", () => {
 	async function createSession(
 		provider?: TaskCredentialTestProvider,
 		policyMaxTtlMs?: number,
+		declaresDelivery = true,
 	): Promise<{ session: AgentSession; sessionManager: SessionManager }> {
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -242,7 +243,7 @@ describe("AgentSession task credential service ownership", () => {
 			}),
 			...(provider === undefined
 				? {}
-				: { taskCredentialProviderAvailability: { available: true, declaresDelivery: true } }),
+				: { taskCredentialProviderAvailability: { available: true, declaresDelivery } }),
 		});
 		session = created;
 		return { session: created, sessionManager };
@@ -310,6 +311,75 @@ describe("AgentSession task credential service ownership", () => {
 		const provider = makeProvider();
 		const withProviderOnly = await createSession(provider);
 		expect(withProviderOnly.session.getTaskCredentialService()).toBeUndefined();
+	});
+
+	it("uses declared external target authority for issue, heartbeat renew, and revoke", async () => {
+		const provider = makeProvider();
+		const { session } = await createSession(provider, 300_000);
+		const service = session.getTaskCredentialService();
+		expect(service).toBeDefined();
+		const boundary = await prepareBoundary(session, "run_001");
+		const context: TaskCredentialRunIssueContext = {
+			...issueContext({ ...boundary, clientRequestId: "req_external_declared" }),
+			targetKind: "external_connector",
+			targetLifecycle: "external_connector",
+			scopes: [{
+				credentialName: "package_registry",
+				purpose: "dependency_read",
+				operations: ["read"],
+				targetKinds: ["external_connector"],
+			}],
+		};
+
+		const issued = service!.issueForTaskRun(context);
+		expect(issued).toMatchObject({ ok: true, delivery: { status: "succeeded" } });
+		if (!issued.ok) return;
+		const renewed = service!.renew({
+			leaseId: issued.leaseId,
+			grantId: issued.grant.grantId,
+			bindingId: issued.bindingId,
+			heartbeatSequence: 1,
+			requestedTtlMs: 60_000,
+			clientRequestId: "req_external_heartbeat_1",
+			nodeAttached: true,
+		});
+		expect(renewed).toMatchObject({ ok: true, grant: { heartbeatSequence: 1 } });
+		const released = service!.releaseDeliveredLease({
+			reference: {
+				schemaVersion: 1,
+				leaseId: issued.leaseId,
+				grantId: issued.grant.grantId,
+				bindingId: issued.bindingId,
+				clientRequestId: context.clientRequestId,
+			},
+			targetId: context.targetId!,
+			reasonCode: "run_completed",
+		});
+		expect(released).toMatchObject({ ok: true, grant: { status: "settled" } });
+		expect(provider.records.get(issued.leaseId)?.revoked).toBe(true);
+	});
+
+	it("fails closed before issue when an external target does not declare delivery authority", async () => {
+		const provider = makeProvider();
+		const { session } = await createSession(provider, 300_000, false);
+		const service = session.getTaskCredentialService();
+		expect(service).toBeDefined();
+		const boundary = await prepareBoundary(session, "run_001");
+
+		const issued = service!.issueForTaskRun({
+			...issueContext({ ...boundary, clientRequestId: "req_external_without_delivery" }),
+			targetKind: "external_connector",
+			targetLifecycle: "external_connector",
+			scopes: [{
+				credentialName: "package_registry",
+				purpose: "dependency_read",
+				operations: ["read"],
+				targetKinds: ["external_connector"],
+			}],
+		});
+
+		expect(issued).toEqual({ ok: false, code: "task_credential_target_unavailable" });
+		expect(provider.records.size).toBe(0);
 	});
 
 	it("dispose fires the Session shutdown signal: every outstanding lease is revoked and settled", async () => {
