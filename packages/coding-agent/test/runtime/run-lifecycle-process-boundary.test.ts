@@ -1,13 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRunLifecycleCoordinator } from "../../src/core/session/run-lifecycle.ts";
 import { SessionManager } from "../../src/core/session/manager.ts";
+import { repoRoot } from "../support/public-roots.ts";
 
-const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const workerPath = fileURLToPath(new URL("../fixtures/run-lifecycle-process-worker.ts", import.meta.url));
 const tempDirs: string[] = [];
 const phases = ["accepted", "started", "terminal"] as const;
@@ -52,7 +52,7 @@ function killAfterReady(sessionFile: string, phase: Phase): Promise<void> {
 	return new Promise((resolvePromise, reject) => {
 		const spawnedAt = Date.now();
 		const child = spawn(process.execPath, ["--import", "tsx", workerPath, sessionFile, phase], {
-			cwd: repoRoot,
+			cwd: repoRoot(),
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let startupReadyAt: number | undefined;

@@ -26,6 +26,7 @@ import {
 	type ExternalConnectorSupervisorPrivateState,
 } from "../../src/core/connector/supervisor.ts";
 import type { ExternalConnectorVendorDriver } from "../../src/core/connector/vendor/types.ts";
+import { repoRoot } from "../support/public-roots.ts";
 
 const SUPPORTED_PLATFORM = process.platform === "linux" || process.platform === "darwin" || process.platform === "win32";
 const PROVIDER_ID = "product-process-supervision-connector";
@@ -330,8 +331,8 @@ describe("product External Connector process supervision", () => {
 			const targetPidPath = join(root, "target.pid");
 			const readyPath = join(root, "ready.json");
 			const processConfiguration = containedProcess(targetPidPath);
-			const fixturePath = join(import.meta.dirname, "fixtures", "external-connector-hard-crash-host.ts");
-			const tsxPath = join(import.meta.dirname, "../../../node_modules/tsx/dist/cli.mjs");
+			const fixturePath = join(import.meta.dirname, "../fixtures", "external-connector-hard-crash-host.ts");
+			const tsxPath = join(repoRoot(), "node_modules/tsx/dist/cli.mjs");
 			const host = spawn(process.execPath, [tsxPath, fixturePath, privateStatePath, targetPidPath, readyPath], {
 				shell: false,
 				stdio: "ignore",

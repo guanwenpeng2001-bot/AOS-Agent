@@ -35,6 +35,7 @@ import {
 	encodeRuntimeLimitsOperationNonce,
 } from "../../src/core/runtime/limits.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
+import { repoRoot } from "../support/public-roots.ts";
 import * as CodingAgent from "../../src/index.ts";
 import {
 	createAgentRuntimeCompositionFactory,
@@ -689,8 +690,8 @@ describe("production External Connector composition", () => {
 			const privateStatePath = join(root, "private", "supervisors.json");
 			const targetPidPath = join(root, "target.pid");
 			const readyPath = join(root, "ready.json");
-			const fixturePath = join(import.meta.dirname, "fixtures", "external-connector-hard-crash-host.ts");
-			const tsxPath = join(import.meta.dirname, "../../../node_modules/tsx/dist/cli.mjs");
+			const fixturePath = join(import.meta.dirname, "../fixtures", "external-connector-hard-crash-host.ts");
+			const tsxPath = join(repoRoot(), "node_modules/tsx/dist/cli.mjs");
 			const hardCrashCapability = createConnectorCapabilitySnapshot({
 				schemaVersion: 1,
 				providerId: "production-hard-crash-connector",

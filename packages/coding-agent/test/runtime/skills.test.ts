@@ -5,8 +5,8 @@ import type { ResourceDiagnostic } from "../../src/core/diagnostics.ts";
 import { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, type Skill } from "../../src/core/runtime/skills.ts";
 import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
 
-const fixturesDir = resolve(__dirname, "fixtures/skills");
-const collisionFixturesDir = resolve(__dirname, "fixtures/skills-collision");
+const fixturesDir = resolve(__dirname, "../fixtures/skills");
+const collisionFixturesDir = resolve(__dirname, "../fixtures/skills-collision");
 
 function createTestSkill(options: {
 	name: string;
@@ -346,8 +346,8 @@ describe("skills", () => {
 	});
 
 	describe("loadSkills with options", () => {
-		const emptyAgentDir = resolve(__dirname, "fixtures/empty-agent");
-		const emptyCwd = resolve(__dirname, "fixtures/empty-cwd");
+		const emptyAgentDir = resolve(__dirname, "../fixtures/empty-agent");
+		const emptyCwd = resolve(__dirname, "../fixtures/empty-cwd");
 
 		it("should load from explicit skillPaths", () => {
 			const { skills, diagnostics } = loadSkills({

@@ -19,8 +19,8 @@ import {
 	SessionWriteCoordinationError,
 	SessionWriteCoordinator,
 } from "../../src/core/session/write-coordinator.ts";
+import { repoRoot } from "../support/public-roots.ts";
 
-const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const workerPath = fileURLToPath(new URL("./session-write-worker.ts", import.meta.url));
 
 function assistantMessage(text: string, timestamp: number) {
@@ -55,7 +55,7 @@ function createPersistedSession(sessionDir: string): string {
 function runWorker(sessionFile: string, marker: string, count: number): Promise<{ code: number; stderr: string }> {
 	return new Promise((resolveWorker, reject) => {
 		const child = spawn(process.execPath, ["--import", "tsx", workerPath, sessionFile, marker, String(count)], {
-			cwd: repoRoot,
+			cwd: repoRoot(),
 			stdio: ["ignore", "ignore", "pipe"],
 		});
 		let stderr = "";

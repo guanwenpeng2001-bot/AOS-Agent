@@ -127,7 +127,7 @@ describe("T3 AgentBinding authority", () => {
 		const externalConnector = source("../../src/core/connector/durable-connector.ts");
 		const remoteOperation = source("../../src/core/runtime/remote-operation.ts");
 		const rpcHost = source("../../src/modes/rpc/rpc-host.ts");
-		const association = source("../../src/core/migrations/execution-association.ts");
+		const association = source("../../src/core/session/execution-association.ts");
 		const providers = source("../../../agent/src/harness/foundation/providers.ts");
 
 		expect(ingress).not.toContain("DEPENDENCY_FACT_TYPES");

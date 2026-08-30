@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
 import { Session } from "@aos-agent/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { projectAutomationRuns } from "../../src/core/session/automation-run-projection.ts";
@@ -19,6 +19,7 @@ import {
 	writeCanonicalRunResult,
 	type CanonicalTerminalOptions,
 } from "../support/canonical-run-terminal.ts";
+import { repoRoot } from "../support/public-roots.ts";
 
 const MODEL = { provider: "acceptance", id: "canonical", thinkingLevel: "off" } as const;
 
@@ -68,10 +69,10 @@ function businessTerminalView(runId: string, receipt: BusinessTerminalInput) {
 
 describe("canonical Run terminal cross-layer acceptance", () => {
 	it("keeps the sole business terminal writer in Foundation settlement", () => {
-		const repositoryRoot = resolve(import.meta.dirname, "../../..");
+		const repositoryRoot = repoRoot();
 		const sourceRoots = [
-			resolve(repositoryRoot, "packages/agent/src"),
-			resolve(repositoryRoot, "packages/coding-agent/src"),
+			join(repositoryRoot, "packages/agent/src"),
+			join(repositoryRoot, "packages/coding-agent/src"),
 		];
 		const sources = sourceRoots.flatMap((root) =>
 			sourceFiles(root).map((path) => ({

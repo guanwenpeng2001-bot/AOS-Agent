@@ -216,7 +216,7 @@ export {
 	getExecutionAssociations,
 	isExecutionAssociationRecord,
 	parseExecutionAssociation,
-} from "./core/migrations/execution-association.ts";
+} from "./core/session/execution-association.ts";
 export {
 	classifyAssistantFailure,
 	classifyProviderFailure,
