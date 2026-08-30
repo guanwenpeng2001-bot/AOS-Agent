@@ -80,10 +80,9 @@ export {
 	createWriteTool,
 	listSessions,
 } from "./core/runtime/sdk.ts";
-export {
-	SessionManager,
-	type SessionEntry,
-	type SessionMessageEntry,
+export type {
+	SessionEntry,
+	SessionMessageEntry,
 } from "./core/session/manager.ts";
 export { SettingsManager } from "./core/runtime/settings-manager.ts";
 export type { Skill } from "./core/runtime/skills.ts";

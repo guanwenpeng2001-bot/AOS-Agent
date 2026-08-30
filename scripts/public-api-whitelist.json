@@ -98,7 +98,6 @@
         "serializeConversation",
         "SessionBeforeSwitchEvent",
         "SessionEntry",
-        "SessionManager",
         "SessionMessageEntry",
         "SettingsManager",
         "Skill",
@@ -10481,9 +10480,9 @@
     {
       "name": "SessionManager",
       "entry": ".",
-      "decision": "keep",
+      "decision": "internal",
       "evidence": [
-        "packages/coding-agent/docs/sdk.md:19"
+        "packages/coding-agent/src/core/session/manager.ts"
       ]
     },
     {
