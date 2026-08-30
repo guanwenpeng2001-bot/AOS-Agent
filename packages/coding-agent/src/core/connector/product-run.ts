@@ -948,10 +948,12 @@ async function resolveExternalConnectorRecoverySelection(
 			"The persisted External Connector provider is not registered in this Host.",
 		);
 	}
+	// wire/ledger field name; local alias below
+	const capabilityDigest = descriptor.capabilitySnapshotDigest;
 	const selection = input.selection ?? {
 		providerId: descriptor.providerId,
 		revision: descriptor.revision,
-		capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+		capabilitySnapshotDigest: capabilityDigest,
 	};
 	if (selection.providerId !== input.providerId) {
 		throw new ExternalConnectorProductError(

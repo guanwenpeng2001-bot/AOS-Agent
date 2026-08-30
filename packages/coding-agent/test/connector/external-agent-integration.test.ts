@@ -260,6 +260,8 @@ async function fixture(options: {
 describe("T4 final acceptance: External Connector product integration", () => {
 	it("runs Task -> Dispatch -> Attempt -> AttemptReceipt -> TaskResult -> RunReceipt without AgentInstance", async () => {
 		const current = await fixture();
+		// wire/ledger field name; local alias below
+		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		const canonicalInput: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "execute externally",
@@ -272,7 +274,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			selection: {
 				providerId: current.descriptor.providerId,
 				revision: current.descriptor.revision,
-				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-product",
 			message: canonicalInput.text,
@@ -319,6 +321,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		const artifactDigest = "a".repeat(64);
 		const canonicalArtifactDigest = "b".repeat(64);
 		const current = await fixture({ artifacts: true });
+		// wire/ledger field name; local alias below
+		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		current.driver.terminalError = {
 			code: vendorCode,
 			message: vendorMessage,
@@ -355,7 +359,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			selection: {
 				providerId: current.descriptor.providerId,
 				revision: current.descriptor.revision,
-				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-error-redaction",
 			message: canonicalInput.text,
@@ -488,6 +492,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				eventValues: testCase.eventValues,
 				...(testCase.supervisionLimits === undefined ? {} : { supervisionLimits: testCase.supervisionLimits }),
 			});
+			// wire/ledger field name; local alias below
+			const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 			const canonicalInput: CanonicalExternalAgentInput = {
 				schemaVersion: 1,
 				text: "validate supervised terminal propagation",
@@ -500,7 +506,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				selection: {
 					providerId: current.descriptor.providerId,
 					revision: current.descriptor.revision,
-					capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+					capabilitySnapshotDigest: capabilityDigest,
 				},
 				runId: `run-${testCase.code}`,
 				message: canonicalInput.text,
@@ -533,6 +539,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 
 	it("restarts from the durable canonical receipt without another driver side effect", async () => {
 		const current = await fixture();
+		// wire/ledger field name; local alias below
+		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		const canonicalInput: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "persist before restart",
@@ -545,7 +553,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			selection: {
 				providerId: current.descriptor.providerId,
 				revision: current.descriptor.revision,
-				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-restart",
 			message: canonicalInput.text,
@@ -581,6 +589,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 
 	it("keeps cancellation idempotent after canonical terminal settlement", async () => {
 		const current = await fixture();
+		// wire/ledger field name; local alias below
+		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		const canonicalInput: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "complete before cancellation",
@@ -593,7 +603,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			selection: {
 				providerId: current.descriptor.providerId,
 				revision: current.descriptor.revision,
-				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-cancel-after-terminal",
 			message: canonicalInput.text,
@@ -609,6 +619,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 
 	it("forwards only admitted artifact and image references to the current driver", async () => {
 		const current = await fixture({ artifacts: true, images: true });
+		// wire/ledger field name; local alias below
+		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		const digestValue = "1".repeat(64);
 		const canonicalInput: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
@@ -631,7 +643,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			selection: {
 				providerId: current.descriptor.providerId,
 				revision: current.descriptor.revision,
-				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-artifact-input",
 			message: canonicalInput.text,
@@ -725,6 +737,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 		];
 		for (const testCase of cases) {
 			const current = await fixture(testCase.capabilities);
+			// wire/ledger field name; local alias below
+			const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 			const canonicalInput = testCase.input as CanonicalExternalAgentInput;
 			await expect(executeExternalConnectorProductRun({
 				session: current.session,
@@ -733,7 +747,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 				selection: {
 					providerId: current.descriptor.providerId,
 					revision: current.descriptor.revision,
-					capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+					capabilitySnapshotDigest: capabilityDigest,
 				},
 				runId: `run-reject-${testCase.name.replaceAll(" ", "-")}`,
 				message: canonicalInput.text,
@@ -762,6 +776,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 
 	it("passes the exact AOS gateway model projection to the current driver", async () => {
 		const current = await fixture({ modelAccess: "aos_gateway" });
+		// wire/ledger field name; local alias below
+		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		const canonicalInput: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "use the projected gateway route",
@@ -775,7 +791,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			selection: {
 				providerId: current.descriptor.providerId,
 				revision: current.descriptor.revision,
-				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-model-gateway",
 			message: canonicalInput.text,
@@ -829,6 +845,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 
 	it("passes an explicitly selected gateway fallback to the current driver", async () => {
 		const current = await fixture({ modelAccess: "aos_gateway" });
+		// wire/ledger field name; local alias below
+		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		const canonicalInput: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "use the selected gateway fallback",
@@ -842,7 +860,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			selection: {
 				providerId: current.descriptor.providerId,
 				revision: current.descriptor.revision,
-				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-model-fallback",
 			message: canonicalInput.text,
@@ -888,6 +906,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 
 	it("rejects an unsupported gateway field before Goal, Task, Attempt, process, or driver side effects", async () => {
 		const current = await fixture({ modelAccess: "aos_gateway", unsupportedModelField: "serviceTier" });
+		// wire/ledger field name; local alias below
+		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		const canonicalInput: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "reject unsupported translation",
@@ -900,7 +920,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			selection: {
 				providerId: current.descriptor.providerId,
 				revision: current.descriptor.revision,
-				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-model-unsupported",
 			message: canonicalInput.text,
@@ -926,6 +946,8 @@ describe("T4 final acceptance: External Connector product integration", () => {
 
 	it("does not inspect a local model support matrix for agent-owned execution", async () => {
 		const current = await fixture({ throwOnModelMatrixRead: true });
+		// wire/ledger field name; local alias below
+		const capabilityDigest = current.descriptor.capabilitySnapshotDigest;
 		const canonicalInput: CanonicalExternalAgentInput = {
 			schemaVersion: 1,
 			text: "agent chooses model",
@@ -938,7 +960,7 @@ describe("T4 final acceptance: External Connector product integration", () => {
 			selection: {
 				providerId: current.descriptor.providerId,
 				revision: current.descriptor.revision,
-				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			},
 			runId: "run-external-agent-owned-no-matrix",
 			message: canonicalInput.text,

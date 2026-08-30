@@ -136,10 +136,12 @@ describe("External Connector product entry composition", () => {
 			expect(initialized.data.externalConnectors).toHaveLength(1);
 			const descriptor = initialized.data.externalConnectors?.[0];
 			if (descriptor === undefined) throw new Error("Settings-derived Connector descriptor is missing");
+			// wire/ledger field name; local alias below
+			const capabilityDigest = descriptor.capabilitySnapshotDigest;
 			const selection = {
 				providerId: descriptor.providerId,
 				revision: descriptor.revision,
-				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+				capabilitySnapshotDigest: capabilityDigest,
 			};
 
 			await controller.handleCommand({

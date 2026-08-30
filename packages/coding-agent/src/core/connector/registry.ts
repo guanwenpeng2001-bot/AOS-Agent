@@ -1038,10 +1038,12 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 	}
 
 	#descriptorActivationSource(descriptor: ExternalConnectorDescriptor): ExternalConnectorActivationSource {
+		// wire/ledger field name; local alias below
+		const capabilityDigest = descriptor.capabilitySnapshotDigest;
 		return createDescriptorExternalConnectorActivationSource({
 			providerId: descriptor.providerId,
 			revision: descriptor.revision,
-			capabilityDigest: descriptor.capabilitySnapshotDigest,
+			capabilityDigest,
 		});
 	}
 
@@ -1060,6 +1062,8 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 		registration: ExternalConnectorRegistration,
 	): ResultValue<ExternalConnectorActivationSource, FoundationError> {
 		const descriptor = registration.descriptor;
+		// wire/ledger field name; local alias below
+		const capabilityDigest = descriptor.capabilitySnapshotDigest;
 		const descriptorSource = this.#descriptorActivationSource(descriptor);
 		const supplied = this.#activationSources.get(descriptor.providerId);
 		const current = this.#readCurrentActivationSource(descriptor.providerId);
@@ -1076,7 +1080,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 			!externalConnectorActivationSourceMatchesCapability(source, {
 				providerId: descriptor.providerId,
 				revision: descriptor.revision,
-				digest: descriptor.capabilitySnapshotDigest,
+				digest: capabilityDigest,
 			})
 		) {
 			this.#publishReadiness(source.providerId === descriptor.providerId ? source : descriptorSource, "quarantined", "source_changed", "quarantined");

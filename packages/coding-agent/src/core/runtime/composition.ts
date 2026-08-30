@@ -279,10 +279,12 @@ async function registerSelectedExternalConnector(options: {
 			"Selected External Connector descriptor and readiness identity are inconsistent",
 		);
 	}
+	// wire/ledger field name; local alias below
+	const capabilityDigest = descriptor.capabilitySnapshotDigest;
 	const selection = {
 		providerId: descriptor.providerId,
 		revision: descriptor.revision,
-		capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+		capabilitySnapshotDigest: capabilityDigest,
 	};
 	const selected = await options.registry.select(selection);
 	if (!selected.ok) throw selected.error;
