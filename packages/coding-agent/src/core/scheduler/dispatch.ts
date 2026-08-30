@@ -48,7 +48,7 @@ import {
 	validateDispatch,
 	validateExecutionCorrelation,
 	validateImmutableAgentBinding,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	RUN_LEDGER_CUSTOM_TYPE,
 	type RunId,

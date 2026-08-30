@@ -10,7 +10,7 @@ import {
 	type SessionLedger,
 	validateEventPayloadForCategory,
 	validateExactShape,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import { type Static, Type } from "typebox";
 
 const WORKTREE_OBJECT_TYPE = "subagent.worktree_recorded";

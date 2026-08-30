@@ -27,7 +27,7 @@ import {
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 	type ThinkingLevel,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model, Models } from "@aos-agent/ai";
 import { createGoalStore } from "../orchestration/goal-store.ts";
 import {

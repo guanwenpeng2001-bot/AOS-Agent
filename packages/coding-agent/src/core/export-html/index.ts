@@ -1,4 +1,4 @@
-import { Session, type AgentState, type Entry } from "../../../../agent/src/internal.ts";
+import { Session, type AgentState, type Entry } from "@aos-agent/agent-core";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { APP_NAME, getExportTemplateDir } from "../../config.ts";

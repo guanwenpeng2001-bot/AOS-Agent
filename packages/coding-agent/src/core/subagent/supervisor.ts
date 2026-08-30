@@ -34,7 +34,7 @@ import {
 	type LayeredResultSettlement,
 	type ResultValue,
 	type SessionLedger,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	SUBAGENT_PROVIDER_KINDS,
 	createChildAgentRecord,

@@ -20,7 +20,7 @@ import {
 	type LedgerWriterLease,
 	Result,
 	type ResultValue,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import { runtimeClockFor, type RuntimeClock } from "../runtime/clock.ts";
 import {
 	applySchedulerClaimAcquire,

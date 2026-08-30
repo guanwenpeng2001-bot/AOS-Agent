@@ -13,7 +13,7 @@ import {
 	type McpServerConfig,
 	type Options,
 } from "@anthropic-ai/claude-agent-sdk";
-import { canonicalFoundationJson, type FoundationJsonValue } from "../../../agent/src/internal.ts";
+import { canonicalFoundationJson, type FoundationJsonValue } from "@aos-agent/agent-core";
 import { z } from "zod/v4";
 import {
 	PRIVATE_CLAUDE_AGENT_SDK_VERSION,

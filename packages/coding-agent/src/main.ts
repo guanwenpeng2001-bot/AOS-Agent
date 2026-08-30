@@ -7,7 +7,7 @@
 
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { type ProvisionedEntry, Session } from "../../agent/src/internal.ts";
+import { type ProvisionedEntry, Session } from "@aos-agent/agent-core";
 import { type ImageContent, modelsAreEqual } from "@aos-agent/ai";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";

@@ -15,7 +15,7 @@ import {
 	type FoundationJsonValue,
 	type ResultValue,
 	type RevisionReference,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 
 export const FOUNDATION_WORKFLOW_DSL_VERSION = 1 as const;
 export type WorkflowDslVersion = typeof FOUNDATION_WORKFLOW_DSL_VERSION;

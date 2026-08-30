@@ -1,4 +1,4 @@
-import type { FileSystem, SessionCreateOptions, SessionMetadata } from "../../../../agent/src/internal.ts";
+import type { FileSystem, SessionCreateOptions, SessionMetadata } from "@aos-agent/agent-core";
 
 /** Result of a prepared SQLite statement execution. */
 export interface SqliteRunResult {

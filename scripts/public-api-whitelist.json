@@ -1125,80 +1125,355 @@
       "internal": [],
       "delete": []
     },
-    "@aos-agent/agent-core": {
+   "@aos-agent/agent-core": {
       "keep": [
-        "Agent",
-        "AgentEvent",
-        "AgentMessage",
-        "AgentState",
-        "AgentTool",
-        "AgentToolResult",
-        "ExternalAgentConnector",
-        "ThinkingLevel"
-      ],
-      "internal": [
-        "AbortRequestedRecord",
         "AcceptanceCriterion",
         "AcceptanceFact",
         "AcquireWriterLeaseOptions",
+        "Agent",
+        "AgentBinding",
+        "AgentContext",
+        "AgentEvent",
+        "AgentHarness",
+        "AgentHarnessFoundationExecution",
+        "AgentHarnessOptions",
+        "AgentHarnessTool",
+        "AgentInstance",
+        "AgentLoopConfig",
+        "AgentMessage",
+        "AgentOperationError",
+        "AgentOperationSignal",
+        "AgentState",
+        "AgentTool",
+        "AgentToolResult",
+        "AgentToolUpdateCallback",
+        "AppendFoundationRecordResult",
+        "ArtifactDigest",
+        "ArtifactRef",
+        "ArtifactRefSchema",
+        "ArtifactStoreProvider",
+        "Ask",
+        "AskReply",
+        "AskStatus",
+        "Attempt",
+        "AttemptReceipt",
+        "AttemptReceiptUsage",
+        "BindingEpoch",
+        "BranchBounds",
+        "Budget",
+        "BudgetSchema",
+        "BudgetUsage",
+        "BudgetUsageSchema",
+        "CanonicalRunResult",
+        "ChildAgentProvider",
+        "ChildSpawnRequest",
+        "ChildSpawnResult",
+        "ConnectorCapabilitySnapshot",
+        "ContextForkMode",
+        "ContextSnapshot",
+        "ContextSnapshotRecord",
+        "ContextSnapshotSource",
+        "Dispatch",
+        "DispatchExecutionResult",
+        "DispatchStartResult",
+        "DurableEventCategory",
+        "DurableEventEnvelope",
+        "DurableLedgerApi",
+        "DurableLedgerError",
+        "EXTERNAL_ERROR_CODES",
+        "EXTERNAL_ERROR_MESSAGES",
+        "Entry",
+        "EntryOrder",
+        "EntryQuery",
+        "EventCorrelationRef",
+        "ExecutionCorrelation",
+        "ExecutionEnv",
+        "ExecutionProviderDescriptor",
+        "ExecutionToolContext",
+        "ExternalAgentConnector",
+        "ExternalErrorCode",
+        "FOUNDATION_ERROR_CODES",
+        "FOUNDATION_TOOL_RESULT_CUSTOM_TYPE",
+        "FileError",
+        "FileSystem",
+        "Fingerprint",
+        "FingerprintSchema",
+        "ForkOptions",
+        "FoundationEnvelope",
+        "FoundationError",
+        "FoundationErrorCode",
+        "FoundationEventEnvelope",
+        "FoundationFactRecord",
+        "FoundationJsonValue",
+        "FoundationLedgerState",
+        "FoundationObjectResult",
+        "FoundationObserver",
+        "FoundationProviderCapability",
+        "FoundationProviderExecutionOptions",
+        "FoundationRecord",
+        "FoundationRecordQuery",
+        "FoundationRetentionPolicy",
+        "FoundationToolGatewayAuthority",
+        "Goal",
+        "HarnessCompactionHookInput",
+        "HarnessCompactionHookResult",
+        "HarnessCompactionResult",
+        "HarnessContextPreparationInput",
+        "HarnessModelCallBoundaryInput",
+        "HarnessTool",
+        "Idempotency",
+        "InMemoryArtifactBlobStore",
+        "InMemorySessionRepo",
+        "InMemorySessionStorage",
+        "LanePointer",
+        "LaneRecord",
+        "LayeredResultSettlement",
+        "LedgerWriterLease",
+        "LogItem",
+        "LogOptions",
+        "McpCapabilityBinding",
+        "McpSelection",
+        "McpToolRoute",
+        "MemoryError",
+        "MemoryProvenanceBoundary",
+        "MessageEntry",
+        "ModelProfile",
+        "ModelRoute",
+        "ModelRouteSchema",
+        "NewRecord",
+        "ObserverCursor",
+        "OperationStartedRecord",
+        "Plan",
+        "PlanStatus",
+        "PluginContract",
+        "PrepareNextTurnContext",
+        "ProfileContract",
+        "ProvisionedEntry",
+        "ProvisionedFoundationRecord",
+        "PublicExecutionError",
+        "PublicExecutionErrorCategory",
+        "QueueMode",
+        "QuotaAttribution",
+        "QuotaProvider",
+        "QuotaReservation",
+        "ROLE_RESOLUTION_ORDER",
+        "RecordQuery",
+        "ReleaseWriterLeaseOptions",
+        "RenewWriterLeaseOptions",
+        "ResourceSelector",
+        "ResourceSelectorSchema",
+        "Result",
+        "ResultProvenance",
+        "ResultValidation",
+        "ResultValue",
+        "RevisionReference",
+        "RevisionReferenceSchema",
+        "RoleDefinition",
+        "RoleRegistry",
+        "RoleRevision",
+        "RunOutcome",
+        "RunReceipt",
+        "SandboxOperationProvider",
+        "SandboxOperationRequest",
+        "SchedulerClaimEventPayload",
+        "SchedulerDeadlockEventPayload",
+        "SchedulerDispatchEventPayload",
+        "SchedulerHandoffEventPayload",
+        "SchedulerQueueEventPayload",
+        "SchedulerTaskExecutorProvider",
+        "SchedulerWakeEventPayload",
+        "ScopedExecutionGateway",
+        "ScopedMemoryStore",
+        "ScopedModelGateway",
+        "ServiceContract",
+        "Session",
+        "SessionCreateOptions",
+        "SessionError",
+        "SessionLedger",
+        "SessionLedgerWriter",
+        "SessionLedgerWriterOptions",
+        "SessionMetadata",
+        "SessionRepo",
+        "SessionSearch",
+        "SessionSearchHit",
+        "SessionSearchOptions",
+        "SessionStats",
+        "SessionStorage",
+        "SetRetentionPolicyOptions",
+        "SettleTaskResultInput",
+        "SideEffectState",
+        "Stage",
+        "StageStatus",
+        "StepAttemptRecord",
+        "StreamFn",
+        "TaskArtifactProjection",
+        "TaskContextPackage",
+        "TaskEnvelope",
+        "TaskEnvelopePublicProjection",
+        "TaskEnvelopePublicProjectionSchema",
+        "TaskExecutorAttemptContext",
+        "TaskExecutorProvider",
+        "TaskResult",
+        "TaskResultRef",
+        "ThinkingLevel",
+        "Todo",
+        "TodoStatus",
+        "ToolExecutionMode",
+        "ToolExecutionResult",
+        "ToolGateway",
+        "ToolGatewayProvider",
+        "ToolGatewayRequest",
+        "ToolGatewayRoute",
+        "ToolGatewayRouteCatalog",
+        "ValidationResult",
+        "VersionedReference",
+        "WorkerReceipt",
+        "WorkerReceiptRef",
+        "agentLoop",
+        "agentLoopContinue",
+        "artifactDigestFromId",
+        "assertJsonSerializable",
+        "bashExecutionToText",
+        "budgetExhaustionReason",
+        "canonicalFoundationJson",
+        "cloneDeepFrozen",
+        "contextSnapshotFromJSON",
+        "convertToLlm",
+        "createAgentInstance",
+        "createAgentOperationSignal",
+        "createAttempt",
+        "createBashTool",
+        "createBindingEpoch",
+        "createCompactionSummaryMessage",
+        "createConnectorCapabilitySnapshot",
+        "createContextSnapshot",
+        "createCustomMessage",
+        "createDurableEvent",
+        "createEditTool",
+        "createExecutionCorrelation",
+        "createFoundationToolGateway",
+        "createFoundationToolGatewayAuthority",
+        "createHostTerminalGateAuthority",
+        "createModelProfileRevision",
+        "createOrderedBindingEpoch",
+        "createReadTool",
+        "createRoleRevision",
+        "createSandboxOperationToolGatewayProvider",
+        "createTaskEnvelope",
+        "createWriteTool",
+        "executeOperation",
+        "fingerprintFoundationValue",
+        "formatPromptTemplateInvocation",
+        "formatSkillInvocation",
+        "formatSkillsForSystemPrompt",
+        "getFileSystemResultOrThrow",
+        "getOrThrow",
+        "invalidDurableRecord",
+        "isSideEffectRetryable",
+        "isToolGatewayRoute",
+        "isValidArtifactDigest",
+        "isValidArtifactId",
+        "newFoundationId",
+        "ok",
+        "parseCommandArgs",
+        "parseExactShape",
+        "parseFoundationMutation",
+        "persistTaskEnvelopeBeforeResolver",
+        "projectMcpSelectionToSelector",
+        "projectTaskEnvelope",
+        "redactText",
+        "resolveAgentBinding",
+        "resolveMcpSelection",
+        "selectorsNarrow",
+        "serializeExactShape",
+        "setDefaultStreamFn",
+        "sha256HexValue",
+        "streamProxy",
+        "toError",
+        "truncateHead",
+        "validateAgentBinding",
+        "validateAgentInstance",
+        "validateAndVerifyToolReceipt",
+        "validateArtifactRef",
+        "validateAsk",
+        "validateAttempt",
+        "validateAttemptReceipt",
+        "validateAttemptReceiptForProvider",
+        "validateAttemptReceiptUsage",
+        "validateBindingEpoch",
+        "validateBudget",
+        "validateBudgetUsage",
+        "validateChildMcpSelection",
+        "validateChildSpawnRequest",
+        "validateConnectorCapabilitySnapshot",
+        "validateConnectorCapabilitySnapshotForProvider",
+        "validateDispatch",
+        "validateDurableEvent",
+        "validateEventPayloadForCategory",
+        "validateExactShape",
+        "validateExecutionCorrelation",
+        "validateFingerprint",
+        "validateFoundationProviderCapability",
+        "validateFoundationToolResultEntry",
+        "validateGoal",
+        "validateImmutableAgentBinding",
+        "validateMcpSelection",
+        "validateMcpSelectionForBinding",
+        "validatePlan",
+        "validateProviderJson",
+        "validatePublicExecutionError",
+        "validateQuotaAttribution",
+        "validateQuotaReservation",
+        "validateRoleRevision",
+        "validateRunReceipt",
+        "validateSandboxOperationRequest",
+        "validateSecretFreeModelProfile",
+        "validateSpawnAgentIntent",
+        "validateStage",
+        "validateTaskEnvelope",
+        "validateTaskEnvelopePublicProjection",
+        "validateTaskResult",
+        "validateTaskResultRef",
+        "validateTodo",
+        "validateToolExecutionResult",
+        "validateToolGatewayRequest",
+        "validateVersionedReference",
+        "validateWorkerReceipt",
+        "validateWorkerReceiptForProvider"
+      ],
+      "internal": [
+        "AbortRequestedRecord",
         "AfterToolCallContext",
         "AfterToolCallResult",
         "AGENT_LOOP_ERROR_CATEGORIES",
         "AGENT_TELEMETRY_SCHEMAS",
-        "AgentBinding",
         "AgentBindingSchema",
-        "AgentContext",
         "AgentDeadlineExceeded",
-        "AgentHarness",
-        "AgentHarnessFoundationExecution",
-        "AgentHarnessOptions",
         "AgentHarnessResources",
-        "AgentHarnessTool",
-        "AgentInstance",
         "AgentInstanceSchema",
-        "agentLoop",
-        "AgentLoopConfig",
-        "agentLoopContinue",
         "AgentLoopConvergenceOptions",
         "AgentLoopConvergenceReason",
         "AgentLoopErrorClassification",
         "AgentLoopTurnUpdate",
-        "AgentOperationError",
-        "AgentOperationSignal",
         "AgentToolCall",
-        "AgentToolUpdateCallback",
         "AI_TELEMETRY_SCHEMA",
         "AiSpanEndAttributes",
         "AiSpanStartAttributes",
         "AppendFoundationFactOptions",
-        "AppendFoundationRecordResult",
         "applyCheckpointRewind",
         "applyProfilePatch",
         "ArtifactBlobStore",
         "ArtifactDescriptor",
-        "ArtifactDigest",
-        "artifactDigestFromId",
         "ArtifactPutOptions",
-        "ArtifactRef",
         "ArtifactReference",
-        "ArtifactRefSchema",
         "ArtifactStoreError",
-        "ArtifactStoreProvider",
         "ArtifactValidationState",
-        "Ask",
-        "AskReply",
-        "AskStatus",
-        "assertJsonSerializable",
         "assertSessionLedgerWriterSession",
         "AsyncCustomEntryContextMessageProjector",
-        "Attempt",
         "AttemptProviderClass",
-        "AttemptReceipt",
-        "AttemptReceiptUsage",
         "AttemptSchema",
         "AttributeValue",
         "BashExecution",
-        "bashExecutionToText",
         "BashPrepare",
         "BashToolDetails",
         "BashToolInput",
@@ -1206,35 +1481,22 @@
         "BeforeToolCallContext",
         "BeforeToolCallResult",
         "BindingConflict",
-        "BindingEpoch",
         "BindingEpochSchema",
         "BindingSourceTrace",
-        "BranchBounds",
         "BranchSummaryEntry",
         "BranchSummaryError",
-        "Budget",
-        "budgetExhaustionReason",
         "BudgetLedger",
-        "BudgetSchema",
         "BudgetScope",
-        "BudgetUsage",
-        "BudgetUsageSchema",
         "buildSessionContext",
         "buildSessionContextAsync",
         "buildToolGatewayCatalog",
         "calculateContextTokens",
-        "canonicalFoundationJson",
-        "CanonicalRunResult",
         "Checkpoint",
         "CheckpointImpactPlan",
         "CheckpointPlanOptions",
         "CheckpointRewindAuthority",
-        "ChildAgentProvider",
-        "ChildSpawnRequest",
-        "ChildSpawnResult",
         "classifyAgentLoopError",
         "classifyHarnessProviderError",
-        "cloneDeepFrozen",
         "collectEntriesForBranchSummary",
         "compact",
         "compactContext",
@@ -1246,62 +1508,33 @@
         "CompactionRetention",
         "CompactionSettings",
         "composeProfileBundle",
-        "ConnectorCapabilitySnapshot",
         "ConnectorCapabilitySnapshotInput",
         "ContextBuildFact",
         "ContextCache",
         "ContextCompactionReason",
-        "ContextForkMode",
         "ContextLedger",
         "ContextLedgerOptions",
         "ContextRecoveryBoundary",
-        "ContextSnapshot",
-        "contextSnapshotFromJSON",
         "ContextSnapshotOptions",
-        "ContextSnapshotRecord",
-        "ContextSnapshotSource",
         "ContextTrust",
-        "convertToLlm",
-        "createAgentInstance",
         "createAgentLoopConvergenceGuard",
-        "createAgentOperationSignal",
-        "createAttempt",
         "CreateAttemptInput",
-        "createBashTool",
-        "createBindingEpoch",
         "CreateBindingEpochInput",
         "createBranchSummaryMessage",
         "createCheckpoint",
-        "createCompactionSummaryMessage",
-        "createConnectorCapabilitySnapshot",
         "createConsumerToolGatewayFake",
         "createContextCacheKey",
-        "createContextSnapshot",
-        "createCustomMessage",
         "createDefaultSandboxOperationTranslator",
-        "createDurableEvent",
-        "createEditTool",
         "createEmptyMcpSelection",
-        "createExecutionCorrelation",
         "createFoundationEnvelope",
         "createFoundationHostModelCallAdapter",
-        "createFoundationToolGateway",
-        "createFoundationToolGatewayAuthority",
         "createHarnessCancellation",
         "createHarnessProviderContext",
-        "createHostTerminalGateAuthority",
         "createLocalToolGatewayProvider",
-        "createModelProfileRevision",
-        "createOrderedBindingEpoch",
         "createPluginContract",
-        "createReadTool",
-        "createRoleRevision",
-        "createSandboxOperationToolGatewayProvider",
         "createScopedMemoryStore",
         "createSecretFreeModelProfile",
-        "createTaskEnvelope",
         "createTypedSpanStarter",
-        "createWriteTool",
         "CustomEntry",
         "decideAgentLoopRetry",
         "decideHarnessRetry",
@@ -1312,16 +1545,9 @@
         "DEFAULT_WRITER_LEASE_TTL_MS",
         "defineTelemetrySchema",
         "digestCheckpointTranscript",
-        "Dispatch",
         "DispatchAttemptStartResult",
         "DispatchExecutionInput",
-        "DispatchExecutionResult",
-        "DispatchStartResult",
         "DURABLE_LEDGER_ERROR_CODES",
-        "DurableEventCategory",
-        "DurableEventEnvelope",
-        "DurableLedgerApi",
-        "DurableLedgerError",
         "DurableLedgerErrorCode",
         "DurableModelProfileStore",
         "DurableRoleRegistry",
@@ -1331,88 +1557,50 @@
         "EffectResourceKind",
         "EffectScope",
         "encodeFoundationMutation",
-        "Entry",
-        "EntryOrder",
-        "EntryQuery",
         "err",
         "estimateContextTokens",
         "estimateTokens",
         "EVENT_CATALOG",
         "eventCatalogEntries",
-        "EventCorrelationRef",
         "EventProducer",
         "ExactShapeIssue",
         "exactShapeIssues",
         "ExactTelemetryAttributes",
         "executeDispatch",
-        "executeOperation",
         "executeShellWithCapture",
-        "ExecutionCorrelation",
         "ExecutionCorrelationSchema",
-        "ExecutionEnv",
         "ExecutionError",
-        "ExecutionProviderDescriptor",
-        "ExecutionToolContext",
         "extendFoundationLineage",
         "ExtensionContract",
         "ExtensionContractSchema",
-        "EXTERNAL_ERROR_CODES",
-        "EXTERNAL_ERROR_MESSAGES",
-        "ExternalErrorCode",
-        "FileError",
         "FileInfo",
         "FileKind",
         "FileOperations",
-        "FileSystem",
         "FileSystemArtifactBlobStore",
         "finalizeRunReceipt",
         "FinalizeRunReceiptInput",
         "finalizeToolReceipt",
         "findCutPoint",
         "findTurnStartIndex",
-        "Fingerprint",
         "fingerprintAgentTurn",
-        "fingerprintFoundationValue",
-        "FingerprintSchema",
         "fingerprintToolArguments",
-        "ForkOptions",
-        "formatPromptTemplateInvocation",
         "formatSize",
-        "formatSkillInvocation",
-        "formatSkillsForSystemPrompt",
-        "FOUNDATION_ERROR_CODES",
         "FOUNDATION_LEDGER_ERROR_CODES",
         "FOUNDATION_SCHEMA_VERSION",
         "FOUNDATION_SHA256_DIGEST_PATTERN",
-        "FOUNDATION_TOOL_RESULT_CUSTOM_TYPE",
         "FoundationCorrelationInput",
-        "FoundationEnvelope",
         "FoundationEnvelopeSchema",
-        "FoundationError",
         "foundationErrorCategory",
-        "FoundationErrorCode",
-        "FoundationEventEnvelope",
-        "FoundationFactRecord",
         "FoundationHostModelCallAdapter",
         "foundationIdempotencyKey",
         "FoundationIntentRecord",
-        "FoundationJsonValue",
         "FoundationJsonValueSchema",
-        "FoundationLedgerState",
         "FoundationLineage",
         "foundationModelCallErrorStream",
         "foundationObjectKey",
-        "FoundationObjectResult",
-        "FoundationObserver",
         "FoundationProvider",
-        "FoundationProviderCapability",
-        "FoundationProviderExecutionOptions",
-        "FoundationRecord",
-        "FoundationRecordQuery",
-        "FoundationRetentionPolicy",
         "FoundationRetentionRecord",
         "FoundationTombstoneRecord",
-        "FoundationToolGatewayAuthority",
         "FoundationToolGuard",
         "FoundationToolPipeline",
         "FoundationToolQuotaAccount",
@@ -1421,33 +1609,20 @@
         "generateSummary",
         "generateSummaryWithUsage",
         "getAgentLoopErrorMessage",
-        "getFileSystemResultOrThrow",
         "getLastAssistantUsage",
-        "getOrThrow",
-        "Goal",
         "HARNESS_TELEMETRY_SCHEMA",
-        "HarnessCompactionHookInput",
-        "HarnessCompactionHookResult",
-        "HarnessCompactionResult",
         "HarnessCompatibilityWriter",
-        "HarnessContextPreparationInput",
         "HarnessDeadlineExceeded",
-        "HarnessModelCallBoundaryInput",
         "HarnessOperationContext",
         "HarnessSpanEndAttributes",
         "HarnessSpanStartAttributes",
-        "HarnessTool",
         "HostTerminalGateAuthority",
-        "Idempotency",
         "IDEMPOTENCY_STATES",
         "IdGenerator",
-        "InMemoryArtifactBlobStore",
         "InMemoryArtifactStore",
         "InMemoryBudgetLedger",
         "InMemoryLocalPluginRegistryStorage",
         "InMemoryRoleRegistry",
-        "InMemorySessionRepo",
-        "InMemorySessionStorage",
         "InMemoryTelemetryContext",
         "InMemoryToolPipelineStorage",
         "InstructionLock",
@@ -1455,15 +1630,10 @@
         "InstructionResolutionRecord",
         "InstructionSource",
         "InstructionSourceInput",
-        "invalidDurableRecord",
         "invokeHarnessProvider",
         "isDurableLedgerStorage",
         "isFoundationMutationLine",
         "isMcpSelectionSubset",
-        "isSideEffectRetryable",
-        "isToolGatewayRoute",
-        "isValidArtifactDigest",
-        "isValidArtifactId",
         "JsonlSessionCreateOptions",
         "JsonlSessionHeader",
         "JsonlSessionListOptions",
@@ -1472,11 +1642,7 @@
         "JsonlSessionRepoFileSystem",
         "JsonlSessionRepoOptions",
         "JsonValue",
-        "LanePointer",
-        "LaneRecord",
-        "LayeredResultSettlement",
         "LEDGER_OBJECT_TYPES",
-        "LedgerWriterLease",
         "LifecycleExtensionRegistrar",
         "LineageSchema",
         "LiveDeltaEnvelope",
@@ -1491,68 +1657,41 @@
         "LocalPluginRegistrySnapshot",
         "LocalPluginRegistryStorage",
         "LocalToolGatewayProviderOptions",
-        "LogItem",
-        "LogOptions",
         "lookupToolGatewayRoute",
         "LspExtensionContract",
         "makeExactShapeGuard",
-        "McpCapabilityBinding",
-        "McpSelection",
         "McpSelectionSchema",
-        "McpToolRoute",
         "MemoryEntry",
-        "MemoryError",
         "MemoryPolicy",
-        "MemoryProvenanceBoundary",
         "MemoryQuery",
-        "MessageEntry",
         "ModelChangeEntry",
-        "ModelProfile",
         "ModelProfileSchema",
-        "ModelRoute",
-        "ModelRouteSchema",
         "ModeSwitchExecutionInput",
         "ModeSwitchIntent",
         "MonitorExtensionContract",
         "negotiateProtocol",
-        "newFoundationId",
         "newFoundationUuid",
         "NewMemoryEntry",
-        "NewRecord",
         "NOOP_TELEMETRY_CONTEXT",
-        "ObserverCursor",
         "ObserverCursorSchema",
-        "ok",
         "OperationExecutionInput",
         "OperationFinishedRecord",
-        "OperationStartedRecord",
         "orderRuntimeHooks",
-        "parseCommandArgs",
         "parseConnectorCapabilitySnapshot",
-        "parseExactShape",
-        "parseFoundationMutation",
         "parseTaskEnvelope",
         "PersistedTaskContextPackage",
-        "persistTaskEnvelopeBeforeResolver",
-        "Plan",
         "planCheckpointRewind",
-        "PlanStatus",
         "PluginActivationContext",
         "pluginContentsDigest",
-        "PluginContract",
         "PluginContractSchema",
         "PluginHook",
         "PluginLifecycleOperation",
         "PluginLifecycleResult",
         "prepareCompaction",
         "prepareForkFoundationRecords",
-        "PrepareNextTurnContext",
         "ProductObserverAdapter",
-        "ProfileContract",
         "projectEventEnvelope",
-        "projectMcpSelectionToSelector",
         "projectSkillExternal",
-        "projectTaskEnvelope",
         "projectToolReceiptExecutionSemantics",
         "PromptCacheInvalidationOptions",
         "PromptCacheLookup",
@@ -1560,19 +1699,11 @@
         "PromptCacheWriteOptions",
         "PromptTemplate",
         "PROTOCOL_FEATURE_MATRIX",
-        "ProvisionedEntry",
-        "ProvisionedFoundationRecord",
         "ProxyAssistantMessageEvent",
         "publicExecutionError",
-        "PublicExecutionError",
-        "PublicExecutionErrorCategory",
         "PublicExecutionErrorSchema",
         "QueueCancelledRecord",
         "QueueEnqueuedRecord",
-        "QueueMode",
-        "QuotaAttribution",
-        "QuotaProvider",
-        "QuotaReservation",
         "raceWithAbortSignal",
         "ReadImageProcessor",
         "ReadImageProcessorResult",
@@ -1582,34 +1713,17 @@
         "RecordBase",
         "RecordedTelemetryEvent",
         "RecordedTelemetrySpan",
-        "RecordQuery",
         "redactArtifactReference",
         "redactedThrownAgentError",
         "redactFoundationError",
         "redactProjection",
-        "redactText",
-        "ReleaseWriterLeaseOptions",
-        "RenewWriterLeaseOptions",
         "requireRoleResolutionTask",
-        "resolveAgentBinding",
         "resolveChildExecutorMcpSelectors",
         "resolveInstructionSources",
-        "resolveMcpSelection",
         "resolveRoleResolution",
         "Resources",
-        "ResourceSelector",
-        "ResourceSelectorSchema",
-        "Result",
-        "ResultProvenance",
         "ResultStatus",
-        "ResultValidation",
-        "ResultValue",
-        "RevisionReference",
-        "RevisionReferenceSchema",
-        "ROLE_RESOLUTION_ORDER",
-        "RoleDefinition",
         "RoleDefinitionSchema",
-        "RoleRegistry",
         "RoleRegistryCopyInput",
         "RoleRegistryCreateInput",
         "RoleRegistryDeleteInput",
@@ -1624,79 +1738,43 @@
         "RoleResolutionOverride",
         "RoleResolutionPreview",
         "RoleResolveInput",
-        "RoleRevision",
         "RoleRevisionSchema",
         "RoleScope",
         "RoleTombstone",
         "runAgentLoop",
         "runAgentLoopContinue",
-        "RunOutcome",
-        "RunReceipt",
         "RunReceiptEventPayload",
         "RunReceiptUsage",
         "RuntimeHookSpec",
         "RuntimeServiceRegistry",
         "RuntimeToolRegistry",
-        "SandboxOperationProvider",
-        "SandboxOperationRequest",
-        "SchedulerClaimEventPayload",
-        "SchedulerDeadlockEventPayload",
-        "SchedulerDispatchEventPayload",
-        "SchedulerHandoffEventPayload",
-        "SchedulerQueueEventPayload",
         "SchedulerSelectionEventPayload",
-        "SchedulerTaskExecutorProvider",
-        "SchedulerWakeEventPayload",
         "SchemaTelemetrySpan",
-        "ScopedExecutionGateway",
-        "ScopedMemoryStore",
-        "ScopedModelGateway",
         "ScopedModelRequest",
         "ScopedModelResult",
-        "selectorsNarrow",
         "selectResources",
         "serializeConnectorCapabilitySnapshot",
         "serializeConversation",
-        "serializeExactShape",
         "serializeScopedModelRequest",
         "serializeTaskEnvelope",
         "serializeToolGatewayRequest",
-        "ServiceContract",
-        "Session",
         "SessionArtifactStore",
         "SessionContextBuildOptions",
-        "SessionCreateOptions",
-        "SessionError",
         "SessionErrorCode",
-        "SessionLedger",
         "SessionLedgerBindingError",
         "SessionLedgerFactResult",
-        "SessionLedgerWriter",
-        "SessionLedgerWriterOptions",
         "SessionMemoryStore",
-        "SessionMetadata",
-        "SessionRepo",
         "SessionRewindPlan",
-        "SessionSearch",
-        "SessionSearchHit",
-        "SessionSearchOptions",
-        "SessionStats",
         "SessionStopReason",
-        "SessionStorage",
         "SessionToolPipelineStorage",
         "SessionTree",
-        "setDefaultStreamFn",
-        "SetRetentionPolicyOptions",
         "settleTaskResult",
-        "SettleTaskResultInput",
         "sha256Hex",
-        "sha256HexValue",
         "ShellCaptureProgress",
         "ShellExecOptions",
         "shouldCompact",
         "ShouldStopAfterTurnContext",
         "SIDE_EFFECT_STATES",
-        "SideEffectState",
         "SideEffectStateSchema",
         "Skill",
         "SkillMetadata",
@@ -1705,28 +1783,14 @@
         "SpanStatus",
         "SpawnAgentIntent",
         "SpawnAgentIntentSchema",
-        "Stage",
-        "StageStatus",
         "startAiSpan",
         "startDispatchAttempt",
         "startHarnessSpan",
-        "StepAttemptRecord",
-        "StreamFn",
         "StreamOptions",
-        "streamProxy",
         "SUBAGENT_ERROR_CODES",
         "switchAgentMode",
         "TaggedError",
-        "TaskArtifactProjection",
-        "TaskContextPackage",
-        "TaskEnvelope",
-        "TaskEnvelopePublicProjection",
-        "TaskEnvelopePublicProjectionSchema",
         "TaskEnvelopeSchema",
-        "TaskExecutorAttemptContext",
-        "TaskExecutorProvider",
-        "TaskResult",
-        "TaskResultRef",
         "TelemetryAttributeDefinition",
         "TelemetryAttributeMetadata",
         "TelemetryAttributeType",
@@ -1746,24 +1810,14 @@
         "TelemetrySpanDefinition",
         "TelemetryStartAttributeDefinition",
         "ThinkingLevelEntry",
-        "Todo",
-        "TodoStatus",
-        "toError",
         "toFoundationError",
         "TOOL_EXECUTION_RESULT_MAX_BYTES",
         "ToolBindingRef",
         "ToolDefinition",
         "ToolDefinitionRegistry",
         "ToolExecution",
-        "ToolExecutionMode",
-        "ToolExecutionResult",
         "ToolGateCheck",
         "ToolGateScope",
-        "ToolGateway",
-        "ToolGatewayProvider",
-        "ToolGatewayRequest",
-        "ToolGatewayRoute",
-        "ToolGatewayRouteCatalog",
         "ToolIntent",
         "ToolPipelineContext",
         "ToolPipelineOptions",
@@ -1777,93 +1831,39 @@
         "ToolStartedRecord",
         "TransportAdapter",
         "TransportObserverCursor",
-        "truncateHead",
         "truncateTail",
         "TruncationResult",
         "TypedSpanStarter",
         "UsageRecord",
         "uuidv7",
-        "validateAgentBinding",
-        "validateAgentInstance",
-        "validateAndVerifyToolReceipt",
         "validateArtifactDescriptor",
         "validateArtifactPutResult",
-        "validateArtifactRef",
         "validateArtifactVerifyResult",
-        "validateAsk",
-        "validateAttempt",
-        "validateAttemptReceipt",
-        "validateAttemptReceiptForProvider",
-        "validateAttemptReceiptUsage",
-        "validateBindingEpoch",
-        "validateBudget",
-        "validateBudgetUsage",
         "validateCheckpointImpactPlan",
-        "validateChildMcpSelection",
-        "validateChildSpawnRequest",
         "validateChildSpawnResult",
-        "validateConnectorCapabilitySnapshot",
-        "validateConnectorCapabilitySnapshotForProvider",
-        "validateDispatch",
         "validateDurableBindingSources",
-        "validateDurableEvent",
         "validateEndpointSecurity",
-        "validateEventPayloadForCategory",
-        "validateExactShape",
-        "validateExecutionCorrelation",
         "validateExtensionContract",
-        "validateFingerprint",
         "validateFoundationEnvelope",
-        "validateFoundationProviderCapability",
-        "validateFoundationToolResultEntry",
-        "validateGoal",
         "validateHostTerminalGateAuthority",
-        "validateImmutableAgentBinding",
         "validateLineage",
         "validateLocalPluginPackage",
-        "validateMcpSelection",
-        "validateMcpSelectionForBinding",
         "validateMcpSelectorTightening",
-        "validatePlan",
         "validateProfileContract",
         "validateProtocolMessageEnvelope",
-        "validateProviderJson",
-        "validatePublicExecutionError",
-        "validateQuotaAttribution",
-        "validateQuotaReservation",
         "validateRoleDefinition",
         "validateRoleRegistryRecord",
         "validateRoleResolutionOrder",
-        "validateRoleRevision",
         "validateRoleScopeTightening",
-        "validateRunReceipt",
         "validateRuntimeServiceDAG",
-        "validateSandboxOperationRequest",
         "validateScopedModelRequest",
         "validateScopedModelResult",
-        "validateSecretFreeModelProfile",
         "validateSelector",
-        "validateSpawnAgentIntent",
-        "validateStage",
-        "validateTaskEnvelope",
-        "validateTaskEnvelopePublicProjection",
-        "validateTaskResult",
-        "validateTaskResultRef",
-        "validateTodo",
-        "validateToolExecutionResult",
-        "validateToolGatewayRequest",
         "validateToolIntent",
         "validateToolReceipt",
         "validateToolResultPayload",
-        "validateVersionedReference",
-        "validateWorkerReceipt",
-        "validateWorkerReceiptForProvider",
         "validateWorkerReceiptRef",
-        "ValidationResult",
-        "VersionedReference",
         "VersionedReferenceSchema",
-        "WorkerReceipt",
-        "WorkerReceiptRef",
         "WorkerReceiptRefSchema",
         "WorkspaceCheckpointState",
         "WriteDeferredRecord",
@@ -2731,7 +2731,7 @@
         "WorkingMemoryOptions",
         "WorkspaceCheckpointImpact"
       ]
-    }
+   }
   },
   "symbols": [
     {
@@ -13002,7 +13002,7 @@
     {
       "name": "AcceptanceCriterion",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/task.ts:3",
         "packages/coding-agent/src/core/orchestration/goal-store.ts:13"
@@ -13019,7 +13019,7 @@
     {
       "name": "AcceptanceFact",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/results.ts:2",
         "packages/agent/src/harness/agent-harness.ts:41",
@@ -13040,7 +13040,7 @@
     {
       "name": "AcquireWriterLeaseOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/durable/state.ts:8",
@@ -13133,7 +13133,7 @@
     {
       "name": "AgentBinding",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/binding.ts:5",
         "packages/agent/src/harness/foundation/providers.ts:9",
@@ -13154,14 +13154,15 @@
     {
       "name": "AgentContext",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/agent-loop.ts:27",
         "packages/agent/src/agent.ts:19",
         "packages/agent/src/harness/agent-harness.ts:18",
         "packages/coding-agent/src/core/session/facade.ts:9",
         "packages/agent/test/agent-loop-convergence.test.ts:12",
-        "packages/agent/test/agent-loop-errors.test.ts:16"
+        "packages/agent/test/agent-loop-errors.test.ts:16",
+        "packages/agent/README.md:516"
       ]
     },
     {
@@ -13192,7 +13193,7 @@
     {
       "name": "AgentHarness",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/child-agent-entry.ts:14",
         "packages/coding-agent/src/child-agent-entry.ts:20",
@@ -13205,7 +13206,7 @@
     {
       "name": "AgentHarnessFoundationExecution",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:4",
         "packages/agent/test/harness/agent-harness-pipeline.test.ts:4",
@@ -13215,7 +13216,7 @@
     {
       "name": "AgentHarnessOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/child-agent-entry.ts:21",
         "packages/coding-agent/src/server/create-harness.ts:10",
@@ -13251,7 +13252,7 @@
     {
       "name": "AgentHarnessTool",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tools/bash.ts:2",
         "packages/agent/src/harness/tools/edit.ts:2",
@@ -13271,7 +13272,7 @@
     {
       "name": "AgentInstance",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:9",
         "packages/agent/src/harness/foundation/execution.ts:22",
@@ -13308,32 +13309,35 @@
     {
       "name": "agentLoop",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/test/agent-loop-convergence.test.ts:11",
         "packages/agent/test/agent-loop-errors.test.ts:12",
-        "packages/agent/test/agent-loop.test.ts:11"
+        "packages/agent/test/agent-loop.test.ts:11",
+        "packages/agent/README.md:514"
       ]
     },
     {
       "name": "AgentLoopConfig",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/agent-loop.ts:29",
         "packages/agent/src/agent.ts:21",
         "packages/agent/src/harness/agent-harness.ts:18",
         "packages/agent/test/agent-loop-convergence.test.ts:12",
         "packages/agent/test/agent-loop-errors.test.ts:16",
-        "packages/agent/test/agent-loop.test.ts:13"
+        "packages/agent/test/agent-loop.test.ts:13",
+        "packages/agent/README.md:522"
       ]
     },
     {
       "name": "agentLoopContinue",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/test/agent-loop.test.ts:11"
+        "packages/agent/test/agent-loop.test.ts:11",
+        "packages/agent/README.md:514"
       ]
     },
     {
@@ -13494,7 +13498,7 @@
     {
       "name": "AgentOperationError",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/modes/rpc/rpc-host.ts:16",
         "packages/coding-agent/test/connector/external-agent-connector-lifecycle.test.ts:3",
@@ -13504,7 +13508,7 @@
     {
       "name": "AgentOperationSignal",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/operation-boundary.ts:3"
       ]
@@ -13586,7 +13590,7 @@
     {
       "name": "AgentToolUpdateCallback",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/types.ts:3",
         "packages/agent/src/harness/agent-harness.ts:18",
@@ -13680,7 +13684,7 @@
     {
       "name": "AppendFoundationRecordResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/ledger-writer.ts:12",
@@ -13761,7 +13765,7 @@
     {
       "name": "ArtifactDigest",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/input.ts:2",
         "packages/coding-agent/test/connector/external-agent-input.test.ts:1",
@@ -13771,7 +13775,7 @@
     {
       "name": "artifactDigestFromId",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/input.ts:4"
       ]
@@ -13843,7 +13847,7 @@
     {
       "name": "ArtifactRef",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/goal.ts:5",
         "packages/agent/src/harness/foundation/task.ts:9",
@@ -13900,7 +13904,7 @@
     {
       "name": "ArtifactRefSchema",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/goal.ts:5",
         "packages/agent/src/harness/foundation/task.ts:9",
@@ -13945,7 +13949,7 @@
     {
       "name": "ArtifactStoreProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/agent-harness.ts:47",
         "packages/coding-agent/src/core/subagent/result.ts:6",
@@ -13990,7 +13994,7 @@
     {
       "name": "Ask",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/ask-store.ts:8",
         "packages/coding-agent/src/core/scheduler/messages.ts:4",
@@ -14008,7 +14012,7 @@
     {
       "name": "AskReply",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/ask-store.ts:9"
       ]
@@ -14032,7 +14036,7 @@
     {
       "name": "AskStatus",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/ask-store.ts:10"
       ]
@@ -14048,7 +14052,7 @@
     {
       "name": "assertJsonSerializable",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/jsonl/repo.ts:2",
         "packages/agent/src/harness/agent-harness.ts:108",
@@ -14102,7 +14106,7 @@
     {
       "name": "Attempt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:10",
         "packages/agent/src/harness/foundation/execution.ts:23",
@@ -14132,7 +14136,7 @@
     {
       "name": "AttemptReceipt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:11",
         "packages/agent/src/harness/foundation/conformance.ts:4",
@@ -14161,7 +14165,7 @@
     {
       "name": "AttemptReceiptUsage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/vendor/types.ts:18",
         "packages/coding-agent/src/core/scheduler/executors.ts:24",
@@ -14236,7 +14240,7 @@
     {
       "name": "bashExecutionToText",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "scripts/browser-smoke-entry.ts:6"
       ]
@@ -14310,7 +14314,7 @@
     {
       "name": "BindingEpoch",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/task.ts:10",
         "packages/agent/src/harness/foundation/binding.ts:5",
@@ -14379,7 +14383,7 @@
     {
       "name": "BranchBounds",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:4",
         "packages/agent/src/harness/session/state.ts:2",
@@ -14451,7 +14455,7 @@
     {
       "name": "Budget",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/task.ts:4",
         "packages/agent/src/harness/foundation/role.ts:3",
@@ -14464,7 +14468,7 @@
     {
       "name": "budgetExhaustionReason",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/workflow-store.ts:3"
       ]
@@ -14496,7 +14500,7 @@
     {
       "name": "BudgetSchema",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:3",
         "packages/agent/src/harness/foundation/role-registry.ts:11",
@@ -14522,7 +14526,7 @@
     {
       "name": "BudgetUsage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:3",
         "packages/agent/src/harness/foundation/gateway.ts:2",
@@ -14535,7 +14539,7 @@
     {
       "name": "BudgetUsageSchema",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:3",
         "packages/coding-agent/src/core/orchestration/workflow.ts:3"
@@ -14620,7 +14624,7 @@
     {
       "name": "canonicalFoundationJson",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/event-catalog.ts:3",
         "packages/agent/src/harness/foundation/schema.ts:5",
@@ -14649,7 +14653,7 @@
     {
       "name": "CanonicalRunResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/automation-run-projection.ts:8",
         "packages/coding-agent/src/core/session/run-lifecycle.ts:18",
@@ -14710,7 +14714,7 @@
     {
       "name": "ChildAgentProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:12",
         "packages/agent/src/harness/foundation/settlement.ts:26",
@@ -14747,7 +14751,7 @@
     {
       "name": "ChildSpawnRequest",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:13",
         "packages/agent/src/harness/foundation/settlement.ts:26",
@@ -14768,7 +14772,7 @@
     {
       "name": "ChildSpawnResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:14",
         "packages/agent/src/harness/foundation/settlement.ts:26",
@@ -14823,7 +14827,7 @@
     {
       "name": "cloneDeepFrozen",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/mcp-selection.ts:5",
         "packages/agent/src/harness/foundation/task.ts:7",
@@ -15036,7 +15040,7 @@
     {
       "name": "ConnectorCapabilitySnapshot",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/conformance.ts:3",
         "packages/coding-agent/src/core/connector/vendor/types.ts:19",
@@ -15185,7 +15189,7 @@
     {
       "name": "ContextForkMode",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/context-fork.ts:27"
       ]
@@ -15278,7 +15282,7 @@
     {
       "name": "ContextSnapshot",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/context/checkpoint.ts:4",
         "packages/agent/src/harness/context/ledger.ts:27",
@@ -15307,7 +15311,7 @@
     {
       "name": "contextSnapshotFromJSON",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/context/ledger.ts:24",
         "packages/coding-agent/src/core/subagent/context-fork.ts:14"
@@ -15324,7 +15328,7 @@
     {
       "name": "ContextSnapshotRecord",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/context/ledger.ts:29",
         "packages/coding-agent/src/core/subagent/context-fork.ts:30"
@@ -15333,7 +15337,7 @@
     {
       "name": "ContextSnapshotSource",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/context-fork.ts:29"
       ]
@@ -15365,7 +15369,7 @@
     {
       "name": "convertToLlm",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/compaction/compaction.ts:16",
         "packages/agent/src/harness/compaction/branch-summarization.ts:11",
@@ -15376,7 +15380,7 @@
     {
       "name": "createAgentInstance",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/supervisor.ts:12",
         "packages/coding-agent/src/core/subagent/inprocess-provider.ts:11",
@@ -15406,7 +15410,7 @@
     {
       "name": "createAgentOperationSignal",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/agent.ts:15",
         "packages/coding-agent/src/core/operation-boundary.ts:3"
@@ -15415,7 +15419,7 @@
     {
       "name": "createAttempt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/durable-connector.ts:7",
         "packages/coding-agent/src/core/scheduler/executors.ts:29",
@@ -15436,7 +15440,7 @@
     {
       "name": "createBashTool",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tools/index.ts:7",
         "packages/coding-agent/src/server/create-harness.ts:12",
@@ -15446,7 +15450,7 @@
     {
       "name": "createBindingEpoch",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/binding.ts:5",
         "packages/coding-agent/src/core/subagent/supervisor.ts:13",
@@ -15493,7 +15497,7 @@
     {
       "name": "createCompactionSummaryMessage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/context.ts:2",
         "packages/agent/src/harness/compaction/compaction.ts:16",
@@ -15504,7 +15508,7 @@
     {
       "name": "createConnectorCapabilitySnapshot",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/dispatch.ts:28",
         "packages/coding-agent/src/core/connector/packaged-runtime.ts:6",
@@ -15533,7 +15537,7 @@
     {
       "name": "createContextSnapshot",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/context/ledger.ts:25",
         "packages/coding-agent/src/core/subagent/context-fork.ts:15",
@@ -15546,7 +15550,7 @@
     {
       "name": "createCustomMessage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "scripts/browser-smoke-entry.ts:8"
       ]
@@ -15578,7 +15582,7 @@
     {
       "name": "createDurableEvent",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:33",
         "packages/coding-agent/src/core/session/run-lifecycle.ts:20",
@@ -15599,7 +15603,7 @@
     {
       "name": "createEditTool",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tools/index.ts:10",
         "packages/coding-agent/src/server/create-harness.ts:13",
@@ -15636,7 +15640,7 @@
     {
       "name": "createExecutionCorrelation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/ledger-writer.ts:2",
         "packages/agent/src/harness/agent-harness.ts:22",
@@ -15665,7 +15669,7 @@
     {
       "name": "createFoundationToolGateway",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/server/create-harness.ts:4",
         "packages/coding-agent/src/core/runtime/composition.ts:2",
@@ -15678,7 +15682,7 @@
     {
       "name": "createFoundationToolGatewayAuthority",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/tool-gateway.ts:2",
         "packages/coding-agent/test/connector/external-connector-registry.test.ts:10"
@@ -15711,7 +15715,7 @@
     {
       "name": "createHostTerminalGateAuthority",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:6",
         "packages/coding-agent/src/core/connector/product-run.ts:4",
@@ -15776,7 +15780,7 @@
     {
       "name": "createModelProfileRevision",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/model-profile.ts:5",
         "packages/coding-agent/src/core/connector/product-run.ts:5",
@@ -15789,7 +15793,7 @@
     {
       "name": "createOrderedBindingEpoch",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:6",
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:8",
@@ -15831,7 +15835,7 @@
     {
       "name": "createReadTool",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tools/index.ts:15",
         "packages/coding-agent/src/server/create-harness.ts:14",
@@ -15841,7 +15845,7 @@
     {
       "name": "createRoleRevision",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry.ts:8",
         "packages/coding-agent/src/core/connector/product-run.ts:7",
@@ -15870,7 +15874,7 @@
     {
       "name": "createSandboxOperationToolGatewayProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/server/create-harness.ts:5",
         "packages/agent/test/harness/tool-gateway-catalog.test.ts:6",
@@ -15912,7 +15916,7 @@
     {
       "name": "createTaskEnvelope",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/composition.ts:5",
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:9",
@@ -15942,7 +15946,7 @@
     {
       "name": "createWriteTool",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tools/index.ts:23",
         "packages/coding-agent/src/server/create-harness.ts:15",
@@ -16168,7 +16172,7 @@
     {
       "name": "Dispatch",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:10",
         "packages/agent/src/harness/foundation/execution.ts:23",
@@ -16215,7 +16219,7 @@
     {
       "name": "DispatchExecutionResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:7",
         "packages/agent/src/harness/foundation/index.ts:14",
@@ -16233,7 +16237,7 @@
     {
       "name": "DispatchStartResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/dispatch.ts:32"
       ]
@@ -16278,7 +16282,7 @@
     {
       "name": "DurableEventCategory",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/queue.ts:12",
         "packages/coding-agent/src/core/scheduler/workflow.ts:13"
@@ -16287,7 +16291,7 @@
     {
       "name": "DurableEventEnvelope",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/observer.ts:3",
         "packages/agent/src/harness/foundation/settlement.ts:33",
@@ -16300,7 +16304,7 @@
     {
       "name": "DurableLedgerApi",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/jsonl/storage.ts:6",
@@ -16313,7 +16317,7 @@
     {
       "name": "DurableLedgerError",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:2",
         "packages/agent/src/harness/session/ledger-writer.ts:15",
@@ -16468,7 +16472,7 @@
     {
       "name": "Entry",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:5",
         "packages/agent/src/harness/session/context.ts:3",
@@ -16497,7 +16501,7 @@
     {
       "name": "EntryOrder",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/state.ts:4",
         "packages/coding-agent/src/core/session/manager-storage.ts:11",
@@ -16515,7 +16519,7 @@
     {
       "name": "EntryQuery",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:6",
         "packages/agent/src/harness/session/state.ts:5",
@@ -16645,7 +16649,7 @@
     {
       "name": "EventCorrelationRef",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:33",
         "packages/coding-agent/src/core/subagent/mailbox.ts:9",
@@ -16784,7 +16788,7 @@
     {
       "name": "executeOperation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:7",
         "packages/agent/src/harness/foundation/index.ts:7",
@@ -16805,7 +16809,7 @@
     {
       "name": "ExecutionCorrelation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/durable/types.ts:1",
         "packages/agent/src/harness/session/types.ts:6",
@@ -16826,7 +16830,7 @@
     {
       "name": "ExecutionEnv",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/prompt-templates.ts:2",
         "packages/agent/src/harness/skills.ts:3",
@@ -16858,7 +16862,7 @@
     {
       "name": "ExecutionProviderDescriptor",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/registry.ts:4",
         "packages/coding-agent/src/core/scheduler/host.ts:21"
@@ -16875,7 +16879,7 @@
     {
       "name": "ExecutionToolContext",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tools/bash.ts:6",
         "packages/agent/src/harness/tools/edit.ts:15",
@@ -16929,7 +16933,7 @@
     {
       "name": "EXTERNAL_ERROR_CODES",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/run-lifecycle.ts:23",
         "packages/coding-agent/test/connector/external-agent-public-exports.test.ts:5"
@@ -16938,7 +16942,7 @@
     {
       "name": "EXTERNAL_ERROR_MESSAGES",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/control-plane-atomic-storage.ts:19",
         "packages/coding-agent/src/core/connector/vendor/types.ts:10",
@@ -16959,7 +16963,7 @@
     {
       "name": "ExternalErrorCode",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/control-plane-atomic-storage.ts:19",
         "packages/coding-agent/src/core/session/run-lifecycle.ts:36"
@@ -16968,7 +16972,7 @@
     {
       "name": "FileError",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/jsonl/errors.ts:1",
         "packages/agent/src/harness/session/jsonl/migration.ts:1",
@@ -17017,7 +17021,7 @@
     {
       "name": "FileSystem",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/jsonl/types.ts:1",
         "packages/agent/src/harness/artifacts.ts:2",
@@ -17088,7 +17092,7 @@
     {
       "name": "Fingerprint",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/schema.ts:5",
         "packages/agent/src/harness/foundation/reference.ts:2",
@@ -17109,7 +17113,7 @@
     {
       "name": "fingerprintFoundationValue",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/mcp-selection.ts:4",
         "packages/agent/src/harness/foundation/task.ts:6",
@@ -17130,7 +17134,7 @@
     {
       "name": "FingerprintSchema",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/reference.ts:3",
         "packages/agent/src/harness/foundation/mcp-selection.ts:7",
@@ -17151,7 +17155,7 @@
     {
       "name": "ForkOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/state.ts:6",
         "packages/agent/src/harness/session/jsonl/storage.ts:24",
@@ -17163,7 +17167,7 @@
     {
       "name": "formatPromptTemplateInvocation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/agent-harness.ts:67",
         "packages/agent/test/harness/prompt-templates.test.ts:6",
@@ -17183,7 +17187,7 @@
     {
       "name": "formatSkillInvocation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/agent-harness.ts:68",
         "packages/agent/test/harness/resource-formatting.test.ts:3",
@@ -17193,7 +17197,7 @@
     {
       "name": "formatSkillsForSystemPrompt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/agent-harness.ts:69",
         "packages/agent/test/harness/system-prompt.test.ts:2",
@@ -17203,7 +17207,7 @@
     {
       "name": "FOUNDATION_ERROR_CODES",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/durable-store.ts:3",
         "packages/agent/test/harness/foundation-contracts.test.ts:10",
@@ -17295,7 +17299,7 @@
     {
       "name": "FOUNDATION_TOOL_RESULT_CUSTOM_TYPE",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/reducer.ts:15",
         "packages/agent/src/harness/agent-harness.ts:82",
@@ -17314,7 +17318,7 @@
     {
       "name": "FoundationEnvelope",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/query.ts:15"
       ]
@@ -17338,7 +17342,7 @@
     {
       "name": "FoundationError",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/schema.ts:4",
         "packages/agent/src/harness/foundation/budget.ts:3",
@@ -17367,7 +17371,7 @@
     {
       "name": "FoundationErrorCode",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/schema.ts:4",
         "packages/agent/src/harness/foundation/role-registry-store.ts:4",
@@ -17380,7 +17384,7 @@
     {
       "name": "FoundationEventEnvelope",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:12",
         "packages/coding-agent/src/core/session/execution-audit.ts:29",
@@ -17391,7 +17395,7 @@
     {
       "name": "FoundationFactRecord",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/session-ledger.ts:8",
         "packages/agent/src/harness/foundation/settlement.ts:34",
@@ -17471,7 +17475,7 @@
     {
       "name": "FoundationJsonValue",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/durable/types.ts:1",
         "packages/agent/src/harness/foundation/schema.ts:6",
@@ -17519,7 +17523,7 @@
     {
       "name": "FoundationLedgerState",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/jsonl/storage.ts:19",
         "packages/agent/src/harness/session/memory.ts:4",
@@ -17567,7 +17571,7 @@
     {
       "name": "FoundationObjectResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/ledger-writer.ts:8",
@@ -17580,7 +17584,7 @@
     {
       "name": "FoundationObserver",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/inprocess-provider.ts:16",
         "packages/coding-agent/src/core/subagent/fork-provider.ts:19",
@@ -17606,7 +17610,7 @@
     {
       "name": "FoundationProviderCapability",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/model-call.ts:5",
         "packages/agent/src/harness/tool-gateway.ts:5",
@@ -17635,7 +17639,7 @@
     {
       "name": "FoundationProviderExecutionOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:26",
         "packages/coding-agent/src/core/connector/durable-connector.ts:27",
@@ -17656,7 +17660,7 @@
     {
       "name": "FoundationRecord",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/types.ts:5",
@@ -17693,7 +17697,7 @@
     {
       "name": "FoundationRecordQuery",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/ledger-writer.ts:9",
@@ -17706,7 +17710,7 @@
     {
       "name": "FoundationRetentionPolicy",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/durable/state.ts:15",
@@ -17769,7 +17773,7 @@
     {
       "name": "FoundationToolGatewayAuthority",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/tool-gateway.ts:3"
       ]
@@ -17927,7 +17931,7 @@
     {
       "name": "getFileSystemResultOrThrow",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/session-backends/sqlite-node/src/sqlite/search-backend.ts:2"
       ]
@@ -17943,7 +17947,7 @@
     {
       "name": "getOrThrow",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tools/bash.ts:3",
         "packages/agent/src/harness/tools/file-mutation-queue.ts:2",
@@ -17964,7 +17968,7 @@
     {
       "name": "Goal",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:18",
         "packages/coding-agent/src/core/orchestration/query.ts:17"
@@ -18054,7 +18058,7 @@
     {
       "name": "HarnessCompactionHookInput",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:15"
       ]
@@ -18062,7 +18066,7 @@
     {
       "name": "HarnessCompactionHookResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:16"
       ]
@@ -18078,7 +18082,7 @@
     {
       "name": "HarnessCompactionResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:17"
       ]
@@ -18102,7 +18106,7 @@
     {
       "name": "HarnessContextPreparationInput",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:19"
       ]
@@ -18142,7 +18146,7 @@
     {
       "name": "HarnessModelCallBoundaryInput",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:20"
       ]
@@ -18358,7 +18362,7 @@
     {
       "name": "HarnessTool",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/child-agent-entry.ts:24",
         "packages/coding-agent/src/server/create-harness.ts:23",
@@ -18428,7 +18432,7 @@
     {
       "name": "Idempotency",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tool-pipeline.ts:27",
         "packages/coding-agent/src/core/scheduler/host.ts:27"
@@ -18533,7 +18537,7 @@
     {
       "name": "InMemoryArtifactBlobStore",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:7",
         "packages/agent/test/harness/agent-harness-runtime.test.ts:13",
@@ -18583,7 +18587,7 @@
     {
       "name": "InMemorySessionRepo",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/test/harness/session/memory.test.ts:2",
         "scripts/browser-smoke-entry.ts:9"
@@ -18592,7 +18596,7 @@
     {
       "name": "InMemorySessionStorage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/child-agent-entry.ts:17",
         "packages/agent/test/harness/agent-harness-compatibility-state.test.ts:5",
@@ -18704,7 +18708,7 @@
     {
       "name": "invalidDurableRecord",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/durable/state.ts:24",
         "packages/coding-agent/src/core/session/run-lifecycle.ts:28"
@@ -18825,7 +18829,7 @@
     {
       "name": "isSideEffectRetryable",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tool-pipeline.ts:26",
         "packages/coding-agent/src/core/scheduler/host.ts:28",
@@ -18835,7 +18839,7 @@
     {
       "name": "isToolGatewayRoute",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/durable-connector.ts:11",
         "packages/coding-agent/src/core/connector/registry.ts:9",
@@ -18862,7 +18866,7 @@
     {
       "name": "isValidArtifactDigest",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/input.ts:7"
       ]
@@ -18870,7 +18874,7 @@
     {
       "name": "isValidArtifactId",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/input.ts:8"
       ]
@@ -18998,7 +19002,7 @@
     {
       "name": "LanePointer",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:8",
         "packages/agent/src/harness/session/state.ts:7",
@@ -19010,7 +19014,7 @@
     {
       "name": "LaneRecord",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:9",
         "packages/agent/src/harness/session/state.ts:8",
@@ -19031,7 +19035,7 @@
     {
       "name": "LayeredResultSettlement",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/agent-harness.ts:34",
         "packages/coding-agent/src/core/subagent/supervisor.ts:34",
@@ -19089,7 +19093,7 @@
     {
       "name": "LedgerWriterLease",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/ledger-writer.ts:11",
@@ -19255,7 +19259,7 @@
     {
       "name": "LogItem",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:10",
         "packages/agent/src/harness/session/state.ts:9",
@@ -19268,7 +19272,7 @@
     {
       "name": "LogOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:11",
         "packages/agent/src/harness/session/state.ts:10",
@@ -19340,7 +19344,7 @@
     {
       "name": "McpCapabilityBinding",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:32",
         "packages/coding-agent/src/core/session/facade.ts:21",
@@ -19359,7 +19363,7 @@
     {
       "name": "McpSelection",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role.ts:8",
         "packages/agent/src/harness/foundation/role-registry.ts:7",
@@ -19389,7 +19393,7 @@
     {
       "name": "McpToolRoute",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:33",
         "packages/coding-agent/src/core/session/facade.ts:22",
@@ -19448,7 +19452,7 @@
     {
       "name": "MemoryError",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/memory.ts:3",
         "packages/coding-agent/test/subagent/subagent-memory.test.ts:5"
@@ -19489,7 +19493,7 @@
     {
       "name": "MemoryProvenanceBoundary",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/context/ledger.ts:15",
         "packages/coding-agent/src/core/subagent/memory.ts:4"
@@ -19586,7 +19590,7 @@
     {
       "name": "MessageEntry",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/context.ts:3",
         "packages/agent/src/harness/agent-harness.ts:115",
@@ -19623,7 +19627,7 @@
     {
       "name": "ModelProfile",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:9",
         "packages/agent/src/harness/foundation/execution.ts:22",
@@ -19670,7 +19674,7 @@
     {
       "name": "ModelRoute",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:22",
         "packages/agent/src/harness/foundation/model-call.ts:6",
@@ -19683,7 +19687,7 @@
     {
       "name": "ModelRouteSchema",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry.ts:8",
         "packages/coding-agent/src/core/subagent/binding.ts:16"
@@ -19784,7 +19788,7 @@
     {
       "name": "newFoundationId",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry.ts:5",
         "packages/agent/src/harness/session/ledger-writer.ts:3",
@@ -19813,7 +19817,7 @@
     {
       "name": "NewRecord",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:12",
         "packages/agent/src/harness/session/jsonl/storage.ts:29",
@@ -19910,7 +19914,7 @@
     {
       "name": "ObserverCursor",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/contracts.ts:4",
         "packages/coding-agent/src/core/subagent/inprocess-provider.ts:41",
@@ -20000,7 +20004,7 @@
     {
       "name": "ok",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/compaction/compaction.ts:19",
         "packages/agent/src/harness/session/durable/codec.ts:2",
@@ -20038,7 +20042,7 @@
     {
       "name": "OperationStartedRecord",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:13",
         "packages/agent/src/harness/session/state.ts:11",
@@ -20164,7 +20168,7 @@
     {
       "name": "parseCommandArgs",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "scripts/browser-smoke-entry.ts:16"
       ]
@@ -20204,7 +20208,7 @@
     {
       "name": "parseExactShape",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/observer.ts:5",
         "packages/agent/src/harness/foundation/contracts.ts:5",
@@ -20249,7 +20253,7 @@
     {
       "name": "parseFoundationMutation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/jsonl/storage.ts:18",
         "packages/agent/src/harness/foundation/migrations/legacy-foundation-schema.ts:2",
@@ -20693,7 +20697,7 @@
     {
       "name": "persistTaskEnvelopeBeforeResolver",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/agent-harness.ts:35",
         "packages/coding-agent/src/core/subagent/composition.ts:9",
@@ -20704,7 +20708,7 @@
     {
       "name": "Plan",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:19",
         "packages/coding-agent/src/core/orchestration/query.ts:19"
@@ -20737,7 +20741,7 @@
     {
       "name": "PlanStatus",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:20"
       ]
@@ -20785,7 +20789,7 @@
     {
       "name": "PluginContract",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/plugins.ts:7",
         "packages/coding-agent/src/core/orchestration/query.ts:20"
@@ -20988,7 +20992,7 @@
     {
       "name": "PrepareNextTurnContext",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/agent.ts:28",
         "packages/coding-agent/src/core/session/facade.ts:26"
@@ -21061,7 +21065,7 @@
     {
       "name": "ProfileContract",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/profile.ts:20",
         "packages/coding-agent/src/core/orchestration/query.ts:21"
@@ -21151,7 +21155,7 @@
     {
       "name": "projectMcpSelectionToSelector",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/binding.ts:15",
         "packages/coding-agent/src/core/subagent/composition.ts:10",
@@ -21169,7 +21173,7 @@
     {
       "name": "projectTaskEnvelope",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/context-fork.ts:19",
         "packages/agent/test/harness/foundation-contracts.test.ts:63",
@@ -21421,7 +21425,7 @@
     {
       "name": "ProvisionedEntry",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:14",
         "packages/agent/src/harness/session/jsonl/storage.ts:31",
@@ -21434,7 +21438,7 @@
     {
       "name": "ProvisionedFoundationRecord",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/ledger-writer.ts:13",
@@ -21472,7 +21476,7 @@
     {
       "name": "PublicExecutionError",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/results.ts:3",
         "packages/agent/src/harness/foundation/providers.ts:4",
@@ -21485,7 +21489,7 @@
     {
       "name": "PublicExecutionErrorCategory",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/automation-run-projection.ts:11"
       ]
@@ -21526,7 +21530,7 @@
     {
       "name": "QueueMode",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/agent.ts:29",
         "packages/agent/src/agent.ts:36",
@@ -21553,7 +21557,7 @@
     {
       "name": "QuotaAttribution",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/executors.ts:36",
         "packages/coding-agent/src/core/subagent/inprocess-provider.ts:42",
@@ -21590,7 +21594,7 @@
     {
       "name": "QuotaProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/dispatch.ts:40",
         "packages/coding-agent/src/core/scheduler/executors.ts:37",
@@ -21603,7 +21607,7 @@
     {
       "name": "QuotaReservation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tool-pipeline.ts:30",
         "packages/coding-agent/src/core/scheduler/selection-reservations.ts:8",
@@ -21698,7 +21702,7 @@
     {
       "name": "RecordQuery",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:16",
         "packages/agent/src/harness/session/state.ts:12",
@@ -21813,7 +21817,7 @@
     {
       "name": "redactText",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/protocol.ts:2",
         "packages/agent/src/harness/tool-pipeline.ts:7",
@@ -21824,7 +21828,7 @@
     {
       "name": "ReleaseWriterLeaseOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/durable/state.ts:21",
@@ -21836,7 +21840,7 @@
     {
       "name": "RenewWriterLeaseOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/durable/state.ts:20",
@@ -21872,7 +21876,7 @@
     {
       "name": "resolveAgentBinding",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry.ts:8",
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:13",
@@ -21918,7 +21922,7 @@
     {
       "name": "resolveMcpSelection",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:14",
         "packages/coding-agent/src/core/connector/product-run.ts:14",
@@ -21963,7 +21967,7 @@
     {
       "name": "ResourceSelector",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/mcp-selection.ts:6",
         "packages/agent/src/harness/foundation/role.ts:5",
@@ -21984,7 +21988,7 @@
     {
       "name": "ResourceSelectorSchema",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/mcp-selection.ts:6",
         "packages/agent/src/harness/foundation/role.ts:5",
@@ -21997,7 +22001,7 @@
     {
       "name": "Result",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/event-catalog.ts:1",
         "packages/agent/src/harness/foundation/schema.ts:3",
@@ -22018,7 +22022,7 @@
     {
       "name": "ResultProvenance",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:21",
         "packages/coding-agent/src/core/subagent/result.ts:15",
@@ -22037,7 +22041,7 @@
     {
       "name": "ResultValidation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/fan-in.ts:20"
       ]
@@ -22045,7 +22049,7 @@
     {
       "name": "ResultValue",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/event-catalog.ts:1",
         "packages/agent/src/harness/foundation/schema.ts:3",
@@ -22082,7 +22086,7 @@
     {
       "name": "RevisionReference",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/task.ts:9",
         "packages/agent/src/harness/foundation/role.ts:5",
@@ -22095,7 +22099,7 @@
     {
       "name": "RevisionReferenceSchema",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role.ts:5",
         "packages/agent/src/harness/foundation/providers.ts:7",
@@ -22132,7 +22136,7 @@
     {
       "name": "ROLE_RESOLUTION_ORDER",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/composition.ts:12",
         "packages/agent/test/harness/foundation-contracts.test.ts:27",
@@ -22142,7 +22146,7 @@
     {
       "name": "RoleDefinition",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry.ts:8",
         "packages/coding-agent/src/core/orchestration/query.ts:23"
@@ -22191,7 +22195,7 @@
     {
       "name": "RoleRegistry",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/composition.ts:21",
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:37",
@@ -22502,7 +22506,7 @@
     {
       "name": "RoleRevision",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:9",
         "packages/agent/src/harness/foundation/execution.ts:22",
@@ -22574,7 +22578,7 @@
     {
       "name": "RunOutcome",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:38"
       ]
@@ -22582,7 +22586,7 @@
     {
       "name": "RunReceipt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:20",
         "packages/agent/src/harness/agent-harness.ts:56",
@@ -22740,7 +22744,7 @@
     {
       "name": "SandboxOperationProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:15",
         "packages/agent/src/harness/tool-gateway.ts:7",
@@ -22753,7 +22757,7 @@
     {
       "name": "SandboxOperationRequest",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:16",
         "packages/agent/src/harness/tool-gateway.ts:8",
@@ -22798,7 +22802,7 @@
     {
       "name": "SchedulerClaimEventPayload",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/deadlock.ts:23"
       ]
@@ -22806,7 +22810,7 @@
     {
       "name": "SchedulerDeadlockEventPayload",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/deadlock.ts:24"
       ]
@@ -22814,7 +22818,7 @@
     {
       "name": "SchedulerDispatchEventPayload",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/deadlock.ts:25"
       ]
@@ -22822,7 +22826,7 @@
     {
       "name": "SchedulerHandoffEventPayload",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/handoff.ts:23"
       ]
@@ -22846,7 +22850,7 @@
     {
       "name": "SchedulerQueueEventPayload",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/deadlock.ts:26"
       ]
@@ -22862,7 +22866,7 @@
     {
       "name": "SchedulerTaskExecutorProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/executors.ts:41",
         "packages/agent/test/harness/foundation-contracts.test.ts:91",
@@ -22873,7 +22877,7 @@
     {
       "name": "SchedulerWakeEventPayload",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/workflow.ts:18"
       ]
@@ -22891,7 +22895,7 @@
     {
       "name": "ScopedExecutionGateway",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/inprocess-provider.ts:18",
         "packages/agent/test/harness/executor-gateway-conformance.test.ts:4"
@@ -22932,7 +22936,7 @@
     {
       "name": "ScopedMemoryStore",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/memory.ts:7",
         "packages/coding-agent/src/core/subagent/inprocess-provider.ts:46",
@@ -22944,7 +22948,7 @@
     {
       "name": "ScopedModelGateway",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/gateway.ts:4",
         "packages/coding-agent/src/core/subagent/inprocess-provider.ts:47",
@@ -23018,7 +23022,7 @@
     {
       "name": "selectorsNarrow",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry.ts:9",
         "packages/agent/src/harness/profile.ts:14",
@@ -23194,7 +23198,7 @@
     {
       "name": "serializeExactShape",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/observer.ts:5",
         "packages/agent/src/harness/foundation/contracts.ts:5",
@@ -23663,7 +23667,7 @@
     {
       "name": "ServiceContract",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/query.ts:26"
       ]
@@ -23703,7 +23707,7 @@
     {
       "name": "Session",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/types.ts:4",
         "packages/agent/src/harness/session/ledger-writer.ts:16",
@@ -23744,7 +23748,7 @@
     {
       "name": "SessionCreateOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/jsonl/types.ts:2",
         "packages/agent/src/harness/session/memory.ts:32",
@@ -23763,7 +23767,7 @@
     {
       "name": "SessionError",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:22",
         "packages/agent/src/harness/session/durable/errors.ts:2",
@@ -23784,7 +23788,7 @@
     {
       "name": "SessionLedger",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry-store.ts:6",
         "packages/agent/src/harness/foundation/settlement.ts:32",
@@ -23832,7 +23836,7 @@
     {
       "name": "SessionLedgerWriter",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/session-ledger.ts:16",
         "packages/agent/src/harness/foundation/settlement.ts:35",
@@ -23845,7 +23849,7 @@
     {
       "name": "SessionLedgerWriterOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/artifacts.ts:8",
         "packages/agent/src/harness/memory/memory.ts:4",
@@ -23868,7 +23872,7 @@
     {
       "name": "SessionMetadata",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:17",
         "packages/agent/src/harness/session/jsonl/types.ts:2",
@@ -23889,7 +23893,7 @@
     {
       "name": "SessionRepo",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/jsonl/repo.ts:3",
         "packages/agent/src/harness/session/memory.ts:35",
@@ -23910,7 +23914,7 @@
     {
       "name": "SessionSearch",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/session-backends/sqlite-node/src/sqlite/search-backend.ts:1"
       ]
@@ -23918,7 +23922,7 @@
     {
       "name": "SessionSearchHit",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/session-backends/sqlite-node/src/sqlite/search-backend.ts:1"
       ]
@@ -23926,7 +23930,7 @@
     {
       "name": "SessionSearchOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/session-backends/sqlite-node/src/sqlite/search-backend.ts:1"
       ]
@@ -23942,7 +23946,7 @@
     {
       "name": "SessionStats",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:18",
         "packages/agent/src/harness/session/state.ts:14",
@@ -23964,7 +23968,7 @@
     {
       "name": "SessionStorage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:19",
         "packages/agent/src/harness/session/jsonl/storage.ts:35",
@@ -24003,7 +24007,7 @@
     {
       "name": "setDefaultStreamFn",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/sdk.ts:2",
         "packages/agent/test/agent-loop.test.ts:12",
@@ -24013,7 +24017,7 @@
     {
       "name": "SetRetentionPolicyOptions",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/session/session.ts:23",
         "packages/agent/src/harness/session/durable/state.ts:22",
@@ -24036,7 +24040,7 @@
     {
       "name": "SettleTaskResultInput",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:22",
         "packages/coding-agent/src/core/subagent/result.ts:17",
@@ -24054,7 +24058,7 @@
     {
       "name": "sha256HexValue",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/artifacts.ts:1",
         "packages/agent/src/harness/memory/memory.ts:1",
@@ -24143,7 +24147,7 @@
     {
       "name": "SideEffectState",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/results.ts:7",
         "packages/agent/src/harness/foundation/providers.ts:8",
@@ -24275,7 +24279,7 @@
     {
       "name": "Stage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:24",
         "packages/coding-agent/src/core/orchestration/query.ts:27"
@@ -24292,7 +24296,7 @@
     {
       "name": "StageStatus",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:25"
       ]
@@ -24325,7 +24329,7 @@
     {
       "name": "StepAttemptRecord",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/reducer.ts:10",
         "packages/agent/src/harness/agent-harness.ts:122",
@@ -24337,7 +24341,7 @@
     {
       "name": "StreamFn",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/stream-fn.ts:1",
         "packages/agent/src/agent-loop.ts:34",
@@ -24366,10 +24370,11 @@
     {
       "name": "streamProxy",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/test/proxy.test.ts:3",
-        "scripts/browser-smoke-entry.ts:17"
+        "scripts/browser-smoke-entry.ts:17",
+        "packages/agent/README.md:497"
       ]
     },
     {
@@ -24490,7 +24495,7 @@
     {
       "name": "TaskArtifactProjection",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/context-fork.ts:37",
         "packages/coding-agent/src/core/subagent/fork-protocol.ts:23"
@@ -24499,7 +24504,7 @@
     {
       "name": "TaskContextPackage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/context/ledger.ts:31",
         "packages/coding-agent/src/core/subagent/context-fork.ts:38"
@@ -24508,7 +24513,7 @@
     {
       "name": "TaskEnvelope",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role.ts:9",
         "packages/agent/src/harness/foundation/results.ts:6",
@@ -24529,7 +24534,7 @@
     {
       "name": "TaskEnvelopePublicProjection",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/context-fork.ts:39"
       ]
@@ -24537,7 +24542,7 @@
     {
       "name": "TaskEnvelopePublicProjectionSchema",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/context-fork.ts:22"
       ]
@@ -24570,7 +24575,7 @@
     {
       "name": "TaskExecutorAttemptContext",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:17",
         "packages/coding-agent/src/core/connector/durable-connector.ts:29",
@@ -24583,7 +24588,7 @@
     {
       "name": "TaskExecutorProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:18",
         "packages/agent/src/harness/foundation/settlement.ts:26",
@@ -24612,7 +24617,7 @@
     {
       "name": "TaskResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:23",
         "packages/agent/src/harness/agent-harness.ts:60",
@@ -24633,7 +24638,7 @@
     {
       "name": "TaskResultRef",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:26",
         "packages/agent/test/harness/goal-store.test.ts:3"
@@ -24874,7 +24879,7 @@
     {
       "name": "Todo",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:27",
         "packages/coding-agent/src/core/orchestration/query.ts:30"
@@ -24899,7 +24904,7 @@
     {
       "name": "TodoStatus",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:28"
       ]
@@ -24907,7 +24912,7 @@
     {
       "name": "toError",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/prompt-templates.ts:2",
         "packages/agent/src/harness/skills.ts:3",
@@ -25122,7 +25127,7 @@
     {
       "name": "ToolExecutionMode",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/agent.ts:32",
         "packages/coding-agent/src/core/extensions/index.ts:161",
@@ -25134,7 +25139,7 @@
     {
       "name": "ToolExecutionResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/gateway.ts:4",
         "packages/agent/src/harness/tool-gateway.ts:9",
@@ -25195,7 +25200,7 @@
     {
       "name": "ToolGateway",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/gateway.ts:4",
         "packages/agent/src/harness/tool-gateway.ts:10",
@@ -25240,7 +25245,7 @@
     {
       "name": "ToolGatewayProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/composition.ts:1",
         "packages/coding-agent/test/connector/external-connector-registry.test.ts:21",
@@ -25258,7 +25263,7 @@
     {
       "name": "ToolGatewayRequest",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/gateway.ts:4",
         "packages/agent/src/harness/tool-gateway.ts:11",
@@ -25287,7 +25292,7 @@
     {
       "name": "ToolGatewayRoute",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/vendor/types.ts:27",
         "packages/coding-agent/src/core/connector/durable-connector.ts:32",
@@ -25300,7 +25305,7 @@
     {
       "name": "ToolGatewayRouteCatalog",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:30"
       ]
@@ -25714,7 +25719,7 @@
     {
       "name": "truncateHead",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/tools/read.ts:10",
         "packages/agent/test/harness/truncate.test.ts:2",
@@ -25820,7 +25825,7 @@
     {
       "name": "validateAgentBinding",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/binding.ts:5",
         "packages/coding-agent/src/core/binding-handles.ts:11",
@@ -25833,7 +25838,7 @@
     {
       "name": "validateAgentInstance",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:22",
         "packages/agent/src/harness/foundation/settlement.ts:27",
@@ -25846,7 +25851,7 @@
     {
       "name": "validateAndVerifyToolReceipt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/agent-harness.ts:85",
         "packages/coding-agent/src/core/runtime/prompt-ingress.ts:10",
@@ -25872,7 +25877,7 @@
     {
       "name": "validateArtifactRef",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/agent-harness.ts:26",
         "packages/coding-agent/src/core/connector/input.ts:9",
@@ -25901,7 +25906,7 @@
     {
       "name": "validateAsk",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/ask-store.ts:6",
         "packages/agent/test/harness/foundation-contracts.test.ts:62"
@@ -25910,7 +25915,7 @@
     {
       "name": "validateAttempt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:23",
         "packages/agent/src/harness/foundation/settlement.ts:30",
@@ -25923,7 +25928,7 @@
     {
       "name": "validateAttemptReceipt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/conformance.ts:4",
         "packages/agent/src/harness/foundation/settlement.ts:13",
@@ -25936,7 +25941,7 @@
     {
       "name": "validateAttemptReceiptForProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:20",
         "packages/agent/src/harness/foundation/settlement.ts:9",
@@ -25949,7 +25954,7 @@
     {
       "name": "validateAttemptReceiptUsage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/vendor/types.ts:13",
         "packages/coding-agent/src/core/scheduler/executors.ts:45"
@@ -25958,7 +25963,7 @@
     {
       "name": "validateBindingEpoch",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:22",
         "packages/agent/src/harness/foundation/settlement.ts:27",
@@ -25971,7 +25976,7 @@
     {
       "name": "validateBudget",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/binding.ts:21",
         "packages/coding-agent/src/core/scheduler/executors.ts:46",
@@ -25982,7 +25987,7 @@
     {
       "name": "validateBudgetUsage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/fork-protocol.ts:14",
         "packages/coding-agent/src/core/scheduler/selection-reservations.ts:14",
@@ -26002,7 +26007,7 @@
     {
       "name": "validateChildMcpSelection",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/binding.ts:24",
         "packages/coding-agent/test/runtime/mcp-exact-selection.test.ts:14"
@@ -26019,7 +26024,7 @@
     {
       "name": "validateChildSpawnRequest",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:9",
         "packages/agent/src/harness/foundation/settlement.ts:26",
@@ -26040,7 +26045,7 @@
     {
       "name": "validateConnectorCapabilitySnapshot",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/conformance.ts:3",
         "packages/coding-agent/src/core/scheduler/executors.ts:48",
@@ -26050,7 +26055,7 @@
     {
       "name": "validateConnectorCapabilitySnapshotForProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/durable-connector.ts:14",
         "packages/coding-agent/src/core/connector/production.ts:5",
@@ -26077,7 +26082,7 @@
     {
       "name": "validateDispatch",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:23",
         "packages/agent/src/harness/foundation/settlement.ts:30",
@@ -26098,7 +26103,7 @@
     {
       "name": "validateDurableEvent",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/session/automation-run-projection.ts:4",
         "packages/coding-agent/src/core/session/execution-audit.ts:20",
@@ -26119,7 +26124,7 @@
     {
       "name": "validateEventPayloadForCategory",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/supervisor.ts:21",
         "packages/coding-agent/src/core/subagent/mailbox.ts:8",
@@ -26132,7 +26137,7 @@
     {
       "name": "validateExactShape",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/budget.ts:4",
         "packages/agent/src/harness/foundation/observer.ts:5",
@@ -26145,7 +26150,7 @@
     {
       "name": "validateExecutionCorrelation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/fork-protocol.ts:15",
         "packages/coding-agent/src/core/connector/operation.ts:11",
@@ -26173,7 +26178,7 @@
     {
       "name": "validateFingerprint",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/selection-reservations.ts:15",
         "packages/coding-agent/src/core/scheduler/executors.ts:49"
@@ -26190,7 +26195,7 @@
     {
       "name": "validateFoundationProviderCapability",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/worker/runtime.ts:3",
         "packages/coding-agent/src/core/policy/sandbox-host.ts:6",
@@ -26201,7 +26206,7 @@
     {
       "name": "validateFoundationToolResultEntry",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/reducer.ts:15",
         "packages/agent/src/harness/agent-harness.ts:86",
@@ -26219,7 +26224,7 @@
     {
       "name": "validateGoal",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:8",
         "packages/agent/test/harness/foundation-contracts.test.ts:58",
@@ -26237,7 +26242,7 @@
     {
       "name": "validateImmutableAgentBinding",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:6",
         "packages/agent/src/harness/foundation/settlement.ts:8",
@@ -26274,7 +26279,7 @@
     {
       "name": "validateMcpSelection",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/durable-connector.ts:17",
         "packages/coding-agent/src/core/connector/vendor/claude.ts:16"
@@ -26283,7 +26288,7 @@
     {
       "name": "validateMcpSelectionForBinding",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role.ts:8",
         "packages/coding-agent/src/core/subagent/binding.ts:25"
@@ -26356,7 +26361,7 @@
     {
       "name": "validatePlan",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:9",
         "packages/agent/test/harness/foundation-contracts.test.ts:59"
@@ -26469,7 +26474,7 @@
     {
       "name": "validateProviderJson",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:18"
       ]
@@ -26477,7 +26482,7 @@
     {
       "name": "validatePublicExecutionError",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/connector/vendor/types.ts:14"
       ]
@@ -26485,7 +26490,7 @@
     {
       "name": "validateQuotaAttribution",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/executors.ts:51",
         "packages/coding-agent/src/core/subagent/inprocess-provider.ts:24"
@@ -26502,7 +26507,7 @@
     {
       "name": "validateQuotaReservation",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/selection-reservations.ts:16",
         "packages/coding-agent/src/core/subagent/inprocess-provider.ts:25",
@@ -26562,7 +26567,7 @@
     {
       "name": "validateRoleRevision",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry-store.ts:26",
         "packages/agent/src/harness/foundation/settlement.ts:27",
@@ -26591,7 +26596,7 @@
     {
       "name": "validateRunReceipt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:15",
         "packages/coding-agent/src/core/session/automation-run-projection.ts:5",
@@ -26628,7 +26633,7 @@
     {
       "name": "validateSandboxOperationRequest",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:11",
         "packages/agent/src/harness/tool-gateway.ts:12",
@@ -26657,7 +26662,7 @@
     {
       "name": "validateSecretFreeModelProfile",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry-store.ts:27",
         "packages/agent/src/harness/foundation/settlement.ts:29",
@@ -26694,7 +26699,7 @@
     {
       "name": "validateSpawnAgentIntent",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:30",
         "packages/coding-agent/src/core/subagent/supervisor.ts:25"
@@ -26703,7 +26708,7 @@
     {
       "name": "validateStage",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:10",
         "packages/agent/test/harness/foundation-contracts.test.ts:60"
@@ -26712,7 +26717,7 @@
     {
       "name": "validateTaskEnvelope",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/role-registry-store.ts:29",
         "packages/agent/src/harness/foundation/settlement.ts:30",
@@ -26725,7 +26730,7 @@
     {
       "name": "validateTaskEnvelopePublicProjection",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/subagent/context-fork.ts:26",
         "packages/agent/test/harness/foundation-contracts.test.ts:64"
@@ -26734,7 +26739,7 @@
     {
       "name": "validateTaskResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/settlement.ts:16",
         "packages/coding-agent/src/core/subagent/result.ts:23",
@@ -26747,7 +26752,7 @@
     {
       "name": "validateTaskResultRef",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:11"
       ]
@@ -26771,7 +26776,7 @@
     {
       "name": "validateTodo",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/orchestration/goal-store.ts:12",
         "packages/agent/test/harness/foundation-contracts.test.ts:61"
@@ -26788,7 +26793,7 @@
     {
       "name": "validateToolExecutionResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/gateway.ts:4",
         "packages/agent/src/harness/tool-gateway.ts:13",
@@ -26809,7 +26814,7 @@
     {
       "name": "validateToolGatewayRequest",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/gateway.ts:4",
         "packages/agent/src/harness/tool-gateway.ts:14",
@@ -26858,7 +26863,7 @@
     {
       "name": "validateVersionedReference",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:21",
         "packages/agent/test/harness/foundation-contracts.test.ts:45"
@@ -26867,7 +26872,7 @@
     {
       "name": "validateWorkerReceipt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/conformance.ts:4",
         "packages/agent/src/harness/foundation/settlement.ts:14",
@@ -26880,7 +26885,7 @@
     {
       "name": "validateWorkerReceiptForProvider",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/execution.ts:20",
         "packages/agent/src/harness/foundation/settlement.ts:9",
@@ -26901,7 +26906,7 @@
     {
       "name": "ValidationResult",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/agent-harness.ts:61",
         "packages/coding-agent/src/core/scheduler/fan-in.ts:27",
@@ -26920,7 +26925,7 @@
     {
       "name": "VersionedReference",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/task.ts:9",
         "packages/agent/src/harness/foundation/role.ts:5",
@@ -26981,7 +26986,7 @@
     {
       "name": "WorkerReceipt",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:11",
         "packages/agent/src/harness/foundation/conformance.ts:4",
@@ -27002,7 +27007,7 @@
     {
       "name": "WorkerReceiptRef",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
         "packages/agent/src/harness/foundation/results.ts:5",
         "packages/coding-agent/src/core/runtime/prompt-ingress.ts:24",

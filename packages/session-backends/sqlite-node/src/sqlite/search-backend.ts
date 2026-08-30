@@ -1,5 +1,5 @@
-import type { SessionSearch, SessionSearchHit, SessionSearchOptions } from "../../../../agent/src/internal.ts";
-import { getFileSystemResultOrThrow } from "../../../../agent/src/internal.ts";
+import type { SessionSearch, SessionSearchHit, SessionSearchOptions } from "@aos-agent/agent-core";
+import { getFileSystemResultOrThrow } from "@aos-agent/agent-core";
 import { applyMigrations } from "./migrations.ts";
 import { sql } from "./sql.ts";
 import { decodeSessionMetadata, type SessionRow } from "./storage/sessions.ts";

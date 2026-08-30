@@ -14,7 +14,7 @@ import {
 	validateBudgetUsage,
 	validateFingerprint,
 	validateQuotaReservation,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import type { SchedulerProviderClass, SchedulerSelectionScore } from "./host.ts";
 
 const SCHEDULER_SELECTION_RESERVATIONS_OBJECT_TYPE = "scheduler_selection_reservations";

@@ -23,7 +23,7 @@ import {
 	type BudgetUsage,
 	type HarnessTool,
 	type ResultValue,
-} from "../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import { contentText, type Api, type Model, type Models } from "@aos-agent/ai";
 import { attachJsonlLineReader, createJsonlLineWriter } from "./modes/rpc/jsonl.ts";
 import {

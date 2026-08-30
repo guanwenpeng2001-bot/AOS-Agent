@@ -1,4 +1,4 @@
-import { canonicalFoundationJson, type AgentMessage, type Entry, type LaneRecord } from "../../../../agent/src/internal.ts";
+import { canonicalFoundationJson, type AgentMessage, type Entry, type LaneRecord } from "@aos-agent/agent-core";
 import type { Usage } from "@aos-agent/ai";
 import { decodeLegacyFoundationRecordV1 } from "../../../../agent/src/harness/foundation/migrations/legacy-foundation-schema.ts";
 import type { SessionEntry } from "../session/manager.ts";

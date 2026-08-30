@@ -21,7 +21,7 @@ import {
 	validateAttemptReceipt,
 	validateExactShape,
 	validateTaskResult,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import { type Static, Type } from "typebox";
 
 const MAX_SUMMARY_BYTES = 16_384;

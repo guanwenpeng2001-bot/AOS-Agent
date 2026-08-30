@@ -49,7 +49,7 @@ import {
 	validateFingerprint,
 	validateImmutableAgentBinding,
 	validateQuotaAttribution,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	parseSchedulerExecutorEntry,
 	parseSchedulerQueueEntry,

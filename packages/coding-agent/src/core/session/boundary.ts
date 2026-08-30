@@ -1,7 +1,7 @@
 /** Durable branch, checkpoint, and recovery boundaries for Session history. */
 
 import { randomUUID } from "node:crypto";
-import type { Entry, Session, SessionMetadata } from "../../../../agent/src/internal.ts";
+import type { Entry, Session, SessionMetadata } from "@aos-agent/agent-core";
 
 export const SESSION_BOUNDARY_SCHEMA_VERSION = 1 as const;
 export const SESSION_BOUNDARY_CUSTOM_TYPE = "session.boundary" as const;

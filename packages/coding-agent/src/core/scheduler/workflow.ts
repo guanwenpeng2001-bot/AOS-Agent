@@ -23,7 +23,7 @@ import {
 	type SessionLedgerWriter,
 	type SideEffectState,
 	type TaskEnvelope,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import type {
 	AgentStep,
 	Workflow,

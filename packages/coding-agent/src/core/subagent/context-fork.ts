@@ -38,7 +38,7 @@ import {
 	type TaskContextPackage,
 	type TaskEnvelopePublicProjection,
 	type TaskEnvelope,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import { CHILD_CONTEXT_FORK_SCOPES, type ChildContextForkScope } from "./lifecycle.ts";
 
 export const CHILD_CONTEXT_FORK_SCHEMA_VERSION = 1 as const;

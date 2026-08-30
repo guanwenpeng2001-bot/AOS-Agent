@@ -20,7 +20,7 @@ import {
 	type FoundationJsonValue,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	cloneCanonicalExternalConnectorMapping,
 	isCanonicalExternalConnectorMappingTimestamp,

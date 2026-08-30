@@ -5,7 +5,7 @@ import {
 	type ContextSnapshot,
 	type ResultValue,
 	type ChildSpawnRequest,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	forkChildContext,
 	type ChildContextForkResult,

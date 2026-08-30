@@ -28,7 +28,7 @@ import {
 	validateAttemptReceipt,
 	validateTaskEnvelope,
 	validateTaskResult,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	parseSchedulerJoinPlan,
 	type SchedulerJoinPlan,

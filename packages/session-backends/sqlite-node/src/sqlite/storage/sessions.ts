@@ -1,4 +1,4 @@
-import { assertJsonSerializable, SessionError } from "../../../../../agent/src/internal.ts";
+import { assertJsonSerializable, SessionError } from "@aos-agent/agent-core";
 import { sql } from "../sql.ts";
 import type { SqliteDatabase, SqliteSessionMetadata } from "../types.ts";
 

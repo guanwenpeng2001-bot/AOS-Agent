@@ -21,7 +21,7 @@ import {
 	type ResultValue,
 	type RevisionReference,
 	type TaskArtifactProjection,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	validateChildContextForkPlan,
 	type ChildContextForkPlan,

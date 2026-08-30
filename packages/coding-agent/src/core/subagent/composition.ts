@@ -32,7 +32,7 @@ import {
 	validateAgentInstance,
 	validateBindingEpoch,
 	validateDispatch,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	SubagentContextIngress,
 	renderSubagentNextTurnContext,

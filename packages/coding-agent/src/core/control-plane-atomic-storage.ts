@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { EXTERNAL_ERROR_MESSAGES, FoundationError, type ExternalErrorCode } from "../../../agent/src/internal.ts";
+import { EXTERNAL_ERROR_MESSAGES, FoundationError, type ExternalErrorCode } from "@aos-agent/agent-core";
 import lockfile from "proper-lockfile";
 
 export type ControlPlaneStorageErrorCode = Extract<

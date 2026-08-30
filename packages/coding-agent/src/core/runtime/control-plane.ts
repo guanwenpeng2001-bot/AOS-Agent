@@ -19,7 +19,7 @@ import {
 	type TaskEnvelope,
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	CapabilityError,
 	CapabilityNameConflictError,

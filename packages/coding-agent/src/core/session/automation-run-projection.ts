@@ -12,7 +12,7 @@ import {
 	type RunReceipt,
 	type SideEffectState,
 	type TaskResult,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 
 export type AutomationRunStatus = "completed" | "failed" | "cancelled";
 

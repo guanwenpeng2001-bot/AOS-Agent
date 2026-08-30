@@ -1,7 +1,7 @@
 /** Host-private, process-bound supervision for the current External Connector path. */
 
 import { Buffer } from "node:buffer";
-import { EXTERNAL_ERROR_MESSAGES, FoundationError } from "../../../../agent/src/internal.ts";
+import { EXTERNAL_ERROR_MESSAGES, FoundationError } from "@aos-agent/agent-core";
 import { LockedAtomicFileStorage } from "../control-plane-atomic-storage.ts";
 import { isExternalConnectorMappingIdentifier } from "./session-mapping.ts";
 import { SYSTEM_RUNTIME_CLOCK, type RuntimeClock, type RuntimeTimerHandle } from "../runtime/clock.ts";

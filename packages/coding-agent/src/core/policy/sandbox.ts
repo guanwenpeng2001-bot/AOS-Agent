@@ -1,5 +1,5 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
-import type { FoundationJsonValue } from "../../../../agent/src/internal.ts";
+import type { FoundationJsonValue } from "@aos-agent/agent-core";
 import {
 	type PolicyBinding,
 	PolicyError,

@@ -1,4 +1,4 @@
-import { type Entry, SessionError } from "../../../../../agent/src/internal.ts";
+import { type Entry, SessionError } from "@aos-agent/agent-core";
 import { joinSqlFragments, sql } from "../sql.ts";
 import type { SqliteDatabase } from "../types.ts";
 

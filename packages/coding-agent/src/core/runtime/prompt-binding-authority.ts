@@ -10,7 +10,7 @@ import {
 	type RoleRevision,
 	type Session,
 	type ThinkingLevel,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import type { Api, Model } from "@aos-agent/ai";
 import {
 	PROMPT_TASK_DEPENDENCY_NAMES,

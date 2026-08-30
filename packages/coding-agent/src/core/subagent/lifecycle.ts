@@ -11,7 +11,7 @@ import {
 	FoundationError,
 	Result,
 	type ResultValue,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 
 export const SUBAGENT_SCHEMA_VERSION = 1 as const;
 

@@ -2,7 +2,7 @@ import {
 	isToolGatewayRoute,
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import { PolicyError, type PolicyOperationRequest } from "../policy/execution.ts";
 import {
 	assertPathInsideWorkspace,

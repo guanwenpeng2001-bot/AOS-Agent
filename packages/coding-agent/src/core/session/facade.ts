@@ -29,7 +29,7 @@ import {
 	type ThinkingLevel,
 	type ToolGatewayRouteCatalog,
 	createCompactionSummaryMessage,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	createAssistantMessageEventStream,
 	isContextOverflow,

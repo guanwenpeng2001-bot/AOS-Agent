@@ -15,7 +15,7 @@ import {
 	validateArtifactRef,
 	validateRunReceipt,
 	validateTaskResult,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import { AskStore } from "../orchestration/ask-store.ts";
 import {
 	applySchedulerMessageAck,

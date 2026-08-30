@@ -14,7 +14,7 @@ import {
 	type Session,
 	type SessionLedgerWriter,
 	type SessionLedgerWriterOptions,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	asFoundationStoreError,
 	cloneStoreValue,

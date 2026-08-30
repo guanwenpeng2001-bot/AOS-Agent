@@ -7,7 +7,7 @@ import {
 	type Result,
 	type SandboxOperationProvider,
 	type WorkerReceipt,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	OperationWorkerProtocolSession,
 	formatWorkerStderrDiagnostic,

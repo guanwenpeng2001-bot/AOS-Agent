@@ -23,7 +23,7 @@ import {
 	type ToolGateway,
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	createExternalCapabilityTruthSnapshot,
 	type ExternalCapabilityBehavior,

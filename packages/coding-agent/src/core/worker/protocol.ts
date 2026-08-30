@@ -21,7 +21,7 @@ import {
 	type SandboxOperationRequest,
 	type SideEffectState,
 	type WorkerReceipt,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	WORKER_SCHEMA_VERSION,
 	validateWorkerBinding,

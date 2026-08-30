@@ -7,7 +7,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Session, type AgentMessage, type ThinkingLevel } from "../../../../agent/src/internal.ts";
+import { Session, type AgentMessage, type ThinkingLevel } from "@aos-agent/agent-core";
 import type { AuthEvent, AuthPrompt } from "@aos-agent/ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@aos-agent/ai/compat";
 import type {

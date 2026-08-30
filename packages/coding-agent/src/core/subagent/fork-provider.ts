@@ -42,7 +42,7 @@ import {
 	type SessionLedger,
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import { attachJsonlLineReader } from "../../modes/rpc/jsonl.ts";
 import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
 import { FORK_PROVIDER } from "./registry.ts";

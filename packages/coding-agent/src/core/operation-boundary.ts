@@ -1,6 +1,6 @@
 /** Shared cancellation/deadline boundary for model, tool, MCP, and sandbox calls. */
 
-import { type AgentOperationSignal, createAgentOperationSignal } from "../../../agent/src/internal.ts";
+import { type AgentOperationSignal, createAgentOperationSignal } from "@aos-agent/agent-core";
 
 export interface OperationBoundaryOptions {
 	signals?: ReadonlyArray<AbortSignal | undefined>;

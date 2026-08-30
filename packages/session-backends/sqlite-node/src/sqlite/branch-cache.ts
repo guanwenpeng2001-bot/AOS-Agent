@@ -1,4 +1,4 @@
-import { SessionError } from "../../../../agent/src/internal.ts";
+import { SessionError } from "@aos-agent/agent-core";
 import { uuidv7 } from "@aos-agent/ai";
 import { sql } from "./sql.ts";
 import {

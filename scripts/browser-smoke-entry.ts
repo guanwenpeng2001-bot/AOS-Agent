@@ -17,7 +17,7 @@ import {
 	streamProxy,
 	toError,
 	truncateHead,
-} from "../packages/agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import { decodeCbor, encodeCbor, PROTOCOL_VERSION } from "@aos-agent/protocol";
 
 // Keep this entry browser-safe. It is bundled by scripts/check-browser-smoke.mjs

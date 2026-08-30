@@ -3,7 +3,7 @@ import { isAbsolute } from "node:path";
 import {
 	FoundationError,
 	type ConnectorCapabilitySnapshot,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import type { ProductionExternalConnectorProcessWithProvenance } from "./process-controller.ts";
 
 export const EXTERNAL_CONNECTOR_TARGET_CONFIG_SCHEMA_VERSION = 1 as const;

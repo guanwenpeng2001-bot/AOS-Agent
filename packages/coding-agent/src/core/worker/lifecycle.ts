@@ -13,7 +13,7 @@ import {
 	Result,
 	type ResultValue,
 	type SideEffectState,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 
 export const WORKER_SCHEMA_VERSION = 1 as const;
 

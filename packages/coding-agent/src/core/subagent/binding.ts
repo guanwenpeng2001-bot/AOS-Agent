@@ -39,7 +39,7 @@ import {
 	type SessionLedger,
 	type TaskEnvelope,
 	type VersionedReference,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 import {
 	POLICY_REQUEST_PREFIX,
 	authorizePolicyOperation,

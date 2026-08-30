@@ -8,7 +8,7 @@ import {
 	type FoundationRecord,
 	type Session,
 	type SessionLedgerWriterOptions,
-} from "../../../../agent/src/internal.ts";
+} from "@aos-agent/agent-core";
 
 /** Shared options for the small Session-backed Foundation stores. */
 export interface FoundationDurableStoreOptions extends SessionLedgerWriterOptions {

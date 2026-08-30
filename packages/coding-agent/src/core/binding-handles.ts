@@ -8,7 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { validateAgentBinding, type AgentBinding, type RevisionReference } from "../../../agent/src/internal.ts";
+import { validateAgentBinding, type AgentBinding, type RevisionReference } from "@aos-agent/agent-core";
 
 export const BINDING_HANDLE_SCHEMA_VERSION = 1 as const;
 export const BINDING_ASSOCIATION_SCHEMA_VERSION = 1 as const;
