@@ -1,4 +1,5 @@
 import {
+	type ArtifactDigest,
 	type Attempt,
 	type ConnectorCapabilitySnapshot,
 	createConnectorCapabilitySnapshot,
@@ -7,13 +8,20 @@ import {
 	type ToolExecutionResult,
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
+import type { CanonicalExternalAgentArtifactReference } from "../../src/core/connector/input.ts";
+import {
+	translateExternalModelProjection,
+	type ExternalResolvedModelProjection,
+} from "../../src/core/connector/model-projection.ts";
 import type { CanonicalExternalConnectorMapping } from "../../src/core/connector/session-mapping.ts";
 import {
 	PRIVATE_CODEX_APP_SERVER_IDENTITY,
 	PrivateCodexAppServerDriver,
 	type PrivateCodexAppServerDriverOptions,
 	type PrivateCodexAppServerTransport,
+	type PrivateCodexAppServerTransportRequest,
 } from "../../src/core/connector/vendor/codex.ts";
+import type { SafeLeaseProjection } from "../../src/core/worker/protocol.ts";
 import type {
 	ExternalConnectorDriverEvent,
 	ExternalConnectorDriverSpawnRequest,
@@ -63,6 +71,77 @@ const capability: ConnectorCapabilitySnapshot = createConnectorCapabilitySnapsho
 	images: false,
 });
 
+const artifactCapability: ConnectorCapabilitySnapshot = createConnectorCapabilitySnapshot({
+	schemaVersion: 1,
+	providerId,
+	revision: 2,
+	protocol: { name: "codex-app-server", version: PRIVATE_CODEX_APP_SERVER_IDENTITY.cliVersion },
+	modelAccess: "agent_owned",
+	resume: true,
+	toolGateway: true,
+	artifacts: true,
+	images: true,
+});
+
+const gatewayCapability: ConnectorCapabilitySnapshot = createConnectorCapabilitySnapshot({
+	schemaVersion: 1,
+	providerId,
+	revision: 3,
+	protocol: { name: "codex-app-server", version: PRIVATE_CODEX_APP_SERVER_IDENTITY.cliVersion },
+	modelAccess: "aos_gateway",
+	resume: true,
+	toolGateway: true,
+	artifacts: true,
+	images: true,
+});
+
+const modelProjection: ExternalResolvedModelProjection = {
+	schemaVersion: 1,
+	provider: "openai",
+	model: "gpt-codex-fixture",
+	effort: "high",
+	serviceTier: "priority",
+	fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+	bindingDigest: { algorithm: "sha256", value: "a".repeat(64) },
+};
+
+const safeLeaseProjection: SafeLeaseProjection = {
+	schemaVersion: 1,
+	leaseId: "lease-codex-1",
+	grantId: "grant-codex-1",
+	bindingId: attempt.bindingId,
+	scopeDigest: `sha256:${"b".repeat(64)}`,
+	expiresAt: "2026-08-29T00:00:00.000Z",
+	clientRequestId: "credential-codex-1",
+};
+
+function digest(id: string): ArtifactDigest {
+	return `sha256:${id}`;
+}
+
+function workspaceArtifact(
+	kind: "file" | "image",
+	mediaType: string,
+	relativePath: string,
+	id: string,
+): CanonicalExternalAgentArtifactReference {
+	return {
+		schemaVersion: 1,
+		artifactId: id,
+		kind,
+		digest: digest(id),
+		mediaType,
+		sizeBytes: 3,
+		provenance: { source: "workspace", producer: "fixture", trust: "trusted" },
+		readHandle: {
+			kind: "workspace_relative",
+			workspaceId: "workspace-main",
+			relativePath,
+			ref: `workspace-${id}`,
+		},
+	};
+}
+
 function spawnRequest(
 	overrides: Partial<ExternalConnectorDriverSpawnRequest> = {},
 ): ExternalConnectorDriverSpawnRequest {
@@ -77,6 +156,21 @@ function spawnRequest(
 		operationNonce: "nonce-codex-1",
 		...overrides,
 	};
+}
+
+function gatewaySpawnRequest(
+	driver: PrivateCodexAppServerDriver,
+	overrides: Partial<ExternalConnectorDriverSpawnRequest> = {},
+): ExternalConnectorDriverSpawnRequest {
+	const translated = translateExternalModelProjection(modelProjection, driver.modelSupportMatrix);
+	if (!translated.ok) throw new Error("Codex fixture model projection did not translate");
+	return spawnRequest({
+		capability: gatewayCapability,
+		modelProjection,
+		modelTranslation: translated.translation,
+		credential: safeLeaseProjection,
+		...overrides,
+	});
 }
 
 function mapping(): CanonicalExternalConnectorMapping {
@@ -376,6 +470,132 @@ describe("private Codex app-server connector", () => {
 			"turn/start",
 		]);
 		expect(server.messages.every((message) => !Object.hasOwn(message, "jsonrpc"))).toBe(true);
+		await driver.dispose();
+		await server.dispose();
+	});
+
+	it("projects workspace file and image artifacts into native Codex input", async () => {
+		const server = new FakeCodexServer();
+		const driver = new PrivateCodexAppServerDriver(driverOptions(server));
+		const file = workspaceArtifact("file", "application/pdf", "docs/evidence.pdf", "1".repeat(64));
+		const image = workspaceArtifact("image", "image/png", "images/trace.png", "2".repeat(64));
+		const handle = await driver.spawn(
+			spawnRequest({
+				capability: artifactCapability,
+				input: { schemaVersion: 1, text: "Inspect both artifacts", artifacts: [file, image] },
+			}),
+		);
+
+		expect(artifactCapability).toMatchObject({ artifacts: true, images: true });
+		const turnStart = server.messages.find((message) => message.method === "turn/start");
+		expect(turnStart?.params).toMatchObject({
+			input: [
+				{ type: "text", text: "Inspect both artifacts", text_elements: [] },
+				{ type: "mention", name: "evidence.pdf", path: "docs/evidence.pdf" },
+				{ type: "localImage", path: "images/trace.png" },
+			],
+		});
+		await expect(driver.read(handle)).resolves.toMatchObject({ status: "succeeded" });
+		await driver.dispose();
+		await server.dispose();
+	});
+
+	it.each([
+		[
+			"unsupported media",
+			workspaceArtifact("file", "audio/wav", "audio/fixture.wav", "3".repeat(64)),
+		],
+		[
+			"opaque artifact-store source",
+			{
+				...workspaceArtifact("image", "image/png", "images/opaque.png", "4".repeat(64)),
+				provenance: { source: "artifact_store", producer: "fixture", trust: "trusted" },
+				readHandle: { kind: "artifact_store", ref: "4".repeat(64) },
+			} satisfies CanonicalExternalAgentArtifactReference,
+		],
+	] as const)("rejects %s with the stable protocol error", async (_name, artifact) => {
+		const server = new FakeCodexServer();
+		const driver = new PrivateCodexAppServerDriver(driverOptions(server));
+		await expect(
+			driver.spawn(
+				spawnRequest({
+					capability: artifactCapability,
+					input: { schemaVersion: 1, text: "Reject this artifact", artifacts: [artifact] },
+				}),
+			),
+		).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+		expect(server.messages).toEqual([]);
+		await driver.dispose();
+		await server.dispose();
+	});
+
+	it("consumes an exact aos_gateway translation and material-free lease", async () => {
+		const server = new FakeCodexServer({
+			threadStartResponse: {
+				...threadResponse(),
+				thread: { ...thread(), modelProvider: modelProjection.provider },
+				model: modelProjection.model,
+				modelProvider: modelProjection.provider,
+				serviceTier: modelProjection.serviceTier,
+			},
+		});
+		const transportRequests: PrivateCodexAppServerTransportRequest[] = [];
+		const driver = new PrivateCodexAppServerDriver({
+			...driverOptions(server),
+			transportFactory: async (request) => {
+				transportRequests.push(request);
+				return server.transport();
+			},
+		});
+		const handle = await driver.spawn(gatewaySpawnRequest(driver));
+
+		expect(gatewayCapability.modelAccess).toBe("aos_gateway");
+		expect(transportRequests).toEqual([
+			{
+				mode: "start",
+				supervisorRef: "supervisor-codex-1",
+				operationNonce: "nonce-codex-1",
+				credential: safeLeaseProjection,
+				signal: undefined,
+			},
+		]);
+		expect(server.messages.find((message) => message.method === "thread/start")?.params).toMatchObject({
+			modelProvider: modelProjection.provider,
+			model: modelProjection.model,
+			serviceTier: modelProjection.serviceTier,
+			allowProviderModelFallback: false,
+		});
+		expect(server.messages.find((message) => message.method === "turn/start")?.params).toMatchObject({
+			model: modelProjection.model,
+			effort: modelProjection.effort,
+			serviceTier: modelProjection.serviceTier,
+		});
+		const wire = JSON.stringify(server.messages);
+		expect(wire).not.toContain(safeLeaseProjection.leaseId);
+		expect(wire).not.toContain(safeLeaseProjection.grantId);
+		await expect(driver.read(handle)).resolves.toMatchObject({ status: "succeeded" });
+		await driver.dispose();
+		await server.dispose();
+	});
+
+	it("fails closed on aos_gateway translation drift before transport activation", async () => {
+		const server = new FakeCodexServer();
+		const driver = new PrivateCodexAppServerDriver(driverOptions(server));
+		const request = gatewaySpawnRequest(driver);
+		const translation = request.modelTranslation!;
+		await expect(
+			driver.spawn({
+				...request,
+				modelTranslation: {
+					...translation,
+					fields: {
+						...translation.fields,
+						model: { ...translation.fields.model, value: "drifted-model" },
+					},
+				},
+			}),
+		).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+		expect(server.messages).toEqual([]);
 		await driver.dispose();
 		await server.dispose();
 	});
