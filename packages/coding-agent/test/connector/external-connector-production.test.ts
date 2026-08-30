@@ -12,6 +12,7 @@ import {
 	type ExternalAgentConnector,
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import { DurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import type {
 	ExternalConnectorDurableStore,
@@ -146,7 +147,7 @@ describe("production External Connector composition", () => {
 			descriptor: {
 				schemaVersion: 1,
 				providerId: capability.providerId,
-				providerClass: "external_connector",
+				providerClass: PROVIDER_CLASS.externalConnector,
 				revision: capability.revision,
 				capabilitySnapshotDigest: capability.digest,
 			},
@@ -167,7 +168,7 @@ describe("production External Connector composition", () => {
 			{
 				schemaVersion: 1,
 				providerId: capability.providerId,
-				providerClass: "external_connector",
+				providerClass: PROVIDER_CLASS.externalConnector,
 				revision: capability.revision,
 				capabilitySnapshotDigest: capability.digest,
 			},
@@ -339,7 +340,7 @@ describe("production External Connector composition", () => {
 				descriptor: {
 					schemaVersion: 1,
 					providerId: capability.providerId,
-					providerClass: "external_connector",
+					providerClass: PROVIDER_CLASS.externalConnector,
 					revision: capability.revision,
 					capabilitySnapshotDigest: capability.digest,
 				},
@@ -544,7 +545,7 @@ describe("production External Connector composition", () => {
 					descriptor: {
 						schemaVersion: 1,
 						providerId: capability.providerId,
-						providerClass: "external_connector",
+						providerClass: PROVIDER_CLASS.externalConnector,
 						revision: capability.revision,
 						capabilitySnapshotDigest: capability.digest,
 					},

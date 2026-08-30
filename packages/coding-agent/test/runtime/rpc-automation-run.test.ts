@@ -19,6 +19,7 @@ import {
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
 } from "../../../agent/src/internal.ts";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
@@ -784,7 +785,7 @@ async function installRpcExternalConnector(
 	const descriptor = {
 		schemaVersion: 1 as const,
 		providerId,
-		providerClass: "external_connector" as const,
+	providerClass: PROVIDER_CLASS.externalConnector,
 		revision: snapshot.revision,
 		capabilitySnapshotDigest: snapshot.digest,
 	};

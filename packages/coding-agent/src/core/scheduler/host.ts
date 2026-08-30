@@ -32,6 +32,7 @@ import {
 	type TaskEnvelope,
 	type TaskResult,
 } from "@aos-agent/agent-core";
+import { PROVIDER_CLASS } from "../connector/provider-class.ts";
 import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "../runtime/clock.ts";
 import type {
 	SchedulerDispatchExecutorRequirements,
@@ -97,7 +98,7 @@ export type SchedulerWaitEdgeKind = (typeof SCHEDULER_WAIT_EDGE_KINDS)[number];
 export const SCHEDULER_EXECUTOR_COST_CLASSES = ["local", "remote_paid"] as const;
 export type SchedulerExecutorCostClass = (typeof SCHEDULER_EXECUTOR_COST_CLASSES)[number];
 
-export const SCHEDULER_PROVIDER_CLASSES = ["scheduler", "task_executor", "agent", "external_connector"] as const;
+export const SCHEDULER_PROVIDER_CLASSES = ["scheduler", "task_executor", "agent", PROVIDER_CLASS.externalConnector] as const;
 export type SchedulerProviderClass = (typeof SCHEDULER_PROVIDER_CLASSES)[number];
 
 export const SCHEDULER_ENGINE_PHASES = [
@@ -874,7 +875,7 @@ function isDescriptor(value: unknown): value is ExecutionProviderDescriptor {
 			"scheduler",
 			"task_executor",
 			"agent",
-			"external_connector",
+			PROVIDER_CLASS.externalConnector,
 		] as const)
 	);
 }

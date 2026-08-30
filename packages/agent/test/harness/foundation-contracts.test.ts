@@ -6,6 +6,7 @@ import {
 	DURABLE_LEDGER_ERROR_CODES,
 	SUBAGENT_ERROR_CODES,
 	FoundationError,
+	PROVIDER_CLASS,
 	foundationErrorCategory,
 	FOUNDATION_ERROR_CODES,
 	FoundationObserver,
@@ -527,7 +528,7 @@ function fakeBinding(): AgentBinding {
 	return result.value;
 }
 
-function fakeAgentAttempt(providerId: string, taskId: string, bindingId: string, agentInstanceId?: string, providerClass: CreateAttemptInput["providerClass"] = agentInstanceId === undefined ? "external_connector" : "agent"): { attempt: Attempt; agentInstance?: AgentInstance; epoch: BindingEpoch } {
+function fakeAgentAttempt(providerId: string, taskId: string, bindingId: string, agentInstanceId?: string, providerClass: CreateAttemptInput["providerClass"] = agentInstanceId === undefined ? PROVIDER_CLASS.externalConnector : "agent"): { attempt: Attempt; agentInstance?: AgentInstance; epoch: BindingEpoch } {
 	const role = roleRevision();
 	const instanceResult = providerClass === "agent" && agentInstanceId !== undefined ? createAgentInstance({ agentInstanceId, providerId, providerDeclaredAgent: true, roleRevision: role, taskId, now: () => fakeNow }) : undefined;
 	if (instanceResult !== undefined && !instanceResult.ok) throw instanceResult.error;

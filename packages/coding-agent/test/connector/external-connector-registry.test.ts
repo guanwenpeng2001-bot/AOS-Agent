@@ -22,6 +22,7 @@ import {
 	type ToolGatewayRoute,
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";
 import {
@@ -86,7 +87,7 @@ function descriptor(snapshot: ConnectorCapabilitySnapshot) {
 	return {
 		schemaVersion: 1 as const,
 		providerId: snapshot.providerId,
-		providerClass: "external_connector" as const,
+	providerClass: PROVIDER_CLASS.externalConnector,
 		revision: snapshot.revision,
 		capabilitySnapshotDigest: snapshot.digest,
 	};
@@ -134,7 +135,7 @@ function activationSource(
 class ArbitraryConnector implements ExternalAgentConnector {
 	readonly schemaVersion = 1 as const;
 	readonly providerId: string;
-	readonly providerClass = "external_connector" as const;
+	readonly providerClass = PROVIDER_CLASS.externalConnector;
 	readonly snapshot: ConnectorCapabilitySnapshot;
 	disposeCalls = 0;
 	disposeHangs = false;

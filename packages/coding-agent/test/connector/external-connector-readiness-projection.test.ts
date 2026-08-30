@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createConnectorCapabilitySnapshot, Result } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import type { ExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";
 import { createExternalConnectorRegistry } from "../../src/core/connector/registry.ts";
@@ -108,7 +109,7 @@ describe("RPC initialize external connector readiness projection", () => {
 			const expectedDescriptor = {
 				schemaVersion: 1 as const,
 				providerId,
-				providerClass: "external_connector" as const,
+				providerClass: PROVIDER_CLASS.externalConnector,
 				revision: snapshot.revision,
 				capabilitySnapshotDigest: snapshot.digest,
 			};

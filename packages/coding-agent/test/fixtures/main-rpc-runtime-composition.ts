@@ -23,6 +23,7 @@ import {
 	type TaskEnvelope,
 	type ToolGateway,
 } from "../../../agent/src/internal.ts";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import {
 	createAgentRuntimeCompositionFactory,
 	createExternalConnectorRegistry,
@@ -459,7 +460,7 @@ function createConnectorRegistry(context: AgentRuntimeCompositionContext, toolGa
 		descriptor: {
 			schemaVersion: 1,
 			providerId: snapshot.providerId,
-			providerClass: "external_connector",
+		providerClass: PROVIDER_CLASS.externalConnector,
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},

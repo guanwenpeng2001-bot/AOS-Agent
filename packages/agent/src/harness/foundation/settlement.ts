@@ -23,7 +23,7 @@ import {
 	type TaskResult,
 	type WorkerReceipt,
 } from "./results.ts";
-import { validateChildSpawnRequest, validateChildSpawnResult, type ChildAgentProvider, type ChildSpawnRequest, type ChildSpawnResult, type ExternalAgentConnector, type FoundationProviderExecutionOptions, type TaskExecutorProvider } from "./providers.ts";
+import { PROVIDER_CLASS, validateChildSpawnRequest, validateChildSpawnResult, type ChildAgentProvider, type ChildSpawnRequest, type ChildSpawnResult, type ExternalAgentConnector, type FoundationProviderExecutionOptions, type TaskExecutorProvider } from "./providers.ts";
 import { validateAgentInstance, validateBindingEpoch, validateRoleRevision, type AgentBinding, type AgentInstance, type BindingEpoch, type ModelProfile, type ModelRoute, type RoleRevision } from "./role.ts";
 import { validateRoleRegistryRecord } from "./role-registry.ts";
 import { validateSecretFreeModelProfile } from "./model-profile.ts";
@@ -498,7 +498,7 @@ export class LayeredResultSettlement {
 		try {
 			let resumed: ResultValue<AttemptReceipt, FoundationError>;
 			const options = { correlation: input.correlation, ...(input.signal === undefined ? {} : { signal: input.signal }) };
-			if (input.provider.providerClass === "external_connector") resumed = await (input.provider as ExternalAgentConnector).resumeAttempt(started.value.attempt, options);
+			if (input.provider.providerClass === PROVIDER_CLASS.externalConnector) resumed = await (input.provider as ExternalAgentConnector).resumeAttempt(started.value.attempt, options);
 			else {
 				const provider = input.provider as TaskExecutorProviderResumeSurface;
 				if (provider.resumeAttempt !== undefined) resumed = await provider.resumeAttempt(started.value.attempt.attemptId, options);

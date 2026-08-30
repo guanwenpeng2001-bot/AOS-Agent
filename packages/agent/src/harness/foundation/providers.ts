@@ -13,6 +13,7 @@ import type { FoundationEventEnvelope, FoundationJsonValue } from "./event-catal
 import { FingerprintSchema, FoundationJsonValueSchema, parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 
 export type FoundationProviderClass = "operation_worker" | "scheduler" | "task_executor" | "agent" | "external_connector" | "gateway" | "store" | "quota" | "transport" | "observer";
+export const PROVIDER_CLASS = Object.freeze({ externalConnector: "external_connector" as const });
 export const PROVIDER_KINDS = ["model", "tool", "sandbox", "operation", "external"] as const;
 export interface ExecutionProviderDescriptor { schemaVersion: 1; providerId: string; providerClass: "operation_worker" | "scheduler" | "task_executor" | "agent" | "external_connector"; }
 export interface FoundationProviderCapability { schemaVersion: 1; id: string; version: number; }

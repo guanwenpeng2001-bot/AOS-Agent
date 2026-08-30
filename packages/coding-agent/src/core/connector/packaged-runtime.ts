@@ -8,6 +8,7 @@ import {
 	Result,
 	SessionLedger,
 } from "@aos-agent/agent-core";
+import { PROVIDER_CLASS } from "./provider-class.ts";
 import type {
 	AgentRuntimeCompositionContext,
 	ExternalConnectorRegistryFactory,
@@ -260,7 +261,7 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 			descriptor: {
 				schemaVersion: 1,
 				providerId: PACKAGED_PROVIDER_ID,
-				providerClass: "external_connector",
+				providerClass: PROVIDER_CLASS.externalConnector,
 				revision: capability.revision,
 				capabilitySnapshotDigest: capability.digest,
 			},

@@ -31,6 +31,7 @@ import {
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
+import { PROVIDER_CLASS } from "./provider-class.ts";
 import {
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 	attachExternalConnectorCredentialLease,
@@ -512,7 +513,7 @@ function supervisedFailureEvidence(
  */
 export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly schemaVersion = 1 as const;
-	readonly providerClass = "external_connector" as const;
+	readonly providerClass = PROVIDER_CLASS.externalConnector;
 	readonly providerId: string;
 	readonly #capability: ConnectorCapabilitySnapshot;
 	readonly #capabilityProbe: (
@@ -543,7 +544,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	constructor(options: ExternalAgentConnectorRuntimeOptions) {
 		const checked = validateConnectorCapabilitySnapshotForProvider(options.capability, {
 			providerId: options.providerId,
-			providerClass: "external_connector",
+			providerClass: PROVIDER_CLASS.externalConnector,
 		});
 		if (!checked.ok) throw checked.error;
 		if (typeof options.capabilityProbe !== "function") {

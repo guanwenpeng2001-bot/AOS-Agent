@@ -21,6 +21,7 @@ import {
 	type ResultValue,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
+import { PROVIDER_CLASS } from "../../core/connector/provider-class.ts";
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
 import type { AgentSession, AgentSessionEvent, ExtensionBindings, SessionStats } from "../../core/session/agent-session.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/session/facade.ts";
@@ -5338,7 +5339,7 @@ export class RpcHostController {
 									),
 								);
 							}
-							const sourceIsExternal = sourceRun.record.model.provider === "external_connector";
+							const sourceIsExternal = sourceRun.record.model.provider === PROVIDER_CLASS.externalConnector;
 							if (sourceIsExternal) {
 								if (command.images !== undefined && command.images.length > 0) {
 									return resumeFailure(

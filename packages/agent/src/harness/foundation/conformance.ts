@@ -1,6 +1,6 @@
 import { Result, type ResultValue } from "../result.ts";
 import { FoundationError } from "./errors.ts";
-import { validateConnectorCapabilitySnapshot, type ConnectorCapabilitySnapshot } from "./providers.ts";
+import { PROVIDER_CLASS, validateConnectorCapabilitySnapshot, type ConnectorCapabilitySnapshot } from "./providers.ts";
 import { validateAttemptReceipt, validateWorkerReceipt, type AttemptReceipt, type WorkerReceipt } from "./results.ts";
 import type { AttemptProviderClass } from "./task.ts";
 
@@ -11,7 +11,7 @@ export interface ProviderReceiptConformance {
 
 /** Capability snapshots are accepted only from the selected external-connector identity. */
 export function validateConnectorCapabilitySnapshotForProvider(value: unknown, provider: ProviderReceiptConformance): ResultValue<ConnectorCapabilitySnapshot, FoundationError> {
-	if (provider.providerClass !== "external_connector") return Result.err(new FoundationError("task_executor_invalid_provider_class", "Only external connectors may publish ConnectorCapabilitySnapshot", { details: { providerId: provider.providerId } }));
+	if (provider.providerClass !== PROVIDER_CLASS.externalConnector) return Result.err(new FoundationError("task_executor_invalid_provider_class", "Only external connectors may publish ConnectorCapabilitySnapshot", { details: { providerId: provider.providerId } }));
 	const checked = validateConnectorCapabilitySnapshot(value);
 	if (!checked.ok) return checked;
 	return checked.value.providerId === provider.providerId

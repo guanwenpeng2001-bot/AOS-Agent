@@ -15,6 +15,7 @@ import {
 	validateFingerprint,
 	validateQuotaReservation,
 } from "@aos-agent/agent-core";
+import { PROVIDER_CLASS } from "../connector/provider-class.ts";
 import type { SchedulerProviderClass, SchedulerSelectionScore } from "./host.ts";
 
 const SCHEDULER_SELECTION_RESERVATIONS_OBJECT_TYPE = "scheduler_selection_reservations";
@@ -314,7 +315,7 @@ function validateDurableFact(value: unknown): ResultValue<SchedulerDurableSelect
 		!isNonEmptyString(candidate.bindingId) ||
 		!isNonEmptyString(candidate.bindingEpochId) ||
 		(candidate.agentInstanceId !== undefined && !isNonEmptyString(candidate.agentInstanceId)) ||
-		!["scheduler", "task_executor", "agent", "external_connector"].includes(candidate.chosenProviderClass) ||
+		!["scheduler", "task_executor", "agent", PROVIDER_CLASS.externalConnector].includes(candidate.chosenProviderClass) ||
 		!Number.isSafeInteger(candidate.capabilityRevision) ||
 		candidate.capabilityRevision < 1 ||
 		!isFingerprint(candidate.capabilityDigest) ||

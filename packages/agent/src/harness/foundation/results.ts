@@ -1,6 +1,7 @@
 import { Result, type ResultValue } from "../result.ts";
 import type { AcceptanceFact } from "./goal.ts";
 import { FoundationError, type PublicExecutionError } from "./errors.ts";
+import { PROVIDER_CLASS } from "./providers.ts";
 import { fingerprintFoundationValue, type ExecutionCorrelation, type Fingerprint, type FoundationLineage } from "./identity.ts";
 import { ArtifactRefSchema, FOUNDATION_SHA256_DIGEST_PATTERN, WorkerReceiptRefSchema, type ArtifactRef, type WorkerReceiptRef } from "./reference.ts";
 import type { AttemptProviderClass, TaskEnvelope } from "./task.ts";
@@ -60,7 +61,7 @@ export function validateAttemptReceipt(value: unknown, options: { agentProvider?
 	if (options.providerClass === "agent" && receipt.agentInstanceId === undefined) return Result.err(new FoundationError("agent_instance_required_for_agent_provider", "Agent-class providers require an AgentInstance", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
 	if (options.providerClass !== undefined && options.providerClass !== "agent" && receipt.agentInstanceId !== undefined) return Result.err(new FoundationError("agent_instance_forbidden_for_provider", "Only agent-class executors may carry an AgentInstance", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
 	if ((options.providerClass === "scheduler" || options.providerClass === "task_executor") && receipt.provenance.producerKind !== "scheduler") return Result.err(new FoundationError("agent_instance_not_agent_provider", "scheduler/task-executor providers must produce scheduler receipts", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
-	if (options.providerClass === "external_connector" && receipt.provenance.producerKind !== "external_connector") return Result.err(new FoundationError("agent_instance_not_agent_provider", "external connectors must produce external_connector receipts", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
+	if (options.providerClass === PROVIDER_CLASS.externalConnector && receipt.provenance.producerKind !== "external_connector") return Result.err(new FoundationError("agent_instance_not_agent_provider", "external connectors must produce external_connector receipts", { details: { attemptReceiptId: receipt.attemptReceiptId } }));
 	return Result.ok(receipt);
 }
 export function validateAttemptReceiptUsage(value: unknown): ResultValue<AttemptReceiptUsage, FoundationError> { return validateExactShape<AttemptReceiptUsage>(AttemptReceiptUsageSchema, value, "attempt_receipt_usage"); }

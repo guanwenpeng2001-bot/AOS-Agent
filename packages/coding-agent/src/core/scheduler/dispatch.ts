@@ -49,6 +49,7 @@ import {
 	validateExecutionCorrelation,
 	validateImmutableAgentBinding,
 } from "@aos-agent/agent-core";
+import { PROVIDER_CLASS } from "../connector/provider-class.ts";
 import {
 	RUN_LEDGER_CUSTOM_TYPE,
 	type RunId,
@@ -1120,7 +1121,7 @@ export class SchedulerDispatchController {
 			providerClass !== "scheduler" &&
 			providerClass !== "task_executor" &&
 			providerClass !== "agent" &&
-			providerClass !== "external_connector"
+			providerClass !== PROVIDER_CLASS.externalConnector
 		) {
 			return rejectSelected(fail("scheduler_executor_unavailable"));
 		}

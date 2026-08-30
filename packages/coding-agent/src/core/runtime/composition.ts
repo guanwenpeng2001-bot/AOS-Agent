@@ -4,6 +4,7 @@ import type { Models } from "@aos-agent/ai";
 import type { CapabilityRegistry } from "../policy/capability-registry.ts";
 import { type ConnectorRetryPolicy, DEFAULT_CONNECTOR_RETRY_POLICY } from "../connector/retry-circuit.ts";
 import type { ExternalConnectorRegistry } from "../connector/registry.ts";
+import { PROVIDER_CLASS } from "../connector/provider-class.ts";
 import {
 	assertExternalConnectorCapabilityWithinTarget,
 	type ExternalConnectorResolvedTarget,
@@ -268,7 +269,7 @@ async function registerSelectedExternalConnector(options: {
 	const readinessStatus = readiness.status;
 	const snapshotState = readiness.state;
 	if (
-		descriptor.providerClass !== "external_connector" ||
+		descriptor.providerClass !== PROVIDER_CLASS.externalConnector ||
 		readinessStatus !== "ready" ||
 		snapshotState !== "current" ||
 		readiness.capability.revision !== descriptor.revision ||
@@ -291,7 +292,7 @@ async function registerSelectedExternalConnector(options: {
 	assertExternalConnectorCapabilityWithinTarget(options.target, selected.value.capabilitySnapshot);
 	if (
 		selected.value.connector.providerId !== options.target.providerId ||
-		selected.value.connector.providerClass !== "external_connector" ||
+		selected.value.connector.providerClass !== PROVIDER_CLASS.externalConnector ||
 		selected.value.capabilitySnapshot.digest.value !== readiness.capability.digest.value
 	) {
 		throw new FoundationError(
@@ -338,7 +339,7 @@ async function registerSelectedExternalConnector(options: {
 			descriptor: {
 				schemaVersion: 1,
 				providerId: options.target.providerId,
-				providerClass: "external_connector",
+				providerClass: PROVIDER_CLASS.externalConnector,
 			},
 			capabilities,
 			costClass: "remote_paid",

@@ -66,9 +66,10 @@ import {
 	type ConnectorRuntimeStatusSource,
 } from "./runtime-status.ts";
 import type { RuntimeClock } from "../runtime/clock.ts";
+import { PROVIDER_CLASS } from "./provider-class.ts";
 
 /** The only current provider class admitted by the open connector registry. */
-export const EXTERNAL_CONNECTOR_PROVIDER_CLASSES = Object.freeze(["external_connector"] as const);
+export const EXTERNAL_CONNECTOR_PROVIDER_CLASSES = Object.freeze([PROVIDER_CLASS.externalConnector] as const);
 export type ExternalConnectorProviderClass = (typeof EXTERNAL_CONNECTOR_PROVIDER_CLASSES)[number];
 
 /** Immutable identity and capability revision pinned at registration. */
@@ -534,7 +535,7 @@ function isExternalConnectorDescriptor(value: unknown): value is ExternalConnect
 		hasExactConnectorKeys(value, EXTERNAL_CONNECTOR_DESCRIPTOR_KEYS) &&
 		value.schemaVersion === 1 &&
 		isExternalConnectorIdentifier(value.providerId) &&
-		value.providerClass === "external_connector" &&
+	value.providerClass === PROVIDER_CLASS.externalConnector &&
 		Number.isSafeInteger(value.revision) &&
 		(value.revision as number) > 0 &&
 		isExternalConnectorFingerprint(value.capabilitySnapshotDigest)
@@ -618,7 +619,7 @@ function capturePublicExternalConnector(
 		const schemaVersion = captured.get("schemaVersion")?.value;
 		const providerId = captured.get("providerId")?.value;
 		const providerClass = captured.get("providerClass")?.value;
-		if (schemaVersion !== 1 || !isExternalConnectorIdentifier(providerId) || providerClass !== "external_connector") {
+		if (schemaVersion !== 1 || !isExternalConnectorIdentifier(providerId) || providerClass !== PROVIDER_CLASS.externalConnector) {
 			return undefined;
 		}
 		const capabilities = captured.get("capabilities")?.value;
@@ -754,7 +755,7 @@ function cloneConnectorDescriptor(value: ExternalConnectorDescriptor): ExternalC
 	return Object.freeze({
 		schemaVersion: 1,
 		providerId: value.providerId,
-		providerClass: "external_connector",
+		providerClass: PROVIDER_CLASS.externalConnector,
 		revision: value.revision,
 		capabilitySnapshotDigest: Object.freeze({ ...value.capabilitySnapshotDigest }),
 	});
@@ -1156,7 +1157,7 @@ class ExternalConnectorRegistryImpl implements ExternalConnectorRegistry {
 					registered.implementation,
 					registered.implementationProof,
 				)) ||
-			registered.implementation.providerClass !== "external_connector" ||
+			registered.implementation.providerClass !== PROVIDER_CLASS.externalConnector ||
 			registered.implementation.providerId !== providerId
 		) {
 			return Result.err(connectorRegistryError("External connector registry or constructed instance changed."));

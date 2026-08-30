@@ -14,6 +14,7 @@ import {
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import { createExternalConnectorRegistry } from "../../src/index.ts";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import type { CanonicalExternalAgentInput } from "../../src/external-connector.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import {
@@ -245,7 +246,7 @@ async function fixture(options: {
 	const descriptor = {
 		schemaVersion: 1 as const,
 		providerId: PROVIDER_ID,
-		providerClass: "external_connector" as const,
+	providerClass: PROVIDER_CLASS.externalConnector,
 		revision: snapshot.revision,
 		capabilitySnapshotDigest: snapshot.digest,
 	};

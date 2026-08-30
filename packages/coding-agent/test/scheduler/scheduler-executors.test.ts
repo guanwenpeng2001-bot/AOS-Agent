@@ -39,6 +39,7 @@ import {
 	type WorkerReceiptRef,
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import { BUILTIN_CODING_AGENT_PROVIDER_ID } from "../../src/core/runtime/prompt-ingress.ts";
 import {
 	parseSchedulerExecutorEntry,
@@ -401,7 +402,7 @@ function correlation(attemptId: string, agentInstanceId?: string) {
 
 function providerClassOf(kind: FakeKind): TaskExecutorProvider["providerClass"] {
 	if (kind === "in_process") return "task_executor";
-	if (kind === "external") return "external_connector";
+	if (kind === "external") return PROVIDER_CLASS.externalConnector;
 	return "agent";
 }
 
@@ -414,7 +415,7 @@ function providerIdOf(kind: FakeKind): string {
 
 function producerKindOf(kind: FakeKind): AttemptReceipt["provenance"]["producerKind"] {
 	if (kind === "in_process") return "scheduler";
-	if (kind === "external") return "external_connector";
+	if (kind === "external") return PROVIDER_CLASS.externalConnector;
 	return "agent_executor";
 }
 

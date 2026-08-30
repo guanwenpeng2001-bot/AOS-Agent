@@ -9,6 +9,7 @@ import {
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import * as publicApi from "../../src/index.ts";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import {
 	createExternalConnectorRegistry,
@@ -158,7 +159,7 @@ describe("External Connector recovery receipt authority", () => {
 				descriptor: {
 					schemaVersion: 1,
 					providerId: PROVIDER_ID,
-					providerClass: "external_connector",
+					providerClass: PROVIDER_CLASS.externalConnector,
 					revision: capability.revision,
 					capabilitySnapshotDigest: capability.digest,
 				},

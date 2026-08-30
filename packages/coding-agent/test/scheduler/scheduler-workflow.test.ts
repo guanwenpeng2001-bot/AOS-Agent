@@ -27,6 +27,7 @@ import {
 	validateAttemptReceiptForProvider,
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import type { Workflow, WorkflowStep } from "../../src/core/orchestration/workflow.ts";
 import type { WorkflowStore } from "../../src/core/orchestration/workflow-store.ts";
 import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../../src/core/session/run-lifecycle.ts";
@@ -401,7 +402,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 			workerReceiptRefs: [],
 			artifacts: status === "succeeded" ? [ARTIFACT] : [],
 			provenance: {
-				producerKind: this.providerClass === "external_connector" ? "external_connector" : "scheduler",
+				producerKind: this.providerClass === PROVIDER_CLASS.externalConnector ? "external_connector" : "scheduler",
 				providerId: attempt.providerId,
 				producedAt: T0,
 				correlation: { ...correlation, attemptReceiptId },
@@ -1147,7 +1148,7 @@ describe("scheduler T7 production Workflow controller", () => {
 			enabled: true,
 			compensationPolicy: "bounded_retry",
 			maxAttempts: 3,
-			providerClass: "external_connector",
+			providerClass: PROVIDER_CLASS.externalConnector,
 			connectorRetry,
 			clock,
 		});
@@ -1204,7 +1205,7 @@ describe("scheduler T7 production Workflow controller", () => {
 			enabled: true,
 			compensationPolicy: "bounded_retry",
 			maxAttempts: 3,
-			providerClass: "external_connector",
+			providerClass: PROVIDER_CLASS.externalConnector,
 		});
 		harness.provider.failuresRemaining = 1;
 		harness.provider.nextSideEffect = "none";

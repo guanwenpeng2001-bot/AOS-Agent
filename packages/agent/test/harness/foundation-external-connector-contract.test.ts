@@ -6,6 +6,7 @@ import {
 	createModelProfileRevision,
 	createRoleRevision,
 	fingerprintFoundationValue,
+	PROVIDER_CLASS,
 	parseConnectorCapabilitySnapshot,
 	resolveAgentBinding,
 	serializeConnectorCapabilitySnapshot,
@@ -134,7 +135,7 @@ function dispatchAndContext(): { dispatch: Dispatch; context: TaskExecutorAttemp
 class ArbitraryExternalConnector implements ExternalAgentConnector {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = providerId;
-	readonly providerClass = "external_connector" as const;
+	readonly providerClass = PROVIDER_CLASS.externalConnector;
 	readonly calls = { probe: 0, run: 0, resume: 0, reconcile: 0, cancel: 0, dispose: 0 };
 	readonly snapshot: ConnectorCapabilitySnapshot;
 
@@ -228,7 +229,7 @@ describe("Foundation ExternalAgentConnector contract", () => {
 	it("is the external_connector specialization of TaskExecutorProvider and exposes no peer lifecycle", async () => {
 		const connector: ExternalAgentConnector = new ArbitraryExternalConnector();
 		const executor: TaskExecutorProvider = connector;
-		expect(executor.providerClass).toBe("external_connector");
+		expect(executor.providerClass).toBe(PROVIDER_CLASS.externalConnector);
 		for (const method of ["createAttempt", "runAttempt", "probeCapabilities", "resumeAttempt", "reconcileAttempt", "cancelAttempt", "dispose"]) expect(method in connector).toBe(true);
 		for (const legacyMethod of ["probe", "start", "resume", "cancel"]) expect(legacyMethod in connector).toBe(false);
 		const probed = await connector.probeCapabilities();
@@ -254,8 +255,8 @@ describe("Foundation ExternalAgentConnector contract", () => {
 		expect(() => createConnectorCapabilitySnapshot({ ...capabilityInput(), unknownCapability: true } as ConnectorCapabilitySnapshotInput)).toThrowError(FoundationError);
 		const { images: _images, ...missingImageFact } = snapshot;
 		expect(validateConnectorCapabilitySnapshot(missingImageFact).ok).toBe(false);
-		expect(validateConnectorCapabilitySnapshotForProvider(snapshot, { providerId, providerClass: "external_connector" }).ok).toBe(true);
-		expect(validateConnectorCapabilitySnapshotForProvider(snapshot, { providerId: "other", providerClass: "external_connector" }).ok).toBe(false);
+		expect(validateConnectorCapabilitySnapshotForProvider(snapshot, { providerId, providerClass: PROVIDER_CLASS.externalConnector }).ok).toBe(true);
+		expect(validateConnectorCapabilitySnapshotForProvider(snapshot, { providerId: "other", providerClass: PROVIDER_CLASS.externalConnector }).ok).toBe(false);
 		expect(validateConnectorCapabilitySnapshotForProvider(snapshot, { providerId, providerClass: "agent" }).ok).toBe(false);
 	});
 
@@ -289,7 +290,7 @@ describe("Foundation ExternalAgentConnector contract", () => {
 		for (const receipt of [await connector.runAttempt(created.value), await connector.resumeAttempt(created.value), await connector.reconcileAttempt(created.value)]) {
 			expect(receipt.ok).toBe(true);
 			if (!receipt.ok) throw receipt.error;
-			expect(validateAttemptReceiptForProvider(receipt.value, { providerId, providerClass: "external_connector" }).ok).toBe(true);
+			expect(validateAttemptReceiptForProvider(receipt.value, { providerId, providerClass: PROVIDER_CLASS.externalConnector }).ok).toBe(true);
 			expect(receipt.value.agentInstanceId).toBeUndefined();
 			expect(receipt.value.provenance.producerKind).toBe("external_connector");
 		}

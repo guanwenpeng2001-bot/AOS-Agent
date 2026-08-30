@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import type { AcceptanceCriterion } from "./goal.ts";
 import type { Budget } from "./budget.ts";
 import { FoundationError } from "./errors.ts";
+import { PROVIDER_CLASS } from "./providers.ts";
 import { fingerprintFoundationValue, type Fingerprint } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
 import { FingerprintSchema } from "./schema.ts";
@@ -65,7 +66,7 @@ export interface CreateAttemptInput { attemptId: string; dispatch: Dispatch; pro
 export function createAttempt(input: CreateAttemptInput): ResultValue<Attempt, FoundationError> {
 	if (input.initialBindingEpoch.ordinal !== 0) return Result.err(new FoundationError("binding_epoch_invalid_ordinal", "Initial attempt epoch must have ordinal 0", { details: { attemptId: input.attemptId } }));
 	if (input.initialBindingEpoch.attemptId !== input.attemptId || input.initialBindingEpoch.taskId !== input.dispatch.taskId || input.initialBindingEpoch.bindingId !== input.dispatch.bindingId) return Result.err(new FoundationError("binding_epoch_mismatch", "Initial attempt epoch must match its Dispatch", { details: { attemptId: input.attemptId } }));
-	if (input.providerClass !== "scheduler" && input.providerClass !== "task_executor" && input.providerClass !== "agent" && input.providerClass !== "external_connector") return Result.err(new FoundationError("task_executor_invalid_provider_class", "Only task-executor provider classes may create attempts", { details: { attemptId: input.attemptId } }));
+	if (input.providerClass !== "scheduler" && input.providerClass !== "task_executor" && input.providerClass !== "agent" && input.providerClass !== PROVIDER_CLASS.externalConnector) return Result.err(new FoundationError("task_executor_invalid_provider_class", "Only task-executor provider classes may create attempts", { details: { attemptId: input.attemptId } }));
 	if (input.providerClass !== "agent" && input.agentInstanceId !== undefined) return Result.err(new FoundationError("agent_instance_forbidden_for_provider", "Only agent-class executors may carry an AgentInstance", { details: { attemptId: input.attemptId } }));
 	if (input.providerClass === "agent" && input.agentInstanceId === undefined) return Result.err(new FoundationError("agent_instance_required_for_agent_provider", "Agent-class providers require an AgentInstance", { details: { attemptId: input.attemptId } }));
 	if (input.providerClass === "agent" && input.initialBindingEpoch.agentInstanceId !== input.agentInstanceId) return Result.err(new FoundationError("binding_epoch_mismatch", "Agent attempt must use the epoch AgentInstance", { details: { attemptId: input.attemptId } }));

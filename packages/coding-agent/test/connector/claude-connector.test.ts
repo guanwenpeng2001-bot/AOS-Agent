@@ -13,6 +13,7 @@ import {
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import * as packageEntry from "../../src/index.ts";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import type { CanonicalExternalConnectorMapping } from "../../src/core/connector/session-mapping.ts";
 import {
 	PRIVATE_CLAUDE_AGENT_SDK_VERSION,
@@ -334,7 +335,7 @@ describe("private Claude Agent SDK connector driver", () => {
 			usage: evidence.usage,
 			provenance: { producerKind: "external_connector", providerId, producedAt: now, correlation },
 			sideEffectState: evidence.sideEffectState,
-		}, { providerClass: "external_connector" })).toMatchObject({ ok: true });
+	}, { providerClass: PROVIDER_CLASS.externalConnector })).toMatchObject({ ok: true });
 		expect(permissionDecision).toBe("allow");
 		expect(toolResult).toEqual({ ok: true, sideEffectState: "none", result: { content: "fixture" } });
 		expect(companion.requests[0]).toMatchObject({

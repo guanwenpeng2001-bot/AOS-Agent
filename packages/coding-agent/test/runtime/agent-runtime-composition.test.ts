@@ -34,6 +34,7 @@ import {
 	type ToolGatewayProvider,
 	type ToolGatewayRoute,
 } from "../../../agent/src/internal.ts";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import { createModels } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";
@@ -554,7 +555,7 @@ function createTestExternalConnectorRegistry(
 		descriptor: {
 			schemaVersion: 1,
 			providerId: snapshot.providerId,
-			providerClass: "external_connector",
+		providerClass: PROVIDER_CLASS.externalConnector,
 			revision: snapshot.revision,
 			capabilitySnapshotDigest: snapshot.digest,
 		},
@@ -1488,14 +1489,14 @@ describe("AgentRuntimeComposition", () => {
 				policy: { maxAttempts: 2, totalRetryTimeMs: 4_000 },
 			});
 			expect(created.session.getExternalConnectorRegistry()?.list()).toMatchObject([
-				{ providerId: target.providerId, providerClass: "external_connector" },
+				{ providerId: target.providerId, providerClass: PROVIDER_CLASS.externalConnector },
 			]);
 			const registered = schedulerRegistry?.get(target.providerId);
 			expect(target.providerId).not.toBe(target.targetId);
 			expect(registered?.entry.descriptor).toEqual({
 				schemaVersion: 1,
 				providerId: target.providerId,
-				providerClass: "external_connector",
+				providerClass: PROVIDER_CLASS.externalConnector,
 			});
 			expect(registered?.runtimeSnapshot).toMatchObject({
 				capabilitySnapshot: { providerId: target.providerId },
@@ -2077,7 +2078,7 @@ describe("AgentRuntimeComposition", () => {
 				externalConnectors: [
 					{
 						providerId: "main-rpc-trusted-connector",
-						providerClass: "external_connector",
+						providerClass: PROVIDER_CLASS.externalConnector,
 						revision: 1,
 					},
 				],

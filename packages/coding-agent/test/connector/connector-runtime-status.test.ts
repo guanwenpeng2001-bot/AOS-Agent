@@ -6,6 +6,7 @@ import {
 	type ExternalAgentConnector,
 } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
+import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import {
 	CONNECTOR_RUNTIME_LATENCY_BUCKET_BOUNDS_MS,
 	CONNECTOR_RUNTIME_STATUS_MAX_COUNT,
@@ -155,7 +156,7 @@ function project(options: {
 
 class PassiveConnector implements ExternalAgentConnector {
 	readonly schemaVersion = 1 as const;
-	readonly providerClass = "external_connector" as const;
+	readonly providerClass = PROVIDER_CLASS.externalConnector;
 	readonly providerId: string;
 	readonly snapshot: ConnectorCapabilitySnapshot;
 	probeCalls = 0;
@@ -420,7 +421,7 @@ describe("ConnectorRuntimeStatus", () => {
 					descriptor: {
 						schemaVersion: 1,
 						providerId: connector.providerId,
-						providerClass: "external_connector",
+					providerClass: PROVIDER_CLASS.externalConnector,
 						revision: connector.snapshot.revision,
 						capabilitySnapshotDigest: connector.snapshot.digest,
 					},
@@ -458,7 +459,7 @@ describe("ConnectorRuntimeStatus", () => {
 					descriptor: {
 						schemaVersion: 1,
 						providerId: missingConnector.providerId,
-						providerClass: "external_connector",
+						providerClass: PROVIDER_CLASS.externalConnector,
 						revision: missingConnector.snapshot.revision,
 						capabilitySnapshotDigest: missingConnector.snapshot.digest,
 					},

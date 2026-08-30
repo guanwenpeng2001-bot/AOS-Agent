@@ -5,6 +5,7 @@ import {
 	validateConnectorCapabilitySnapshotForProvider,
 	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
+import { PROVIDER_CLASS } from "./provider-class.ts";
 import {
 	createDurableExternalAgentConnector,
 	type ExternalAgentConnectorRuntimeOptions,
@@ -309,7 +310,7 @@ export async function createProductionExternalAgentConnector(
 		}
 		const checked = validateConnectorCapabilitySnapshotForProvider(probed.value, {
 			providerId: options.providerId,
-			providerClass: "external_connector",
+			providerClass: PROVIDER_CLASS.externalConnector,
 		});
 		if (
 			!checked.ok ||

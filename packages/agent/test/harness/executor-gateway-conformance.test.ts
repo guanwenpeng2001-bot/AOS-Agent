@@ -7,6 +7,7 @@ import {
 	createRoleRevision,
 	fingerprintFoundationValue,
 	FoundationError,
+	PROVIDER_CLASS,
 	resolveAgentBinding,
 	SessionLedger,
 	validateImmutableAgentBinding,
@@ -231,7 +232,7 @@ describe("T6 external executor scoped gateway conformance", () => {
 		const target = targetReference(currentBinding);
 		const lease = leaseReference(currentBinding, currentEpoch);
 		const model = new ConsumerModelGateway();
-		const gateway = new ScopedExecutionGateway({ model, binding: currentBinding, epoch: currentEpoch, providerClass: "external_connector", budget: { modelCalls: 1 } });
+		const gateway = new ScopedExecutionGateway({ model, binding: currentBinding, epoch: currentEpoch, providerClass: PROVIDER_CLASS.externalConnector, budget: { modelCalls: 1 } });
 		const executor = new ConsumerShapedExternalExecutor(gateway);
 		const result = await executor.execute(request(currentBinding, currentEpoch), target, lease);
 		expect(result).toMatchObject({ ok: true, value: { requestId: "model-request-t6-gateway" } });
@@ -271,7 +272,7 @@ describe("T6 external executor scoped gateway conformance", () => {
 		const target = targetReference(currentBinding);
 		const lease = leaseReference(currentBinding, currentEpoch);
 		const model = new ConsumerModelGateway();
-		const gateway = new ScopedExecutionGateway({ model, binding: currentBinding, epoch: currentEpoch, providerClass: "external_connector", budget: { modelCalls: 2 } });
+		const gateway = new ScopedExecutionGateway({ model, binding: currentBinding, epoch: currentEpoch, providerClass: PROVIDER_CLASS.externalConnector, budget: { modelCalls: 2 } });
 		const executor = new ConsumerShapedExternalExecutor(gateway);
 		const good = await executor.execute(request(currentBinding, currentEpoch), target, lease);
 		expect(good.ok).toBe(true);
@@ -282,7 +283,7 @@ describe("T6 external executor scoped gateway conformance", () => {
 		expect(profileResult).toMatchObject({ ok: false, error: { code: "binding_task_before_binding" } });
 		const otherBinding = { ...currentBinding, bindingId: "binding-other" };
 		const mismatchedEpoch = { ...currentEpoch, bindingId: otherBinding.bindingId };
-		const mismatchedGateway = new ScopedExecutionGateway({ model, binding: currentBinding, epoch: mismatchedEpoch, providerClass: "external_connector" });
+		const mismatchedGateway = new ScopedExecutionGateway({ model, binding: currentBinding, epoch: mismatchedEpoch, providerClass: PROVIDER_CLASS.externalConnector });
 		const mismatchedExecutor = new ConsumerShapedExternalExecutor(mismatchedGateway);
 		const bindingResult = await mismatchedExecutor.execute(request(currentBinding, mismatchedEpoch), target, lease);
 		expect(bindingResult).toMatchObject({ ok: false, error: { code: "binding_epoch_mismatch" } });

@@ -21,6 +21,7 @@ import {
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
 } from "@aos-agent/agent-core";
+import { PROVIDER_CLASS } from "./provider-class.ts";
 import {
 	cloneCanonicalExternalConnectorMapping,
 	isCanonicalExternalConnectorMappingTimestamp,
@@ -1233,7 +1234,7 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		if (payload === undefined) return undefined;
 		const checked = validateAttemptReceiptForProvider(payload, {
 			providerId: (payload as { readonly providerId?: string }).providerId ?? "invalid",
-			providerClass: "external_connector",
+			providerClass: PROVIDER_CLASS.externalConnector,
 		});
 		if (!checked.ok || checked.value.attemptId !== attemptId || checked.value.attemptReceiptId !== receiptId) {
 			throw new FoundationError("invalid_correlation", "Durable external connector receipt is invalid", {
@@ -1247,7 +1248,7 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 		const expectedId = `attempt_receipt_${receipt.attemptId}`;
 		const checked = validateAttemptReceiptForProvider(receipt, {
 			providerId: receipt.providerId,
-			providerClass: "external_connector",
+			providerClass: PROVIDER_CLASS.externalConnector,
 		});
 		if (!checked.ok || receipt.attemptReceiptId !== expectedId) {
 			throw new FoundationError(

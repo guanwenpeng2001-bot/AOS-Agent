@@ -24,6 +24,7 @@ import {
 	type SideEffectState,
 	type TaskEnvelope,
 } from "@aos-agent/agent-core";
+import { PROVIDER_CLASS } from "../connector/provider-class.ts";
 import type {
 	AgentStep,
 	Workflow,
@@ -1219,7 +1220,7 @@ export class SchedulerWorkflowController {
 			compensation === undefined &&
 			this.connectorRetry !== undefined &&
 			this.connectorRetryOptions !== undefined &&
-			dispatched.value.providerClass === "external_connector"
+			dispatched.value.providerClass === PROVIDER_CLASS.externalConnector
 		) {
 			if (dispatched.value.providerId !== this.connectorRetryOptions.providerId) {
 				const rejected = await this.connectorRetry.recordFailure({
@@ -1353,7 +1354,7 @@ export class SchedulerWorkflowController {
 		if (
 			this.connectorRetry !== undefined &&
 			this.connectorRetryOptions !== undefined &&
-			(provider === undefined || provider.providerClass === "external_connector")
+			(provider === undefined || provider.providerClass === PROVIDER_CLASS.externalConnector)
 		) {
 			const targetMatches = provider === undefined || provider.providerId === this.connectorRetryOptions.providerId;
 			const decision = await this.connectorRetry.recordFailure({
@@ -1382,7 +1383,7 @@ export class SchedulerWorkflowController {
 			}
 			return this.handleFailure(workflow, step, sideEffect, false);
 		}
-		if (provider?.providerClass === "external_connector") {
+		if (provider?.providerClass === PROVIDER_CLASS.externalConnector) {
 			const failClosedRetry = new ConnectorRetryCircuit(
 				withRuntimeClock({ ledger: this.ledger, taskId: this.task.taskId }, this.clock),
 			);

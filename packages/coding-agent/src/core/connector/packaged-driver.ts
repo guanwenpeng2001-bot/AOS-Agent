@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PROVIDER_CLASS } from "./provider-class.ts";
 import type {
 	AgentBinding,
 	Attempt,
@@ -158,7 +159,7 @@ function receiptSummary(
 class PackagedFakeExternalAgentConnector implements ExternalAgentConnector {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = PACKAGED_PROVIDER_ID;
-	readonly providerClass = "external_connector" as const;
+	readonly providerClass = PROVIDER_CLASS.externalConnector;
 	readonly #fixture: PackagedExternalAgentDriver;
 	readonly #capability: ConnectorCapabilitySnapshot;
 	readonly #attempts = new Map<string, Attempt>();
