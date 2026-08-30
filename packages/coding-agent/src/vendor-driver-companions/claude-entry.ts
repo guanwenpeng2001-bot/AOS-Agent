@@ -12,13 +12,16 @@ import {
 	type HookCallback,
 	type McpServerConfig,
 	type Options,
+	type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { canonicalFoundationJson, type FoundationJsonValue } from "@aos-agent/agent-core";
 import { z } from "zod/v4";
 import {
 	PRIVATE_CLAUDE_AGENT_SDK_VERSION,
 	type PrivateClaudeAgentSdkCompanion,
 	type PrivateClaudeCompanionQueryRequest,
+	type PrivateClaudeNativeContentBlock,
 	type PrivateClaudeSelectedTool,
 } from "../core/connector/vendor/claude.ts";
 
@@ -86,6 +89,43 @@ function mcpServers(request: PrivateClaudeCompanionQueryRequest): Record<string,
 	]));
 }
 
+function nativeContentBlock(block: PrivateClaudeNativeContentBlock): ContentBlockParam {
+	if (block.type === "text") return { type: "text", text: block.text };
+	if (block.type === "image") return { type: "image", source: { ...block.source } };
+	return { type: "document", source: { ...block.source } };
+}
+
+function promptFor(request: PrivateClaudeCompanionQueryRequest): AsyncIterable<SDKUserMessage> {
+	return {
+		async *[Symbol.asyncIterator]() {
+			yield {
+				type: "user",
+				message: {
+					role: "user",
+					content: request.prompt.content.map(nativeContentBlock),
+				},
+				parent_tool_use_id: null,
+			};
+		},
+	};
+}
+
+function environmentFor(request: PrivateClaudeCompanionQueryRequest): Record<string, string> {
+	if (request.model === undefined) return { ...request.env };
+	return {
+		...request.env,
+		CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "1",
+		CLAUDE_CODE_USE_ANTHROPIC_AWS: "0",
+		CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD: "0",
+		CLAUDE_CODE_USE_BEDROCK: "1",
+		CLAUDE_CODE_USE_FOUNDRY: "0",
+		CLAUDE_CODE_USE_GATEWAY: "0",
+		CLAUDE_CODE_USE_MANTLE: "0",
+		CLAUDE_CODE_USE_VERTEX: "0",
+		ANTHROPIC_BEDROCK_SERVICE_TIER: request.model.serviceTier,
+	};
+}
+
 function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
 	const selectedNames = new Set(request.tools.map((selected) => selected.exposedToolName));
 	return {
@@ -94,9 +134,10 @@ function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
 		agents: {},
 		cwd: request.cwd,
 		env: {
-			...request.env,
+			...environmentFor(request),
 			CLAUDE_AGENT_SDK_CLIENT_APP: "aos-agent/0.84.3",
 		},
+		...(request.model === undefined ? {} : { model: request.model.model, effort: request.model.effort }),
 		hooks: {
 			PreToolUse: [{ hooks: [observationHook(request, "PreToolUse")] }],
 			PostToolUse: [{ hooks: [observationHook(request, "PostToolUse")] }],
@@ -137,7 +178,7 @@ export function createPrivateClaudeAgentSdkCompanion(): PrivateClaudeAgentSdkCom
 	return Object.freeze({
 		sdkVersion: PRIVATE_CLAUDE_AGENT_SDK_VERSION,
 		query: (request: PrivateClaudeCompanionQueryRequest) => query({
-			prompt: request.prompt,
+			prompt: promptFor(request),
 			options: optionsFor(request),
 		}),
 	});

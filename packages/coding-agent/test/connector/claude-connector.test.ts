@@ -1,9 +1,13 @@
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
+	Result,
 	createConnectorCapabilitySnapshot,
 	resolveMcpSelection,
 	validateAttemptReceipt,
 	type Attempt,
+	type ArtifactStoreProvider,
 	type ConnectorCapabilitySnapshot,
 	type ExecutionCorrelation,
 	type FoundationJsonValue,
@@ -14,9 +18,15 @@ import {
 import { describe, expect, it } from "vitest";
 import * as packageEntry from "../../src/index.ts";
 import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../../src/core/connector/input.ts";
+import {
+	translateExternalModelProjection,
+	type ExternalResolvedModelProjection,
+} from "../../src/core/connector/model-projection.ts";
 import type { CanonicalExternalConnectorMapping } from "../../src/core/connector/session-mapping.ts";
 import {
 	PRIVATE_CLAUDE_AGENT_SDK_VERSION,
+	PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX,
 	PrivateClaudeAgentSdkDriver,
 	type PrivateClaudeAgentSdkCompanion,
 	type PrivateClaudeCompanionQuery,
@@ -70,6 +80,42 @@ const capability: ConnectorCapabilitySnapshot = createConnectorCapabilitySnapsho
 	artifacts: false,
 	images: false,
 });
+
+function capabilityFor(
+	overrides: Partial<Pick<ConnectorCapabilitySnapshot, "modelAccess" | "artifacts" | "images">>,
+): ConnectorCapabilitySnapshot {
+	return createConnectorCapabilitySnapshot({
+		schemaVersion: 1,
+		providerId,
+		revision: 1,
+		protocol: { name: "claude-agent-sdk", version: PRIVATE_CLAUDE_AGENT_SDK_VERSION },
+		modelAccess: overrides.modelAccess ?? "agent_owned",
+		resume: false,
+		toolGateway: true,
+		artifacts: overrides.artifacts ?? false,
+		images: overrides.images ?? false,
+	});
+}
+
+const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+const imageArtifactId = createHash("sha256").update(imageBytes).digest("hex");
+
+function imageArtifact(mediaType = "image/png"): CanonicalExternalAgentArtifactReference {
+	return {
+		schemaVersion: 1,
+		artifactId: imageArtifactId,
+		kind: "image",
+		digest: `sha256:${imageArtifactId}`,
+		mediaType,
+		sizeBytes: imageBytes.byteLength,
+		provenance: { source: "artifact_store", producer: "claude-test", trust: "trusted" },
+		readHandle: { kind: "artifact_store", ref: imageArtifactId },
+	};
+}
+
+const artifactStore: Pick<ArtifactStoreProvider, "get"> = {
+	get: async () => Result.ok(imageBytes),
+};
 
 const toolGatewayRoute: ToolGatewayRoute = {
 	kind: "mcp",
@@ -340,7 +386,10 @@ describe("private Claude Agent SDK connector driver", () => {
 		expect(toolResult).toEqual({ ok: true, sideEffectState: "none", result: { content: "fixture" } });
 		expect(companion.requests[0]).toMatchObject({
 			sdkVersion: "0.3.246",
-			prompt: "Perform the Claude fixture task",
+			prompt: {
+				type: "user",
+				content: [{ type: "text", text: "Perform the Claude fixture task" }],
+			},
 			tools: [{ exposedToolName: selectedToolName }],
 		});
 		await expect(connector.connect({ ...mapping(), attemptId: "attempt-claude-other" })).rejects.toMatchObject({
@@ -357,6 +406,115 @@ describe("private Claude Agent SDK connector driver", () => {
 		});
 		expect(resumedCompanion.requests).toHaveLength(0);
 		await resumed.dispose();
+	});
+
+	it("translates a declared image ArtifactRef into one Claude-native image block", async () => {
+		const companion = new FakeCompanion(async function* () {
+			yield init();
+			yield result();
+		});
+		const connector = driver(companion, { artifactStore });
+		const handle = await connector.spawn(spawnRequest({
+			capability: capabilityFor({ artifacts: true, images: true }),
+			input: {
+				schemaVersion: 1,
+				text: "Inspect the image",
+				artifacts: [imageArtifact()],
+			},
+		}));
+		await expect(connector.read(handle)).resolves.toMatchObject({ status: "succeeded" });
+		expect(companion.requests[0]?.prompt).toEqual({
+			type: "user",
+			content: [
+				{ type: "text", text: "Inspect the image" },
+				{
+					type: "image",
+					source: {
+						type: "base64",
+						media_type: "image/png",
+						data: Buffer.from(imageBytes).toString("base64"),
+					},
+				},
+			],
+		});
+		await connector.dispose();
+	});
+
+	it("rejects unsupported artifact media with a stable vendor error", async () => {
+		const connector = driver(new FakeCompanion(async function* () {
+			yield init();
+		}), { artifactStore });
+		await expect(connector.spawn(spawnRequest({
+			capability: capabilityFor({ artifacts: true }),
+			input: {
+				schemaVersion: 1,
+				text: "Inspect the binary",
+				artifacts: [{ ...imageArtifact("application/octet-stream"), kind: "file" }],
+			},
+		}))).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+		await connector.dispose();
+	});
+
+	it("consumes one exact Bedrock aos_gateway projection and its safe lease", async () => {
+		const projection: ExternalResolvedModelProjection = {
+			schemaVersion: 1,
+			provider: "bedrock",
+			model: "anthropic.claude-sonnet-fixture-v1:0",
+			effort: "high",
+			serviceTier: "priority",
+			fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+			bindingDigest: { algorithm: "sha256", value: "d".repeat(64) },
+		};
+		const translated = translateExternalModelProjection(projection, PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX);
+		if (!translated.ok) throw new Error(translated.error.reasonCode);
+		const credential = {
+			schemaVersion: 1 as const,
+			leaseId: "lease-claude-model-1",
+			grantId: "grant-claude-model-1",
+			bindingId: attempt.bindingId,
+			scopeDigest: `sha256:${"e".repeat(64)}`,
+			expiresAt: "2026-08-28T01:00:00.000Z",
+			clientRequestId: "request-claude-model-1",
+		};
+		const companion = new FakeCompanion(async function* () {
+			yield { ...init(), model: projection.model, effort: projection.effort };
+			yield result();
+		});
+		const connector = driver(companion);
+		const handle = await connector.spawn(spawnRequest({
+			capability: capabilityFor({ modelAccess: "aos_gateway" }),
+			modelProjection: projection,
+			modelTranslation: translated.translation,
+			credential,
+		}));
+		await expect(connector.read(handle)).resolves.toMatchObject({ status: "succeeded" });
+		expect(companion.requests[0]).toMatchObject({
+			model: {
+				provider: "bedrock",
+				model: projection.model,
+				effort: "high",
+				serviceTier: "priority",
+				fallbackDecision: '{"kind":"primary","reason":"fallback_not_used"}',
+				bindingDigest: JSON.stringify(projection.bindingDigest),
+			},
+			credential,
+		});
+
+		const drifted = {
+			...translated.translation,
+			fields: {
+				...translated.translation.fields,
+				model: { ...translated.translation.fields.model, value: "drifted-model" },
+			},
+		};
+		await expect(connector.spawn(spawnRequest({
+			capability: capabilityFor({ modelAccess: "aos_gateway" }),
+			modelProjection: projection,
+			modelTranslation: drifted,
+			credential,
+		}))).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+		expect(companion.requests).toHaveLength(1);
+		await connector.dispose();
 	});
 
 	it("rejects malformed or stale MCP selections and intersects exact Tool Gateway routes", async () => {

@@ -19,6 +19,7 @@
 
 ### Added
 
+- Claude connector artifact input and exact Bedrock `aos_gateway` model projection support, with verified native image/PDF/text blocks and material-free lease correlation.
 - Trusted External Connector targets can now be registered in settings for standard CLI, RPC, and SDK Sessions; project and Role selections require project trust and can only narrow global targets.
 - Documented the External Connector driver SPI as a bounded JSONL process contract, including lifecycle, provenance, capability negotiation, and safe failure behavior.
 - Added trusted generic modulePath targets for settings-selected external connectors, with pre-launch provenance checks and supervised process execution.

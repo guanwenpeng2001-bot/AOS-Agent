@@ -14,6 +14,7 @@ import {
 	canonicalFoundationJson,
 	isToolGatewayRoute,
 	validateMcpSelection,
+	type ArtifactStoreProvider,
 	type AttemptReceiptUsage,
 	type ConnectorCapabilitySnapshot,
 	type FoundationJsonValue,
@@ -30,7 +31,20 @@ import {
 	isExternalConnectorMappingIdentifier,
 	type CanonicalExternalConnectorMapping,
 } from "../session-mapping.ts";
+import {
+	translateExternalModelProjection,
+	type ExternalModelFieldSupport,
+	type ExternalModelSupportMatrix,
+} from "../model-projection.ts";
 import { ExternalConnectorSupervisorError } from "../supervisor.ts";
+import {
+	validateSafeLeaseProjection,
+	type SafeLeaseProjection,
+} from "../../worker/protocol.ts";
+import type {
+	CanonicalExternalAgentArtifactReference,
+	CanonicalExternalAgentInput,
+} from "../input.ts";
 import type {
 	ExternalConnectorDriverHandle,
 	ExternalConnectorDriverLookup,
@@ -44,6 +58,84 @@ export const PRIVATE_CLAUDE_AGENT_SDK_VERSION = "0.3.246" as const;
 const CLAUDE_PROTOCOL_NAME = "claude-agent-sdk";
 const CLAUDE_PERMISSION_TOOL = "claude.permission.request";
 const CLAUDE_NAMESPACE = "claude";
+const CLAUDE_AOS_GATEWAY_PROVIDER = "bedrock";
+const CLAUDE_EFFORT_LEVELS = Object.freeze(["low", "medium", "high", "xhigh", "max"] as const);
+const CLAUDE_IMAGE_MEDIA_TYPES = Object.freeze(["image/gif", "image/jpeg", "image/png", "image/webp"] as const);
+const CLAUDE_FILE_MEDIA_TYPES = Object.freeze(["application/pdf", "text/plain"] as const);
+
+export const PRIVATE_CLAUDE_AGENT_SDK_CAPABILITIES = Object.freeze({
+	sdkVersion: PRIVATE_CLAUDE_AGENT_SDK_VERSION,
+	images: Object.freeze({ status: "supported" as const, mediaTypes: CLAUDE_IMAGE_MEDIA_TYPES }),
+	files: Object.freeze({ status: "version-limited" as const, mediaTypes: CLAUDE_FILE_MEDIA_TYPES }),
+	model: Object.freeze({ status: "supported" as const }),
+	effort: Object.freeze({ status: "supported" as const, values: CLAUDE_EFFORT_LEVELS }),
+	serviceTier: Object.freeze({ status: "version-limited" as const, provider: CLAUDE_AOS_GATEWAY_PROVIDER }),
+	resume: Object.freeze({ status: "version-limited" as const, connectorEnabled: false }),
+});
+
+type PrivateClaudeEffortLevel = (typeof CLAUDE_EFFORT_LEVELS)[number];
+type PrivateClaudeImageMediaType = (typeof CLAUDE_IMAGE_MEDIA_TYPES)[number];
+
+export type PrivateClaudeNativeContentBlock =
+	| { readonly type: "text"; readonly text: string }
+	| {
+			readonly type: "image";
+			readonly source: {
+				readonly type: "base64";
+				readonly media_type: PrivateClaudeImageMediaType;
+				readonly data: string;
+			};
+	  }
+	| {
+			readonly type: "document";
+			readonly source:
+				| { readonly type: "base64"; readonly media_type: "application/pdf"; readonly data: string }
+				| { readonly type: "text"; readonly media_type: "text/plain"; readonly data: string };
+	  };
+
+export interface PrivateClaudeNativePrompt {
+	readonly type: "user";
+	readonly content: readonly PrivateClaudeNativeContentBlock[];
+}
+
+export interface PrivateClaudeModelSelection {
+	readonly provider: typeof CLAUDE_AOS_GATEWAY_PROVIDER;
+	readonly model: string;
+	readonly effort: PrivateClaudeEffortLevel;
+	readonly serviceTier: string;
+	readonly fallbackDecision: string;
+	readonly bindingDigest: string;
+}
+
+function exactModelSupport(
+	targetField: string,
+	accepts: (value: string) => boolean,
+): ExternalModelFieldSupport {
+	return Object.freeze({
+		supported: true,
+		targetField,
+		accepts,
+		translate: (value: string) => accepts(value) ? Object.freeze({ kind: "exact" as const, value }) : undefined,
+	});
+}
+
+function acceptsCanonicalObject(value: string): boolean {
+	try {
+		const parsed: unknown = JSON.parse(value);
+		return isRecord(parsed) && canonicalFoundationJson(parsed) === value;
+	} catch {
+		return false;
+	}
+}
+
+export const PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX: ExternalModelSupportMatrix = Object.freeze({
+	provider: exactModelSupport("apiProvider", (value) => value === CLAUDE_AOS_GATEWAY_PROVIDER),
+	model: exactModelSupport("model", (value) => value.length > 0),
+	effort: exactModelSupport("effort", (value) => CLAUDE_EFFORT_LEVELS.includes(value as PrivateClaudeEffortLevel)),
+	serviceTier: exactModelSupport("serviceTier", (value) => value.length > 0),
+	fallbackDecision: exactModelSupport("fallbackDecision", acceptsCanonicalObject),
+	bindingDigest: exactModelSupport("bindingDigest", acceptsCanonicalObject),
+});
 
 export const PRIVATE_CLAUDE_AGENT_SDK_LIMITS = Object.freeze({
 	maxMessageBytes: 256 * 1024,
@@ -92,7 +184,9 @@ export interface PrivateClaudeToolResult {
 
 export interface PrivateClaudeCompanionQueryRequest {
 	readonly sdkVersion: typeof PRIVATE_CLAUDE_AGENT_SDK_VERSION;
-	readonly prompt: string;
+	readonly prompt: PrivateClaudeNativePrompt;
+	readonly model?: PrivateClaudeModelSelection;
+	readonly credential?: SafeLeaseProjection;
 	readonly cwd: string;
 	readonly env: Readonly<Record<string, string>>;
 	readonly tools: readonly PrivateClaudeSelectedTool[];
@@ -117,6 +211,7 @@ export interface PrivateClaudeAgentSdkDriverOptions {
 	readonly companion: PrivateClaudeAgentSdkCompanion;
 	readonly cwd: string;
 	readonly mcpSelection: McpSelection;
+	readonly artifactStore?: Pick<ArtifactStoreProvider, "get">;
 	/** Trusted, already-projected environment. Ambient process.env is never consulted. */
 	readonly env?: Readonly<Record<string, string>>;
 	readonly limits?: Partial<PrivateClaudeAgentSdkLimits>;
@@ -184,6 +279,7 @@ interface ClaudeOperation {
 	readonly terminal: Deferred<ExternalConnectorTerminalEvidence>;
 	readonly pending: Map<string, PendingClaudeOperation>;
 	readonly seenCallbacks: Set<string>;
+	readonly model?: PrivateClaudeModelSelection;
 	readonly authority?: ClaudeExecutionAuthority;
 	sessionId: string;
 	sequence: number;
@@ -336,12 +432,61 @@ function validateCapability(providerId: string, capability: ConnectorCapabilityS
 		capability.protocol.version !== PRIVATE_CLAUDE_AGENT_SDK_VERSION ||
 		capability.resume !== false ||
 		capability.toolGateway !== true ||
-		capability.artifacts ||
-		capability.images ||
-		(capability.modelAccess !== "agent_owned" && capability.modelAccess !== "none")
+		(capability.images && !capability.artifacts) ||
+		!(["agent_owned", "aos_gateway", "none"] as const).includes(capability.modelAccess)
 	) {
 		throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
 	}
+}
+
+function resolveModelSelection(
+	request: ExternalConnectorDriverSpawnRequest,
+): PrivateClaudeModelSelection | undefined {
+	if (request.capability.modelAccess !== "aos_gateway") {
+		if (request.modelProjection !== undefined || request.modelTranslation !== undefined) {
+			throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		}
+		return undefined;
+	}
+	if (
+		request.modelProjection === undefined ||
+		request.modelTranslation === undefined ||
+		request.credential === undefined ||
+		!validateSafeLeaseProjection(request.credential)
+	) {
+		throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+	}
+	const translated = translateExternalModelProjection(
+		request.modelProjection,
+		PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX,
+	);
+	if (
+		!translated.ok ||
+		canonicalFoundationJson(translated.translation) !== canonicalFoundationJson(request.modelTranslation)
+	) {
+		throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+	}
+	const fields = request.modelTranslation.fields;
+	if (
+		fields.provider.targetField !== "apiProvider" ||
+		fields.provider.value !== CLAUDE_AOS_GATEWAY_PROVIDER ||
+		fields.model.targetField !== "model" ||
+		fields.effort.targetField !== "effort" ||
+		!CLAUDE_EFFORT_LEVELS.includes(fields.effort.value as PrivateClaudeEffortLevel) ||
+		fields.serviceTier.targetField !== "serviceTier" ||
+		fields.fallbackDecision.targetField !== "fallbackDecision" ||
+		fields.bindingDigest.targetField !== "bindingDigest"
+	) {
+		throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+	}
+	return Object.freeze({
+		provider: CLAUDE_AOS_GATEWAY_PROVIDER,
+		model: fields.model.value,
+		effort: fields.effort.value as PrivateClaudeEffortLevel,
+		serviceTier: fields.serviceTier.value,
+		fallbackDecision: fields.fallbackDecision.value,
+		bindingDigest: fields.bindingDigest.value,
+	});
 }
 
 function resolveTools(selection: McpSelection): readonly PrivateClaudeSelectedTool[] {
@@ -599,11 +744,13 @@ function cancellationEvidence(
 
 /** @internal Package-private driver for the pinned Claude Agent SDK companion. */
 export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDriver {
+	readonly modelSupportMatrix = PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX;
 	readonly toolGatewayMcpSelection: McpSelection;
 	readonly #providerId: string;
 	readonly #companion: PrivateClaudeAgentSdkCompanion;
 	readonly #cwd: string;
 	readonly #env: Readonly<Record<string, string>>;
+	readonly #artifactStore: Pick<ArtifactStoreProvider, "get"> | undefined;
 	readonly #selectedTools: readonly PrivateClaudeSelectedTool[];
 	readonly #limits: PrivateClaudeAgentSdkLimits;
 	readonly #now: () => string;
@@ -622,6 +769,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		this.#companion = options.companion;
 		this.#cwd = options.cwd;
 		this.#env = Object.freeze({ ...(options.env ?? {}) });
+		this.#artifactStore = options.artifactStore;
 		this.toolGatewayMcpSelection = mcpSelection.value;
 		this.#selectedTools = resolveTools(mcpSelection.value);
 		this.#limits = resolveLimits(options.limits);
@@ -630,7 +778,14 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
 		validateCapability(this.#providerId, request.capability);
-		if (request.input.artifacts.length > 0) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		if (
+			(request.input.artifacts.length > 0 && !request.capability.artifacts) ||
+			(request.input.artifacts.some((artifact) => artifact.kind === "image") && !request.capability.images)
+		) {
+			throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		}
+		const model = resolveModelSelection(request);
+		const prompt = await this.#nativePrompt(request.input, request.signal);
 		const mcpSelection = validateMcpSelection(request.mcpSelection);
 		if (
 			!mcpSelection.ok ||
@@ -638,8 +793,9 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
 		const tools = intersectToolGatewayRoutes(this.#selectedTools, request.toolGatewayRoutes);
 		const operation = this.#openOperation({
-			prompt: request.input.text,
+			prompt,
 			tools,
+			...(model === undefined ? {} : { model, credential: request.credential }),
 			supervisorRef: request.supervisorRef,
 			operationNonce: request.operationNonce,
 			externalTurnId: request.attempt.attemptId,
@@ -729,8 +885,10 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 	}
 
 	#openOperation(input: {
-		readonly prompt: string;
+		readonly prompt: PrivateClaudeNativePrompt;
 		readonly tools: readonly PrivateClaudeSelectedTool[];
+		readonly model?: PrivateClaudeModelSelection;
+		readonly credential?: SafeLeaseProjection;
 		readonly supervisorRef: string;
 		readonly operationNonce: string;
 		readonly externalTurnId?: string;
@@ -744,6 +902,8 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		const query = this.#companion.query({
 			sdkVersion: PRIVATE_CLAUDE_AGENT_SDK_VERSION,
 			prompt: input.prompt,
+			...(input.model === undefined ? {} : { model: input.model }),
+			...(input.credential === undefined ? {} : { credential: input.credential }),
 			cwd: this.#cwd,
 			env: this.#env,
 			tools: input.tools,
@@ -775,6 +935,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			terminal: deferred<ExternalConnectorTerminalEvidence>(),
 			pending: new Map(),
 			seenCallbacks: new Set(),
+			...(input.model === undefined ? {} : { model: input.model }),
 			...(input.authority === undefined ? {} : { authority: input.authority }),
 			sessionId: "",
 			sequence: 0,
@@ -870,7 +1031,9 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			actualTools.length !== expectedTools.length ||
 			actualTools.some((tool, index) => tool !== expectedTools[index]) ||
 			actualServers.length !== expectedServers.length ||
-			actualServers.some((server, index) => server !== expectedServers[index])
+			actualServers.some((server, index) => server !== expectedServers[index]) ||
+			(operation.model !== undefined &&
+				(message.model !== operation.model.model || message.effort !== operation.model.effort))
 		) {
 			throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
 		}
@@ -1064,6 +1227,71 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		operation.pending.clear();
 		operation.events.close();
 		operation.query.close();
+	}
+
+	async #nativePrompt(input: CanonicalExternalAgentInput, signal?: AbortSignal): Promise<PrivateClaudeNativePrompt> {
+		const content: PrivateClaudeNativeContentBlock[] = [{ type: "text", text: input.text }];
+		for (const artifact of input.artifacts) content.push(await this.#nativeArtifact(artifact, signal));
+		return Object.freeze({ type: "user", content: Object.freeze(content) });
+	}
+
+	async #nativeArtifact(
+		artifact: CanonicalExternalAgentArtifactReference,
+		signal?: AbortSignal,
+	): Promise<PrivateClaudeNativeContentBlock> {
+		const imageMediaType = CLAUDE_IMAGE_MEDIA_TYPES.find((mediaType) => mediaType === artifact.mediaType);
+		const fileMediaType = CLAUDE_FILE_MEDIA_TYPES.find((mediaType) => mediaType === artifact.mediaType);
+		if (
+			this.#artifactStore === undefined ||
+			(artifact.kind === "image" && imageMediaType === undefined) ||
+			(artifact.kind === "file" && fileMediaType === undefined)
+		) {
+			throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		}
+		const loaded = await withTimeout(
+			this.#artifactStore.get(artifact.artifactId),
+			this.#limits.requestTimeoutMs,
+			signal,
+		);
+		if (
+			!loaded.ok ||
+			loaded.value.byteLength !== artifact.sizeBytes ||
+			createHash("sha256").update(loaded.value).digest("hex") !== artifact.artifactId
+		) {
+			throw eventInvalidError();
+		}
+		if (artifact.kind === "image" && imageMediaType !== undefined) {
+			return Object.freeze({
+				type: "image",
+				source: Object.freeze({
+					type: "base64",
+					media_type: imageMediaType,
+					data: Buffer.from(loaded.value).toString("base64"),
+				}),
+			});
+		}
+		if (fileMediaType === "application/pdf") {
+			return Object.freeze({
+				type: "document",
+				source: Object.freeze({
+					type: "base64",
+					media_type: "application/pdf",
+					data: Buffer.from(loaded.value).toString("base64"),
+				}),
+			});
+		}
+		try {
+			return Object.freeze({
+				type: "document",
+				source: Object.freeze({
+					type: "text",
+					media_type: "text/plain",
+					data: new TextDecoder("utf-8", { fatal: true }).decode(loaded.value),
+				}),
+			});
+		} catch {
+			throw eventInvalidError();
+		}
 	}
 }
 
