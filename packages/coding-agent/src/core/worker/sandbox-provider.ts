@@ -582,8 +582,8 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 			transitions,
 			transitionRecords: Object.freeze([this.cloneRecord(reclaimingRecord), this.cloneRecord(unknownRecord)]),
 		};
-		const durableError = this.persistFact(fact);
-		if (durableError !== undefined) return Result.err(durableError);
+		const persistenceError = this.persistFact(fact);
+		if (persistenceError !== undefined) return Result.err(persistenceError);
 		this.records.delete(workerId);
 		this.records.set(workerId, unknownRecord);
 		this.evictRetainedFacts();
@@ -1225,8 +1225,8 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 			record: this.cloneRecord(safeRecord),
 			transitions: Object.freeze((supervisor.lifecycleState?.transitions ?? []).map((transition) => Object.freeze({ ...transition }))),
 		};
-		const durableError = this.persistFact(fact);
-		if (durableError !== undefined) return durableError;
+		const persistenceError = this.persistFact(fact);
+		if (persistenceError !== undefined) return persistenceError;
 		this.records.delete(safeRecord.workerId);
 		this.records.set(safeRecord.workerId, safeRecord);
 		this.evictRetainedFacts();
@@ -1252,8 +1252,8 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 			revision: record.revision,
 			recordedAt: new Date().toISOString(),
 		});
-		const durableError = this.persistFact(fact);
-		if (durableError !== undefined) return durableError;
+		const persistenceError = this.persistFact(fact);
+		if (persistenceError !== undefined) return persistenceError;
 		this.publishObservationalFact(fact);
 		return undefined;
 	}
@@ -1266,8 +1266,8 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 			terminalRecordRevision,
 			receipt: this.cloneReceipt(safeReceipt),
 		};
-		const durableError = this.persistFact(fact);
-		if (durableError !== undefined) return durableError;
+		const persistenceError = this.persistFact(fact);
+		if (persistenceError !== undefined) return persistenceError;
 		this.receipts.delete(safeReceipt.workerReceiptId);
 		this.receipts.set(safeReceipt.workerReceiptId, safeReceipt);
 		this.evictRetainedFacts();

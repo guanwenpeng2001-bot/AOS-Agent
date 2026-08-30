@@ -426,14 +426,14 @@ export class SubagentMailbox {
 		try {
 			const existing = await this.ledger.get(SUBAGENT_MAILBOX_SENT_OBJECT_TYPE, input.messageId);
 			if (existing !== undefined) {
-				const checkedExisting = this.validateStoredSentRecord(existing);
-				if (!checkedExisting.ok) return checkedExisting;
-				if (checkedExisting.value === undefined || !inputMatchesStored(input, checkedExisting.value.payload)) {
+				const existingResult = this.validateStoredSentRecord(existing);
+				if (!existingResult.ok) return existingResult;
+				if (existingResult.value === undefined || !inputMatchesStored(input, existingResult.value.payload)) {
 					return Result.err(new FoundationError("subagent_conflict", "Child mailbox messageId is already bound to different content"));
 				}
 				const ack = await this.readAck(input.messageId);
 				if (!ack.ok) return ack;
-				return Result.ok(publicMessage(checkedExisting.value.payload, ack.value));
+				return Result.ok(publicMessage(existingResult.value.payload, ack.value));
 			}
 			const payload: ChildMailboxSentPayloadV1 = {
 				schemaVersion: 1,
@@ -482,12 +482,12 @@ export class SubagentMailbox {
 					},
 				},
 			);
-			const checkedStored = this.validateStoredSentRecord(stored.record);
-			if (!checkedStored.ok) return checkedStored;
-			if (checkedStored.value === undefined) {
+			const storedResult = this.validateStoredSentRecord(stored.record);
+			if (!storedResult.ok) return storedResult;
+			if (storedResult.value === undefined) {
 				return Result.err(new FoundationError("subagent_persistence_failed", "Persisted Child mailbox message is outside mailbox ownership"));
 			}
-			return Result.ok(publicMessage(checkedStored.value.payload, undefined));
+			return Result.ok(publicMessage(storedResult.value.payload, undefined));
 		} catch {
 			return Result.err(new FoundationError("subagent_persistence_failed", "Child mailbox message could not be persisted"));
 		}
@@ -551,12 +551,12 @@ export class SubagentMailbox {
 			if (sentRecord === undefined) {
 				return Result.err(new FoundationError("subagent_not_found", "Child mailbox message was not found"));
 			}
-			const checkedSent = this.validateStoredSentRecord(sentRecord);
-			if (!checkedSent.ok) return checkedSent;
-			if (checkedSent.value === undefined) {
+			const sentResult = this.validateStoredSentRecord(sentRecord);
+			if (!sentResult.ok) return sentResult;
+			if (sentResult.value === undefined) {
 				return Result.err(new FoundationError("subagent_not_found", "Child mailbox message was not found"));
 			}
-			const sent = checkedSent.value.payload;
+			const sent = sentResult.value.payload;
 			const endpointLookup = this.endpoint(input.toAgentInstanceId);
 			if (!endpointLookup.ok) return endpointLookup;
 			const endpoint = endpointLookup.value;
@@ -599,12 +599,12 @@ export class SubagentMailbox {
 					agentInstanceId: endpoint.agentInstanceId,
 				},
 			});
-			const checkedAck = this.validateStoredAckRecord(stored.record, new Map([[sent.messageId, sent]]));
-			if (!checkedAck.ok) return checkedAck;
-			if (checkedAck.value === undefined) {
+			const ackResult = this.validateStoredAckRecord(stored.record, new Map([[sent.messageId, sent]]));
+			if (!ackResult.ok) return ackResult;
+			if (ackResult.value === undefined) {
 				return Result.err(new FoundationError("subagent_persistence_failed", "Persisted Child mailbox acknowledgement is outside mailbox ownership"));
 			}
-			return Result.ok(publicMessage(sent, checkedAck.value));
+			return Result.ok(publicMessage(sent, ackResult.value));
 		} catch {
 			return Result.err(new FoundationError("subagent_persistence_failed", "Child mailbox acknowledgement could not be persisted"));
 		}
@@ -714,9 +714,9 @@ export class SubagentMailbox {
 		) {
 			return Result.err(new FoundationError("subagent_mailbox_invalid", "Sibling roster query is invalid"));
 		}
-		const checkedRoster = this.readRoster();
-		if (!checkedRoster.ok) return checkedRoster;
-		const roster = checkedRoster.value.filter((entry) => entry.sessionId === this.sessionId);
+		const rosterResult = this.readRoster();
+		if (!rosterResult.ok) return rosterResult;
+		const roster = rosterResult.value.filter((entry) => entry.sessionId === this.sessionId);
 		const requester = roster.find((entry) => entry.childAgentInstanceId === inputValue.agentInstanceId);
 		if (requester === undefined) return Result.err(new FoundationError("subagent_not_found", "Child Agent was not found"));
 		return Result.ok(
@@ -803,9 +803,9 @@ export class SubagentMailbox {
 	): Promise<ResultValue<readonly ChildAgentRosterEntry[], FoundationError>> {
 		const deadline = this.clock() + input.timeoutMs;
 		while (true) {
-			const checkedRoster = this.readRoster();
-			if (!checkedRoster.ok) return checkedRoster;
-			const roster = checkedRoster.value.filter(
+			const rosterResult = this.readRoster();
+			if (!rosterResult.ok) return rosterResult;
+			const roster = rosterResult.value.filter(
 				(entry) =>
 					entry.sessionId === this.sessionId && input.childAgentInstanceIds.includes(entry.childAgentInstanceId),
 			);

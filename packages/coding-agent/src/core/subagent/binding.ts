@@ -535,27 +535,27 @@ function projectChildBindingUnchecked(
 		if (!projected.ok) return projectionError("Child MCP selector cannot resolve outside the parent exact set");
 		childMcpSelection = projected.value;
 	}
-	const checkedChildMcpSelection = validateMcpSelectionForBinding(
+	const childMcpSelectionResult = validateMcpSelectionForBinding(
 		childMcpSelection,
 		childRole.value.mcpSelector,
 		childCapability.id,
 	);
-	if (!checkedChildMcpSelection.ok) return projectionError("Child MCP selection is invalid");
-	const checkedMcpInheritance = validateChildMcpSelection({
+	if (!childMcpSelectionResult.ok) return projectionError("Child MCP selection is invalid");
+	const mcpInheritanceResult = validateChildMcpSelection({
 		parentSelection: parentBinding.value.mcpSelection,
-		childSelection: checkedChildMcpSelection.value,
+		childSelection: childMcpSelectionResult.value,
 	});
-	if (!checkedMcpInheritance.ok) return projectionError(checkedMcpInheritance.error.message);
+	if (!mcpInheritanceResult.ok) return projectionError(mcpInheritanceResult.error.message);
 	const mcpApprovalEvidenceId = resolveMcpInheritanceApproval(mcpInheritanceAuthority, {
 		parentBindingId: parentBinding.value.bindingId,
 		childBindingId: input.childBindingId,
 		policyRevision: childPolicy,
 		parentSelection: parentBinding.value.mcpSelection,
-		childSelection: checkedChildMcpSelection.value,
+		childSelection: childMcpSelectionResult.value,
 	});
 	if (!mcpApprovalEvidenceId.ok) return mcpApprovalEvidenceId;
 	const mcpBaseProof: ChildBindingTighteningProof =
-		mcpSelectorProof === "equal" && sameJson(parentBinding.value.mcpSelection, checkedChildMcpSelection.value)
+		mcpSelectorProof === "equal" && sameJson(parentBinding.value.mcpSelection, childMcpSelectionResult.value)
 			? "equal"
 			: "narrowed";
 	const mcpProof = applyManagedLock("mcp", locks, mcpBaseProof);
@@ -620,7 +620,7 @@ function projectChildBindingUnchecked(
 	const fields: ChildBindingProjectionFieldRecord[] = [
 		fieldRecord("instructions", instructionParent ?? null, instructionChild ?? null, instructionProof),
 		fieldRecord("skills", parentRole.value.skillSelector, childRole.value.skillSelector, skillProof),
-		fieldRecord("mcp", parentBinding.value.mcpSelection, checkedChildMcpSelection.value, mcpProof),
+		fieldRecord("mcp", parentBinding.value.mcpSelection, childMcpSelectionResult.value, mcpProof),
 		fieldRecord("model", parentModelValue, childModelValue, modelProof),
 		fieldRecord(
 			"sandbox",

@@ -153,30 +153,30 @@ function validateCanonicalRunResult(candidate: CanonicalRunResult): ValidatedCan
 		fail("Canonical Run result has an invalid exact shape");
 	}
 
-	const checkedReceipt = validateRunReceipt(candidate.runReceipt);
-	if (!checkedReceipt.ok) fail("Canonical RunReceipt has an invalid exact shape");
-	const receipt = checkedReceipt.value;
+	const receiptResult = validateRunReceipt(candidate.runReceipt);
+	if (!receiptResult.ok) fail("Canonical RunReceipt has an invalid exact shape");
+	const receipt = receiptResult.value;
 	if (!isCanonicalTimestamp(receipt.completedAt)) {
 		fail(`Canonical RunReceipt ${receipt.runReceiptId} has an invalid completion time`);
 	}
 
-	const checkedEvent = validateDurableEvent(candidate.writtenEvent);
+	const eventResult = validateDurableEvent(candidate.writtenEvent);
 	if (
-		!checkedEvent.ok ||
-		checkedEvent.value.category !== "run_receipt.written" ||
-		!isCanonicalTimestamp(checkedEvent.value.timestamp) ||
-		!isRecord(checkedEvent.value.payload)
+		!eventResult.ok ||
+		eventResult.value.category !== "run_receipt.written" ||
+		!isCanonicalTimestamp(eventResult.value.timestamp) ||
+		!isRecord(eventResult.value.payload)
 	) {
 		fail(`Canonical RunReceipt ${receipt.runReceiptId} has an invalid written event`);
 	}
-	const sessionId = checkedEvent.value.correlation.sessionId;
+	const sessionId = eventResult.value.correlation.sessionId;
 	if (sessionId.length === 0) fail(`Canonical RunReceipt ${receipt.runReceiptId} has no Session correlation`);
 	if (
-		checkedEvent.value.payload.runId !== receipt.runId ||
-		checkedEvent.value.payload.runReceiptId !== receipt.runReceiptId ||
-		checkedEvent.value.correlation.runId !== receipt.runId ||
-		(checkedEvent.value.correlation.runReceiptId !== undefined &&
-			checkedEvent.value.correlation.runReceiptId !== receipt.runReceiptId)
+		eventResult.value.payload.runId !== receipt.runId ||
+		eventResult.value.payload.runReceiptId !== receipt.runReceiptId ||
+		eventResult.value.correlation.runId !== receipt.runId ||
+		(eventResult.value.correlation.runReceiptId !== undefined &&
+			eventResult.value.correlation.runReceiptId !== receipt.runReceiptId)
 	) {
 		fail(`Canonical run_receipt.written event conflicts for Run ${receipt.runId}`);
 	}

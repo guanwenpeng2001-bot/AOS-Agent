@@ -554,8 +554,8 @@ export async function cleanupChildWorktree(
 		} catch {
 			after = Result.err(new FoundationError("subagent_close_unknown", "Host adapter resolve threw after delete"));
 		}
-		const checkedAfter = after.ok ? validateOwnedState(after.value, ownedIdentity.value) : closeUnknown("Host adapter could not verify child worktree deletion", after.error);
-		if (checkedAfter.ok && checkedAfter.value.state === "missing") {
+		const afterStateResult = after.ok ? validateOwnedState(after.value, ownedIdentity.value) : closeUnknown("Host adapter could not verify child worktree deletion", after.error);
+		if (afterStateResult.ok && afterStateResult.value.state === "missing") {
 			const persisted = await persistRecord(host, cloneDeepFrozen({ ...durable.value.record, cleanedUp: true }), durable.value.revision);
 			if (persisted.ok) return persisted;
 			const quarantined = await quarantine(host, ownedIdentity.value, "cleanup_unknown");

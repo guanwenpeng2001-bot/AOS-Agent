@@ -313,9 +313,9 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		options: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<ChildSpawnResult, FoundationError>> {
 		if (this.disposed) return Result.err(fail("subagent_provider_unavailable", "Fork Child Agent provider is disposed"));
-		const checkedRequest = validateChildSpawnRequest(requestValue);
-		if (!checkedRequest.ok) return checkedRequest;
-		const request = checkedRequest.value;
+		const requestResult = validateChildSpawnRequest(requestValue);
+		if (!requestResult.ok) return requestResult;
+		const request = requestResult.value;
 		const existing = this.bySpawnId.get(request.spawnId);
 		if (existing !== undefined) {
 			if (existing.lost) return Result.err(fail("subagent_lost", "Child Agent spawn handle is lost"));
@@ -345,8 +345,8 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		if (bindingFact?.kind !== "fact") {
 			return Result.err(fail("subagent_spawn_invalid", "Child AgentBinding must be durable before spawn"));
 		}
-		const checkedBinding = validateImmutableAgentBinding(bindingFact.payload);
-		if (!checkedBinding.ok) return checkedBinding;
+		const bindingResult = validateImmutableAgentBinding(bindingFact.payload);
+		if (!bindingResult.ok) return bindingResult;
 		const projectionFact = await this.ledger.getFact<ChildBindingProjection>(
 			CHILD_BINDING_PROJECTION_OBJECT_TYPE,
 			request.spawnId,
@@ -355,7 +355,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 			projectionFact === undefined ||
 			!validateChildBindingProjection(projectionFact.payload) ||
 			projectionFact.payload.spawnId !== request.spawnId ||
-			projectionFact.payload.childBindingId !== checkedBinding.value.bindingId
+			projectionFact.payload.childBindingId !== bindingResult.value.bindingId
 		) {
 			return Result.err(fail("subagent_spawn_invalid", "Child Binding projection proof must be durable before fork spawn"));
 		}
@@ -371,7 +371,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 			spawn: created.value,
 			request,
 			correlation,
-			binding: checkedBinding.value,
+			binding: bindingResult.value,
 			bindingProjection: projectionFact.payload,
 			contextFork: contextFork.value,
 			childLaneId: planned.value.childLaneId,
@@ -452,9 +452,9 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		attempt: Attempt,
 		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
-		const checkedAttempt = validateAttempt(attempt);
-		if (!checkedAttempt.ok) return checkedAttempt;
-		const handle = this.byAttemptId.get(checkedAttempt.value.attemptId);
+		const attemptResult = validateAttempt(attempt);
+		if (!attemptResult.ok) return attemptResult;
+		const handle = this.byAttemptId.get(attemptResult.value.attemptId);
 		if (handle === undefined) return Result.err(fail("subagent_not_found", "Child Agent attempt is not held by this provider"));
 		if (handle.lost) return Result.err(fail("subagent_lost", "Child Agent handle is lost"));
 		if (handle.closed) return Result.err(fail("subagent_conflict", "Child Agent handle is closed"));
@@ -464,7 +464,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 			if (!started.ok) return started;
 		}
 		if (options?.signal?.aborted) return this.cancel(attempt.attemptId).then(() => Result.err(fail("subagent_cancel_failed", "Child Agent turn was cancelled")));
-		return this.sendTurn(handle, checkedAttempt.value, options?.signal);
+		return this.sendTurn(handle, attemptResult.value, options?.signal);
 	}
 
 	async cancelAttempt(attemptId: string): Promise<ResultValue<void, FoundationError>> {

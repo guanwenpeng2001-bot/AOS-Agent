@@ -2845,9 +2845,9 @@ function canonicalRunResultsFromSession(session: RunLedgerSession): CanonicalRun
 	const runReceiptIds = new Set<string>();
 	for (const fact of facts) {
 		if (fact.objectType !== "run_receipt") continue;
-		const checkedReceipt = validateCanonicalRunReceipt(fact.payload);
-		if (!checkedReceipt.ok) throw checkedReceipt.error;
-		const receipt: CanonicalRunReceipt = checkedReceipt.value;
+		const receiptResult = validateCanonicalRunReceipt(fact.payload);
+		if (!receiptResult.ok) throw receiptResult.error;
+		const receipt: CanonicalRunReceipt = receiptResult.value;
 		if (receipt.runId !== fact.objectId) {
 			throw new FoundationError("run_terminal_authority_invalid", "Canonical RunReceipt durable key is invalid");
 		}

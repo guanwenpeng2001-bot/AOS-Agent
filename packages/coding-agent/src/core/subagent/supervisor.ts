@@ -596,30 +596,30 @@ export class SubagentSupervisor {
 		if (input.childLaneId === this.laneId || [...this.controls.values()].some((control) => control.childLaneId === input.childLaneId)) {
 			return Result.err(new FoundationError("subagent_conflict", "Each Child Agent requires a unique durable lane"));
 		}
-		const checkedRequest = validateChildSpawnRequest(input.request);
-		const checkedOrigin = validateAgentInstance(input.originParentAgentInstance);
-		const checkedLineageParent = validateAgentInstance(
+		const requestResult = validateChildSpawnRequest(input.request);
+		const originResult = validateAgentInstance(input.originParentAgentInstance);
+		const lineageParentResult = validateAgentInstance(
 			input.lineageParentAgentInstance ?? input.originParentAgentInstance,
 		);
-		const checkedBinding = validateImmutableAgentBinding(input.childBinding);
-		if (!checkedRequest.ok || !checkedOrigin.ok || !checkedLineageParent.ok || !checkedBinding.ok) {
+		const bindingResult = validateImmutableAgentBinding(input.childBinding);
+		if (!requestResult.ok || !originResult.ok || !lineageParentResult.ok || !bindingResult.ok) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent spawn plan references invalid Foundation objects"));
 		}
-		if (!validateLineage(checkedOrigin.value) || !validateLineage(checkedLineageParent.value)) {
+		if (!validateLineage(originResult.value) || !validateLineage(lineageParentResult.value)) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent parent lineage is invalid"));
 		}
-		if (!lineageParentAllowed(checkedOrigin.value, checkedLineageParent.value)) {
+		if (!lineageParentAllowed(originResult.value, lineageParentResult.value)) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Nested spawn reparent must select the origin parent or one of its proven ancestors"));
 		}
-		const request = checkedRequest.value;
+		const request = requestResult.value;
 		if (
 			(request.forkScope === "recent_n") !== (request.recentN !== undefined) ||
 			(request.forkScope === "task_package") !== (request.taskPackageRef !== undefined)
 		) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent fork scope fields are not exact"));
 		}
-		const originParent = checkedOrigin.value;
-		const lineageParent = checkedLineageParent.value;
+		const originParent = originResult.value;
+		const lineageParent = lineageParentResult.value;
 		if (
 			request.parentSpawn === undefined ||
 			!validateSpawnAgentIntent(request.parentSpawn).ok ||
@@ -630,7 +630,7 @@ export class SubagentSupervisor {
 			request.parentAgentInstanceId !== lineageParent.agentInstanceId ||
 			request.parentAttemptId !== input.originParentAttemptId ||
 			request.taskEnvelope.taskId === lineageParent.taskId ||
-			checkedBinding.value.taskId !== request.taskEnvelope.taskId
+			bindingResult.value.taskId !== request.taskEnvelope.taskId
 		) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent spawn identities do not match the parent Task, child Task, and Binding"));
 		}
@@ -673,17 +673,17 @@ export class SubagentSupervisor {
 		) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child TaskEnvelope must be durable before spawn planning"));
 		}
-		const durableBinding = await this.ledger.get("agent_binding", checkedBinding.value.bindingId);
+		const durableBinding = await this.ledger.get("agent_binding", bindingResult.value.bindingId);
 		if (
 			durableBinding?.kind !== "fact" ||
-			canonicalFoundationJson(durableBinding.payload) !== canonicalFoundationJson(checkedBinding.value)
+			canonicalFoundationJson(durableBinding.payload) !== canonicalFoundationJson(bindingResult.value)
 		) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child AgentBinding must be durable before spawn planning"));
 		}
 		const durableOrigin = await this.ledger.get("agent_instance", originParent.agentInstanceId);
 		const durableLineageParent = await this.ledger.get("agent_instance", lineageParent.agentInstanceId);
 		const durableOriginAttempt = await this.ledger.get("attempt", input.originParentAttemptId);
-		const checkedOriginAttempt =
+		const originAttemptResult =
 			durableOriginAttempt?.kind === "fact" ? validateAttempt(durableOriginAttempt.payload) : undefined;
 		const expectedOriginLane = this.controls.get(originParent.agentInstanceId)?.childLaneId ?? this.laneId;
 		const expectedLineageParentLane = this.controls.get(lineageParent.agentInstanceId)?.childLaneId ?? this.laneId;
@@ -707,8 +707,8 @@ export class SubagentSupervisor {
 			durableLineageParent.correlation.agentInstanceId !== lineageParent.agentInstanceId ||
 			canonicalFoundationJson(durableLineageParent.payload) !== canonicalFoundationJson(lineageParent) ||
 			durableOriginAttempt?.kind !== "fact" ||
-			checkedOriginAttempt === undefined ||
-			!checkedOriginAttempt.ok ||
+			originAttemptResult === undefined ||
+			!originAttemptResult.ok ||
 			durableOriginAttempt.objectId !== input.originParentAttemptId ||
 			!Number.isSafeInteger(durableOriginAttempt.revision) ||
 			durableOriginAttempt.revision < 1 ||
@@ -718,18 +718,18 @@ export class SubagentSupervisor {
 			durableOriginAttempt.correlation.taskId !== originParent.taskId ||
 			durableOriginAttempt.correlation.attemptId !== input.originParentAttemptId ||
 			durableOriginAttempt.correlation.agentInstanceId !== originParent.agentInstanceId ||
-			durableOriginAttempt.correlation.dispatchId !== checkedOriginAttempt.value.dispatchId ||
-			durableOriginAttempt.correlation.bindingId !== checkedOriginAttempt.value.bindingId ||
-			checkedOriginAttempt.value.bindingEpochIds.length === 0 ||
-			durableOriginAttempt.correlation.bindingEpochId !== checkedOriginAttempt.value.bindingEpochIds.at(-1) ||
-			checkedOriginAttempt.value.attemptId !== input.originParentAttemptId ||
-			checkedOriginAttempt.value.taskId !== originParent.taskId ||
-			checkedOriginAttempt.value.agentInstanceId !== originParent.agentInstanceId ||
-			!["starting", "running", "awaiting_checkpoint"].includes(checkedOriginAttempt.value.status)
+			durableOriginAttempt.correlation.dispatchId !== originAttemptResult.value.dispatchId ||
+			durableOriginAttempt.correlation.bindingId !== originAttemptResult.value.bindingId ||
+			originAttemptResult.value.bindingEpochIds.length === 0 ||
+			durableOriginAttempt.correlation.bindingEpochId !== originAttemptResult.value.bindingEpochIds.at(-1) ||
+			originAttemptResult.value.attemptId !== input.originParentAttemptId ||
+			originAttemptResult.value.taskId !== originParent.taskId ||
+			originAttemptResult.value.agentInstanceId !== originParent.agentInstanceId ||
+			!["starting", "running", "awaiting_checkpoint"].includes(originAttemptResult.value.status)
 		) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent origin and lineage require durable parent identity proof"));
 		}
-		const bindingConcurrency = checkedBinding.value.budget.concurrency ?? this.maxConcurrent;
+		const bindingConcurrency = bindingResult.value.budget.concurrency ?? this.maxConcurrent;
 		const concurrencyLimit = Math.min(this.maxConcurrent, bindingConcurrency);
 		if (concurrencyLimit < 1) {
 			return Result.err(new FoundationError("subagent_concurrency_exceeded", "Child Agent Binding forbids concurrent execution"));
@@ -751,7 +751,7 @@ export class SubagentSupervisor {
 				taskId: request.taskEnvelope.taskId,
 				attemptId: input.attemptId,
 				agentInstanceId: createdAgent.value.agentInstanceId,
-				bindingId: checkedBinding.value.bindingId,
+				bindingId: bindingResult.value.bindingId,
 				activationReason: "attempt_started",
 				activatedByCommandId: input.activatedByCommandId,
 				now: this.now,
@@ -761,21 +761,21 @@ export class SubagentSupervisor {
 				schemaVersion: 1,
 				dispatchId: input.dispatchId,
 				taskId: request.taskEnvelope.taskId,
-				bindingId: checkedBinding.value.bindingId,
+				bindingId: bindingResult.value.bindingId,
 				taskExecutorProviderId: input.providerDescriptor.descriptor.providerId,
 				status: "pending",
 				...(deadline.value === undefined ? {} : { deadlineAt: deadline.value }),
 				createdAt: this.now(),
 			};
-			const checkedDispatch = validateDispatch(dispatch);
-			if (!checkedDispatch.ok) return checkedDispatch;
+			const dispatchResult = validateDispatch(dispatch);
+			if (!dispatchResult.ok) return dispatchResult;
 			const correlation: ExecutionCorrelation = {
 				sessionId: this.sessionId,
 				laneId: input.childLaneId,
 				taskId: request.taskEnvelope.taskId,
 				dispatchId: dispatch.dispatchId,
 				attemptId: input.attemptId,
-				bindingId: checkedBinding.value.bindingId,
+				bindingId: bindingResult.value.bindingId,
 				bindingEpochId: createdEpoch.value.bindingEpochId,
 				agentInstanceId: createdAgent.value.agentInstanceId,
 				providerId: input.providerDescriptor.descriptor.providerId,
@@ -793,7 +793,7 @@ export class SubagentSupervisor {
 				taskId: request.taskEnvelope.taskId,
 				dispatchId: dispatch.dispatchId,
 				attemptId: input.attemptId,
-				bindingId: checkedBinding.value.bindingId,
+				bindingId: bindingResult.value.bindingId,
 				bindingEpochIds: [createdEpoch.value.bindingEpochId],
 				providerKind: input.providerDescriptor.providerKind,
 				providerId: input.providerDescriptor.descriptor.providerId,
@@ -813,7 +813,7 @@ export class SubagentSupervisor {
 				reparented: originParent.agentInstanceId !== lineageParent.agentInstanceId,
 				dispatchId: dispatch.dispatchId,
 				attemptId: input.attemptId,
-				bindingId: checkedBinding.value.bindingId,
+				bindingId: bindingResult.value.bindingId,
 				bindingEpochId: createdEpoch.value.bindingEpochId,
 				providerId: input.providerDescriptor.descriptor.providerId,
 				maxTurns: requestedMaxTurns,
@@ -833,8 +833,8 @@ export class SubagentSupervisor {
 				cloneDeepFrozen({
 					schemaVersion: 1 as const,
 					request,
-					childBinding: checkedBinding.value,
-					dispatch: checkedDispatch.value,
+					childBinding: bindingResult.value,
+					dispatch: dispatchResult.value,
 					agentInstance: createdAgent.value,
 					initialBindingEpoch: createdEpoch.value,
 					correlation,
@@ -862,19 +862,19 @@ export class SubagentSupervisor {
 		if (!isRecord(plan) || !exactKeys(plan, SPAWN_PLAN_KEYS) || plan.schemaVersion !== 1) {
 			return Result.err(new FoundationError("subagent_spawn_invalid", "Child Agent spawn plan is invalid"));
 		}
-		const checkedRequest = validateChildSpawnRequest(plan.request);
-		const checkedBinding = validateImmutableAgentBinding(plan.childBinding);
-		const checkedDispatch = validateDispatch(plan.dispatch);
-		const checkedAgent = validateAgentInstance(plan.agentInstance);
-		const checkedEpoch = validateBindingEpoch(plan.initialBindingEpoch);
-		const checkedCorrelation = validateExecutionCorrelation(plan.correlation);
+		const requestResult = validateChildSpawnRequest(plan.request);
+		const bindingResult = validateImmutableAgentBinding(plan.childBinding);
+		const dispatchResult = validateDispatch(plan.dispatch);
+		const agentResult = validateAgentInstance(plan.agentInstance);
+		const epochResult = validateBindingEpoch(plan.initialBindingEpoch);
+		const correlationResult = validateExecutionCorrelation(plan.correlation);
 		if (
-			!checkedRequest.ok ||
-			!checkedBinding.ok ||
-			!checkedDispatch.ok ||
-			!checkedAgent.ok ||
-			!checkedEpoch.ok ||
-			!checkedCorrelation.ok ||
+			!requestResult.ok ||
+			!bindingResult.ok ||
+			!dispatchResult.ok ||
+			!agentResult.ok ||
+			!epochResult.ok ||
+			!correlationResult.ok ||
 			!isIdentifier(plan.childLaneId) ||
 			!isIdentifier(plan.providerId) ||
 			!isPositiveInteger(plan.maxTurns) ||
@@ -1136,7 +1136,7 @@ export class SubagentSupervisor {
 				new FoundationError("subagent_persistence_failed", "Durable Child Agent receipt could not be read"),
 			);
 		}
-		const durableReceiptMismatch =
+		const receiptMismatch =
 			durableReceipt?.kind !== "fact" ||
 			durableReceipt.objectId !== receipt.value.attemptReceiptId ||
 			durableReceipt.revision !== 1 ||
@@ -1151,8 +1151,8 @@ export class SubagentSupervisor {
 			durableReceipt.correlation.agentInstanceId !== record.childAgentInstanceId ||
 			canonicalFoundationJson(durableReceipt.payload) !== canonicalFoundationJson(receipt.value);
 		if (
-			(receipt.value.status !== "suspended" && durableReceiptMismatch) ||
-			(receipt.value.status === "suspended" && durableReceipt !== undefined && durableReceiptMismatch)
+			(receipt.value.status !== "suspended" && receiptMismatch) ||
+			(receipt.value.status === "suspended" && durableReceipt !== undefined && receiptMismatch)
 		) {
 			return this.rejectUntrustedReceipt(
 				record,

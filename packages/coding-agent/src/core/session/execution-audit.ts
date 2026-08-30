@@ -2209,9 +2209,9 @@ function canonicalRunSources(
 		.filter((source) => source.record.objectType === "run_receipt")
 		.sort((left, right) => left.record.seq - right.record.seq || left.record.id.localeCompare(right.record.id));
 	for (const candidate of runFacts) {
-		const checkedReceipt = validateRunReceipt(candidate.value);
-		if (!checkedReceipt.ok) return failRunProjection();
-		const receipt = checkedReceipt.value;
+		const receiptResult = validateRunReceipt(candidate.value);
+		if (!receiptResult.ok) return failRunProjection();
+		const receipt = receiptResult.value;
 		const sourceLaneId = candidate.record.correlation.laneId;
 		if (
 			receipt.runId !== candidate.record.objectId ||
