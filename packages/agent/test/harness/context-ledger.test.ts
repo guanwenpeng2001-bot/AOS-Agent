@@ -15,7 +15,7 @@ import {
 	sha256Hex,
 	type ArtifactStoreError,
 	type JsonlSessionMetadata,
-} from "../../src/index.ts";
+} from "../../src/internal.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { InMemorySessionStorage } from "../../src/harness/session/memory.ts";
 import { createTempDir } from "./session-test-utils.ts";

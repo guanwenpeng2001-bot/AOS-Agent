@@ -13,7 +13,7 @@ import {
 	type FoundationProviderCapability,
 	type ResultValue,
 	type WorkerReceipt,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import {
 	PolicyError,
 	authorizePolicyOperation,

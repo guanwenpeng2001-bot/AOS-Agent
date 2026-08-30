@@ -37,7 +37,7 @@ import {
 	validateAttemptReceiptForProvider,
 	validateDurableEvent,
 	type WorkerReceiptRef,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import { BUILTIN_CODING_AGENT_PROVIDER_ID } from "../../src/core/runtime/prompt-ingress.ts";
 import {

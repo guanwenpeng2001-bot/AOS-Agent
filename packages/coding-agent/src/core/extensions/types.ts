@@ -14,7 +14,7 @@ import type {
 	AgentToolUpdateCallback,
 	ThinkingLevel,
 	ToolExecutionMode,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type {
 	Api,
 	AssistantMessageEvent,

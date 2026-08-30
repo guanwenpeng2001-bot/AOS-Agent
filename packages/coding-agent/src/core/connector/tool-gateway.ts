@@ -5,7 +5,7 @@ import {
 	type ToolGateway,
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 
 /** Policy authority owned by the canonical AgentSession composition. */
 export interface ExternalToolGatewayPolicyAuthority {

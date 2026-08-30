@@ -17,7 +17,7 @@ import type {
 	Result,
 	TaskExecutorAttemptContext,
 	ToolExecutionResult,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 
 export const PACKAGED_EXTERNAL_AGENT_DRIVER_NAMES = Object.freeze(["fake-connector"] as const);
 export type PackagedExternalAgentDriverName = (typeof PACKAGED_EXTERNAL_AGENT_DRIVER_NAMES)[number];

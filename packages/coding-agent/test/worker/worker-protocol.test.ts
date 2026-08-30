@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkerReceipt } from "@aos-agent/agent-core";
+import type { WorkerReceipt } from "../../../agent/src/internal.ts";
 import {
 	WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES,
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,

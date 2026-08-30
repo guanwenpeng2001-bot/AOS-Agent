@@ -1,4 +1,4 @@
-import { canonicalFoundationJson } from "@aos-agent/agent-core";
+import { canonicalFoundationJson } from "../../../../agent/src/internal.ts";
 import {
 	parseRunBindingAssociation,
 	type RunBindingAssociation,

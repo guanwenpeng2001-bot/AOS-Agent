@@ -10,7 +10,7 @@ import {
 	type McpSelection,
 	type ToolExecutionResult,
 	type ToolGatewayRoute,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import * as packageEntry from "../../src/index.ts";
 import type { CanonicalExternalConnectorMapping } from "../../src/core/connector/session-mapping.ts";

@@ -8,7 +8,7 @@ import {
 } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { Agent, agentLoop, createAgentLoopConvergenceGuard } from "../src/index.ts";
+import { Agent, agentLoop, createAgentLoopConvergenceGuard } from "../src/internal.ts";
 import type { AgentContext, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.ts";
 
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {

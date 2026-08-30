@@ -16,7 +16,7 @@ import {
 	resolveAgentBinding,
 	Session,
 	type TaskEnvelope,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import type { SchedulerExecutorEntry, SchedulerQueueEntry } from "../../src/core/scheduler/host.ts";
 import {

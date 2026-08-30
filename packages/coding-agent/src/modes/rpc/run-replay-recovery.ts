@@ -1,4 +1,4 @@
-import type { DurableEventEnvelope } from "@aos-agent/agent-core";
+import type { DurableEventEnvelope } from "../../../../agent/src/internal.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type {
 	AuditEvent,

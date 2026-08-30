@@ -10,7 +10,7 @@ import {
 	fingerprintFoundationValue,
 	type ConnectorCapabilitySnapshot,
 	type ExternalAgentConnector,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import { DurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import type {

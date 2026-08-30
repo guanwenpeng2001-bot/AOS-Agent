@@ -16,7 +16,7 @@ import {
 	type RevisionReference,
 	type RoleRevision,
 	type TaskEnvelope,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import {
 	CHILD_BINDING_PROJECTION_FIELDS,
 	CHILD_BINDING_PROJECTION_OBJECT_TYPE,

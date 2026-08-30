@@ -7,7 +7,7 @@ import {
 	type FoundationJsonValue,
 	Result,
 	SessionLedger,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type {
 	AgentRuntimeCompositionContext,
 	ExternalConnectorRegistryFactory,

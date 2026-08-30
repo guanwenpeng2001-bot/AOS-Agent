@@ -5,7 +5,7 @@ import {
 	Session,
 	SessionLedger,
 	type SessionLedgerFactResult,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
 import {
 	PrivateMigrationError,

@@ -1,4 +1,4 @@
-import { validateEventPayloadForCategory } from "@aos-agent/agent-core";
+import { validateEventPayloadForCategory } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import * as publicApi from "../../src/index.ts";
 import * as externalConnectorApi from "../../src/external-connector.ts";

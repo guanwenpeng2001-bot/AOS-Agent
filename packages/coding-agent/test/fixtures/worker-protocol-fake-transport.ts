@@ -1,4 +1,4 @@
-import { Result, type FoundationError, type ResultValue } from "@aos-agent/agent-core";
+import { Result, type FoundationError, type ResultValue } from "../../../agent/src/internal.ts";
 import {
 	WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES,
 	formatWorkerStderrDiagnostic,

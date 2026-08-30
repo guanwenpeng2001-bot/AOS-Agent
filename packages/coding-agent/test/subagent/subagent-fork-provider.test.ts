@@ -43,7 +43,7 @@ import {
 	type RevisionReference,
 	type RoleRevision,
 	type TaskEnvelope,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { createAssistantMessageEventStream, createModels, fakeProvider } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
 import type { SubagentProviderDescriptor } from "../../src/core/subagent/registry.ts";

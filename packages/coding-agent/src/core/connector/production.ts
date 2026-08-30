@@ -4,7 +4,7 @@ import {
 	FoundationError,
 	validateConnectorCapabilitySnapshotForProvider,
 	type ExternalAgentConnector,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import {
 	createDurableExternalAgentConnector,
 	type ExternalAgentConnectorRuntimeOptions,

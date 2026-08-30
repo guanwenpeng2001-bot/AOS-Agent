@@ -1,6 +1,6 @@
 /** Canonical finite runtime limits for one External Connector Attempt. */
 
-import { fingerprintFoundationValue, type Fingerprint } from "@aos-agent/agent-core";
+import { fingerprintFoundationValue, type Fingerprint } from "../../../../agent/src/internal.ts";
 import { isExternalConnectorMappingIdentifier } from "../connector/session-mapping.ts";
 import type {
 	ExternalConnectorSegmentDeadline,

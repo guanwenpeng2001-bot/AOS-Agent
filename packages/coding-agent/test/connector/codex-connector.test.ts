@@ -5,7 +5,7 @@ import {
 	type ExecutionCorrelation,
 	type FoundationJsonValue,
 	type ToolExecutionResult,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import type { CanonicalExternalConnectorMapping } from "../../src/core/connector/session-mapping.ts";
 import {

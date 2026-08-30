@@ -34,7 +34,7 @@ import {
 	type TaskEnvelope,
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import {
 	projectSafeChildResult,
 	settleChildTaskResult,

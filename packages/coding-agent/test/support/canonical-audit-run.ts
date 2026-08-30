@@ -8,7 +8,7 @@ import type {
 	SideEffectState,
 	TaskEnvelope,
 	TaskResult,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 
 import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../../src/core/session/manager-storage.ts";
 import type { SessionEntry } from "../../src/core/session/manager.ts";

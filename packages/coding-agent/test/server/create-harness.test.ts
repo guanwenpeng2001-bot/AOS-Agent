@@ -7,7 +7,7 @@ import {
 	type Result,
 	Session,
 	type ShellExecOptions,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import { createModels } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";

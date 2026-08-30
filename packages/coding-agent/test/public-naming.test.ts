@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import * as AgentPublic from "@aos-agent/agent-core";
-import { parseTaskEnvelope, serializeTaskEnvelope, type TaskEnvelope } from "@aos-agent/agent-core";
+import { parseTaskEnvelope, serializeTaskEnvelope, type TaskEnvelope } from "../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import * as CodingAgentPublic from "../src/index.ts";
 import { SchedulerHost } from "../src/core/scheduler/host.ts";
@@ -69,13 +69,13 @@ describe("current public naming", () => {
 		}
 		expect(versionedExports).toEqual([]);
 		expect(migrationExports).toEqual([]);
-		expect(AgentPublic.TaskEnvelopeSchema).toBeDefined();
+		expect("TaskEnvelopeSchema" in AgentPublic).toBe(false);
 		expect("TaskEnvelopeV1Schema" in AgentPublic).toBe(false);
 		expect(SchedulerHost).toBeDefined();
 		expect("SchedulerHost" in CodingAgentPublic).toBe(false);
 		expect("SchedulerHostV1" in CodingAgentPublic).toBe(false);
 		const agentRootExports = exportsBySpecifier.get("@aos-agent/agent-core:.");
-		expect(agentRootExports?.has("JsonlSessionHeader")).toBe(true);
+		expect(agentRootExports?.has("JsonlSessionHeader")).toBe(false);
 		expect(agentRootExports?.has("JsonlV4Header")).toBe(false);
 		expect(agentRootExports?.has("JsonlV5Header")).toBe(false);
 		const jsonlTypes = readFileSync(join(root, "packages/agent/src/harness/session/jsonl/types.ts"), "utf8");

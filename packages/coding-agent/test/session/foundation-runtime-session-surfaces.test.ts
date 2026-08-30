@@ -8,7 +8,7 @@ import type {
 	RunReceipt,
 	TaskEnvelope,
 	TaskResult,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { fakeAssistantMessage, registerFakeProvider, type AssistantMessage } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {

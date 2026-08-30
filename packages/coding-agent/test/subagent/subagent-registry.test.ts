@@ -4,7 +4,7 @@ import {
 	Result,
 	type ChildAgentProvider,
 	type TaskExecutorProvider,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import {
 	AGENT_RUNTIME_HOST_PROVIDER,
 	FORK_PROVIDER,

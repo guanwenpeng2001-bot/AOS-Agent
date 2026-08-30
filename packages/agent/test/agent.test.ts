@@ -8,7 +8,7 @@ import {
 	type AgentToolUpdateCallback,
 	type StreamFn,
 	setDefaultStreamFn,
-} from "../src/index.ts";
+} from "../src/internal.ts";
 
 // Mock stream that mimics AssistantMessageEventStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {

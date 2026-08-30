@@ -1,4 +1,4 @@
-import { SessionError, type SessionStats } from "@aos-agent/agent-core";
+import { SessionError, type SessionStats } from "../../../../../agent/src/internal.ts";
 import type { Usage } from "@aos-agent/ai";
 import { sql } from "../sql.ts";
 import type { SqliteDatabase } from "../types.ts";

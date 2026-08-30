@@ -21,7 +21,7 @@ import {
 	type TaskEnvelope,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import * as packageEntry from "../../src/index.ts";
 import {
 	DurableExternalAgentConnector,

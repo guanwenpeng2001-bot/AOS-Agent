@@ -8,7 +8,7 @@ import {
 	type Attempt,
 	type CanonicalRunResult,
 	type TaskEnvelope,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import type { RunHandle, RunStreamEvent } from "../../src/core/session/run-lifecycle.ts";
 import { createSessionManagerStorage } from "../../src/core/session/manager-storage.ts";
 import type { SessionManager } from "../../src/core/session/manager.ts";

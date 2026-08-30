@@ -1,7 +1,7 @@
 /** Test-only OS-process bootstrap for the fork provider smoke. */
 import { once } from "node:events";
 import process from "node:process";
-import { FoundationError, Result } from "@aos-agent/agent-core";
+import { FoundationError, Result } from "../../../agent/src/internal.ts";
 import {
 	createAssistantMessageEventStream,
 	createModels,

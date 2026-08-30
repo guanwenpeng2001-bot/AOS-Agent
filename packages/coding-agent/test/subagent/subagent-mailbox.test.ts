@@ -1,4 +1,4 @@
-import { InMemorySessionStorage, Session, SessionLedger } from "@aos-agent/agent-core";
+import { InMemorySessionStorage, Session, SessionLedger } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import {
 	SUBAGENT_MAILBOX_ACK_OBJECT_TYPE,

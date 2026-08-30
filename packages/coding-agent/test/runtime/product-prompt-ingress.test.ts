@@ -20,7 +20,7 @@ import {
 	type StreamFn,
 	type ScopedModelGateway,
 	type ToolGateway,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import {
 	createAssistantMessageEventStream,

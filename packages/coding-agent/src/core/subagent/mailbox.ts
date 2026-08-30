@@ -11,7 +11,7 @@ import {
 	type FoundationRecord,
 	type ResultValue,
 	type SessionLedger,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import { SUBAGENT_PROVIDER_KINDS } from "./lifecycle.ts";
 import type { ChildAgentRosterEntry } from "./supervisor.ts";
 

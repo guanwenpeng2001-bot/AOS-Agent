@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { Session } from "@aos-agent/agent-core";
+import { Session } from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
 import { projectAutomationRuns } from "../../src/core/session/automation-run-projection.ts";
 import { ExecutionAuditQuery } from "../../src/core/session/execution-audit-query.ts";

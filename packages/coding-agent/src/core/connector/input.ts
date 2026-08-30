@@ -7,7 +7,7 @@ import {
 	isValidArtifactDigest,
 	isValidArtifactId,
 	validateArtifactRef,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 
 export const CANONICAL_EXTERNAL_AGENT_INPUT_SCHEMA_VERSION = 1 as const;
 

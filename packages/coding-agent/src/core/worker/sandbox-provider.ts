@@ -15,7 +15,7 @@ import {
 	type SandboxOperationProvider,
 	type SandboxOperationRequest,
 	type WorkerReceipt,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import {
 	OperationWorkerSupervisor,
 	type WorkerSupervisorConfig,

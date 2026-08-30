@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, fingerprintFoundationValue, FoundationError, Result } from "@aos-agent/agent-core";
+import { Agent, fingerprintFoundationValue, FoundationError, Result } from "../../../agent/src/internal.ts";
 import type { Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../../src/core/session/agent-session.ts";

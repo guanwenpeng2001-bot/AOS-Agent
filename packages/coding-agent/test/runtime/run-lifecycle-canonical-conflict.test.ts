@@ -5,7 +5,7 @@ import {
 	type FoundationFactRecord,
 	type RunReceipt,
 	type TaskResult,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import { PrivateMigrationError } from "../../src/core/migrations/session-entry.ts";
 import {

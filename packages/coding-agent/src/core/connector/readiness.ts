@@ -2,7 +2,7 @@ import {
 	cloneDeepFrozen,
 	fingerprintFoundationValue,
 	type Fingerprint,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 
 export const DEFAULT_EXTERNAL_CONNECTOR_READINESS_TTL_MS = 5 * 60_000;
 

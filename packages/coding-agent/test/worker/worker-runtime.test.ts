@@ -1,5 +1,5 @@
 import { PassThrough } from "node:stream";
-import { validateWorkerReceiptForProvider } from "@aos-agent/agent-core";
+import { validateWorkerReceiptForProvider } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,

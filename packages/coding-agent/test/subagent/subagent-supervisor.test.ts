@@ -26,7 +26,7 @@ import {
 	type RoleRevision,
 	type TaskEnvelope,
 	type TaskExecutorProvider,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import type { SubagentProviderDescriptor } from "../../src/core/subagent/registry.ts";
 import {

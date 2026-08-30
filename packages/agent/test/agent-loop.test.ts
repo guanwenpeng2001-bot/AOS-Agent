@@ -9,7 +9,7 @@ import {
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { agentLoop, agentLoopContinue } from "../src/agent-loop.ts";
-import { setDefaultStreamFn } from "../src/index.ts";
+import { setDefaultStreamFn } from "../src/internal.ts";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.ts";
 
 // Mock stream for testing - mimics MockAssistantStream

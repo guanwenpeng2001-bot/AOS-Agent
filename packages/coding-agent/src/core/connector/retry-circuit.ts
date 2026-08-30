@@ -6,7 +6,7 @@ import {
 	type ResultValue,
 	type SessionLedger,
 	type SideEffectState,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import { runtimeClockFor, type RuntimeClock } from "../runtime/clock.ts";
 
 export const CONNECTOR_RETRY_DECISION_OBJECT_TYPE = "scheduler.connector.retry_decision";

@@ -1,4 +1,4 @@
-import type { FileError, Result } from "@aos-agent/agent-core";
+import type { FileError, Result } from "../../../../agent/src/internal.ts";
 import {
 	type BranchBounds,
 	type Entry,
@@ -16,7 +16,7 @@ import {
 	type SessionRepo as SessionRepository,
 	type SessionStats,
 	type SessionStorage,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import { uuidv7 } from "@aos-agent/ai";
 import { appendEntryToBranchCache, buildCachedBranch, deleteBranchCache, rebuildBranchCache } from "./branch-cache.ts";
 import { applyMigrations } from "./migrations.ts";

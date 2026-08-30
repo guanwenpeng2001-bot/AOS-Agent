@@ -34,7 +34,7 @@ import {
 	type FoundationRetentionPolicy,
 	type SetRetentionPolicyOptions,
 	validateFoundationToolResultEntry,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type {
 	CustomMessageEntry,
 	LabelEntry,

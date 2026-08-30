@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@aos-agent/agent-core";
+import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "../../../../agent/src/internal.ts";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@aos-agent/ai/compat";
 import { getAgentDir } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";

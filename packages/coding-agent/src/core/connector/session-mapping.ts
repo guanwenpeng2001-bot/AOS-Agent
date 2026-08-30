@@ -1,6 +1,6 @@
 /** Canonical, secret-free mapping owned by the ExternalAgentConnector runtime. */
 
-import type { Fingerprint } from "@aos-agent/agent-core";
+import type { Fingerprint } from "../../../../agent/src/internal.ts";
 
 export const EXTERNAL_CONNECTOR_MAPPING_SCHEMA_VERSION = 1 as const;
 

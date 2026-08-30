@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createConnectorCapabilitySnapshot, Result } from "@aos-agent/agent-core";
+import { createConnectorCapabilitySnapshot, Result } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import type { ExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";

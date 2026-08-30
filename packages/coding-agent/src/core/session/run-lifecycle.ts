@@ -34,7 +34,7 @@ import {
 	validateRunReceipt as validateCanonicalRunReceipt,
 	validateTaskResult,
 	type ExternalErrorCode,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type { AssistantMessage, AssistantMessageEvent } from "@aos-agent/ai";
 import type { AgentSessionEvent } from "./agent-session.ts";
 import {

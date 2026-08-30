@@ -21,7 +21,7 @@ import {
 	Result,
 	type ResultValue,
 	type SchedulerHandoffEventPayload,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import { runtimeClockFor, type RuntimeClock } from "../runtime/clock.ts";
 import {
 	applySchedulerHandoffTransition,

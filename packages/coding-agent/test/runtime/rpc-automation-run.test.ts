@@ -18,7 +18,7 @@ import {
 	type FoundationJsonValue,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";

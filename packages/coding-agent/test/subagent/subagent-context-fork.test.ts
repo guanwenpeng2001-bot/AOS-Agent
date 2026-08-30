@@ -12,7 +12,7 @@ import {
 	type Entry,
 	type RoleRevision,
 	type TaskEnvelope,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import {
 	forkChildContext,
 	TASK_PACKAGE_CRITERION_MAX_CHARS,

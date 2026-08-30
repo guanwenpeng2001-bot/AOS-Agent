@@ -29,7 +29,7 @@ import {
 	type FoundationEventEnvelope,
 	type RunReceipt as CanonicalRunReceipt,
 	type TaskEnvelope,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type { ContextSnapshot, ContextSourceReceipt } from "./context-engine.ts";
 import { serializePublicRunBindingAssociation, type RunBindingAssociation } from "../binding-handles.ts";
 import {

@@ -11,7 +11,7 @@ import {
 	type SessionLedger,
 	validateAttemptReceipt,
 	validateTaskResult,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type {
 	ChildMailboxMessage,
 	ConsumeChildMailboxInput,

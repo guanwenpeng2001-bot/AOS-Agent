@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Session } from "@aos-agent/agent-core";
+import { Session } from "../../../agent/src/internal.ts";
 import { classifyProviderFailure } from "../../src/core/execution-error.ts";
 import {
 	createSessionCheckpoint,

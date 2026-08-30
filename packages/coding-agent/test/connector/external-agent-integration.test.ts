@@ -11,7 +11,7 @@ import {
 	type Attempt,
 	type ConnectorCapabilitySnapshot,
 	type FoundationJsonValue,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import { createExternalConnectorRegistry } from "../../src/index.ts";
 import type { CanonicalExternalAgentInput } from "../../src/external-connector.ts";

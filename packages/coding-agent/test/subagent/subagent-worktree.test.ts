@@ -7,7 +7,7 @@ import {
 	Session,
 	SessionLedger,
 	type ResultValue,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import {
 	applyChildWorktree,
 	cleanupChildWorktree,

@@ -11,7 +11,7 @@ import {
 	type AgentTool,
 	type HarnessTool,
 	type StreamFn,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import {
 	createAssistantMessageEventStream,
 	createModels,

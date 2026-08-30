@@ -1,4 +1,4 @@
-import { FoundationError, InMemorySessionStorage, Result, Session } from "@aos-agent/agent-core";
+import { FoundationError, InMemorySessionStorage, Result, Session } from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
 import {
 	SCHEDULER_DEADLOCK_OBJECT_TYPE,

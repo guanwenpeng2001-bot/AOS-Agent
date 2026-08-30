@@ -9,7 +9,7 @@ import {
 	type RunReceipt,
 	type SideEffectState,
 	type TaskResult,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import { AutomationRunProjectionError, projectAutomationRuns } from "../../src/core/session/automation-run-projection.ts";
 

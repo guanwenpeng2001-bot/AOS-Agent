@@ -25,7 +25,7 @@ import {
 	type TaskExecutorProvider,
 	type TaskResult,
 	validateAttemptReceiptForProvider,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
 import type { Workflow, WorkflowStep } from "../../src/core/orchestration/workflow.ts";
 import type { WorkflowStore } from "../../src/core/orchestration/workflow-store.ts";

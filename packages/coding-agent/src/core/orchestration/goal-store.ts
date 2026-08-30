@@ -26,7 +26,7 @@ import {
 	type TaskResultRef,
 	type Todo,
 	type TodoStatus,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import {
 	asFoundationStoreError,
 	cloneStoreValue,

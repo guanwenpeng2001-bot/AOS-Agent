@@ -14,7 +14,7 @@ import {
 	canonicalFoundationJson,
 	sha256HexValue,
 	type SessionRewindPlan,
-} from "../../src/index.ts";
+} from "../../src/internal.ts";
 import { resolveInstructionSources, type InstructionLock } from "../../src/harness/context/instruction.ts";
 import { applyCheckpointRewind } from "../../src/harness/context/checkpoint.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";

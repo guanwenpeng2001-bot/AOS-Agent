@@ -6,7 +6,7 @@ import {
 	ContextLedger,
 	type ConnectorCapabilitySnapshot,
 	type ExternalAgentConnector,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";
 import type {

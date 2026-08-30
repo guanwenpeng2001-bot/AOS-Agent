@@ -21,7 +21,7 @@ import {
 	type QuotaAttribution,
 	type QuotaProvider,
 	type QuotaReservation,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
 import {
 	SchedulerComposition,

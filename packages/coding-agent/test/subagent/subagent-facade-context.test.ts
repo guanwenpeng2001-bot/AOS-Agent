@@ -15,7 +15,7 @@ import {
 	type QuotaProvider,
 	type ScopedModelGateway,
 	type ToolGateway,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { createAssistantMessageEventStream, type Context, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../../src/core/session/agent-session.ts";

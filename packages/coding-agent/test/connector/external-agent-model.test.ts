@@ -7,7 +7,7 @@ import {
 	type AgentBinding,
 	type ModelProfile,
 	type RevisionReference,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import {
 	EXTERNAL_MODEL_PROJECTION_FIELDS,

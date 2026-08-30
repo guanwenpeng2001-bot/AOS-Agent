@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SandboxOperationRequest } from "@aos-agent/agent-core";
+import type { SandboxOperationRequest } from "../../../agent/src/internal.ts";
 import {
 	OperationWorkerSupervisor,
 	type WorkerSupervisorConfig,

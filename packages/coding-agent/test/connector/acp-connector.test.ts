@@ -31,7 +31,7 @@ import {
 	type FoundationJsonValue,
 	type ToolExecutionResult,
 	type ToolGatewayRoute,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import * as packageEntry from "../../src/index.ts";
 import {

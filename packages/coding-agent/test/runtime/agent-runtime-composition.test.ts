@@ -33,7 +33,7 @@ import {
 	type ToolGateway,
 	type ToolGatewayProvider,
 	type ToolGatewayRoute,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import { createModels } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";

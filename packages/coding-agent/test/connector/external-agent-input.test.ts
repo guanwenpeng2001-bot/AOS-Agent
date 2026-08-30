@@ -1,4 +1,4 @@
-import { type ArtifactDigest, fingerprintFoundationValue } from "@aos-agent/agent-core";
+import { type ArtifactDigest, fingerprintFoundationValue } from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import {
 	type CanonicalExternalAgentArtifactReference,

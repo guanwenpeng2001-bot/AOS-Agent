@@ -42,7 +42,7 @@ import {
 	type TaskExecutorProvider,
 	type TaskResult,
 	type ValidationResult,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type { ImageContent } from "@aos-agent/ai";
 import { createCodingAgentHarness, type CreateCodingAgentHarnessOptions } from "../../server/create-harness.ts";
 

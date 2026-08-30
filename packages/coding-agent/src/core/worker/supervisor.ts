@@ -18,7 +18,7 @@ import {
 	type ResultValue,
 	type SandboxOperationRequest,
 	type WorkerReceipt,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
 	OperationWorkerProtocolSession,

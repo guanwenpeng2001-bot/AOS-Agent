@@ -7,7 +7,7 @@ import {
 	Result,
 	createConnectorCapabilitySnapshot,
 	type ExternalAgentConnector,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import type { ExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";
 import {

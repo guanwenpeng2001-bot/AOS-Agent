@@ -13,7 +13,7 @@ import {
 	validateImmutableAgentBinding,
 	type AgentBinding,
 	type Fingerprint,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type { ModelFallbackReason } from "../runtime/model-broker.ts";
 
 export const EXTERNAL_MODEL_PROJECTION_SCHEMA_VERSION = 1 as const;

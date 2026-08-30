@@ -1,4 +1,4 @@
-import type { Entry, EntryOrder } from "@aos-agent/agent-core";
+import type { Entry, EntryOrder } from "../../../../../agent/src/internal.ts";
 import { sql } from "../sql.ts";
 import type { SqliteDatabase } from "../types.ts";
 

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Session, type AgentMessage } from "@aos-agent/agent-core";
+import { Session, type AgentMessage } from "../../../agent/src/internal.ts";
 import { getModel } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as publicApi from "../../src/index.ts";

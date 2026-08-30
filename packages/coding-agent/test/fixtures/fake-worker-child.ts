@@ -1,4 +1,4 @@
-import type { WorkerReceipt } from "@aos-agent/agent-core";
+import type { WorkerReceipt } from "../../../agent/src/internal.ts";
 import type {
 	OperationWorkerEventFrame,
 	OperationWorkerRequestFrame,

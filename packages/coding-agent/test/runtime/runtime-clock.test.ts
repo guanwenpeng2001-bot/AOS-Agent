@@ -1,4 +1,4 @@
-import { FoundationError, Result } from "@aos-agent/agent-core";
+import { FoundationError, Result } from "../../../agent/src/internal.ts";
 import { describe, expect, test } from "vitest";
 import { SYSTEM_RUNTIME_CLOCK, withRuntimeClock } from "../../src/core/runtime/clock.ts";
 import { type SchedulerHostOptions, SchedulerHost } from "../../src/core/scheduler/host.ts";

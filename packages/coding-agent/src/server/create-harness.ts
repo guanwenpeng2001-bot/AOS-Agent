@@ -29,7 +29,7 @@ import {
 	type ToolGatewayRoute,
 	type ToolExecutionResult,
 	type WorkerReceipt,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import type { Static, TSchema } from "typebox";
 import {
 	createAgentRuntimeCompositionFactoryFromTrustedProviders,

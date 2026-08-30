@@ -40,7 +40,7 @@ import {
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 	validateAttemptReceiptForProvider,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import { createRunLifecycleCoordinator } from "../../src/core/session/run-lifecycle.ts";
 import type { SchedulerClaim, SchedulerQueueEntry } from "../../src/core/scheduler/host.ts";

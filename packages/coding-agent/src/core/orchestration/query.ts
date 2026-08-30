@@ -29,7 +29,7 @@ import {
 	type TaskResult,
 	type Todo,
 	type WorkerReceipt,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type { Workflow } from "./workflow.ts";
 
 /** Stable queryable Foundation entities. This is an identity/query surface, not a persistence engine. */

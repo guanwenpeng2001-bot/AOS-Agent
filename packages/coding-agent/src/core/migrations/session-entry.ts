@@ -4,7 +4,7 @@ import {
 	type Fingerprint,
 	type FoundationRecord,
 	type SessionLedger,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type { FileEntry, SessionEntry } from "../session/manager.ts";
 import {
 	decodeCurrentSessionEntry,

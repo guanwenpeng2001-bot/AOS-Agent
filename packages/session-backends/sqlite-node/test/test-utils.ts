@@ -8,7 +8,7 @@ import type {
 	Session as CoreSession,
 	Entry,
 	MessageEntry,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import type { Usage } from "@aos-agent/ai";
 import { afterEach, vi } from "vitest";
 import type { SqliteDatabaseFactory, SqliteSessionMetadata } from "../src/index.ts";

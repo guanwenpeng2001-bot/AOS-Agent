@@ -23,7 +23,7 @@ import {
 	type StreamFn,
 	type TaskEnvelope,
 	type ToolGateway,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import {
 	createAssistantMessageEventStream,
 	createModels,

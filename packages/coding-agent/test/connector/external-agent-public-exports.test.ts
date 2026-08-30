@@ -6,7 +6,7 @@ import {
 	EXTERNAL_ERROR_MESSAGES,
 	FOUNDATION_ERROR_CODES,
 	FoundationError,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import * as externalConnectorApi from "../../src/external-connector.ts";

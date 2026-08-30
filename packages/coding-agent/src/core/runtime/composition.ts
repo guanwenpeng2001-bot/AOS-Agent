@@ -1,5 +1,5 @@
-import type { AgentHarness, Session, ToolGateway, ToolGatewayProvider } from "@aos-agent/agent-core";
-import { createFoundationToolGateway, FoundationError, fingerprintFoundationValue, Result } from "@aos-agent/agent-core";
+import type { AgentHarness, Session, ToolGateway, ToolGatewayProvider } from "../../../../agent/src/internal.ts";
+import { createFoundationToolGateway, FoundationError, fingerprintFoundationValue, Result } from "../../../../agent/src/internal.ts";
 import type { Models } from "@aos-agent/ai";
 import type { CapabilityRegistry } from "../policy/capability-registry.ts";
 import { type ConnectorRetryPolicy, DEFAULT_CONNECTOR_RETRY_POLICY } from "../connector/retry-circuit.ts";

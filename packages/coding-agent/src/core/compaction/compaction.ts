@@ -5,7 +5,7 @@
  * and after compaction the session is reloaded.
  */
 
-import type { AgentMessage, StreamFn, ThinkingLevel } from "@aos-agent/agent-core";
+import type { AgentMessage, StreamFn, ThinkingLevel } from "../../../../agent/src/internal.ts";
 import { contentText, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@aos-agent/ai";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@aos-agent/ai/compat";
 import { completeSimple } from "@aos-agent/ai/compat";

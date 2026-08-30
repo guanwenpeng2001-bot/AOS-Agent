@@ -50,7 +50,7 @@ import {
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
 	type ToolGateway,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type { ChildContextForkResult } from "./context-fork.ts";
 import { cleanupChildMemoryScope, createChildMemoryScope } from "./memory.ts";
 import {

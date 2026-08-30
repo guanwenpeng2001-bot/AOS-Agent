@@ -5,7 +5,7 @@
  * a summary of the branch being left so context isn't lost.
  */
 
-import type { AgentMessage, StreamFn } from "@aos-agent/agent-core";
+import type { AgentMessage, StreamFn } from "../../../../agent/src/internal.ts";
 import type { RetryCallbacks, RetryPolicy } from "@aos-agent/ai";
 import { contentText } from "@aos-agent/ai";
 import type { Model, SimpleStreamOptions, Usage } from "@aos-agent/ai/compat";

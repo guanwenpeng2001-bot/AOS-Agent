@@ -24,7 +24,7 @@ import {
 	type SchedulerDeadlockEventPayload,
 	type SchedulerDispatchEventPayload,
 	type SchedulerQueueEventPayload,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import { runtimeClockFor, type RuntimeClock } from "../runtime/clock.ts";
 import { SCHEDULER_MESSAGE_OBJECT_TYPES, type SchedulerAskWaitFact } from "./messages.ts";
 import type { SchedulerHandoffController } from "./handoff.ts";

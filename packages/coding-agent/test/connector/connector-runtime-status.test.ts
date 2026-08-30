@@ -4,7 +4,7 @@ import {
 	createConnectorCapabilitySnapshot,
 	type ConnectorCapabilitySnapshot,
 	type ExternalAgentConnector,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import {
 	CONNECTOR_RUNTIME_LATENCY_BUCKET_BOUNDS_MS,

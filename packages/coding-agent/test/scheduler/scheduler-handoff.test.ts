@@ -12,7 +12,7 @@ import {
 	Result,
 	Session,
 	type SetRetentionPolicyOptions,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import {
 	SCHEDULER_HANDOFF_ACCEPTANCE_OBJECT_TYPE,

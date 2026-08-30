@@ -30,7 +30,7 @@ import {
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import {
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 	attachExternalConnectorCredentialLease,

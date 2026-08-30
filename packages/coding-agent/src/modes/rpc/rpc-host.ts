@@ -20,7 +20,7 @@ import {
 	LayeredResultSettlement,
 	type ResultValue,
 	type ThinkingLevel,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
 import type { AgentSession, AgentSessionEvent, ExtensionBindings, SessionStats } from "../../core/session/agent-session.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/session/facade.ts";

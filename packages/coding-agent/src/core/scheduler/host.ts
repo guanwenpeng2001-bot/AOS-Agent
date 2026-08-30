@@ -31,7 +31,7 @@ import {
 	type SideEffectState,
 	type TaskEnvelope,
 	type TaskResult,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import { runtimeClockFor, type RuntimeClock, type RuntimeTimerHandle } from "../runtime/clock.ts";
 import type {
 	SchedulerDispatchExecutorRequirements,

@@ -1,4 +1,4 @@
-import type { StreamFn } from "@aos-agent/agent-core";
+import type { StreamFn } from "../../../../agent/src/internal.ts";
 import { type AssistantMessage, createAssistantMessageEventStream, fakeAssistantMessage } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "../harness.ts";

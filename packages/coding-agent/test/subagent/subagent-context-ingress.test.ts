@@ -10,7 +10,7 @@ import {
 	type FoundationJsonValue,
 	type FoundationProviderCapability,
 	type ResultValue,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import {
 	renderSubagentNextTurnContext,

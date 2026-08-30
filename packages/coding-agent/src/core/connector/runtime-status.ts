@@ -4,7 +4,7 @@ import {
 	cloneDeepFrozen,
 	fingerprintFoundationValue,
 	type Fingerprint,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import type {
 	ConnectorCircuitFact,
 	ConnectorCircuitState,

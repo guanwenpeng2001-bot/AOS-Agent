@@ -17,7 +17,7 @@ import {
 	type ModelProfile,
 	type RevisionReference,
 	type RoleRevision,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { CapabilityPublicIdentity } from "../../src/core/policy/capability-public-identity.ts";
 import {
 	CapabilityRegistry,

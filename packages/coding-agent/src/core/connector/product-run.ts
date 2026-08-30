@@ -32,7 +32,7 @@ import {
 	type TaskResult,
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
-} from "@aos-agent/agent-core";
+} from "../../../../agent/src/internal.ts";
 import { createGoalStore } from "../orchestration/goal-store.ts";
 import {
 	gateCanonicalExternalAgentInputBeforeAcceptance,

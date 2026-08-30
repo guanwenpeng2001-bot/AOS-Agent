@@ -21,7 +21,7 @@ import {
 	type SideEffectState,
 	type TaskExecutorAttemptContext,
 	type TaskExecutorProvider,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { createAssistantMessageEventStream, createModels, type Api, type Model, type Models } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";
 import { describe, expect, it } from "vitest";

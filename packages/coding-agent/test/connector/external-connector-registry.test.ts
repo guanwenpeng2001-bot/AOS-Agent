@@ -20,7 +20,7 @@ import {
 	type ToolGatewayRequest,
 	type ToolGatewayProvider,
 	type ToolGatewayRoute,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
 import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Writable } from "node:stream";
-import { Agent, FoundationError, Result } from "@aos-agent/agent-core";
+import { Agent, FoundationError, Result } from "../../../agent/src/internal.ts";
 import { createModels, type Model, type Models } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../../src/core/session/agent-session.ts";

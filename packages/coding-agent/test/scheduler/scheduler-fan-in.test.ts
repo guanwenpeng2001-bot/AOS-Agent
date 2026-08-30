@@ -24,7 +24,7 @@ import {
 	type TaskExecutorProvider,
 	type ValidationResult,
 	validateAttemptReceiptForProvider,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
 import { createRunLifecycleCoordinator, type RunHandle } from "../../src/core/session/run-lifecycle.ts";
 import {

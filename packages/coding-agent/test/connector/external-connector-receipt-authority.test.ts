@@ -6,7 +6,7 @@ import {
 	type AgentBinding,
 	type Attempt,
 	type AttemptReceipt,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import * as publicApi from "../../src/index.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";

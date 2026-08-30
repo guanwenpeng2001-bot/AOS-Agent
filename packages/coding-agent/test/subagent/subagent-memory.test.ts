@@ -7,7 +7,7 @@ import {
 	Session,
 	ContextLedger,
 	createScopedMemoryStore,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import {
 	cleanupChildMemoryScope,
 	createChildMemoryScope,

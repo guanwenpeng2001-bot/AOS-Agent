@@ -14,7 +14,7 @@ import {
 	type TaskEnvelope,
 	type TaskResult,
 	type WorkerReceipt,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it } from "vitest";
 import {
 	createRunLifecycleCoordinator,

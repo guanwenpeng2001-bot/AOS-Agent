@@ -5,7 +5,7 @@ import {
 	Session,
 	SessionLedger,
 	type TaskResult,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
 import { createRunLifecycleCoordinator, type RunLifecycleCoordinator } from "../../src/core/session/run-lifecycle.ts";
 import type { SchedulerMessage } from "../../src/core/scheduler/host.ts";

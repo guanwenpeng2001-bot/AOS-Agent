@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, FoundationError, LayeredResultSettlement } from "@aos-agent/agent-core";
+import { Agent, FoundationError, LayeredResultSettlement } from "../../../agent/src/internal.ts";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../../src/core/session/agent-session.ts";

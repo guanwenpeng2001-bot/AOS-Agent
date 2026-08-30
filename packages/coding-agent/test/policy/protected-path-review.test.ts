@@ -21,7 +21,7 @@ import {
 	type ToolExecutionResult,
 	type ToolGatewayRequest,
 	type ToolGatewayRoute,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { AgentSession } from "../../src/core/session/agent-session.ts";
 import { getAgentCanonicalSession } from "../../src/core/session/facade.ts";
 import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition.ts";
