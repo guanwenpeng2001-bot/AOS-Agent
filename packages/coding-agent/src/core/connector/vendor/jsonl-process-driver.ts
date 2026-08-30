@@ -479,7 +479,15 @@ export class JsonlProcessExternalConnectorDriver implements ExternalConnectorVen
 
 	#send(session: ProcessSession, frame: FoundationJsonValue | Record<string, unknown>): void {
 		if (session.error !== undefined) throw session.error;
-		const serialized = assertExternalConnectorJsonlFrameSize(frame);
+		let serialized: string;
+		try {
+			serialized = assertExternalConnectorJsonlFrameSize(frame);
+		} catch (error) {
+			if (error instanceof TypeError && error.message === "External Connector JSONL frame exceeds its size limit") {
+				throw new ExternalConnectorJsonlDriverError("external_frame_oversize", "JSONL frame exceeds its size limit");
+			}
+			throw error;
+		}
 		if (Buffer.byteLength(serialized, "utf8") > EXTERNAL_CONNECTOR_JSONL_MAX_FRAME_BYTES) {
 			throw new ExternalConnectorJsonlDriverError("external_frame_oversize", "JSONL frame exceeds its size limit");
 		}

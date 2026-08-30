@@ -25,7 +25,10 @@ import type {
 } from "./durable-connector.ts";
 import { createExternalConnectorRegistry } from "./registry.ts";
 import { createProductionExternalAgentConnector } from "./production.ts";
-import type { ExternalConnectorResolvedTarget } from "./target-config.ts";
+import {
+	ExternalConnectorTargetConfigError,
+	type ExternalConnectorResolvedTarget,
+} from "./target-config.ts";
 import {
 	loadPackagedExternalAgentDriver,
 	packagedExternalAgentDriverProcessModulePath,
@@ -285,6 +288,13 @@ function packagedCapability(): ConnectorCapabilitySnapshot {
 function genericTargetCapability(target: ExternalConnectorResolvedTarget): ConnectorCapabilitySnapshot {
 	const modelAccess = target.capabilityCeiling.modelAccess[0];
 	if (modelAccess === undefined) throw new TypeError("External Connector target capability ceiling is empty");
+	if (modelAccess === "aos_gateway") {
+		throw new ExternalConnectorTargetConfigError(
+			"capability_widened",
+			"$.selectedTarget.capabilityCeiling.modelAccess",
+			"Generic External Connector targets cannot use aos_gateway model access.",
+		);
+	}
 	return createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
 		providerId: target.providerId,

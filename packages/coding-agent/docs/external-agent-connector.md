@@ -90,7 +90,11 @@ the private JSONL driver adapter. It does not dynamically import a settings
 module or let the target choose a private vendor driver. Every target is still
 constructed through production provenance checks, process containment,
 supervision, and the durable connector runtime; a target that fails those checks
-remains fail-closed.
+remains fail-closed. A generic target whose selected capability ceiling resolves
+to `modelAccess: "aos_gateway"` is rejected with
+`external_connector_config_invalid`; generic settings targets may advertise only
+`none` or `agent_owned`, so no generic JSONL driver consumes a Host model
+projection or translation.
 
 The descriptor pins `providerId`, `providerClass: "external_connector"`,
 `revision`, and the capability snapshot digest. A selection must repeat those
@@ -140,8 +144,12 @@ Host-to-driver frames are handshake and request. Driver-to-Host frames are
 handshake_result, response, error, event, and events_end. The outer objects
 have exact keys: unknown or missing fields are rejected fail-closed; they are
 not ignored or forwarded. Payloads must be Foundation JSON. Typed nested values
-such as handles, mappings, events, routes, tool requests, and terminal evidence
-also reject unknown fields at their validation boundary.
+such as handles, mappings, routes, tool requests, and terminal evidence also
+reject unknown fields at their validation boundary. An `artifact` object nested
+inside an artifact event or terminal evidence is canonicalized from its known
+fields (`schemaVersion`, `artifactId`, `mediaType`, `digest`, and optional
+`sizeBytes`); extra fields are discarded. The enclosing event and terminal
+evidence objects still enforce their exact outer keys.
 
 The 256 KiB frame limit, UTF-8/LF framing rule, exact-key rule, and stable error
 policy above apply to every row in the following frame matrix. The matrix calls
@@ -149,8 +157,8 @@ out the row-specific request id or stream id and operation correlation.
 
 | Frame | Direction | Required fields | Optional fields | Correlation and stable rejection |
 | --- | --- | --- | --- | --- |
-| handshake | Host -> driver | schemaVersion, type: "handshake", requestId, supervisorRef, operationNonce, protocolVersion: 1, providerId, version, capability | None | requestId, supervisorRef, and operationNonce are current Host values. Host validation failures are external_event_invalid; a Host-written oversized frame is external_frame_oversize. Unsupported protocol is external_protocol_unsupported. |
-| handshake_result | Driver -> Host | schemaVersion, type: "handshake_result", requestId, supervisorRef, operationNonce, protocolVersion: 1, providerId, version, capability, implementedOperations | None | Echo all three ids. Protocol, identity, capability, or operation drift is external_capability_mismatch; a malformed response is external_event_invalid. |
+| handshake | Host -> driver | schemaVersion, type: "handshake", requestId, supervisorRef, operationNonce, protocolVersion: 1, providerId, version, capability | None | requestId, supervisorRef, and operationNonce are current Host values. Host validation failures are external_event_invalid; a Host-written oversized frame is external_frame_oversize. A handshake that receives a parsed frame other than handshake_result may be external_protocol_unsupported. |
+| handshake_result | Driver -> Host | schemaVersion, type: "handshake_result", requestId, supervisorRef, operationNonce, protocolVersion: 1, providerId, version, capability, implementedOperations | None | Echo all three ids. A protocolVersion other than 1 is an unsupported shape at parse time and the pump folds it to external_event_invalid; identity, capability, or operation drift is external_capability_mismatch; other malformed responses are external_event_invalid. |
 | request | Host -> driver | schemaVersion, type: "request", requestId, operation, supervisorRef, operationNonce, payload | None | The response must use the same requestId, operation, ref, and nonce. The driver returns an error frame for a rejected request. |
 | response | Driver -> Host | schemaVersion, type: "response", requestId, operation, supervisorRef, operationNonce, result | None | Unknown, duplicate, late, or operation-mismatched responses are external_event_invalid. Result shape is checked after request correlation. |
 | error | Driver -> Host | schemaVersion, type: "error", requestId, operation, supervisorRef, operationNonce, code, message | None | Echo the request correlation. code is a lower-case stable identifier (maximum 128 characters); message is bounded to 512 characters and must not contain secrets or raw diagnostics. |
@@ -164,7 +172,7 @@ redacted:
 | Condition | Stable code |
 | --- | --- |
 | Malformed JSON, unknown fields, invalid typed payload, wrong ref/nonce, duplicate or late response/event | external_event_invalid |
-| Unsupported JSONL protocol version | external_protocol_unsupported |
+| Handshake receives a parsed frame other than handshake_result (if that branch exists) | external_protocol_unsupported |
 | Mismatched provider/version/capability digest or missing required behavior | external_capability_mismatch or external_connector_not_ready |
 | Host outbound JSONL frame exceeds its bound | external_frame_oversize |
 | Supervised item exceeds a runtime resource bound | external_resource_limit_exceeded |
@@ -174,12 +182,15 @@ redacted:
 | Terminal state or process cleanup cannot be proven | external_terminal_ambiguous or side_effect_unknown |
 | Target settings or provenance are invalid | external_connector_config_invalid or external_connector_executable_untrusted |
 
-Error-code direction matters. The Host JSONL `#send` path raises
-`external_frame_oversize` when an outbound frame exceeds its bound. An inbound
-line that exceeds the process-channel limit fails that channel with an ordinary
-`Error`; if an inbound line is delivered but JSON parsing or frame validation
-fails, the JSONL pump folds it into `external_event_invalid`. An inbound
-oversized line is not stably mapped to `external_frame_oversize`.
+Error-code direction matters. The Host JSONL `#send` path maps an outbound frame
+whose size assertion fails to `external_frame_oversize`. An inbound line that
+exceeds the process-channel limit fails that channel with an ordinary `Error`;
+if an inbound line is delivered but JSON parsing or frame validation fails, the
+JSONL pump folds it into `external_event_invalid`, including a
+`handshake_result` whose `protocolVersion` is not 1. `external_protocol_unsupported`
+is reserved for a handshake receiving a parsed frame other than
+`handshake_result`, if that branch exists. An inbound oversized line is not
+stably mapped to `external_frame_oversize`.
 
 These codes describe Host-visible outcomes as well as driver error responses;
 the Host may replace an unsafe vendor error with the corresponding fixed
@@ -198,7 +209,7 @@ immutable snapshot:
 | providerId | Target provider identifier. |
 | revision | Positive integer snapshot revision. |
 | protocol | { name: string, version: string }. |
-| modelAccess | none, agent_owned, or aos_gateway. |
+| modelAccess | none, agent_owned, or aos_gateway. Settings-selected generic JSONL targets may use only none or agent_owned; the generic factory rejects a selected aos_gateway ceiling. |
 | resume, toolGateway, artifacts, images | Boolean capability flags. |
 | digest | { algorithm: "sha256", value: string }, matching the fingerprint of the preceding immutable fields. |
 
@@ -256,7 +267,9 @@ The spawn payload carries canonical Host facts, not a second business schema.
 attempt, correlation, and input are validated Foundation values. bindingDigest
 is the selected binding fingerprint value and bindingRevision is its revision.
 Model projections, when present, are secret-free and must match the frozen
-capability. The driver must not mutate these values or infer a wider binding.
+capability. Settings-selected generic targets never receive an aos_gateway model
+projection or translation because that capability is rejected before driver
+registration. The driver must not mutate these values or infer a wider binding.
 
 ### Event stream
 
@@ -270,7 +283,7 @@ handle, and no event has an optional field outside this table.
 | started | schemaVersion: 1, type, externalSessionId, producedAt | externalTurnId | Must be the first event and may occur only once. |
 | progress | schemaVersion: 1, type, externalSessionId, sequence, producedAt | externalTurnId, phase | sequence is a positive safe integer strictly greater than the prior progress sequence; phase is bounded text. |
 | heartbeat | schemaVersion: 1, type, externalSessionId, sequence, producedAt | externalTurnId | Must follow started; its positive sequence is strictly increasing. This is process liveness, not credential renewal. |
-| artifact | schemaVersion: 1, type, externalSessionId, artifact, producedAt | externalTurnId | Allowed only when artifacts is true; the reference is content-addressed metadata, not inline data. |
+| artifact | schemaVersion: 1, type, externalSessionId, artifact, producedAt | externalTurnId | Allowed only when artifacts is true; the reference is content-addressed metadata, not inline data. Known artifact fields are canonicalized and extra nested fields are discarded; the event envelope remains exact-key. |
 | tool_gateway_request | schemaVersion: 1, type, externalSessionId, operationNonce, request, producedAt | externalTurnId | The nested nonce must equal the handle and channel nonce. Host scope and in-flight checks happen before any effect. |
 
 After the event stream, the driver emits exactly one events_end frame. There is
@@ -338,8 +351,9 @@ Terminal evidence has required externalSessionId, operationNonce, status,
 sideEffectState, and producedAt; externalTurnId, artifacts, usage, and error
 are optional. status is succeeded, failed, cancelled, or suspended;
 sideEffectState is none, unknown, or side_effect_unknown. A cancelled result
-must use sideEffectState: "none". Artifacts are content-addressed references,
-and usage is the canonical Attempt-receipt usage shape
+must use sideEffectState: "none". Artifacts are content-addressed references:
+known fields in each nested artifact object are canonicalized and extra fields
+are discarded. Usage is the canonical Attempt-receipt usage shape
 (inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens,
 and costUsd). Errors use the stable public error code/message projection.
 Invalid or contradictory evidence is

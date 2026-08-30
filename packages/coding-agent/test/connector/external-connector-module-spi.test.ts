@@ -43,7 +43,12 @@ function immutableReference(type: string, id: string): RevisionReference {
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function target(options: { readonly toolGateway?: boolean } = {}): ReturnType<typeof buildExternalConnectorTargetConfig>["selectedTarget"] {
+function target(
+	options: {
+		readonly toolGateway?: boolean;
+		readonly modelAccess?: ExternalConnectorTargetDefinition["capabilityCeiling"]["modelAccess"];
+	} = {},
+): ReturnType<typeof buildExternalConnectorTargetConfig>["selectedTarget"] {
 	const definition: ExternalConnectorTargetDefinition = {
 		schemaVersion: 1,
 		targetId: "fixture-external-jsonl-target",
@@ -55,7 +60,7 @@ function target(options: { readonly toolGateway?: boolean } = {}): ReturnType<ty
 		executableIdentity: identity(process.execPath),
 		moduleIdentity: identity(FIXTURE_PATH),
 		capabilityCeiling: {
-			modelAccess: ["none"],
+			modelAccess: options.modelAccess ?? ["none"],
 			resume: true,
 			toolGateway: options.toolGateway ?? false,
 			artifacts: false,
@@ -131,6 +136,25 @@ function binding(currentTask: TaskEnvelope): AgentBinding {
 }
 
 describe("generic External Connector JSONL module SPI", () => {
+	it("rejects a generic settings target that selects aos_gateway model access", async () => {
+		const root = mkdtempSync(join(tmpdir(), "aos-jsonl-module-aos-gateway-"));
+		const selectedTarget = target({ modelAccess: ["aos_gateway"] });
+		if (selectedTarget === undefined) throw new Error("Target selection unexpectedly missing");
+		try {
+			await expect(
+				createPackagedExternalConnectorRegistryFactory({
+					target: selectedTarget,
+					agentDir: root,
+				}),
+			).rejects.toMatchObject({
+				code: "external_connector_config_invalid",
+				reason: "capability_widened",
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("runs a non-packaged settings target through the supervised process and canonical receipt", async () => {
 		const root = mkdtempSync(join(tmpdir(), "aos-jsonl-module-spi-"));
 		const selectedTarget = target();
