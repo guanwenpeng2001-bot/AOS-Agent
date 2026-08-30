@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROVIDER_CLASS } from "./provider-class.ts";
 import type {
 	AgentBinding,
 	Attempt,
@@ -100,6 +99,7 @@ const EXACT_OPERATION_KEYS = new Set(["sequence", "kind", "input", "output"]);
 const OPERATION_KINDS: ReadonlySet<string> = new Set(["start", "tool", "resume", "cancel"]);
 const COMPILED_BUN_URL_MARKERS = Object.freeze(["$bunfs", "~BUN", "%7EBUN"]);
 const PACKAGED_NOW = "2026-08-29T00:00:00.000Z";
+const PACKAGED_PROVIDER_CLASS = Object.freeze({ externalConnector: "external_connector" as const });
 const PACKAGED_PROVIDER_ID = "aos.fake-connector" as const;
 const PACKAGED_TOOL_CALL_ID = "aos.fake-tool-call" as const;
 const PACKAGED_TOOL_NAME = "fixture.echo" as const;
@@ -159,7 +159,7 @@ function receiptSummary(
 class PackagedFakeExternalAgentConnector implements ExternalAgentConnector {
 	readonly schemaVersion = 1 as const;
 	readonly providerId = PACKAGED_PROVIDER_ID;
-	readonly providerClass = PROVIDER_CLASS.externalConnector;
+	readonly providerClass = PACKAGED_PROVIDER_CLASS.externalConnector;
 	readonly #fixture: PackagedExternalAgentDriver;
 	readonly #capability: ConnectorCapabilitySnapshot;
 	readonly #attempts = new Map<string, Attempt>();
