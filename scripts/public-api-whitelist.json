@@ -1359,6 +1359,7 @@
         "createSandboxOperationToolGatewayProvider",
         "createTaskEnvelope",
         "createWriteTool",
+        "decodeLegacyFoundationRecordV1",
         "executeOperation",
         "fingerprintFoundationValue",
         "formatPromptTemplateInvocation",

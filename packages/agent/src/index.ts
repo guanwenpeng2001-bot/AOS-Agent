@@ -107,6 +107,7 @@ export {
 } from "./harness/foundation/identity.ts";
 export type { ExecutionCorrelation, Fingerprint } from "./harness/foundation/identity.ts";
 export { cloneDeepFrozen } from "./harness/foundation/immutability.ts";
+export { decodeLegacyFoundationRecordV1 } from "./harness/foundation/migrations/legacy-foundation-schema.ts";
 export {
 	projectMcpSelectionToSelector,
 	resolveMcpSelection,

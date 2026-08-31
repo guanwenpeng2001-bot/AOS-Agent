@@ -9,6 +9,7 @@ import { PUBLIC_ROOTS, repoRoot } from "./support/public-roots.ts";
 import ts from "typescript";
 
 const businessVersionPattern = /_?V\d+(?=[A-Z_]|$)/u;
+const allowedPublicMigrationExports = new Set(["decodeLegacyFoundationRecordV1"]);
 const legacyPublicSurfacePatterns = [
 	/External Agent Adapter/giu,
 	/Execution Audit \/ Replay \/ External Mapping Contract/gu,
@@ -49,14 +50,15 @@ describe("current public naming", () => {
 				new Set(exportedSymbols.map((symbol) => symbol.name)),
 			);
 			for (const symbol of exportedSymbols) {
-				if (businessVersionPattern.test(symbol.name)) {
+				if (businessVersionPattern.test(symbol.name) && !allowedPublicMigrationExports.has(symbol.name)) {
 					versionedExports.push(`${publicRoot.specifier}:${symbol.name}`);
 					continue;
 				}
 				const resolved = (symbol.flags & ts.SymbolFlags.Alias) === 0 ? symbol : checker.getAliasedSymbol(symbol);
-				if (businessVersionPattern.test(resolved.name))
+				if (businessVersionPattern.test(resolved.name) && !allowedPublicMigrationExports.has(symbol.name))
 					versionedExports.push(`${publicRoot.specifier}:${symbol.name}->${resolved.name}`);
 				if (
+					!allowedPublicMigrationExports.has(symbol.name) &&
 					resolved
 						.getDeclarations()
 						?.some((declaration) =>

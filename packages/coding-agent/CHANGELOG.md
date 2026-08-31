@@ -72,6 +72,7 @@
 
 ### Fixed
 
+- Installed packages now boot successfully through the CLI and SDK entrypoints.
 - Moved the public execution-association views from `core/migrations/` to `core/session/` so package-root exports no longer come from the private migrations layer, and corrected test fixture and repository-root paths that broke after the directory-domain move.
 - Source naming contract now flags Trusted named re-exports and version-suffixed `export abstract class` declarations.
 - Scheduler restarts now reclaim interrupted capacity and quota reservations before dispatching new work.

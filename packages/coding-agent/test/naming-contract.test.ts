@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { repoRoot } from "./support/public-roots.ts";
 
@@ -164,6 +165,34 @@ describe("source naming contract", () => {
 				const index = match.index ?? 0;
 				const location = `${relative(root, path).replaceAll("\\", "/")}:${lineNumber(source, index)}`;
 				violations.push(`${location}: Trusted export ${trustedNamedExport}`);
+			}
+		}
+
+		expect(violations).toEqual([]);
+	});
+
+	it("keeps package source imports inside published package boundaries", () => {
+		const root = repoRoot();
+		const packageRoot = join(root, "packages");
+		const files: string[] = [];
+		for (const entry of readdirSync(packageRoot, { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const sourceDirectory = join(packageRoot, entry.name, "src");
+			if (existsSync(sourceDirectory)) collectTypeScriptFiles(sourceDirectory, files);
+		}
+		files.sort();
+
+		const violations: string[] = [];
+		for (const path of files) {
+			const source = readFileSync(path, "utf8");
+			const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+			for (const statement of sourceFile.statements) {
+				if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
+				const specifier = statement.moduleSpecifier;
+				if (specifier === undefined || !ts.isStringLiteral(specifier)) continue;
+				if (!/^(?:\.\.\/)+[a-z0-9-]+\/src\//u.test(specifier.text)) continue;
+				const location = `${relative(root, path).replaceAll("\\", "/")}:${lineNumber(source, specifier.getStart(sourceFile))}`;
+				violations.push(`${location}: cross-package source import ${specifier.text}`);
 			}
 		}
 
