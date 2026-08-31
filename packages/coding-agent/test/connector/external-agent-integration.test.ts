@@ -42,6 +42,7 @@ import type {
 	ExternalModelProjectionField,
 	ExternalModelSupportMatrix,
 } from "../../src/core/connector/model-projection.ts";
+import { DeterministicClock } from "../support/deterministic-clock.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
 
 const NOW = "2026-08-27T00:00:00.000Z";
@@ -237,6 +238,7 @@ async function fixture(options: {
 		driver,
 		supervision: {
 			...supervision.options,
+			clock: new DeterministicClock(),
 			...(options.supervisionLimits === undefined ? {} : { limits: options.supervisionLimits }),
 		},
 		now: () => NOW,
