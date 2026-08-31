@@ -12,23 +12,38 @@ import { createTempDir } from "./session-test-utils.ts";
 
 const chmodRestorePaths: string[] = [];
 
-function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
-	return new Promise<T>((resolve, reject) => {
-		const timeoutId = setTimeout(() => {
-			onTimeout?.();
-			reject(new Error(`Timed out after ${ms}ms`));
-		}, ms);
-		promise.then(
-			(value) => {
-				clearTimeout(timeoutId);
-				resolve(value);
-			},
-			(error: unknown) => {
-				clearTimeout(timeoutId);
-				reject(error);
-			},
-		);
+async function startCommandAfterOutput(
+	env: NodeExecutionEnv,
+	command: string,
+	marker: string,
+	abortSignal?: AbortSignal,
+): Promise<{ execution: ReturnType<NodeExecutionEnv["exec"]> }> {
+	let stdout = "";
+	let markerObserved = false;
+	let resolveMarker!: () => void;
+	const markerOutput = new Promise<void>((resolve) => {
+		resolveMarker = resolve;
 	});
+	const execution = env.exec(command, {
+		abortSignal,
+		onStdout: (chunk) => {
+			stdout += chunk;
+			if (!markerObserved && stdout.includes(marker)) {
+				markerObserved = true;
+				resolveMarker();
+			}
+		},
+	});
+
+	await Promise.race([
+		markerOutput,
+		execution.then((result) => {
+			if (!markerObserved) {
+				throw new Error(`Command settled before stdout contained ${JSON.stringify(marker)}: ${JSON.stringify(result)}`);
+			}
+		}),
+	]);
+	return { execution };
 }
 
 function toBashSingleQuotedArg(value: string): string {
@@ -390,13 +405,13 @@ describe("NodeExecutionEnv", () => {
 			const env = new NodeExecutionEnv({ cwd: root });
 			const controller = new AbortController();
 			try {
-				const result = getOrThrow(
-					await withTimeout(
-						env.exec(createInheritedStdioCommand(pidFile), { abortSignal: controller.signal }),
-						3000,
-						() => controller.abort(),
-					),
+				const { execution } = await startCommandAfterOutput(
+					env,
+					createInheritedStdioCommand(pidFile),
+					"child-exiting",
+					controller.signal,
 				);
+				const result = getOrThrow(await execution);
 				expect(result.stdout).toContain("child-exiting");
 			} finally {
 				controller.abort();
@@ -408,13 +423,9 @@ describe("NodeExecutionEnv", () => {
 	it("cleanup terminates active shell processes", async () => {
 		const root = createTempDir();
 		const env = new NodeExecutionEnv({ cwd: root });
-		const execution = env.exec("touch started; sleep 60");
-		for (let attempt = 0; attempt < 100 && !getOrThrow(await env.exists("started")); attempt++) {
-			await new Promise((resolve) => setTimeout(resolve, 10));
-		}
-		expect(getOrThrow(await env.exists("started"))).toBe(true);
+		const { execution } = await startCommandAfterOutput(env, "printf started; sleep 60", "started");
 		await env.cleanup();
-		await expect(withTimeout(execution, 3000)).resolves.toMatchObject({ ok: true });
+		await expect(execution).resolves.toMatchObject({ ok: true });
 	});
 
 	it("streams stdout and stderr chunks", async () => {
