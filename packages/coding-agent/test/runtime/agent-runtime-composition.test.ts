@@ -100,16 +100,16 @@ import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
 import { createExternalConnectorTestRuntime } from "../connector/external-connector-test-supervision.ts";
 import { observeCanonicalTerminal } from "../support/canonical-run-terminal.ts";
 import {
-	createPr11CredentialProvider,
-	createPr11RegistryFactory,
-	createPr11SyntheticCompositionContext,
-	createPr11ToolGateway,
-	PR11_CREDENTIAL_CANARY,
-	PR11_SCOPE,
-	pr11CredentialPolicySettings,
-	pr11TargetConfig,
-	executePr11ProductRun,
-	type Pr11RegistryCapture,
+	createRecordingCredentialProvider,
+	createExternalConnectorRegistryFactory,
+	createExternalConnectorSyntheticCompositionContext,
+	createCrossLayerToolGateway,
+	EXTERNAL_CREDENTIAL_CANARY,
+	EXTERNAL_CONNECTOR_CREDENTIAL_SCOPE,
+	externalCredentialPolicySettings,
+	crossLayerTargetConfig,
+	executeCrossLayerProductRun,
+	type ExternalConnectorRegistryCapture,
 } from "../connector/fixtures/cross-layer.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
@@ -1468,21 +1468,21 @@ describe("AgentRuntimeComposition", () => {
 	});
 
 	it("projects trimmed Tool Gateway routes and completes request, execute, and result through composition", async () => {
-		const synthetic = createPr11SyntheticCompositionContext("pr11-composition-tool-gateway");
-		const captures: Pr11RegistryCapture[] = [];
+		const synthetic = createExternalConnectorSyntheticCompositionContext("connector-composition-tool-gateway");
+		const captures: ExternalConnectorRegistryCapture[] = [];
 		let providerExecutions = 0;
-		const targetConfig = pr11TargetConfig(process.cwd(), {
-			targetId: "pr11-tool-gateway-target",
-			providerId: "pr11.tool-gateway",
+		const targetConfig = crossLayerTargetConfig(process.cwd(), {
+			targetId: "connector-tool-gateway-target",
+			providerId: "connector.tool-gateway",
 			toolGateway: true,
 		});
-		const gateway = createPr11ToolGateway(() => {
+		const gateway = createCrossLayerToolGateway(() => {
 			providerExecutions += 1;
 		});
 		const factory = createAgentRuntimeCompositionFactory({
 			toolGateway: () => gateway,
 			externalConnectorTargetConfig: targetConfig,
-			externalConnectorRegistry: createPr11RegistryFactory({ mode: "tool_gateway", captures }),
+			externalConnectorRegistry: createExternalConnectorRegistryFactory({ mode: "tool_gateway", captures }),
 		});
 		const composition = materializeAgentRuntimeComposition(factory, synthetic.context);
 		bindCanonicalExternalToolGatewayPolicy(composition.toolGateway, {
@@ -1490,12 +1490,12 @@ describe("AgentRuntimeComposition", () => {
 		});
 		try {
 			const capture = captures[0];
-			if (capture === undefined) throw new Error("PR-11 Tool Gateway connector was not composed");
+			if (capture === undefined) throw new Error("cross-layer connector Tool Gateway connector was not composed");
 			expect(capture.target).toBe(targetConfig.selectedTarget);
 			expect(capture.toolGateway).toBe(composition.toolGateway);
 			expect(capture.authority.runtimeLimits).toBe(composition.runtimeLimits);
 
-			const execution = await executePr11ProductRun(synthetic.context, capture, "pr11-tool-gateway-run");
+			const execution = await executeCrossLayerProductRun(synthetic.context, capture, "connector-tool-gateway-run");
 			expect(execution.runReceipt.terminalStatus).toBe("completed");
 			expect(providerExecutions).toBe(1);
 			expect(capture.driver.spawnRequests).toHaveLength(1);
@@ -1504,7 +1504,7 @@ describe("AgentRuntimeComposition", () => {
 					kind: "local",
 					namespace: "workspace",
 					toolName: "workspace.read",
-					providerId: "pr11-builtin-tools",
+					providerId: "connector-builtin-tools",
 					revision: 1,
 					operation: { resource: "filesystem.read", effects: ["read"] },
 				},
@@ -1528,21 +1528,21 @@ describe("AgentRuntimeComposition", () => {
 
 	it("rejects unknown or unauthorized routes and orphan or nonce events before provider effects", async () => {
 		for (const mode of ["unknown", "unauthorized", "orphan", "nonce"] as const) {
-			const synthetic = createPr11SyntheticCompositionContext(`pr11-rejection-${mode}`);
-			const captures: Pr11RegistryCapture[] = [];
-			const targetConfig = pr11TargetConfig(process.cwd(), {
-				targetId: `pr11-rejection-target-${mode}`,
-				providerId: `pr11.rejection.${mode}`,
+			const synthetic = createExternalConnectorSyntheticCompositionContext(`connector-rejection-${mode}`);
+			const captures: ExternalConnectorRegistryCapture[] = [];
+			const targetConfig = crossLayerTargetConfig(process.cwd(), {
+				targetId: `connector-rejection-target-${mode}`,
+				providerId: `connector.rejection.${mode}`,
 				toolGateway: true,
 			});
 			let providerExecutions = 0;
-			const gateway = createPr11ToolGateway(() => {
+			const gateway = createCrossLayerToolGateway(() => {
 				providerExecutions += 1;
 			});
 			const factory = createAgentRuntimeCompositionFactory({
 				toolGateway: () => gateway,
 				externalConnectorTargetConfig: targetConfig,
-				externalConnectorRegistry: createPr11RegistryFactory({ mode, captures }),
+				externalConnectorRegistry: createExternalConnectorRegistryFactory({ mode, captures }),
 			});
 			const composition = materializeAgentRuntimeComposition(factory, synthetic.context);
 			bindCanonicalExternalToolGatewayPolicy(composition.toolGateway, {
@@ -1550,11 +1550,11 @@ describe("AgentRuntimeComposition", () => {
 			});
 			try {
 				const capture = captures[0];
-				if (capture === undefined) throw new Error(`PR-11 ${mode} connector was not composed`);
-				const execution = await executePr11ProductRun(
+				if (capture === undefined) throw new Error(`cross-layer connector ${mode} connector was not composed`);
+				const execution = await executeCrossLayerProductRun(
 					synthetic.context,
 					capture,
-					`pr11-rejection-run-${mode}`,
+					`connector-rejection-run-${mode}`,
 				);
 				expect(execution.runReceipt.terminalStatus).toBe("failed");
 				expect(execution.attemptReceipt.status).toBe("failed");
@@ -1573,17 +1573,17 @@ describe("AgentRuntimeComposition", () => {
 	});
 
 	it("fails closed during composition when a true Tool Gateway capability lacks vendor behavior", () => {
-		const synthetic = createPr11SyntheticCompositionContext("pr11-capability-missing-behavior");
-		const targetConfig = pr11TargetConfig(process.cwd(), {
-			targetId: "pr11-capability-missing-behavior-target",
-			providerId: "pr11.capability-missing-behavior",
+		const synthetic = createExternalConnectorSyntheticCompositionContext("connector-capability-missing-behavior");
+		const targetConfig = crossLayerTargetConfig(process.cwd(), {
+			targetId: "connector-capability-missing-behavior-target",
+			providerId: "connector.capability-missing-behavior",
 			toolGateway: true,
 		});
-		const gateway = createPr11ToolGateway();
+		const gateway = createCrossLayerToolGateway();
 		const factory = createAgentRuntimeCompositionFactory({
 			toolGateway: () => gateway,
 			externalConnectorTargetConfig: targetConfig,
-			externalConnectorRegistry: createPr11RegistryFactory({
+			externalConnectorRegistry: createExternalConnectorRegistryFactory({
 				mode: "tool_gateway",
 				bindBehaviorManifest: false,
 			}),
@@ -1596,28 +1596,28 @@ describe("AgentRuntimeComposition", () => {
 
 	it("passes external credential authority through the five-argument composition and rejects it after revoke", async () => {
 		const fixture = await createRuntimeFixture();
-		const targetConfig = pr11TargetConfig(fixture.cwd, {
-			targetId: "pr11-credential-composition-target",
-			providerId: "pr11.credential-composition",
+		const targetConfig = crossLayerTargetConfig(fixture.cwd, {
+			targetId: "connector-credential-composition-target",
+			providerId: "connector.credential-composition",
 			accountReference: { schemaVersion: 1, namespace: "test", accountId: "opaque-account" },
 		});
-		const credential = createPr11CredentialProvider();
-		const captures: Pr11RegistryCapture[] = [];
+		const credential = createRecordingCredentialProvider();
+		const captures: ExternalConnectorRegistryCapture[] = [];
 		const factory = createAgentRuntimeCompositionFactory({
 			externalConnectorTargetConfig: targetConfig,
 			externalConnectorCredentialIssueContext: () => (attempt, binding) => ({
 				taskId: attempt.taskId,
 				graphRevision: 1,
-				nodeId: "pr11-credential-node",
-				runId: "pr11-credential-run",
+				nodeId: "connector-credential-node",
+				runId: "connector-credential-run",
 				capabilityBindingId: binding.capabilityRevision.id,
 				policyBindingId: binding.policyRevision.id,
-				scopes: [PR11_SCOPE],
+				scopes: [EXTERNAL_CONNECTOR_CREDENTIAL_SCOPE],
 				requestedTtlMs: 60_000,
-				clientRequestId: "pr11-credential-resolver",
+				clientRequestId: "connector-credential-resolver",
 				nodeAttached: true,
 			}),
-			externalConnectorRegistry: createPr11RegistryFactory({ mode: "complete", captures }),
+			externalConnectorRegistry: createExternalConnectorRegistryFactory({ mode: "complete", captures }),
 			taskCredentialProvider: () => credential.provider,
 			taskCredentialPolicyMaxTtlMs: 300_000,
 		});
@@ -1625,8 +1625,8 @@ describe("AgentRuntimeComposition", () => {
 			getApiKey: () => "test-key",
 			initialState: {
 				model: {
-					id: "pr11-credential-model",
-					name: "PR-11 Credential Model",
+					id: "connector-credential-model",
+					name: "cross-layer connector Credential Model",
 					api: "anthropic-messages",
 					provider: "test",
 					baseUrl: "https://test.invalid",
@@ -1636,18 +1636,18 @@ describe("AgentRuntimeComposition", () => {
 					contextWindow: 1_000,
 					maxTokens: 100,
 				} satisfies Model<"anthropic-messages">,
-				systemPrompt: "PR-11 credential composition",
+				systemPrompt: "cross-layer connector credential composition",
 				tools: [],
 			},
 			streamFn: () => {
-				throw new Error("PR-11 credential test does not stream a model");
+				throw new Error("cross-layer connector credential test does not stream a model");
 			},
 		});
-		const sessionManager = SessionManager.inMemory(fixture.cwd, { id: "pr11-credential-composition-session" });
+		const sessionManager = SessionManager.inMemory(fixture.cwd, { id: "connector-credential-composition-session" });
 		const session = new AgentSession({
 			agent,
 			sessionManager,
-			settingsManager: SettingsManager.inMemory({ executionPolicy: pr11CredentialPolicySettings() }),
+			settingsManager: SettingsManager.inMemory({ executionPolicy: externalCredentialPolicySettings() }),
 			cwd: fixture.cwd,
 			modelRuntime: fixture.services.modelRuntime,
 			resourceLoader: fixture.services.resourceLoader,
@@ -1656,10 +1656,10 @@ describe("AgentRuntimeComposition", () => {
 			noTools: "all",
 		});
 		try {
-			await session.runExternalAgentPreflight("pr11-credential-run");
+			await session.runExternalAgentPreflight("connector-credential-run");
 			const capture = captures[0];
 			if (capture === undefined || capture.credential === undefined) {
-				throw new Error("PR-11 credential authority was not composed");
+				throw new Error("cross-layer connector credential authority was not composed");
 			}
 			expect(capture.target).toBe(targetConfig.selectedTarget);
 			expect(capture.credential).toBeDefined();
@@ -1667,21 +1667,21 @@ describe("AgentRuntimeComposition", () => {
 			const capabilityBindingId = session.getCapabilityBindingId();
 			const policyBinding = session.getActiveExecutionPolicyBinding();
 			if (capabilityBindingId === undefined || policyBinding === undefined) {
-				throw new Error("PR-11 credential policy boundary was not materialized");
+				throw new Error("cross-layer connector credential policy boundary was not materialized");
 			}
-			const attempt = { taskId: "pr11-credential-task" } as unknown as Attempt;
+			const attempt = { taskId: "connector-credential-task" } as unknown as Attempt;
 			const binding = {
 				capabilityRevision: { id: capabilityBindingId },
 				policyRevision: { id: policyBinding.id },
 			} as unknown as AgentBinding;
 			const issueContext = capture.credential.resolveIssueContext(attempt, binding);
-			if (issueContext === undefined) throw new Error("PR-11 credential issue context is missing");
+			if (issueContext === undefined) throw new Error("cross-layer connector credential issue context is missing");
 			const service = session.getTaskCredentialService();
-			if (service === undefined) throw new Error("PR-11 credential service is missing");
+			if (service === undefined) throw new Error("cross-layer connector credential service is missing");
 			const issued = service.issueForTaskRun(issueContext);
 			expect(issued).toMatchObject({ ok: true, delivery: { status: "succeeded" } });
 			if (!issued.ok) return;
-			expect(credential.target.projectedMaterials).toEqual([PR11_CREDENTIAL_CANARY]);
+			expect(credential.target.projectedMaterials).toEqual([EXTERNAL_CREDENTIAL_CANARY]);
 			expect(Object.keys(issued.grant).sort()).not.toContain("material");
 			const projection = {
 				schemaVersion: 1 as const,
@@ -1690,14 +1690,14 @@ describe("AgentRuntimeComposition", () => {
 				bindingId: issued.bindingId,
 				scopeDigest: issued.grant.scopeDigest,
 				expiresAt: issued.grant.expiresAt,
-				clientRequestId: "pr11-safe-projection",
+				clientRequestId: "connector-safe-projection",
 			};
 			expect(capture.credential.service.lookupDeliveredLease({
 				projection,
 				targetId: targetConfig.selectedTarget?.targetId ?? "missing-target",
 			})).toMatchObject({ ok: true, projection });
 			expect(JSON.stringify({ issued, projection, entries: sessionManager.getEntries() })).not.toContain(
-				PR11_CREDENTIAL_CANARY,
+				EXTERNAL_CREDENTIAL_CANARY,
 			);
 
 			const renewed = service.renew({
@@ -1706,7 +1706,7 @@ describe("AgentRuntimeComposition", () => {
 				bindingId: issued.bindingId,
 				heartbeatSequence: 1,
 				requestedTtlMs: 120_000,
-				clientRequestId: "pr11-credential-renew",
+				clientRequestId: "connector-credential-renew",
 				nodeAttached: true,
 			});
 			expect(renewed).toMatchObject({ ok: true, grant: { heartbeatSequence: 1 } });
@@ -1714,7 +1714,7 @@ describe("AgentRuntimeComposition", () => {
 			const revoked = service.revoke({
 				leaseId: issued.leaseId,
 				reasonCode: "run_cancelled",
-				clientRequestId: "pr11-credential-revoke",
+				clientRequestId: "connector-credential-revoke",
 				nodeAttached: true,
 			});
 			expect(revoked).toMatchObject({ ok: true, grant: { status: "revoked" } });
@@ -1729,7 +1729,7 @@ describe("AgentRuntimeComposition", () => {
 				bindingId: issued.bindingId,
 				heartbeatSequence: 2,
 				requestedTtlMs: 60_000,
-				clientRequestId: "pr11-credential-renew-after-revoke",
+				clientRequestId: "connector-credential-renew-after-revoke",
 				nodeAttached: true,
 			}).ok).toBe(false);
 		} finally {

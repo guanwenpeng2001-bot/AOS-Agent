@@ -35,14 +35,14 @@ export interface SubagentCapabilityRequirements {
 
 export type ExecutableSubagentProvider = ChildAgentProvider & TaskExecutorProvider;
 
-interface BoundExecutableSubagentProviderV1 {
+interface BoundExecutableSubagentProvider {
 	readonly revision: number;
 	readonly provider: ExecutableSubagentProvider;
 }
 
 export class SubagentProviderRegistry {
 	private readonly descriptors = new Map<string, SubagentProviderDescriptor[]>();
-	private readonly executableProviders = new Map<string, BoundExecutableSubagentProviderV1>();
+	private readonly executableProviders = new Map<string, BoundExecutableSubagentProvider>();
 
 	register(descriptor: SubagentProviderDescriptor): void {
 		if (

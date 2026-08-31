@@ -905,7 +905,7 @@ function freezeState(value: OperationWorkerProtocolState): OperationWorkerProtoc
 	});
 }
 
-interface WorkerRequestIdentityV1 {
+interface WorkerRequestIdentity {
 	readonly providerId?: string;
 	readonly taskId?: string;
 	readonly dispatchId?: string;
@@ -914,7 +914,7 @@ interface WorkerRequestIdentityV1 {
 	readonly bindingEpochId?: string;
 }
 
-function requestIdentity(request: SandboxOperationRequest): WorkerRequestIdentityV1 {
+function requestIdentity(request: SandboxOperationRequest): WorkerRequestIdentity {
 	return {
 		...(request.providerId === undefined ? {} : { providerId: request.providerId }),
 		...(request.taskId === undefined ? {} : { taskId: request.taskId }),
@@ -1082,7 +1082,7 @@ function operationBlocksNewExecute(state: OperationWorkerProtocolState, operatio
 	return request?.responseType !== "error";
 }
 
-function addRequest(state: OperationWorkerProtocolState, requestId: string, type: WorkerRequestFrameType, operationId?: string, identity?: WorkerRequestIdentityV1): ProtocolResult<OperationWorkerProtocolState> {
+function addRequest(state: OperationWorkerProtocolState, requestId: string, type: WorkerRequestFrameType, operationId?: string, identity?: WorkerRequestIdentity): ProtocolResult<OperationWorkerProtocolState> {
 	if (findRequest(state, requestId) !== undefined) return Result.err(conflict());
 	return Result.ok(withState(state, { requests: [...state.requests, freezeRequest({ requestId, type, ...(operationId === undefined ? {} : { operationId }), ...(identity ?? {}), responseCount: 0 })] }));
 }

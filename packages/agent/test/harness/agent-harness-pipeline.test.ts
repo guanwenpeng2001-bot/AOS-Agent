@@ -78,7 +78,7 @@ function t4RoleRevision(): RoleRevision {
 		revision: 1,
 		slug: "public-tool",
 		name: "Public Tool",
-		description: "T4 public tool role",
+		description: "public tool role",
 		persona: "Exercise the public tool pipeline",
 		modelProfileRef: { schemaVersion: 1 as const, type: "model_profile", id: "model", revision: 1 },
 		capabilitySelector: { policy: "all" as const },
@@ -129,7 +129,7 @@ function execution(): AgentHarnessFoundationExecution {
 		initialBindingEpoch: bindingEpoch,
 		agentInstance: { schemaVersion: 1, agentInstanceId, providerId: "agent-provider", taskId, roleRevision: { schemaVersion: 1, type: "role_revision", id: role.roleRevisionId, revision: role.revision }, bindingEpochIds: [bindingEpoch.bindingEpochId], status: "starting", lineage: { schemaVersion: 1, entityType: "agent_instance", entityId: agentInstanceId, depth: 0 }, createdAt: T4_NOW, updatedAt: T4_NOW },
 		bindingEpochIds: [bindingEpoch.bindingEpochId],
-		settlement: { tests: [{ name: "T4 public tool", required: true, status: "passed" }], evidence: [] },
+		settlement: { tests: [{ name: "public tool", required: true, status: "passed" }], evidence: [] },
 		hostAuthority: createHostTerminalGateAuthority("host-public-tool"),
 	};
 }
@@ -147,12 +147,12 @@ class T4FoundationProvider implements TaskExecutorProvider {
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> { return [t4ProviderCapability]; }
 
 	async createAttempt(dispatch: Dispatch, _binding: AgentBinding, context?: TaskExecutorAttemptContext) {
-		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "T4 provider requires provider attempt context"));
+		if (context === undefined) return Result.err(new FoundationError("invalid_correlation", "provider requires provider attempt context"));
 		return createAttempt({ attemptId: context.initialBindingEpoch.attemptId, dispatch, providerId: this.providerId, initialBindingEpoch: context.initialBindingEpoch, providerClass: this.providerClass, agentInstanceId: context.initialBindingEpoch.agentInstanceId, now: () => T4_NOW });
 	}
 
 	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
-		if (options?.correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "T4 provider requires provider execution correlation"));
+		if (options?.correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "provider requires provider execution correlation"));
 		const toolReceipts = await this.session.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", order: "oldestFirst" });
 		let failed = false;
 		let sideEffectState: "none" | "side_effect_unknown" = "none";
@@ -296,7 +296,7 @@ async function assertProjectorRejectsTamper(tamper: ProjectorTamper): Promise<vo
 	}
 }
 
-describe("T4 public AgentHarness tool consumer", () => {
+describe("public AgentHarness tool consumer", () => {
 	it("routes a public AgentTool through the durable pipeline and replays it after a harness restart", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "public-tool-session", createdAt: 1 }));
 		const model = { id: "tool-model", name: "Tool Model", api: "openai-responses" as const, provider: "openai" as const, baseUrl: "", reasoning: false, input: ["text"] as ("text")[], cost: { input: 0, output: 0 }, contextWindow: 1000, maxTokens: 1000 } as Model<"openai-responses">;

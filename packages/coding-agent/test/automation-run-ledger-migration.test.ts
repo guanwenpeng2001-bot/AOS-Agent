@@ -324,7 +324,7 @@ describe("private automation.run ledger migration", () => {
 		).toThrow("terminal fact conflicts");
 	});
 
-	it("decodes the complete T0 record, receipt, error, and nested metadata contracts", () => {
+	it("decodes the complete record, receipt, error, and nested metadata contracts", () => {
 		expect(decodeLegacyAutomationRunLedgerEntryV1(fullAccepted())).toEqual(fullAccepted());
 		expect(decodeLegacyAutomationRunLedgerEntryV1(fullTerminal())).toEqual(fullTerminal());
 		const result = migrateLegacyAutomationRunLedger(SESSION_ID, [
@@ -363,7 +363,7 @@ describe("private automation.run ledger migration", () => {
 		}
 	});
 
-	it("fails closed on invalid nested T0 metadata", () => {
+	it("fails closed on invalid nested metadata", () => {
 		const acceptedEntry = fullAccepted();
 		const terminalEntry = fullTerminal();
 		const invalidEntries = [

@@ -709,7 +709,7 @@ export interface FoundationToolQuotaAccountOptions {
 	now?: () => string;
 }
 
-interface ToolReservationScopeV1 {
+interface ToolReservationScope {
 	bindingId: string;
 	bindingEpochId: string;
 	toolCallId: string;
@@ -727,7 +727,7 @@ export class FoundationToolQuotaAccount implements ToolQuotaAccount {
 	private readonly maxToolCalls: number | undefined;
 	private readonly idGenerator: (prefix: string) => string;
 	private readonly now: () => string;
-	private readonly reservationKeys = new Map<string, ToolReservationScopeV1>();
+	private readonly reservationKeys = new Map<string, ToolReservationScope>();
 
 	constructor(options: FoundationToolQuotaAccountOptions = {}) {
 		this.budget = freeze({ ...(options.budget ?? {}) });
@@ -738,7 +738,7 @@ export class FoundationToolQuotaAccount implements ToolQuotaAccount {
 
 	reserve(scope: ToolGateScope): ResultValue<VersionedReference, FoundationError> {
 		const budget: Budget = freeze(tightenBudget(scope.context.binding.budget, this.budget));
-		const scopeKey: ToolReservationScopeV1 = { bindingId: scope.context.binding.bindingId, bindingEpochId: scope.context.bindingEpoch.bindingEpochId, toolCallId: scope.intent.toolCallId };
+		const scopeKey: ToolReservationScope = { bindingId: scope.context.binding.bindingId, bindingEpochId: scope.context.bindingEpoch.bindingEpochId, toolCallId: scope.intent.toolCallId };
 		const existingReservation = this.reservations.find((reservation) => sameReservationScope(this.reservationKeys.get(reservation.reservationId), scopeKey));
 		if (existingReservation !== undefined) return Result.ok(capacityReference(scope.context, "tool_quota"));
 		const activeForBinding = [...this.reservationKeys.values()].filter((key) => key.bindingId === scopeKey.bindingId && key.bindingEpochId === scopeKey.bindingEpochId).length;
@@ -796,7 +796,7 @@ export class FoundationToolQuotaAccount implements ToolQuotaAccount {
 			this.reservationKeys.clear();
 			return;
 		}
-		const scopeKey: ToolReservationScopeV1 = { bindingId: scope.context.binding.bindingId, bindingEpochId: scope.context.bindingEpoch.bindingEpochId, toolCallId: scope.intent.toolCallId };
+		const scopeKey: ToolReservationScope = { bindingId: scope.context.binding.bindingId, bindingEpochId: scope.context.bindingEpoch.bindingEpochId, toolCallId: scope.intent.toolCallId };
 		for (let index = this.reservations.length - 1; index >= 0; index -= 1) {
 			const reservation = this.reservations[index]!;
 			if (!sameReservationScope(this.reservationKeys.get(reservation.reservationId), scopeKey)) continue;
@@ -806,7 +806,7 @@ export class FoundationToolQuotaAccount implements ToolQuotaAccount {
 	}
 }
 
-function sameReservationScope(left: ToolReservationScopeV1 | undefined, right: ToolReservationScopeV1): boolean {
+function sameReservationScope(left: ToolReservationScope | undefined, right: ToolReservationScope): boolean {
 	return left?.bindingId === right.bindingId && left.bindingEpochId === right.bindingEpochId && left.toolCallId === right.toolCallId;
 }
 
@@ -1055,7 +1055,7 @@ export class FoundationToolPipeline {
 				return Result.ok({ schemaVersion: 1, batchId, status: "succeeded", receipts: [], usage: {}, conflicts: [], maxConcurrency: 0, durationMs: elapsed(this.nowMs(), startedAt) });
 			}
 
-			const prepared: PreparedCallV1[] = [];
+			const prepared: PreparedCall[] = [];
 			for (const call of calls) {
 				const entry = await this.prepare(call, context);
 				if (!entry.ok) return entry;
@@ -1065,7 +1065,7 @@ export class FoundationToolPipeline {
 			const dependencies = computeDependencies(prepared);
 			const conflictDependencies = computeConflictDependencies(prepared);
 			const receipts = new Array<ToolReceipt | undefined>(prepared.length);
-			const settledStates = new Array<SettledCallStateV1 | undefined>(prepared.length);
+			const settledStates = new Array<SettledCallState | undefined>(prepared.length);
 			const errors: FoundationError[] = [];
 			const settled = prepared.map(() => deferred<void>());
 			const signal = options.signal;
@@ -1195,7 +1195,7 @@ export class FoundationToolPipeline {
 
 	private peakConcurrency = 0;
 
-	private async prepare(call: ToolCall, context: ToolPipelineContext): Promise<ResultValue<PreparedCallV1, FoundationError>> {
+	private async prepare(call: ToolCall, context: ToolPipelineContext): Promise<ResultValue<PreparedCall, FoundationError>> {
 		if (call.toolCallId.length === 0 || call.toolName.length === 0) return Result.err(new FoundationError("invalid_identifier", "tool call id and name must not be empty"));
 		if (call.idempotencyKey !== undefined && call.idempotencyKey.length === 0) return Result.err(new FoundationError("invalid_identifier", "idempotency key must not be empty"));
 		const resolved = this.registry.resolve(call.toolName, call.namespace);
@@ -1355,7 +1355,7 @@ export class FoundationToolPipeline {
 		}
 	}
 
-	private scopeFor(entry: PreparedCallV1, context: ToolPipelineContext): ToolGateScope {
+	private scopeFor(entry: PreparedCall, context: ToolPipelineContext): ToolGateScope {
 		return {
 			context,
 			tool: entry.tool,
@@ -1367,7 +1367,7 @@ export class FoundationToolPipeline {
 	}
 
 	private async runPrepared(
-		prepared: PreparedCallV1,
+		prepared: PreparedCall,
 		context: ToolPipelineContext,
 		signal: AbortSignal | undefined,
 		scope: ToolGateScope,
@@ -1469,7 +1469,7 @@ export class FoundationToolPipeline {
 		});
 	}
 
-	private async applyPostProcessor(prepared: PreparedCallV1, context: ToolPipelineContext, execution: ToolExecution): Promise<ResultValue<ToolExecution, FoundationError>> {
+	private async applyPostProcessor(prepared: PreparedCall, context: ToolPipelineContext, execution: ToolExecution): Promise<ResultValue<ToolExecution, FoundationError>> {
 		const processor = prepared.tool.postProcessor;
 		if (processor === undefined) return Result.ok(execution);
 		let candidate: ToolPostNormalization | undefined;
@@ -1517,7 +1517,7 @@ export class FoundationToolPipeline {
 	}
 
 	private async finalize(
-		prepared: PreparedCallV1,
+		prepared: PreparedCall,
 		context: ToolPipelineContext,
 		state: {
 			outcome: ToolReceiptOutcome;
@@ -1578,7 +1578,7 @@ export class FoundationToolPipeline {
 		return Result.ok(receipt);
 	}
 
-	private async withDedup(prepared: PreparedCallV1, source: ToolReceipt): Promise<ResultValue<ToolReceipt, FoundationError>> {
+	private async withDedup(prepared: PreparedCall, source: ToolReceipt): Promise<ResultValue<ToolReceipt, FoundationError>> {
 		const replayMissingResult = source.outcome === "succeeded" && source.result === undefined;
 		const replayOutcome: ToolReceiptOutcome = replayMissingResult ? "side_effect_unknown" : source.outcome;
 		const replaySideEffectState: SideEffectState = replayMissingResult ? "side_effect_unknown" : source.sideEffectState;
@@ -1620,7 +1620,7 @@ export class FoundationToolPipeline {
 		return Result.ok(receipt);
 	}
 
-	private syntheticCancelledReceipt(entry: PreparedCallV1, context: ToolPipelineContext): ToolReceipt {
+	private syntheticCancelledReceipt(entry: PreparedCall, context: ToolPipelineContext): ToolReceipt {
 		return finalizeToolReceipt({
 			schemaVersion: 1,
 			toolReceiptId: this.idGenerator("tool_receipt"),
@@ -1648,7 +1648,7 @@ export function createFoundationToolPipeline(options: ToolPipelineOptions): Foun
 	return new FoundationToolPipeline(options);
 }
 
-interface PreparedCallV1 {
+interface PreparedCall {
 	call: ToolCall;
 	tool: ToolDefinition;
 	intent: ToolIntent;
@@ -1659,7 +1659,7 @@ interface PreparedCallV1 {
 	replay?: ToolReceipt;
 }
 
-interface SettledCallStateV1 {
+interface SettledCallState {
 	receipt?: ToolReceipt;
 	error?: FoundationError;
 }
@@ -1731,7 +1731,7 @@ function collectConflictKeys(
 	}
 }
 
-function detectConflicts(prepared: readonly PreparedCallV1[]): readonly ToolConflict[] {
+function detectConflicts(prepared: readonly PreparedCall[]): readonly ToolConflict[] {
 	const keyToCallIds = new Map<string, string[]>();
 	for (const call of prepared) {
 		for (const key of call.conflictKeys) {
@@ -1748,7 +1748,7 @@ function detectConflicts(prepared: readonly PreparedCallV1[]): readonly ToolConf
 	);
 }
 
-function computeDependencies(prepared: readonly PreparedCallV1[]): Map<number, readonly number[]> {
+function computeDependencies(prepared: readonly PreparedCall[]): Map<number, readonly number[]> {
 	const keyOwners = new Map<string, number[]>();
 	const dependencies = new Map<number, readonly number[]>();
 	for (let index = 0; index < prepared.length; index += 1) {
@@ -1767,7 +1767,7 @@ function computeDependencies(prepared: readonly PreparedCallV1[]): Map<number, r
 	return dependencies;
 }
 
-function computeConflictDependencies(prepared: readonly PreparedCallV1[]): Map<number, readonly number[]> {
+function computeConflictDependencies(prepared: readonly PreparedCall[]): Map<number, readonly number[]> {
 	const keyOwners = new Map<string, number[]>();
 	const dependencies = new Map<number, readonly number[]>();
 	for (let index = 0; index < prepared.length; index += 1) {
@@ -1785,7 +1785,7 @@ function computeConflictDependencies(prepared: readonly PreparedCallV1[]): Map<n
 
 function findConflictDependencyFailure(
 	dependencies: readonly number[],
-	settledStates: readonly (SettledCallStateV1 | undefined)[],
+	settledStates: readonly (SettledCallState | undefined)[],
 ): { index: number } | undefined {
 	for (const index of dependencies) {
 		const state = settledStates[index];

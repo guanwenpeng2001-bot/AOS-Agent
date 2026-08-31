@@ -58,15 +58,15 @@ describe("Together models", () => {
 			thinkingFormat: "openai",
 		});
 
-		const deepSeekV4 = getModel("together", "deepseek-ai/DeepSeek-V4-Pro");
-		expect(deepSeekV4.thinkingLevelMap).toEqual({
+		const deepSeekModel = getModel("together", "deepseek-ai/DeepSeek-V4-Pro");
+		expect(deepSeekModel.thinkingLevelMap).toEqual({
 			minimal: null,
 			low: null,
 			medium: null,
 			high: "high",
 			xhigh: null,
 		});
-		expect(deepSeekV4.compat).toMatchObject({
+		expect(deepSeekModel.compat).toMatchObject({
 			supportsReasoningEffort: true,
 			thinkingFormat: "together",
 		});

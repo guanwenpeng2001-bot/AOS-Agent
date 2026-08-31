@@ -14,19 +14,19 @@ import type {
 } from "../../src/core/worker/protocol.ts";
 import type { WorkerRuntimeSandboxOperationProvider } from "../../src/core/worker/runtime.ts";
 
-export type FakeWorkerStartBehaviorV1 = "success" | "provider-error" | "throw" | "correlation-drift" | "oversized-frame" | "pending";
-export type FakeWorkerCredentialActionV1 = "project" | "renew" | "revoke";
+export type FakeWorkerStartBehavior = "success" | "provider-error" | "throw" | "correlation-drift" | "oversized-frame" | "pending";
+export type FakeWorkerCredentialAction = "project" | "renew" | "revoke";
 
-export interface FakeWorkerProviderOptionsV1 {
+export interface FakeWorkerProviderOptions {
 	readonly providerId?: string;
 	readonly capabilities?: readonly string[];
-	readonly startBehavior?: FakeWorkerStartBehaviorV1;
-	readonly failedCredentialActions?: readonly FakeWorkerCredentialActionV1[];
+	readonly startBehavior?: FakeWorkerStartBehavior;
+	readonly failedCredentialActions?: readonly FakeWorkerCredentialAction[];
 	readonly cancelFails?: boolean;
 	readonly disposeThrows?: boolean;
 }
 
-export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvider {
+export class FakeWorkerProvider implements WorkerRuntimeSandboxOperationProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerClass = "operation_worker" as const;
 	readonly providerId: string;
@@ -40,15 +40,15 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 	disposeCalls = 0;
 
 	private readonly capabilityIds: readonly string[];
-	private readonly startBehavior: FakeWorkerStartBehaviorV1;
-	private readonly failedCredentialActions: ReadonlySet<FakeWorkerCredentialActionV1>;
+	private readonly startBehavior: FakeWorkerStartBehavior;
+	private readonly failedCredentialActions: ReadonlySet<FakeWorkerCredentialAction>;
 	private readonly cancelFails: boolean;
 	private readonly disposeThrows: boolean;
 	private pendingResolve?: (receipt: WorkerReceipt) => void;
 	private pendingRequest?: SandboxOperationRequest;
 	private pendingCorrelation?: ExecutionCorrelation;
 
-	constructor(options: FakeWorkerProviderOptionsV1 = {}) {
+	constructor(options: FakeWorkerProviderOptions = {}) {
 		this.providerId = options.providerId ?? "sandbox-worker";
 		this.capabilityIds = options.capabilities ?? ["filesystem.read", "process.spawn"];
 		this.startBehavior = options.startBehavior ?? "success";
@@ -121,7 +121,7 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 		resolve(receipt);
 	}
 
-	private credentialResult(action: FakeWorkerCredentialActionV1): ResultValue<void, FoundationError> {
+	private credentialResult(action: FakeWorkerCredentialAction): ResultValue<void, FoundationError> {
 		return this.failedCredentialActions.has(action)
 			? Result.err(new FoundationError("worker_unavailable", "fake credential target rejected operation"))
 			: Result.ok(undefined);

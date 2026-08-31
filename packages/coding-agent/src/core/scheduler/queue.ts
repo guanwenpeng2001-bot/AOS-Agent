@@ -218,12 +218,12 @@ export interface SchedulerQueueSnapshot {
 	readonly dispatches: readonly SchedulerDispatchRecord[];
 }
 
-interface QueueKeyPayloadV1 {
+interface QueueKeyPayload {
 	readonly schemaVersion: 1;
 	readonly queueEntryId: string;
 }
 
-interface AttemptPolicyPayloadV1 {
+interface AttemptPolicyPayload {
 	readonly schemaVersion: 1;
 	readonly taskId: string;
 	readonly maxAttempts: number;
@@ -315,12 +315,12 @@ function mapLedgerError(error: unknown, staleCode: SchedulerErrorCode): Foundati
 	return schedulerError("scheduler_persistence_failed");
 }
 
-function parseQueueKey(value: unknown): QueueKeyPayloadV1 | undefined {
+function parseQueueKey(value: unknown): QueueKeyPayload | undefined {
 	if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.queueEntryId !== "string") return undefined;
 	return { schemaVersion: 1, queueEntryId: value.queueEntryId };
 }
 
-function parseAttemptPolicy(value: unknown): AttemptPolicyPayloadV1 | undefined {
+function parseAttemptPolicy(value: unknown): AttemptPolicyPayload | undefined {
 	if (
 		!isRecord(value) ||
 		value.schemaVersion !== 1 ||

@@ -83,7 +83,7 @@ export interface ChildResultTransportHost {
 	readonly now?: () => number;
 }
 
-interface ValidatedChildResultV1 {
+interface ValidatedChildResult {
 	readonly childAgentInstanceId: string;
 	readonly taskId: string;
 	readonly receipt: AttemptReceipt;
@@ -135,7 +135,7 @@ function validateAgentReceipt(value: unknown): ResultValue<AttemptReceipt, Found
 	return Result.ok(checked.value);
 }
 
-function validateTransportInput(value: unknown): ResultValue<ValidatedChildResultV1, FoundationError> {
+function validateTransportInput(value: unknown): ResultValue<ValidatedChildResult, FoundationError> {
 	const input = validateExactShape<ChildResultTransportInput>(ChildResultTransportInputV1Schema, value, "child_result_transport_input");
 	if (!input.ok) return untrusted("Child result transport input has an invalid exact shape", input.error);
 	if (input.value.type === "attempt_receipt") {
@@ -193,7 +193,7 @@ function validateTransportInput(value: unknown): ResultValue<ValidatedChildResul
 
 async function verifyDurableSources(
 	host: ChildResultTransportHost,
-	value: ValidatedChildResultV1,
+	value: ValidatedChildResult,
 ): Promise<ResultValue<void, FoundationError>> {
 	for (const receipt of value.sourceReceipts) {
 		const correlation = receipt.provenance.correlation;
@@ -273,12 +273,12 @@ async function verifyArtifacts(
 	return Result.ok(cloneDeepFrozen(retained));
 }
 
-function projectionObjectId(value: ValidatedChildResultV1): string {
+function projectionObjectId(value: ValidatedChildResult): string {
 	return value.taskResultId === undefined ? `attempt:${value.receipt.attemptReceiptId}` : `task-result:${value.taskResultId}`;
 }
 
 function buildProjection(
-	value: ValidatedChildResultV1,
+	value: ValidatedChildResult,
 	artifacts: readonly ArtifactRef[],
 	producedAt: string,
 ): SafeChildResultProjection {
@@ -297,7 +297,7 @@ function buildProjection(
 
 function projectionRecordMatches(
 	host: ChildResultTransportHost,
-	value: ValidatedChildResultV1,
+	value: ValidatedChildResult,
 	record: Awaited<ReturnType<SessionLedger["get"]>>,
 ): boolean {
 	return record !== undefined &&

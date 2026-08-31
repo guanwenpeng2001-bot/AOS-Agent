@@ -189,7 +189,7 @@ describe("SubagentProviderRegistry", () => {
 
 	it("allows revision upgrade and retrieves exact revision without losing old", () => {
 		const registry = new SubagentProviderRegistry();
-		const providerV1: SubagentProviderDescriptor = {
+		const providerRevisionOne: SubagentProviderDescriptor = {
 			schemaVersion: 1,
 			providerKind: "in_process",
 			descriptor: { schemaVersion: 1, providerId: "native.in_process", providerClass: "agent" },
@@ -203,10 +203,10 @@ describe("SubagentProviderRegistry", () => {
 			},
 			implementedInThisLine: true,
 		};
-		const providerV2 = { ...providerV1, revision: 2, capabilities: { ...providerV1.capabilities, maxDepth: 2 } };
+		const providerRevisionTwo = { ...providerRevisionOne, revision: 2, capabilities: { ...providerRevisionOne.capabilities, maxDepth: 2 } };
 
-		registry.register(providerV1);
-		registry.register(providerV2);
+		registry.register(providerRevisionOne);
+		registry.register(providerRevisionTwo);
 
 		expect(registry.get("native.in_process").revision).toBe(2);
 		expect(registry.get("native.in_process", 1).revision).toBe(1);
@@ -220,13 +220,13 @@ describe("SubagentProviderRegistry", () => {
 			new FoundationError("subagent_provider_unavailable", "Provider native.in_process revision 3 not found."),
 		);
 
-		expect(() => registry.register({ ...providerV2, revision: 2 })).toThrowError(
+		expect(() => registry.register({ ...providerRevisionTwo, revision: 2 })).toThrowError(
 			new FoundationError(
 				"subagent_spawn_invalid",
 				"Provider native.in_process revision 2 must be greater than existing revision 2.",
 			),
 		);
-		expect(() => registry.register({ ...providerV2, revision: 1 })).toThrowError(
+		expect(() => registry.register({ ...providerRevisionTwo, revision: 1 })).toThrowError(
 			new FoundationError(
 				"subagent_spawn_invalid",
 				"Provider native.in_process revision 1 must be greater than existing revision 2.",

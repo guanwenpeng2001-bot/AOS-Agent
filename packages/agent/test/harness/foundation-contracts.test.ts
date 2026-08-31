@@ -542,7 +542,7 @@ function fakeAgentAttempt(providerId: string, taskId: string, bindingId: string,
 
 class FakeSandboxOperationProvider implements SandboxOperationProvider {
 	readonly schemaVersion = 1 as const;
-	readonly providerId = "fake-line-11";
+	readonly providerId = "fake-sandbox-operation";
 	readonly providerClass = "operation_worker" as const;
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> { return [fakeProviderCapability]; }
 	async start(request: SandboxOperationRequest) {
@@ -647,7 +647,7 @@ function registryNotImplemented<T>(): ResultValue<T, FoundationError> {
 	return Result.err(new FoundationError("foundation_schema_unknown_record", "registry fake has no persistence implementation"));
 }
 
-/** Compile-time contract fake: the registry surface is independent from any T2 store. */
+/** Compile-time contract fake: the registry surface is independent from any store. */
 class FakeRoleRegistry implements RoleRegistry {
 	create(_input: RoleRegistryCreateInput) { return registryNotImplemented<RoleRegistryRecord>(); }
 	get(_query: RoleRegistryGetQuery) { return registryNotImplemented<RoleRegistryRecord>(); }
@@ -664,8 +664,8 @@ class FakeRoleRegistry implements RoleRegistry {
 	}
 }
 
-describe("T1 registry and identity query contracts", () => {
-	it("exposes the exact T1 entity identity/query set", () => {
+describe("registry and identity query contracts", () => {
+	it("exposes the exact entity identity/query set", () => {
 		const expected = new Set([
 			"execution_correlation", "lineage", "fingerprint", "envelope", "event", "task", "artifact", "role_definition", "role_revision", "model_profile", "agent_binding", "binding_epoch", "agent_instance", "dispatch", "attempt", "worker_receipt", "attempt_receipt", "task_result", "run_receipt", "provider_contract", "protocol_negotiation", "observer_cursor", "observer_snapshot", "plugin", "service", "profile", "session", "goal", "plan", "stage", "todo", "ask", "workflow", "run", "turn", "step", "inbox",
 		]);
@@ -788,7 +788,7 @@ describe("provider-neutral compilation contracts", () => {
 		expect(validateAttemptReceipt(omit(receipt(), "error")).ok).toBe(true);
 	});
 
-	it("covers deterministic line 11, 12A, and 12B providers", async () => {
+	it("covers deterministic local, child-agent, and scheduler providers", async () => {
 		const sandbox = new FakeSandboxOperationProvider();
 	const worker = await sandbox.start({ schemaVersion: 1, operationId: "operation-11" });
 		expect(worker.ok && validateWorkerReceipt(worker.value).ok).toBe(true);

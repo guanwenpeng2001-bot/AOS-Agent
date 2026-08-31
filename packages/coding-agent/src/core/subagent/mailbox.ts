@@ -118,7 +118,7 @@ export interface SubagentMailboxOptions {
 	readonly delay?: (milliseconds: number) => Promise<void>;
 }
 
-interface ChildMailboxSentPayloadV1 {
+interface ChildMailboxSentPayload {
 	readonly schemaVersion: 1;
 	readonly messageId: string;
 	readonly fromAgentInstanceId: string;
@@ -129,7 +129,7 @@ interface ChildMailboxSentPayloadV1 {
 	readonly createdAt: string;
 }
 
-interface ChildMailboxAckPayloadV1 {
+interface ChildMailboxAckPayload {
 	readonly schemaVersion: 1;
 	readonly messageId: string;
 	readonly fromAgentInstanceId: string;
@@ -283,7 +283,7 @@ function validateSendInput(value: unknown): value is SendChildMailboxMessageInpu
 	);
 }
 
-function validateSentPayload(value: unknown): value is ChildMailboxSentPayloadV1 {
+function validateSentPayload(value: unknown): value is ChildMailboxSentPayload {
 	return (
 		isRecord(value) &&
 		exactKeys(value, SENT_PAYLOAD_KEYS) &&
@@ -299,7 +299,7 @@ function validateSentPayload(value: unknown): value is ChildMailboxSentPayloadV1
 	);
 }
 
-function validateAckPayload(value: unknown): value is ChildMailboxAckPayloadV1 {
+function validateAckPayload(value: unknown): value is ChildMailboxAckPayload {
 	return (
 		isRecord(value) &&
 		exactKeys(
@@ -316,14 +316,14 @@ function validateAckPayload(value: unknown): value is ChildMailboxAckPayloadV1 {
 	);
 }
 
-function publicMessage(sent: ChildMailboxSentPayloadV1, ack: ChildMailboxAckPayloadV1 | undefined): ChildMailboxMessage {
+function publicMessage(sent: ChildMailboxSentPayload, ack: ChildMailboxAckPayload | undefined): ChildMailboxMessage {
 	return cloneDeepFrozen({
 		...sent,
 		...(ack === undefined ? {} : { ack: { at: ack.at, byAttemptId: ack.byAttemptId } }),
 	});
 }
 
-function inputMatchesStored(input: SendChildMailboxMessageInput, stored: ChildMailboxSentPayloadV1): boolean {
+function inputMatchesStored(input: SendChildMailboxMessageInput, stored: ChildMailboxSentPayload): boolean {
 	return (
 		input.messageId === stored.messageId &&
 		input.fromAgentInstanceId === stored.fromAgentInstanceId &&
@@ -435,7 +435,7 @@ export class SubagentMailbox {
 				if (!ack.ok) return ack;
 				return Result.ok(publicMessage(existingResult.value.payload, ack.value));
 			}
-			const payload: ChildMailboxSentPayloadV1 = {
+			const payload: ChildMailboxSentPayload = {
 				schemaVersion: 1,
 				messageId: input.messageId,
 				fromAgentInstanceId: input.fromAgentInstanceId,
@@ -579,7 +579,7 @@ export class SubagentMailbox {
 				}
 				return Result.ok(publicMessage(sent, existing.value));
 			}
-			const ack: ChildMailboxAckPayloadV1 = {
+			const ack: ChildMailboxAckPayload = {
 				schemaVersion: 1,
 				messageId: sent.messageId,
 				fromAgentInstanceId: sent.fromAgentInstanceId,
@@ -858,7 +858,7 @@ export class SubagentMailbox {
 	private validateStoredSentRecord(
 		record: FoundationRecord,
 	): ResultValue<
-		| { readonly payload: ChildMailboxSentPayloadV1; readonly sequence: number; readonly timestamp: number }
+		| { readonly payload: ChildMailboxSentPayload; readonly sequence: number; readonly timestamp: number }
 		| undefined,
 		FoundationError
 	> {
@@ -915,8 +915,8 @@ export class SubagentMailbox {
 
 	private validateStoredAckRecord(
 		record: FoundationRecord,
-		sentById: ReadonlyMap<string, ChildMailboxSentPayloadV1>,
-	): ResultValue<ChildMailboxAckPayloadV1 | undefined, FoundationError> {
+		sentById: ReadonlyMap<string, ChildMailboxSentPayload>,
+	): ResultValue<ChildMailboxAckPayload | undefined, FoundationError> {
 		const endpoints = this.ownedEndpoints();
 		if (!endpoints.ok) return endpoints;
 		const rawPayload = record.kind === "fact" && isRecord(record.payload) ? record.payload : undefined;
@@ -969,7 +969,7 @@ export class SubagentMailbox {
 	}
 
 	private async readSentRecords(): Promise<
-		ResultValue<readonly { readonly payload: ChildMailboxSentPayloadV1; readonly sequence: number; readonly timestamp: number }[], FoundationError>
+		ResultValue<readonly { readonly payload: ChildMailboxSentPayload; readonly sequence: number; readonly timestamp: number }[], FoundationError>
 	> {
 		try {
 			const records = await this.ledger.find({
@@ -977,7 +977,7 @@ export class SubagentMailbox {
 				objectType: SUBAGENT_MAILBOX_SENT_OBJECT_TYPE,
 				order: "oldestFirst",
 			});
-			const result: { payload: ChildMailboxSentPayloadV1; sequence: number; timestamp: number }[] = [];
+			const result: { payload: ChildMailboxSentPayload; sequence: number; timestamp: number }[] = [];
 			for (const record of records) {
 				if (record.kind !== "fact") {
 					return Result.err(new FoundationError("subagent_persistence_failed", "Durable Child mailbox message is invalid"));
@@ -993,8 +993,8 @@ export class SubagentMailbox {
 	}
 
 	private async readAckMap(
-		sentRecords?: readonly { readonly payload: ChildMailboxSentPayloadV1; readonly sequence: number; readonly timestamp: number }[],
-	): Promise<ResultValue<ReadonlyMap<string, ChildMailboxAckPayloadV1>, FoundationError>> {
+		sentRecords?: readonly { readonly payload: ChildMailboxSentPayload; readonly sequence: number; readonly timestamp: number }[],
+	): Promise<ResultValue<ReadonlyMap<string, ChildMailboxAckPayload>, FoundationError>> {
 		try {
 			const sent = sentRecords === undefined ? await this.readSentRecords() : Result.ok(sentRecords);
 			if (!sent.ok) return sent;
@@ -1004,7 +1004,7 @@ export class SubagentMailbox {
 				objectType: SUBAGENT_MAILBOX_ACK_OBJECT_TYPE,
 				order: "oldestFirst",
 			});
-			const result = new Map<string, ChildMailboxAckPayloadV1>();
+			const result = new Map<string, ChildMailboxAckPayload>();
 			for (const record of records) {
 				if (record.kind !== "fact") {
 					return Result.err(new FoundationError("subagent_persistence_failed", "Durable Child mailbox acknowledgement is invalid"));
@@ -1023,7 +1023,7 @@ export class SubagentMailbox {
 		}
 	}
 
-	private async readAck(messageId: string): Promise<ResultValue<ChildMailboxAckPayloadV1 | undefined, FoundationError>> {
+	private async readAck(messageId: string): Promise<ResultValue<ChildMailboxAckPayload | undefined, FoundationError>> {
 		const map = await this.readAckMap();
 		return map.ok ? Result.ok(map.value.get(messageId)) : map;
 	}

@@ -4,7 +4,7 @@
  * Regenerates the normalized old-AgentSession observable transcript and
  * verifies it against the committed fixture
  * (`fixtures/old-agent-session.transcript.json`). The committed fixture is the
- * ground truth that later facade-parity tasks (T3/T9) replay against the new
+ * ground truth that later facade-parity tasks (facade parity) replay against the new
  * AgentHarness.
  *
  * Regenerate the fixture after intentional behavioral changes:

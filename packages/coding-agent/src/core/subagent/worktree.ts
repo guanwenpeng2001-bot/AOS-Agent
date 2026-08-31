@@ -88,7 +88,7 @@ export interface ChildWorktreeHost {
 	readonly now?: () => number;
 }
 
-interface DurableWorktreeRecordV1 {
+interface DurableWorktreeRecord {
 	readonly record: ChildWorktreeRecord;
 	readonly revision: number;
 }
@@ -222,7 +222,7 @@ function recordFromEventPayload(value: unknown): ResultValue<ChildWorktreeRecord
 async function readDurableRecord(
 	host: ChildWorktreeHost,
 	value: ChildWorktreeIdentity,
-): Promise<ResultValue<DurableWorktreeRecordV1 | undefined, FoundationError>> {
+): Promise<ResultValue<DurableWorktreeRecord | undefined, FoundationError>> {
 	try {
 		const stored = await host.ledger.get(WORKTREE_OBJECT_TYPE, objectId(value));
 		if (stored === undefined) return Result.ok(undefined);
@@ -388,7 +388,7 @@ async function resolvePresent(
 async function requireCanonicalRecord(
 	host: ChildWorktreeHost,
 	value: unknown,
-): Promise<ResultValue<DurableWorktreeRecordV1, FoundationError>> {
+): Promise<ResultValue<DurableWorktreeRecord, FoundationError>> {
 	const supplied = validateRecord(value);
 	if (!supplied.ok) return supplied;
 	const ownedIdentity = identity(supplied.value.childAgentInstanceId, supplied.value.attemptId);

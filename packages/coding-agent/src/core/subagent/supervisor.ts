@@ -131,7 +131,7 @@ export interface SubagentProviderSpawnPlan {
 	readonly providerId: string;
 }
 
-interface SubagentSupervisorControlV1 {
+interface SubagentSupervisorControl {
 	readonly schemaVersion: 1;
 	readonly childAgentInstanceId: string;
 	readonly spawnId: string;
@@ -307,7 +307,7 @@ function validateProviderDescriptor(value: unknown): value is SubagentProviderDe
 	);
 }
 
-function validateControl(value: unknown): value is SubagentSupervisorControlV1 {
+function validateControl(value: unknown): value is SubagentSupervisorControl {
 	return (
 		isRecord(value) &&
 		exactKeys(value, CONTROL_KEYS) &&
@@ -417,7 +417,7 @@ export class SubagentSupervisor {
 	private readonly now: () => string;
 	private readonly scheduleQueueTimeout: (milliseconds: number, onTimeout: () => void) => () => void;
 	private readonly records = new Map<string, ChildAgentRecord>();
-	private readonly controls = new Map<string, SubagentSupervisorControlV1>();
+	private readonly controls = new Map<string, SubagentSupervisorControl>();
 	private readonly queue: QueueWaiter[] = [];
 	private readonly spawnReservations = new Set<string>();
 	private readonly childReservations = new Set<string>();
@@ -466,7 +466,7 @@ export class SubagentSupervisor {
 					objectType: SUBAGENT_SUPERVISOR_CONTROL_OBJECT_TYPE,
 					order: "oldestFirst",
 				});
-				const rebuiltControls = new Map<string, SubagentSupervisorControlV1>();
+				const rebuiltControls = new Map<string, SubagentSupervisorControl>();
 				const foreignControlChildIds = new Set<string>();
 				for (const fact of controlFacts) {
 					if (fact.kind !== "fact" || fact.correlation.sessionId !== this.sessionId) {
@@ -801,7 +801,7 @@ export class SubagentSupervisor {
 				createdAt: dispatch.createdAt,
 			});
 			if (!record.ok) return record;
-			const control: SubagentSupervisorControlV1 = {
+			const control: SubagentSupervisorControl = {
 				schemaVersion: 1,
 				childAgentInstanceId: createdAgent.value.agentInstanceId,
 				spawnId: request.spawnId,
@@ -1452,8 +1452,8 @@ export class SubagentSupervisor {
 	}
 
 	private async persistControl(
-		control: SubagentSupervisorControlV1,
-	): Promise<ResultValue<SubagentSupervisorControlV1, FoundationError>> {
+		control: SubagentSupervisorControl,
+	): Promise<ResultValue<SubagentSupervisorControl, FoundationError>> {
 		if (!validateControl(control)) {
 			return Result.err(new FoundationError("subagent_persistence_failed", "Child Agent control is invalid"));
 		}

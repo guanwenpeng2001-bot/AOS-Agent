@@ -20,7 +20,7 @@ import {
 	STRICT_PROFILE_FIXTURE,
 } from "../fixtures/execution-policy-contract.ts";
 
-describe("execution policy T0 contract", () => {
+describe("execution policy contract", () => {
 	it("freezes policy domains and public entry names", () => {
 		expect(POLICY_ACTIONS).toEqual(["allow", "ask", "deny"]);
 		expect(POLICY_ENFORCEMENTS).toEqual(["legacy", "host", "sandbox"]);

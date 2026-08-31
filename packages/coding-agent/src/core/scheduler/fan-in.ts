@@ -90,7 +90,7 @@ export interface SchedulerFanInOptions {
 	readonly now?: () => string;
 }
 
-interface CollectedFanInV1 {
+interface CollectedFanIn {
 	readonly policy: SchedulerJoinPolicy;
 	readonly predecessorNodeIds: readonly string[];
 	readonly predecessorTaskResultIds: readonly string[];
@@ -368,7 +368,7 @@ export class SchedulerFanInController {
 
 	private async collect(
 		request: SchedulerFanInSettleRequest,
-	): Promise<ResultValue<CollectedFanInV1, FoundationError>> {
+	): Promise<ResultValue<CollectedFanIn, FoundationError>> {
 		const policy = request.plan?.policy ?? "require_all";
 		const predecessorNodeIds = request.plan?.predecessorTaskIds ?? [];
 		const predecessorTaskResultIds: string[] = [];

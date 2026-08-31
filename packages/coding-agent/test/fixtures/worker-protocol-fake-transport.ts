@@ -9,15 +9,15 @@ import {
 } from "../../src/core/worker/protocol.ts";
 import type { WorkerBinding } from "../../src/core/worker/lifecycle.ts";
 
-export type FakeWorkerTransportModeV1 = "ready" | "slow" | "cancel_ack" | "receipt" | "disconnect" | "malformed" | "oversized_data";
+export type FakeWorkerTransportMode = "ready" | "slow" | "cancel_ack" | "receipt" | "disconnect" | "malformed" | "oversized_data";
 
-export class FakeWorkerProtocolTransportV1 {
+export class FakeWorkerProtocolTransport {
 	private readonly session: OperationWorkerProtocolSession;
 	private readonly binding: WorkerBinding;
-	private readonly mode: FakeWorkerTransportModeV1;
+	private readonly mode: FakeWorkerTransportMode;
 	private readonly stdoutLines: string[] = [];
 
-	constructor(binding: WorkerBinding, mode: FakeWorkerTransportModeV1 = "ready") {
+	constructor(binding: WorkerBinding, mode: FakeWorkerTransportMode = "ready") {
 		this.binding = binding;
 		this.mode = mode;
 		this.session = new OperationWorkerProtocolSession();
@@ -140,4 +140,4 @@ export class FakeWorkerProtocolTransportV1 {
 	}
 }
 
-export const FakeWorkerTransportV1 = FakeWorkerProtocolTransportV1;
+export const FakeWorkerTransport = FakeWorkerProtocolTransport;

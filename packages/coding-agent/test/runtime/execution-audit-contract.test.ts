@@ -34,7 +34,7 @@ import {
 } from "../fixtures/execution-audit-contract.ts";
 import { canonicalAuditRunEntries } from "../support/canonical-audit-run.ts";
 
-describe("execution audit T0 contract", () => {
+describe("execution audit contract", () => {
 	it("projects and replays only digest-bound safe child lifecycle fields", () => {
 		const base = {
 			schemaVersion: 1 as const,
@@ -538,7 +538,7 @@ function graphSession(entries: ReadonlyArray<SessionEntry>): AuditSession {
 
 describe("execution audit task graph contract", () => {
 	it("adds task.graph as the only additive audit source and event type", () => {
-		// The T0 fixture predates the remote.operation and task.credential
+		// The fixture predates the remote.operation and task.credential
 		// sources; ignoring those known later additions, task.graph must be the
 		// only remaining delta.
 		expect(

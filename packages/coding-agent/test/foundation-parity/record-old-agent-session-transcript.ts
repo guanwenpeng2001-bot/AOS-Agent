@@ -5,7 +5,7 @@
  * (via the suite harness and, for the resume flow, the session runtime
  * factory) and returns the normalized observable transcript fixture.
  *
- * The fixture is facade-neutral plain JSON: later facade-parity tasks (T3/T9)
+ * The fixture is facade-neutral plain JSON: later facade-parity tasks (facade parity)
  * run the same scripts against AgentHarness and must reproduce the recorded
  * observations modulo the explicit `gaps` documented in the migration
  * inventory.

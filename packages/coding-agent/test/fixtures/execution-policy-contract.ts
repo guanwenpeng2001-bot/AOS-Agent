@@ -1,8 +1,8 @@
 /**
- * T0-only contract fixture.
+ * -only contract fixture.
  *
  * This file intentionally does not import production policy code. It records
- * the values that T1-T7 must implement and gives the contract test stable
+ * the values that later implementations must implement and gives the contract test stable
  * cases for fail-closed and public-boundary review.
  */
 

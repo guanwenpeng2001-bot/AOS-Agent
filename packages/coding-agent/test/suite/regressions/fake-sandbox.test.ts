@@ -131,7 +131,7 @@ async function createStrictHarness(input?: {
 	return { harness, sandbox: fake.state };
 }
 
-describe("T7 fake-sandbox execution policy regressions", () => {
+describe("fake-sandbox execution policy regressions", () => {
 	const harnesses: Harness[] = [];
 
 	afterEach(async () => {
@@ -521,7 +521,7 @@ function createHarnessSessionForRunLedger() {
 	return SessionManager.inMemory("/workspace/policy-t7", { id: "session-t7" });
 }
 
-describe("T7 execution policy ledger fixture sanity", () => {
+describe("execution policy ledger fixture sanity", () => {
 	it("stores metadata-only public summaries from the fake-sandbox path", () => {
 		const ledger = createExecutionPolicyLedger();
 		const result = resolveExecutionPolicyProfile({

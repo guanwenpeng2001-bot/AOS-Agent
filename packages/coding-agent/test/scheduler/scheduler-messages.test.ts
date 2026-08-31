@@ -37,10 +37,10 @@ vi.mock("@aos-agent/ai/compat", () => ({
 
 vi.mock("@aos-agent/ai/providers/all", () => ({}));
 
-const T0 = "2027-01-01T00:00:00.000Z";
-const T1 = "2027-01-01T00:01:00.000Z";
-const T2 = "2027-01-01T00:02:00.000Z";
-const T3 = "2027-01-01T00:03:00.000Z";
+const BASE_TIME = "2027-01-01T00:00:00.000Z";
+const FIRST_TIME = "2027-01-01T00:01:00.000Z";
+const SECOND_TIME = "2027-01-01T00:02:00.000Z";
+const THIRD_TIME = "2027-01-01T00:03:00.000Z";
 
 interface PairFixture {
 	readonly sourceManager: SessionManager;
@@ -71,7 +71,7 @@ function graphStore(manager: SessionManager, runs: RunLifecycleCoordinator): Tas
 			},
 		},
 		{ getByBusinessKey: () => undefined },
-		{ now: () => T0 },
+		{ now: () => BASE_TIME },
 	);
 }
 
@@ -80,8 +80,8 @@ function pair(): PairFixture {
 	const targetManager = SessionManager.inMemory("C:/workspace/target", { id: "session-target" });
 	const sourceSession = new Session(createSessionManagerStorage(sourceManager));
 	const targetSession = new Session(createSessionManagerStorage(targetManager));
-	const sourceRuns = createRunLifecycleCoordinator(sourceManager, { diagnostics: () => {}, now: () => T0 });
-	const targetRuns = createRunLifecycleCoordinator(targetManager, { diagnostics: () => {}, now: () => T0 });
+	const sourceRuns = createRunLifecycleCoordinator(sourceManager, { diagnostics: () => {}, now: () => BASE_TIME });
+	const targetRuns = createRunLifecycleCoordinator(targetManager, { diagnostics: () => {}, now: () => BASE_TIME });
 	const sourceGraph = graphStore(sourceManager, sourceRuns);
 	const targetGraph = graphStore(targetManager, targetRuns);
 	const endpoints = [
@@ -112,8 +112,8 @@ function requiredMessage(overrides: Partial<SchedulerMessage> = {}): SchedulerMe
 		toSessionId: "session-target",
 		correlation: { taskId: "task-1" },
 		ack: "required",
-		expiresAt: T1,
-		createdAt: T0,
+		expiresAt: FIRST_TIME,
+		createdAt: BASE_TIME,
 		revision: 0,
 		...overrides,
 	};
@@ -181,7 +181,7 @@ async function seedTaskResult(
 		provenance: {
 			producerKind: "host",
 			providerId: "host-gate",
-			producedAt: T0,
+			producedAt: BASE_TIME,
 			correlation: {
 				sessionId: "session-target",
 				laneId: "main",
@@ -240,7 +240,7 @@ async function seedRunReceipt(
 						retryable: false,
 					},
 				}),
-		completedAt: T0,
+		completedAt: BASE_TIME,
 	};
 	const ledger = new SessionLedger(session, { ownerId: "scheduler-messaging" });
 	const stored = await ledger.appendFact("run_receipt", input.runId, receipt, {
@@ -277,28 +277,28 @@ describe("durable scheduler message lifecycle", () => {
 			sessionId: "session-target",
 			messageId: "message-1",
 			threadId: "thread-1",
-			at: T0,
+			at: BASE_TIME,
 		});
-		expect(acknowledged.message).toMatchObject({ revision: 1, ackedAt: T0 });
+		expect(acknowledged.message).toMatchObject({ revision: 1, ackedAt: BASE_TIME });
 
 		await fixture.messages.post({
-			message: requiredMessage({ messageId: "message-2", createdAt: T0, expiresAt: T1 }),
+			message: requiredMessage({ messageId: "message-2", createdAt: BASE_TIME, expiresAt: FIRST_TIME }),
 		});
 		const replayed = await fixture.messages.replayRequiredMessage({
 			sessionId: "session-source",
 			messageId: "message-2",
 			threadId: "thread-1",
-			at: T1,
-			expiresAt: T2,
+			at: FIRST_TIME,
+			expiresAt: SECOND_TIME,
 		});
-		expect(replayed.message).toMatchObject({ revision: 1, createdAt: T1, expiresAt: T2 });
+		expect(replayed.message).toMatchObject({ revision: 1, createdAt: FIRST_TIME, expiresAt: SECOND_TIME });
 		expect(
 			await fixture.messages.replayRequiredMessage({
 				sessionId: "session-source",
 				messageId: "message-2",
 				threadId: "thread-1",
-				at: T1,
-				expiresAt: T2,
+				at: FIRST_TIME,
+				expiresAt: SECOND_TIME,
 			}),
 		).toEqual({ message: replayed.message, replayed: true });
 		await expectFoundationCode(
@@ -307,8 +307,8 @@ describe("durable scheduler message lifecycle", () => {
 					sessionId: "session-source",
 					messageId: "message-2",
 					threadId: "thread-1",
-					at: T2,
-					expiresAt: T3,
+					at: SECOND_TIME,
+					expiresAt: THIRD_TIME,
 				}),
 			"scheduler_message_timeout",
 		);
@@ -316,9 +316,9 @@ describe("durable scheduler message lifecycle", () => {
 			sessionId: "session-source",
 			messageId: "message-2",
 			threadId: "thread-1",
-			at: T2,
+			at: SECOND_TIME,
 		});
-		expect(timedOut).toMatchObject({ revision: 2, timedOutAt: T2 });
+		expect(timedOut).toMatchObject({ revision: 2, timedOutAt: SECOND_TIME });
 
 		const expected = {
 			schemaVersion: 1,
@@ -383,7 +383,7 @@ describe("durable scheduler message lifecycle", () => {
 					sessionId: "session-source",
 					messageId: "message-1",
 					threadId: "thread-1",
-					at: T0,
+					at: BASE_TIME,
 				}),
 			"scheduler_message_invalid",
 		);
@@ -396,7 +396,7 @@ describe("durable scheduler message lifecycle", () => {
 		await ledger.appendFact(
 			SCHEDULER_MESSAGE_OBJECT_TYPES.posted,
 			"message-1",
-			{ schemaVersion: 1, message: requiredMessage({ revision: 2, createdAt: T2, expiresAt: T3 }) },
+			{ schemaVersion: 1, message: requiredMessage({ revision: 2, createdAt: SECOND_TIME, expiresAt: THIRD_TIME }) },
 			{
 				clientRequestId: "inject-revision-gap",
 				expectedRevision: 1,
@@ -410,7 +410,7 @@ describe("durable scheduler message lifecycle", () => {
 describe("cross-Session task submit and wait", () => {
 	it("creates or reuses only the target Graph and observes failed, cancelled, and timed-out nodes", async () => {
 		const fixture = pair();
-		const submit = (taskId: string, suffix: string, expiresAt = T3) =>
+		const submit = (taskId: string, suffix: string, expiresAt = THIRD_TIME) =>
 			fixture.messages.submitCrossSessionTask({
 				sourceSessionId: "session-source",
 				targetSessionId: "session-target",
@@ -421,7 +421,7 @@ describe("cross-Session task submit and wait", () => {
 				threadId: `thread-${suffix}`,
 				messageId: `submit-${suffix}`,
 				clientRequestId: `create-${suffix}`,
-				createdAt: T0,
+				createdAt: BASE_TIME,
 				expiresAt,
 			});
 
@@ -441,7 +441,7 @@ describe("cross-Session task submit and wait", () => {
 			await fixture.messages.waitForCrossSessionTask({
 				sourceSessionId: "session-source",
 				waitId: "wait-failed",
-				at: T1,
+				at: FIRST_TIME,
 			}),
 		).toMatchObject({ status: "failed", targetSessionId: "session-target" });
 
@@ -456,16 +456,16 @@ describe("cross-Session task submit and wait", () => {
 			await fixture.messages.waitForCrossSessionTask({
 				sourceSessionId: "session-source",
 				waitId: "wait-cancelled",
-				at: T1,
+				at: FIRST_TIME,
 			}),
 		).toMatchObject({ status: "cancelled" });
 
-		await submit("task-timeout", "timeout", T1);
+		await submit("task-timeout", "timeout", FIRST_TIME);
 		expect(
 			await fixture.messages.waitForCrossSessionTask({
 				sourceSessionId: "session-source",
 				waitId: "wait-timeout",
-				at: T1,
+				at: FIRST_TIME,
 			}),
 		).toMatchObject({ status: "timed_out" });
 	});
@@ -482,12 +482,12 @@ describe("cross-Session task submit and wait", () => {
 			threadId: "thread-1",
 			messageId: "submit-1",
 			clientRequestId: "create-1",
-			createdAt: T0,
-			expiresAt: T2,
+			createdAt: BASE_TIME,
+			expiresAt: SECOND_TIME,
 		});
 		await expectFoundationCode(
 			() =>
-				fixture.messages.waitForCrossSessionTask({ sourceSessionId: "session-target", waitId: "wait-1", at: T1 }),
+				fixture.messages.waitForCrossSessionTask({ sourceSessionId: "session-target", waitId: "wait-1", at: FIRST_TIME }),
 			"scheduler_not_found",
 		);
 	});
@@ -515,8 +515,8 @@ describe("result ready and reclaim", () => {
 			taskId: "task-1",
 			threadId: "result-thread",
 			messageId: "result-ready-1",
-			createdAt: T0,
-			expiresAt: T2,
+			createdAt: BASE_TIME,
+			expiresAt: SECOND_TIME,
 			reference,
 		});
 		expect(ready.type).toBe("result.ready");
@@ -528,7 +528,7 @@ describe("result ready and reclaim", () => {
 			readyMessageId: "result-ready-1",
 			reclaimMessageId: "result-reclaim-1",
 			clientRequestId: "reclaim-1",
-			at: T1,
+			at: FIRST_TIME,
 		});
 		expect(reclaimed).toMatchObject({ reference, status: "failed", replayed: false });
 		expect(reclaimed).not.toHaveProperty("summary");
@@ -541,7 +541,7 @@ describe("result ready and reclaim", () => {
 				readyMessageId: "result-ready-1",
 				reclaimMessageId: "result-reclaim-1",
 				clientRequestId: "reclaim-1",
-				at: T1,
+				at: FIRST_TIME,
 			}),
 		).toMatchObject({ replayed: true, reference });
 		await expectFoundationCode(
@@ -554,7 +554,7 @@ describe("result ready and reclaim", () => {
 					readyMessageId: "result-ready-1",
 					reclaimMessageId: "result-reclaim-2",
 					clientRequestId: "reclaim-2",
-					at: T1,
+					at: FIRST_TIME,
 				}),
 			"scheduler_message_invalid",
 		);
@@ -586,8 +586,8 @@ describe("result ready and reclaim", () => {
 			taskId: "task-1",
 			threadId: "run-result-thread",
 			messageId: "run-result-ready",
-			createdAt: T0,
-			expiresAt: T2,
+			createdAt: BASE_TIME,
+			expiresAt: SECOND_TIME,
 			reference: runReference,
 		});
 		expect(
@@ -599,7 +599,7 @@ describe("result ready and reclaim", () => {
 				readyMessageId: "run-result-ready",
 				reclaimMessageId: "run-result-reclaim",
 				clientRequestId: "run-reclaim-1",
-				at: T1,
+				at: FIRST_TIME,
 			}),
 		).toMatchObject({ status: "cancelled" });
 
@@ -615,8 +615,8 @@ describe("result ready and reclaim", () => {
 						taskId: "task-1",
 						threadId: "bad-thread",
 						messageId: `bad-ready-${reference.revision}`,
-						createdAt: T0,
-						expiresAt: T1,
+						createdAt: BASE_TIME,
+						expiresAt: FIRST_TIME,
 						reference,
 					}),
 				"scheduler_message_invalid",
@@ -630,8 +630,8 @@ describe("result ready and reclaim", () => {
 					taskId: "task-other",
 					threadId: "bad-task-thread",
 					messageId: "bad-task-ready",
-					createdAt: T0,
-					expiresAt: T1,
+					createdAt: BASE_TIME,
+					expiresAt: FIRST_TIME,
 					reference: runReference,
 				}),
 			"scheduler_message_invalid",
@@ -648,8 +648,8 @@ describe("result ready and reclaim", () => {
 			taskId: "task-expiring",
 			threadId: "expiring-thread",
 			messageId: "expiring-ready",
-			createdAt: T0,
-			expiresAt: T1,
+			createdAt: BASE_TIME,
+			expiresAt: FIRST_TIME,
 			reference: expiringReference,
 		});
 		await expectFoundationCode(
@@ -662,7 +662,7 @@ describe("result ready and reclaim", () => {
 					readyMessageId: "expiring-ready",
 					reclaimMessageId: "expired-reclaim",
 					clientRequestId: "expired-reclaim",
-					at: T1,
+					at: FIRST_TIME,
 				}),
 			"scheduler_message_timeout",
 		);
@@ -682,14 +682,14 @@ describe("cross-Session Ask orchestration", () => {
 			options: ["approve", "reject"],
 			dueAt,
 			...(escalationAt === undefined ? {} : { escalationAt, escalationTarget: "operator-1" }),
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: `ask-create-${suffix}`,
 		};
 	}
 
 	it("handles answer, expiry, and escalation through AskStore transitions and emits safe acceptance evidence", async () => {
 		const fixture = pair();
-		const answered = await fixture.messages.createCrossSessionAsk(askInput("answered", T2));
+		const answered = await fixture.messages.createCrossSessionAsk(askInput("answered", SECOND_TIME));
 		expect(answered.ask).not.toHaveProperty("question");
 		expect(answered.ask).not.toHaveProperty("options");
 		await fixture.messages.replyCrossSessionAsk({
@@ -703,7 +703,7 @@ describe("cross-Session Ask orchestration", () => {
 		const answerResolution = await fixture.messages.resolveCrossSessionAsk({
 			sourceSessionId: "session-source",
 			waitId: "ask-wait-answered",
-			at: T1,
+			at: FIRST_TIME,
 			clientRequestId: "resolve-answered",
 			messageId: "ask-response-answered",
 		});
@@ -716,7 +716,7 @@ describe("cross-Session Ask orchestration", () => {
 			await fixture.messages.resolveCrossSessionAsk({
 				sourceSessionId: "session-source",
 				waitId: "ask-wait-answered",
-				at: T2,
+				at: SECOND_TIME,
 				clientRequestId: "resolve-answered-replay",
 				messageId: "ask-response-answered",
 			}),
@@ -726,30 +726,30 @@ describe("cross-Session Ask orchestration", () => {
 				fixture.messages.resolveCrossSessionAsk({
 					sourceSessionId: "session-source",
 					waitId: "ask-wait-answered",
-					at: T2,
+					at: SECOND_TIME,
 					clientRequestId: "resolve-answered-conflict",
 					messageId: "ask-response-conflict",
 				}),
 			"scheduler_message_invalid",
 		);
 
-		await fixture.messages.createCrossSessionAsk(askInput("expired", T1, T3));
+		await fixture.messages.createCrossSessionAsk(askInput("expired", FIRST_TIME, THIRD_TIME));
 		expect(
 			await fixture.messages.resolveCrossSessionAsk({
 				sourceSessionId: "session-source",
 				waitId: "ask-wait-expired",
-				at: T1,
+				at: FIRST_TIME,
 				clientRequestId: "resolve-expired",
 				messageId: "ask-response-expired",
 			}),
 		).toMatchObject({ status: "expired", evidence: { outcome: "unsatisfied", verified: false } });
 
-		await fixture.messages.createCrossSessionAsk(askInput("escalated", T3, T1));
+		await fixture.messages.createCrossSessionAsk(askInput("escalated", THIRD_TIME, FIRST_TIME));
 		expect(
 			await fixture.messages.resolveCrossSessionAsk({
 				sourceSessionId: "session-source",
 				waitId: "ask-wait-escalated",
-				at: T1,
+				at: FIRST_TIME,
 				clientRequestId: "resolve-escalated",
 				messageId: "ask-response-escalated",
 			}),
@@ -767,7 +767,7 @@ describe("cross-Session Ask orchestration", () => {
 
 	it("recovers an answered Ask from the same two ledgers and rejects a wrong source Session", async () => {
 		const fixture = pair();
-		const created = await fixture.messages.createCrossSessionAsk(askInput("reload", T2));
+		const created = await fixture.messages.createCrossSessionAsk(askInput("reload", SECOND_TIME));
 		await fixture.messages.replyCrossSessionAsk({
 			targetSessionId: "session-target",
 			askId: created.ask.askId,
@@ -781,7 +781,7 @@ describe("cross-Session Ask orchestration", () => {
 			await reloaded.resolveCrossSessionAsk({
 				sourceSessionId: "session-source",
 				waitId: "ask-wait-reload",
-				at: T1,
+				at: FIRST_TIME,
 				clientRequestId: "resolve-reload",
 				messageId: "ask-response-reload",
 			}),
@@ -791,7 +791,7 @@ describe("cross-Session Ask orchestration", () => {
 				reloaded.resolveCrossSessionAsk({
 					sourceSessionId: "session-target",
 					waitId: "ask-wait-reload",
-					at: T1,
+					at: FIRST_TIME,
 					clientRequestId: "resolve-wrong-session",
 					messageId: "ask-response-wrong-session",
 				}),

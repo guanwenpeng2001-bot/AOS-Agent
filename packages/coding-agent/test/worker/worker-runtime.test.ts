@@ -13,7 +13,7 @@ import {
 import { OperationWorkerRuntime } from "../../src/core/worker/runtime.ts";
 import type { WorkerBinding } from "../../src/core/worker/lifecycle.ts";
 import { runOperationWorkerProcess } from "../../src/worker-entry.ts";
-import { FakeWorkerProviderV1 } from "../fixtures/fake-worker-provider.ts";
+import { FakeWorkerProvider } from "../fixtures/fake-worker-provider.ts";
 
 const binding: WorkerBinding = {
 	schemaVersion: 1,
@@ -72,8 +72,8 @@ const leaseRef: SafeLeaseReference = {
 	clientRequestId: lease.clientRequestId,
 };
 
-function harness(provider = new FakeWorkerProviderV1()): {
-	readonly provider: FakeWorkerProviderV1;
+function harness(provider = new FakeWorkerProvider()): {
+	readonly provider: FakeWorkerProvider;
 	readonly runtime: OperationWorkerRuntime;
 	readonly frames: OperationWorkerEventFrame[];
 	readonly diagnostics: string[];
@@ -94,7 +94,7 @@ function harness(provider = new FakeWorkerProviderV1()): {
 
 describe("trusted Operation Worker runtime", () => {
 	it("fails initialize closed on provider identity mismatch without ready or provider effects", async () => {
-		const provider = new FakeWorkerProviderV1({ providerId: "mismatched-provider" });
+		const provider = new FakeWorkerProvider({ providerId: "mismatched-provider" });
 		const state = harness(provider);
 		await state.runtime.receiveFrame(initialize);
 
@@ -116,7 +116,7 @@ describe("trusted Operation Worker runtime", () => {
 	});
 
 	it("fails execute before initialize closed without provider calls, output, or raw-frame leakage", async () => {
-		const provider = new FakeWorkerProviderV1();
+		const provider = new FakeWorkerProvider();
 		const state = harness(provider);
 		const rawMarker = "raw-execute-before-initialize";
 		const earlyExecute: OperationWorkerRequestFrame = {
@@ -154,7 +154,7 @@ describe("trusted Operation Worker runtime", () => {
 			},
 		]);
 
-		const mismatch = harness(new FakeWorkerProviderV1({ capabilities: ["filesystem.read"] }));
+		const mismatch = harness(new FakeWorkerProvider({ capabilities: ["filesystem.read"] }));
 		await mismatch.runtime.receiveFrame(initialize);
 		expect(mismatch.frames).toEqual([
 			expect.objectContaining({ type: "error", requestId: initialize.requestId, code: "sandbox_capability_insufficient" }),
@@ -208,7 +208,7 @@ describe("trusted Operation Worker runtime", () => {
 		expect(invalid.frames).toEqual([]);
 		expect(invalid.diagnostics.join("")).toBe("[redacted worker diagnostic]\n");
 
-		const drift = harness(new FakeWorkerProviderV1({ startBehavior: "correlation-drift" }));
+		const drift = harness(new FakeWorkerProvider({ startBehavior: "correlation-drift" }));
 		await drift.runtime.receiveFrame(initialize);
 		await drift.runtime.receiveFrame(execute);
 		await drift.runtime.waitForIdle();
@@ -218,7 +218,7 @@ describe("trusted Operation Worker runtime", () => {
 	});
 
 	it("fails closed before transport output when a valid provider result exceeds the complete-frame bound", async () => {
-		const state = harness(new FakeWorkerProviderV1({ startBehavior: "oversized-frame" }));
+		const state = harness(new FakeWorkerProvider({ startBehavior: "oversized-frame" }));
 		await state.runtime.receiveFrame(initialize);
 		await state.runtime.receiveFrame(execute);
 		await state.runtime.waitForIdle();
@@ -255,7 +255,7 @@ describe("trusted Operation Worker runtime", () => {
 	});
 
 	it("projects, renews, and revokes safe credential references and reports target failures", async () => {
-		const state = harness(new FakeWorkerProviderV1({ failedCredentialActions: ["renew"] }));
+		const state = harness(new FakeWorkerProvider({ failedCredentialActions: ["renew"] }));
 		await state.runtime.receiveFrame(initialize);
 		await state.runtime.receiveFrame({ type: "credential.project", requestId: "project-1", workerId: binding.workerId, lease });
 		await state.runtime.receiveFrame({ type: "credential.renew", requestId: "renew-1", workerId: binding.workerId, lease });
@@ -270,7 +270,7 @@ describe("trusted Operation Worker runtime", () => {
 	});
 
 	it("forwards cancel without treating its acknowledgement as side-effect closure", async () => {
-		const state = harness(new FakeWorkerProviderV1({ startBehavior: "pending" }));
+		const state = harness(new FakeWorkerProvider({ startBehavior: "pending" }));
 		await state.runtime.receiveFrame(initialize);
 		await state.runtime.receiveFrame(execute);
 		await state.runtime.receiveFrame({ type: "cancel", requestId: "cancel-1", workerId: binding.workerId, operationId: request.operationId, reason: "cancel" });
@@ -283,14 +283,14 @@ describe("trusted Operation Worker runtime", () => {
 	});
 
 	it("maps provider Result.err and cancel failure without leaking provider detail", async () => {
-		const rejected = harness(new FakeWorkerProviderV1({ startBehavior: "provider-error" }));
+		const rejected = harness(new FakeWorkerProvider({ startBehavior: "provider-error" }));
 		await rejected.runtime.receiveFrame(initialize);
 		await rejected.runtime.receiveFrame(execute);
 		await rejected.runtime.waitForIdle();
 		expect(rejected.frames.map((frame) => frame.type)).toEqual(["ready", "operation.started", "error"]);
 		expect(rejected.frames.at(-1)).toMatchObject({ requestId: execute.requestId, code: "worker_start_failed" });
 
-		const cancelFailed = harness(new FakeWorkerProviderV1({ startBehavior: "pending", cancelFails: true }));
+		const cancelFailed = harness(new FakeWorkerProvider({ startBehavior: "pending", cancelFails: true }));
 		await cancelFailed.runtime.receiveFrame(initialize);
 		await cancelFailed.runtime.receiveFrame(execute);
 		await cancelFailed.runtime.receiveFrame({ type: "cancel", requestId: "cancel-failed-1", workerId: binding.workerId, operationId: request.operationId, reason: "cancel" });
@@ -315,7 +315,7 @@ describe("trusted Operation Worker runtime", () => {
 		expect(state.provider.disposeCalls).toBe(1);
 		expect(state.runtime.closed).toBe(true);
 
-		const failed = harness(new FakeWorkerProviderV1({ disposeThrows: true }));
+		const failed = harness(new FakeWorkerProvider({ disposeThrows: true }));
 		await failed.runtime.receiveFrame(initialize);
 		await failed.runtime.receiveFrame({ type: "reclaim", requestId: "reclaim-2", workerId: binding.workerId });
 		expect(failed.frames.at(-1)).toMatchObject({ type: "error", requestId: "reclaim-2", code: "worker_reclaim_failed" });
@@ -324,7 +324,7 @@ describe("trusted Operation Worker runtime", () => {
 	});
 
 	it("redacts provider throws and keeps stdout frames protocol-only", async () => {
-		const state = harness(new FakeWorkerProviderV1({ startBehavior: "throw" }));
+		const state = harness(new FakeWorkerProvider({ startBehavior: "throw" }));
 		await state.runtime.receiveFrame(initialize);
 		await state.runtime.receiveFrame(execute);
 		await state.runtime.waitForIdle();
@@ -351,7 +351,7 @@ describe("trusted Operation Worker runtime", () => {
 		});
 
 		const run = runOperationWorkerProcess({
-			provider: new FakeWorkerProviderV1({ startBehavior: "throw" }),
+			provider: new FakeWorkerProvider({ startBehavior: "throw" }),
 			input,
 			output,
 			diagnostic,

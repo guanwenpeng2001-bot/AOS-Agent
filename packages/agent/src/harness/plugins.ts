@@ -311,7 +311,7 @@ export class InMemoryLocalPluginRegistryStorage implements LocalPluginRegistrySt
 	}
 }
 
-interface PluginRegistryDiskPointerV1 {
+interface PluginRegistryDiskPointer {
 	schemaVersion: typeof FOUNDATION_SCHEMA_VERSION;
 	generation: number;
 	snapshotFile: string;
@@ -478,8 +478,8 @@ function parsePluginRegistrySnapshot(value: unknown, expectedGeneration: number)
 	return validatePluginRegistrySnapshot(value, expectedGeneration);
 }
 
-function parsePluginRegistryPointer(value: unknown): ResultValue<PluginRegistryDiskPointerV1, FoundationError> {
-	const shape = durableRegistryShape<PluginRegistryDiskPointerV1>(pluginRegistryDiskPointerSchema, value, "plugin registry activation pointer");
+function parsePluginRegistryPointer(value: unknown): ResultValue<PluginRegistryDiskPointer, FoundationError> {
+	const shape = durableRegistryShape<PluginRegistryDiskPointer>(pluginRegistryDiskPointerSchema, value, "plugin registry activation pointer");
 	if (!shape.ok) return shape;
 	if (!Number.isSafeInteger(shape.value.generation) || !new RegExp(`^snapshot-${shape.value.generation}-[0-9a-f-]+\\.json$`).test(shape.value.snapshotFile)) {
 		return Result.err(pluginError("plugin_rollback_failed", "plugin registry activation pointer is invalid"));
@@ -606,7 +606,7 @@ export class LocalFilePluginRegistryStorage implements LocalPluginRegistryStorag
 			unwrapPluginFileResult(await this.#fileSystem.syncFile(snapshotTemporaryPath));
 			unwrapPluginFileResult(await this.#fileSystem.renameFile(snapshotTemporaryPath, snapshotPath));
 			unwrapPluginFileResult(await this.#fileSystem.syncDirectory(snapshotDirectory));
-			const pointer: PluginRegistryDiskPointerV1 = { schemaVersion: FOUNDATION_SCHEMA_VERSION, generation: snapshot.generation, snapshotFile };
+			const pointer: PluginRegistryDiskPointer = { schemaVersion: FOUNDATION_SCHEMA_VERSION, generation: snapshot.generation, snapshotFile };
 			unwrapPluginFileResult(await this.#fileSystem.createExclusive(pointerTemporaryPath, canonicalFoundationJson(pointer)));
 			unwrapPluginFileResult(await this.#fileSystem.syncFile(pointerTemporaryPath));
 			unwrapPluginFileResult(await this.#fileSystem.renameFile(pointerTemporaryPath, pointerPath));

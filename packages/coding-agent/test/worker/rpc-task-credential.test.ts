@@ -144,7 +144,7 @@ const SENTINEL = "sentinel-secret-42";
 
 /**
  * Fake sandbox provider: declares per-binding isolation AND credential
- * delivery so the T3 per-binding sandbox facts resolve honestly.
+ * delivery so the per-binding sandbox facts resolve honestly.
  */
 function makeSandboxProvider(): SandboxProvider {
 	const capabilities = {
@@ -550,7 +550,7 @@ async function seedRunTerminal(session: AgentSession, runId: string): Promise<vo
 	});
 }
 
-/** Create the task graph and attach its node to the run (the T3 node-attach preflight fact). */
+/** Create the task graph and attach its node to the run (the node-attach preflight fact). */
 async function seedGraphAndAttach(
 	controller: RpcHostController,
 	options: {
@@ -615,7 +615,7 @@ async function seedApprovedGate(
 
 /**
  * Materialize the session's frozen policy boundary (capability binding +
- * policy binding + ready per-binding sandbox session) so the T3 preflight
+ * policy binding + ready per-binding sandbox session) so the preflight
  * facts are real. The command preflight itself never prepares anything;
  * this is fixture setup only. `preflight` is skipped when the boundary was
  * already materialized by a live run (run.start runs its own preflight).
@@ -1215,7 +1215,7 @@ describe("task credential automation host rpc", () => {
 			await cleanup();
 		}
 	});
-	it("issue runs the T3 preflight: gate approval, node attach, TTL, and scope facts", async () => {
+	it("issue runs the preflight: gate approval, node attach, TTL, and scope facts", async () => {
 		const { controller, runtimeHost, cleanup } = await startInMemoryController({
 			withAuth: true,
 			responseDelayMs: 1,
@@ -1521,7 +1521,7 @@ describe("task credential automation host rpc", () => {
 		}
 	});
 
-	describe("T3 preflight regressions (no provider call, no append)", () => {
+	describe("preflight regressions (no provider call, no append)", () => {
 		/**
 		 * The deny path must never reach the issuer, the projection, or the
 		 * session single-writer: zero issuer grants, zero material projections,
@@ -1603,7 +1603,7 @@ describe("task credential automation host rpc", () => {
 			try {
 				await dispatchCommand(controller, { id: "init-1", type: "initialize", protocolVersion: 1 });
 				const boundary = await seedRunGraphAndBoundary(controller, runtimeHost.session, "run_001", "graph-disposed");
-				// Dispose the live per-binding sandbox session: the T3 sandbox
+				// Dispose the live per-binding sandbox session: the sandbox
 				// fact is no longer `ready`, so the preflight fails closed.
 				await runtimeHost.session.getActiveSandboxSessionForCompatibility()?.dispose();
 				const response = await dispatchCommand(controller, issueCommand("run_001", "issue-disposed", boundary));

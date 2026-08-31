@@ -1,7 +1,7 @@
 /**
  * Scheduler core state machine and serializers.
  *
- * Pure Host-side control-plane types for line 12B. This module does not
+ * Pure Host-side scheduler control-plane types. This module does not
  * register a production Scheduler, scan Task Graph, tick, claim from a
  * ledger, or construct a types-only facade. Production composition owns the
  * tick and Graph ready-scan. Queue persistence, executor registration, and
@@ -1656,7 +1656,7 @@ export interface SchedulerHostTickResult {
 	readonly errors: readonly SchedulerHostTickError[];
 }
 
-interface SchedulerHostWorkItemV1 {
+interface SchedulerHostWorkItem {
 	readonly graph: TaskGraphRecord;
 	readonly node: TaskGraphNodeView;
 	readonly entry: SchedulerQueueEntry;
@@ -1664,7 +1664,7 @@ interface SchedulerHostWorkItemV1 {
 	readonly attach: boolean;
 }
 
-interface SchedulerHostWorkOutcomeV1 {
+interface SchedulerHostWorkOutcome {
 	readonly claimed: boolean;
 	readonly dispatched: boolean;
 	readonly settled: boolean;
@@ -1672,7 +1672,7 @@ interface SchedulerHostWorkOutcomeV1 {
 	readonly error?: SchedulerHostTickError;
 }
 
-interface SchedulerHostClaimRenewalV1 {
+interface SchedulerHostClaimRenewal {
 	failure(): FoundationError | undefined;
 	stop(): Promise<void>;
 }
@@ -1729,7 +1729,7 @@ export class SchedulerHost {
 	private readonly maxConcurrentAttempts: number;
 	private readonly claimTtlMs: number | undefined;
 	private readonly clock: RuntimeClock;
-	private readonly active = new Set<Promise<SchedulerHostWorkOutcomeV1>>();
+	private readonly active = new Set<Promise<SchedulerHostWorkOutcome>>();
 	private unsubscribe: (() => void) | undefined;
 	private pollTimer: RuntimeTimerHandle | undefined;
 	private currentTick: Promise<SchedulerHostTickResult> | undefined;
@@ -1841,7 +1841,7 @@ export class SchedulerHost {
 		}
 		const entryById = new Map(snapshot.value.entries.map((entry) => [entry.queueEntryId, entry]));
 		const claimById = new Map(snapshot.value.claims.map((claim) => [claim.claimId, claim]));
-		const work: SchedulerHostWorkItemV1[] = [];
+		const work: SchedulerHostWorkItem[] = [];
 		let scannedNodes = 0;
 		let enqueued = 0;
 		for (const graph of listed.graphs) {
@@ -1896,8 +1896,8 @@ export class SchedulerHost {
 		let activeTotal = this.active.size;
 		const activeByTaskId = new Map<string, number>();
 		const taskCapacityByTaskId = new Map<string, number>();
-		const pending: Promise<SchedulerHostWorkOutcomeV1>[] = [];
-		const immediate: SchedulerHostWorkOutcomeV1[] = [];
+		const pending: Promise<SchedulerHostWorkOutcome>[] = [];
+		const immediate: SchedulerHostWorkOutcome[] = [];
 		for (let item of work) {
 			if (activeTotal >= this.maxConcurrentAttempts) break;
 			const knownTaskCapacity = taskCapacityByTaskId.get(item.graph.taskId);
@@ -1940,7 +1940,7 @@ export class SchedulerHost {
 			}
 			activeTotal++;
 			activeByTaskId.set(taskId, taskActive + 1);
-			let job: Promise<SchedulerHostWorkOutcomeV1>;
+			let job: Promise<SchedulerHostWorkOutcome>;
 			job = this.process(item, associated.value).finally(() => this.active.delete(job));
 			this.active.add(job);
 			pending.push(job);
@@ -1961,9 +1961,9 @@ export class SchedulerHost {
 	}
 
 	private async process(
-		item: SchedulerHostWorkItemV1,
+		item: SchedulerHostWorkItem,
 		association: SchedulerHostRunAssociation,
-	): Promise<SchedulerHostWorkOutcomeV1> {
+	): Promise<SchedulerHostWorkOutcome> {
 		let claim = item.claim;
 		if (claim === undefined) {
 			const claimed = await this.queue.claim({
@@ -2084,7 +2084,7 @@ export class SchedulerHost {
 		}
 	}
 
-	private startClaimRenewal(claim: SchedulerClaim): SchedulerHostClaimRenewalV1 {
+	private startClaimRenewal(claim: SchedulerClaim): SchedulerHostClaimRenewal {
 		const ttlMs = this.claimTtlMs ?? SCHEDULER_CLAIM_MAX_LEASE_TTL_MS;
 		const intervalMs = Math.max(SCHEDULER_CLAIM_MIN_LEASE_TTL_MS, Math.floor(ttlMs / 2));
 		let timer: RuntimeTimerHandle | undefined;
@@ -2121,12 +2121,12 @@ export class SchedulerHost {
 	}
 
 	private async rejectAfterDispatch(
-		item: SchedulerHostWorkItemV1,
+		item: SchedulerHostWorkItem,
 		claim: SchedulerClaim,
 		dispatched: SchedulerDispatchOutcome,
 		association: SchedulerHostRunAssociation,
 		error: FoundationError,
-	): Promise<SchedulerHostWorkOutcomeV1> {
+	): Promise<SchedulerHostWorkOutcome> {
 		const hostSettled = await this.settleRunAtHost({
 			runId: association.runId,
 			taskId: item.graph.taskId,
@@ -2162,11 +2162,11 @@ export class SchedulerHost {
 	}
 
 	private workError(
-		item: SchedulerHostWorkItemV1,
+		item: SchedulerHostWorkItem,
 		error: unknown,
 		claimed: boolean,
 		dispatched: boolean,
-	): SchedulerHostWorkOutcomeV1 {
+	): SchedulerHostWorkOutcome {
 		return {
 			claimed,
 			dispatched,

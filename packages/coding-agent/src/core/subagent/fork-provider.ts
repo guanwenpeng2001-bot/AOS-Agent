@@ -138,7 +138,7 @@ interface Deferred<T> {
 	readonly settled: () => boolean;
 }
 
-interface ForkChildHandleV1 {
+interface ForkChildHandle {
 	readonly spawnId: string;
 	spawn: ChildSpawnResult;
 	readonly request: ChildSpawnRequest;
@@ -260,8 +260,8 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 	private readonly cancelTimeoutMs: number;
 	private readonly closeTimeoutMs: number;
 	private readonly declaredCapabilities: readonly FoundationProviderCapability[];
-	private readonly bySpawnId = new Map<string, ForkChildHandleV1>();
-	private readonly byAttemptId = new Map<string, ForkChildHandleV1>();
+	private readonly bySpawnId = new Map<string, ForkChildHandle>();
+	private readonly byAttemptId = new Map<string, ForkChildHandle>();
 	private disposed = false;
 
 	constructor(options: ForkChildAgentProviderOptions) {
@@ -366,7 +366,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 			loadParentContext: this.loadParentContext,
 		});
 		if (!contextFork.ok) return contextFork;
-		const handle: ForkChildHandleV1 = {
+		const handle: ForkChildHandle = {
 			spawnId: request.spawnId,
 			spawn: created.value,
 			request,
@@ -648,7 +648,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 	}
 
 	private async startProcess(
-		handle: ForkChildHandleV1,
+		handle: ForkChildHandle,
 		resume: boolean,
 	): Promise<ResultValue<void, FoundationError>> {
 		if (handle.child !== undefined) {
@@ -698,7 +698,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		return child;
 	}
 
-	private initializeFrame(handle: ForkChildHandleV1, resume: boolean): ChildAgentInitializeRequest {
+	private initializeFrame(handle: ForkChildHandle, resume: boolean): ChildAgentInitializeRequest {
 		return {
 			type: "initialize",
 			requestId: requestId("initialize", handle.spawnId, handle.generation),
@@ -735,7 +735,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		};
 	}
 
-	private attachProcess(handle: ForkChildHandleV1, child: ChildAgentProcess): void {
+	private attachProcess(handle: ForkChildHandle, child: ChildAgentProcess): void {
 		const onExit = (_code: number | null, _signal: NodeJS.Signals | null): void => {
 			handle.exited = true;
 			if (handle.closed && !handle.lost) {
@@ -787,7 +787,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		);
 	}
 
-	private async receiveLine(handle: ForkChildHandleV1, line: string): Promise<void> {
+	private async receiveLine(handle: ForkChildHandle, line: string): Promise<void> {
 		const parsed = parseChildAgentFrame(line);
 		if (!parsed.ok) {
 			await this.markLost(handle, parsed.error);
@@ -882,7 +882,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 	}
 
 	private async sendTurn(
-		handle: ForkChildHandleV1,
+		handle: ForkChildHandle,
 		attempt: Attempt,
 		signal?: AbortSignal,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
@@ -953,7 +953,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		return timed.value;
 	}
 
-	private writeFrame(handle: ForkChildHandleV1, frame: unknown): ResultValue<void, FoundationError> {
+	private writeFrame(handle: ForkChildHandle, frame: unknown): ResultValue<void, FoundationError> {
 		const child = handle.child;
 		if (child === undefined || child.stdin === null || handle.lost) {
 			return Result.err(fail("subagent_lost", "Child Agent stdin pipe is not live"));
@@ -967,7 +967,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		}
 	}
 
-	private async reserveQuota(handle: ForkChildHandleV1): Promise<ResultValue<QuotaReservation, FoundationError>> {
+	private async reserveQuota(handle: ForkChildHandle): Promise<ResultValue<QuotaReservation, FoundationError>> {
 		const attribution = childAgentQuotaAttribution({
 			taskId: handle.spawn.attempt.taskId,
 			attemptId: handle.spawn.attempt.attemptId,
@@ -1000,7 +1000,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 	}
 
 	private async settleQuota(
-		handle: ForkChildHandleV1,
+		handle: ForkChildHandle,
 		usage: BudgetUsage,
 	): Promise<ResultValue<BudgetUsage, FoundationError>> {
 		if (handle.quotaReservation === undefined) {
@@ -1018,7 +1018,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 	}
 
 	private async markLost(
-		handle: ForkChildHandleV1,
+		handle: ForkChildHandle,
 		error: FoundationError,
 		notifySupervisor = true,
 	): Promise<ResultValue<never, FoundationError>> {
@@ -1039,7 +1039,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		return Result.err(error);
 	}
 
-	private async killProcess(handle: ForkChildHandleV1): Promise<void> {
+	private async killProcess(handle: ForkChildHandle): Promise<void> {
 		const child = handle.child;
 		if (child === undefined) return;
 		try {
@@ -1051,7 +1051,7 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		child.killed = true;
 	}
 
-	private async dropProcess(handle: ForkChildHandleV1, lost: boolean): Promise<void> {
+	private async dropProcess(handle: ForkChildHandle, lost: boolean): Promise<void> {
 		const child = handle.child;
 		handle.detachStdout?.();
 		handle.detachStdout = undefined;
@@ -1070,12 +1070,12 @@ export class ForkChildAgentProvider implements ChildAgentProvider, TaskExecutorP
 		handle.receiptWaiter = undefined;
 	}
 
-	private maybeCompleteClose(handle: ForkChildHandleV1): void {
+	private maybeCompleteClose(handle: ForkChildHandle): void {
 		if (handle.lost || handle.closeWaiter === undefined) return;
 		if (handle.closeAcked && handle.exited) handle.closeWaiter.resolve(Result.ok(undefined));
 	}
 
-	private async releaseHandle(handle: ForkChildHandleV1): Promise<ResultValue<void, FoundationError>> {
+	private async releaseHandle(handle: ForkChildHandle): Promise<ResultValue<void, FoundationError>> {
 		if (handle.closed) {
 			await this.dropProcess(handle, false);
 			return Result.ok(undefined);

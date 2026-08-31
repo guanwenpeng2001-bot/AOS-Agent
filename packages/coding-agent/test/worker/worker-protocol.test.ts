@@ -22,7 +22,7 @@ import {
 	type OperationWorkerProtocolState,
 	type OperationWorkerRequestFrame,
 } from "../../src/core/worker/protocol.ts";
-import { FakeWorkerProtocolTransportV1 } from "../fixtures/worker-protocol-fake-transport.ts";
+import { FakeWorkerProtocolTransport } from "../fixtures/worker-protocol-fake-transport.ts";
 import type { WorkerBinding } from "../../src/core/worker/lifecycle.ts";
 
 const binding: WorkerBinding = {
@@ -375,7 +375,7 @@ describe("private Operation Worker protocol", () => {
 	});
 
 	it("keeps stdout JSONL-only and redacts stderr diagnostics", () => {
-		const transport = new FakeWorkerProtocolTransportV1(binding, "ready");
+		const transport = new FakeWorkerProtocolTransport(binding, "ready");
 		const readyLines = transport.send({ type: "initialize", requestId: "initialize-1", binding });
 		expect(readyLines.ok).toBe(true);
 		if (!readyLines.ok) return;
@@ -393,10 +393,10 @@ describe("private Operation Worker protocol", () => {
 	});
 
 	it("covers fake ready, slow, cancel acknowledgement, receipt, disconnect, malformed, and oversized data", () => {
-		const ready = new FakeWorkerProtocolTransportV1(binding, "ready");
+		const ready = new FakeWorkerProtocolTransport(binding, "ready");
 		const readyResult = ready.send({ type: "initialize", requestId: "initialize-1", binding });
 		expect(readyResult.ok).toBe(true);
-		const heartbeat = new FakeWorkerProtocolTransportV1(binding, "ready");
+		const heartbeat = new FakeWorkerProtocolTransport(binding, "ready");
 		heartbeat.send({ type: "initialize", requestId: "initialize-1", binding });
 		const heartbeatOutput = heartbeat.sendHeartbeat(1, "2026-08-21T00:00:03.000Z");
 		expect(heartbeatOutput).toMatchObject({ ok: true, value: [expect.stringContaining('"type":"heartbeat"')] });
@@ -406,12 +406,12 @@ describe("private Operation Worker protocol", () => {
 		expect(heartbeat.sendHeartbeat(1, "2026-08-21T00:00:04.000Z")).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 		expect(heartbeat.sendHeartbeat(2, "2026-08-21T00:00:02.000Z")).toMatchObject({ ok: false, error: { code: "worker_conflict" } });
 
-		const slow = new FakeWorkerProtocolTransportV1(binding, "slow");
+		const slow = new FakeWorkerProtocolTransport(binding, "slow");
 		expect(slow.send({ type: "initialize", requestId: "initialize-1", binding }).ok).toBe(true);
 		const slowOutput = slow.send({ type: "execute", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, request });
 		expect(slowOutput).toMatchObject({ ok: true, value: [] });
 
-		const cancel = new FakeWorkerProtocolTransportV1(binding, "cancel_ack");
+		const cancel = new FakeWorkerProtocolTransport(binding, "cancel_ack");
 		cancel.send({ type: "initialize", requestId: "initialize-1", binding });
 		cancel.send({ type: "execute", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, request });
 		const cancelOutput = cancel.send({ type: "cancel", requestId: "cancel-1", workerId: binding.workerId, operationId: request.operationId, reason: "cancel" });
@@ -419,20 +419,20 @@ describe("private Operation Worker protocol", () => {
 		expect(cancel.state.phase).toBe("cancelling");
 		expect(cancel.state.operations[0]).toMatchObject({ started: true, terminal: false, receiptReceived: false });
 
-		const receiptTransport = new FakeWorkerProtocolTransportV1(binding, "receipt");
+		const receiptTransport = new FakeWorkerProtocolTransport(binding, "receipt");
 		receiptTransport.send({ type: "initialize", requestId: "initialize-1", binding });
 		const receiptOutput = receiptTransport.send({ type: "execute", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, request });
 		expect(receiptOutput).toMatchObject({ ok: true, value: expect.arrayContaining([expect.stringContaining("\"type\":\"receipt\"")]) });
 
-		const disconnected = new FakeWorkerProtocolTransportV1(binding, "disconnect");
+		const disconnected = new FakeWorkerProtocolTransport(binding, "disconnect");
 		expect(disconnected.send({ type: "initialize", requestId: "initialize-1", binding })).toMatchObject({ ok: false, error: { code: "worker_lost" } });
 
-		const malformed = new FakeWorkerProtocolTransportV1(binding, "malformed");
+		const malformed = new FakeWorkerProtocolTransport(binding, "malformed");
 		const malformedOutput = malformed.send({ type: "initialize", requestId: "initialize-1", binding });
 		expect(malformedOutput).toMatchObject({ ok: true, value: ["{malformed worker frame"] });
 		if (malformedOutput.ok) expect(parseOperationWorkerFrame(malformedOutput.value[0]!)).toMatchObject({ ok: false, error: { code: "worker_operation_invalid" } });
 
-		const oversized = new FakeWorkerProtocolTransportV1(binding, "oversized_data");
+		const oversized = new FakeWorkerProtocolTransport(binding, "oversized_data");
 		oversized.send({ type: "initialize", requestId: "initialize-1", binding });
 		const oversizedOutput = oversized.send({ type: "execute", requestId: "execute-1", workerId: binding.workerId, operationId: request.operationId, request });
 		expect(oversizedOutput.ok).toBe(true);

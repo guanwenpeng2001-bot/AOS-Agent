@@ -78,7 +78,7 @@ function dataset(): WorkflowEvaluationDataset {
 	};
 }
 
-describe("T12 workflow evaluation", () => {
+describe("workflow evaluation", () => {
 	it("produces a deterministic quality, cost, and recovery regression snapshot", () => {
 		const evaluated = runWorkflowEvaluation({
 			dataset: dataset(),

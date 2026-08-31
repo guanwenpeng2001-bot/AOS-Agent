@@ -17,7 +17,7 @@ export type ObserverErrorCode = "observer_not_attached" | "observer_already_atta
 export class ObserverError extends Error { readonly _tag = "ObserverErrorV1" as const; readonly code: ObserverErrorCode; constructor(code: ObserverErrorCode, message: string) { super(message.replace(/https?:\/\/[^\s]+/g, "[redacted-url]")); this.name = "ObserverErrorV1"; this.code = code; } }
 export interface ObserverEventListener { durable(event: DurableEventEnvelope): void; live(delta: LiveDeltaEnvelope): void; }
 export interface FoundationObserverOptions { maxBufferSize?: number; catalogVersion?: number; retentionFloor?: number; idGenerator?: () => string; }
-interface BufferedItemV1 { sequence: number; offset: number; event?: DurableEventEnvelope; delta?: LiveDeltaEnvelope; }
+interface BufferedItem { sequence: number; offset: number; event?: DurableEventEnvelope; delta?: LiveDeltaEnvelope; }
 
 export const ObserverCursorSchema = Type.Object({ schemaVersion: Type.Literal(1), sessionId: Type.String({ minLength: 1 }), ledgerRevision: Type.Integer({ minimum: 0 }), sequence: Type.Integer({ minimum: 0 }), catalogVersion: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
 export const ObserverSnapshotSchema = Type.Object({ schemaVersion: Type.Literal(1), sessionId: Type.String({ minLength: 1 }), ledgerRevision: Type.Integer({ minimum: 0 }), sequence: Type.Integer({ minimum: 0 }), catalogVersion: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
@@ -30,7 +30,7 @@ export function parseObserverSnapshot(text: string): ResultValue<ObserverSnapsho
 
 export class FoundationObserver {
 	private phase: ObserverPhase = "idle"; private readonly maxBufferSize: number; private readonly catalogVersion: number; private readonly retentionFloor: number; private readonly idGenerator: () => string;
-	private observerId: string | undefined; private sessionId: string | undefined; private snapshot: ObserverSnapshot | undefined; private cursor: ObserverCursor | undefined; private buffered: BufferedItemV1[] = []; private listener: ObserverEventListener | undefined; private lastAppliedSequence = 0; private lastLiveOffset = -1;
+	private observerId: string | undefined; private sessionId: string | undefined; private snapshot: ObserverSnapshot | undefined; private cursor: ObserverCursor | undefined; private buffered: BufferedItem[] = []; private listener: ObserverEventListener | undefined; private lastAppliedSequence = 0; private lastLiveOffset = -1;
 	constructor(options: FoundationObserverOptions = {}) { this.maxBufferSize = Math.max(1, options.maxBufferSize ?? 1024); this.catalogVersion = options.catalogVersion ?? 1; this.retentionFloor = options.retentionFloor ?? 0; this.idGenerator = options.idGenerator ?? newFoundationUuid; }
 	get currentPhase(): ObserverPhase { return this.phase; }
 	get currentObserverId(): string | undefined { return this.observerId; }

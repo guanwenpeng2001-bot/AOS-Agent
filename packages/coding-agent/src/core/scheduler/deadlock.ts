@@ -355,13 +355,13 @@ function detectionIdFor(memberTaskIds: readonly string[], edgeKinds: readonly Sc
 	return `dl_${digest.slice(0, 16)}`;
 }
 
-interface CycleHitV1 {
+interface CycleHit {
 	readonly memberTaskIds: readonly string[];
 	readonly edgeKinds: readonly SchedulerWaitEdgeKind[];
 	readonly cycleEdges: readonly SchedulerWaitForEdge[];
 }
 
-function findFirstCycle(edges: readonly SchedulerWaitForEdge[]): CycleHitV1 | undefined {
+function findFirstCycle(edges: readonly SchedulerWaitForEdge[]): CycleHit | undefined {
 	const adjacency = new Map<string, SchedulerWaitForEdge[]>();
 	for (const edge of edges) {
 		if (edge.fromTaskId === edge.toTaskId) continue;
@@ -379,7 +379,7 @@ function findFirstCycle(edges: readonly SchedulerWaitForEdge[]): CycleHitV1 | un
 	const visiting = new Set<string>();
 	const visited = new Set<string>();
 	const parent = new Map<string, SchedulerWaitForEdge>();
-	let found: CycleHitV1 | undefined;
+	let found: CycleHit | undefined;
 	const visit = (node: string): boolean => {
 		if (found !== undefined) return true;
 		visiting.add(node);
@@ -424,7 +424,7 @@ function isActiveQueueState(state: SchedulerQueueEntry["state"]): boolean {
 	return state === "claimed" || state === "dispatched";
 }
 
-interface ScanBudgetV1 {
+interface ScanBudget {
 	graphs: number;
 	nodes: number;
 	edges: number;
@@ -590,11 +590,11 @@ export class SchedulerDeadlockController {
 		return this.nowFn();
 	}
 
-	private createBudget(): ScanBudgetV1 {
+	private createBudget(): ScanBudget {
 		return { graphs: 0, nodes: 0, edges: 0, steps: 0, timedOut: false };
 	}
 
-	private expired(budget: ScanBudgetV1, deadlineAt: number): boolean {
+	private expired(budget: ScanBudget, deadlineAt: number): boolean {
 		budget.steps += 1;
 		if (budget.steps > SCHEDULER_DEADLOCK_SCAN_HARD_CAP) {
 			budget.timedOut = true;
@@ -747,7 +747,7 @@ export class SchedulerDeadlockController {
 	private async collectEdges(
 		failed: ReadonlySet<string>,
 		deadlineAt: number,
-		budget: ScanBudgetV1,
+		budget: ScanBudget,
 	): Promise<ResultValue<readonly SchedulerWaitForEdge[], FoundationError>> {
 		const edges: SchedulerWaitForEdge[] = [];
 		const push = (edge: SchedulerWaitForEdge): boolean => {
@@ -863,7 +863,7 @@ export class SchedulerDeadlockController {
 
 	private async collectAskWaits(
 		deadlineAt: number,
-		budget: ScanBudgetV1,
+		budget: ScanBudget,
 	): Promise<ResultValue<readonly SchedulerAskWaitFact[], FoundationError>> {
 		const latest = new Map<string, { readonly revision: number; readonly payload: SchedulerAskWaitFact }>();
 		for (const ledger of this.waitLedgers) {
@@ -932,7 +932,7 @@ export class SchedulerDeadlockController {
 	private async failTask(
 		taskId: string,
 		deadlineAt: number,
-		budget: ScanBudgetV1,
+		budget: ScanBudget,
 	): Promise<ResultValue<void, FoundationError>> {
 		if (this.handoff !== undefined) {
 			const offered = await this.handoff.snapshot();
@@ -1174,7 +1174,7 @@ export class SchedulerDeadlockController {
 	private async enforceBackpressure(
 		failed: ReadonlySet<string>,
 		deadlineAt: number,
-		budget: ScanBudgetV1,
+		budget: ScanBudget,
 	): Promise<ResultValue<{ signals: SchedulerBackpressureSignal[] }, FoundationError>> {
 		const snapshots = await this.snapshotAllQueues();
 		if (!snapshots.ok) return snapshots;

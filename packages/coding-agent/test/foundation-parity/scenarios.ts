@@ -5,7 +5,7 @@
  * records: a fixed set of scenario scripts written against a facade-neutral
  * {@link ScenarioHost}. The old-session recorder (`old-agent-session-host.ts`)
  * implements the host over the current AgentSession; later facade-parity tasks
- * (T3/T9) implement the same host over the new AgentHarness and compare their
+ * (facade parity) implement the same host over the new AgentHarness and compare their
  * recorded observations against the committed fixture
  * (`fixtures/old-agent-session.transcript.json`).
  *

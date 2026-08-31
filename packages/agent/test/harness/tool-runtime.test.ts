@@ -128,7 +128,7 @@ function allowAllGuards(): FoundationToolGuard {
 	});
 }
 
-describe("T4 fixed tool runtime", () => {
+describe("fixed tool runtime", () => {
 	it("arms a durable intent fence before executing and records the result fact after execution", async () => {
 		const events: string[] = [];
 		const storage = new InMemoryToolPipelineStorage();

@@ -34,8 +34,8 @@ vi.mock("@aos-agent/ai/compat", () => ({
 
 vi.mock("@aos-agent/ai/providers/all", () => ({}));
 
-const T0 = "2026-08-22T12:00:00.000Z";
-const T1 = "2026-08-22T12:00:10.000Z";
+const BASE_TIME = "2026-08-22T12:00:00.000Z";
+const LATER_TIME = "2026-08-22T12:00:10.000Z";
 const DEADLINE = "2026-08-22T12:05:00.000Z";
 const OWNER_ID = "scheduler_host_1";
 
@@ -50,7 +50,7 @@ function queued(overrides: Partial<SchedulerQueueEntry> = {}): SchedulerQueueEnt
 		state: "queued",
 		priority: 0,
 		attemptsUsed: 0,
-		enqueuedAt: T0,
+		enqueuedAt: BASE_TIME,
 		revision: 0,
 		...overrides,
 	};
@@ -66,13 +66,13 @@ function transfer(overrides: Partial<SchedulerOwnershipTransfer> = {}): Schedule
 		state: "offered",
 		fencingToken: "fence_a",
 		deadlineAt: DEADLINE,
-		createdAt: T0,
+		createdAt: BASE_TIME,
 		revision: 0,
 		...overrides,
 	};
 }
 
-function graphStore(manager: SessionManager, gates?: TaskGateStore, now: () => string = () => T0): TaskGraphStore {
+function graphStore(manager: SessionManager, gates?: TaskGateStore, now: () => string = () => BASE_TIME): TaskGraphStore {
 	return createTaskGraphStore(
 		manager,
 		{ get: () => undefined },
@@ -93,7 +93,7 @@ interface Clock {
 	set: (iso: string) => void;
 }
 
-function clock(start: string = T0): Clock {
+function clock(start: string = BASE_TIME): Clock {
 	let current = start;
 	return {
 		now: () => current,
@@ -187,7 +187,7 @@ async function enqueueClaimed(
 	expect(claimed.ok).toBe(true);
 }
 
-describe("scheduler T8 deadlock fairness and backpressure", () => {
+describe("scheduler  deadlock fairness and backpressure", () => {
 	it("detects a dependsOn wait-for cycle from graph view and fails the lowest-revision member", async () => {
 		const harness = await baseHarness();
 		harness.graph.create({
@@ -308,7 +308,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			question: "Continue A?",
 			options: ["yes", "no"],
 			dueAt: DEADLINE,
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: "ask_ab",
 			taskId: "task_a",
 		});
@@ -322,7 +322,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			question: "Continue B?",
 			options: ["yes", "no"],
 			dueAt: DEADLINE,
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: "ask_ba",
 			taskId: "task_b",
 		});
@@ -387,7 +387,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			question: "Continue A?",
 			options: ["yes", "no"],
 			dueAt: DEADLINE,
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: "ask_ab",
 			taskId: "task_a",
 		});
@@ -401,7 +401,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			question: "Continue B?",
 			options: ["yes", "no"],
 			dueAt: DEADLINE,
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: "ask_ba",
 			taskId: "task_b",
 		});
@@ -416,7 +416,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 		const resolved = await messages.resolveCrossSessionAsk({
 			sourceSessionId: "session_source",
 			waitId: "wait_ab",
-			at: T1,
+			at: LATER_TIME,
 			clientRequestId: "resolve_ab",
 			messageId: "msg_ab_response",
 		});
@@ -481,7 +481,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			question: "Continue A?",
 			options: ["yes", "no"],
 			dueAt: DEADLINE,
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: "ask_ab",
 			taskId: "task_a",
 		});
@@ -495,7 +495,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			question: "Continue B?",
 			options: ["yes", "no"],
 			dueAt: DEADLINE,
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: "ask_ba",
 			taskId: "task_b",
 		});
@@ -560,7 +560,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			question: "Continue A?",
 			options: ["yes", "no"],
 			dueAt: DEADLINE,
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: "ask_ab",
 			taskId: "task_a",
 		});
@@ -574,7 +574,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			question: "Continue B?",
 			options: ["yes", "no"],
 			dueAt: DEADLINE,
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: "ask_ba",
 			taskId: "task_b",
 		});
@@ -588,7 +588,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			question: "Continue A again?",
 			options: ["yes", "no"],
 			dueAt: DEADLINE,
-			createdAt: T0,
+			createdAt: BASE_TIME,
 			clientRequestId: "ask_other",
 			taskId: "task_a",
 		});
@@ -605,7 +605,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 				await messages.resolveCrossSessionAsk({
 					sourceSessionId: "session_source",
 					waitId: "wait_shared",
-					at: T1,
+					at: LATER_TIME,
 					clientRequestId: "resolve_ab",
 					messageId: "msg_ab_response",
 				})
@@ -813,19 +813,19 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 			queueEntryId: "queue_fresh",
 			taskId: "task_fresh",
 			priority: 5,
-			enqueuedAt: T1,
+			enqueuedAt: LATER_TIME,
 		});
 		const aged = queued({
 			queueEntryId: "queue_aged",
 			taskId: "task_aged",
 			priority: 0,
-			enqueuedAt: T0,
+			enqueuedAt: BASE_TIME,
 		});
-		expect(schedulerEffectivePriority(fresh, T1)).toBe(5);
-		expect(schedulerEffectivePriority(aged, T1)).toBe(10);
-		const ordered = schedulerOrderQueuedWork([fresh, aged], T1);
+		expect(schedulerEffectivePriority(fresh, LATER_TIME)).toBe(5);
+		expect(schedulerEffectivePriority(aged, LATER_TIME)).toBe(10);
+		const ordered = schedulerOrderQueuedWork([fresh, aged], LATER_TIME);
 		expect(ordered.map((entry) => entry.queueEntryId)).toEqual(["queue_aged", "queue_fresh"]);
-		const harness = await baseHarness({ clock: clock(T1), maxQueueDepth: 8 });
+		const harness = await baseHarness({ clock: clock(LATER_TIME), maxQueueDepth: 8 });
 		harness.graph.create({
 			taskId: "task_fresh",
 			graphRevision: 1,
@@ -936,7 +936,7 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 	});
 
 	it("retries retained graph work on a later tick after durable queue capacity is released", async () => {
-		const time = clock(T0);
+		const time = clock(BASE_TIME);
 		const manager = SessionManager.inMemory("/workspace/deadlock-depth", { id: "session_a" });
 		const graph = graphStore(manager, undefined, time.now);
 		for (const taskId of ["task_a", "task_b", "task_c"]) {
@@ -1005,8 +1005,8 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 	});
 
 	it("bounds scans so a tick cannot hang past its timeout", async () => {
-		const frozen = clock(T0);
-		const runtimeClock = new DeterministicClock({ wallTimeMs: Date.parse(T0) });
+		const frozen = clock(BASE_TIME);
+		const runtimeClock = new DeterministicClock({ wallTimeMs: Date.parse(BASE_TIME) });
 		const manager = SessionManager.inMemory("/workspace/deadlock-timeout", { id: "session_a" });
 		const graph = graphStore(manager, undefined, frozen.now);
 		for (let index = 0; index < 8; index += 1) {
@@ -1067,8 +1067,8 @@ describe("scheduler T8 deadlock fairness and backpressure", () => {
 	});
 
 	it("returns timedOut when an awaited queue read never resolves and does not start a second tick", async () => {
-		const frozen = clock(T0);
-		const runtimeClock = new DeterministicClock({ wallTimeMs: Date.parse(T0) });
+		const frozen = clock(BASE_TIME);
+		const runtimeClock = new DeterministicClock({ wallTimeMs: Date.parse(BASE_TIME) });
 		const manager = SessionManager.inMemory("/workspace/deadlock-hang", { id: "session_a" });
 		const graph = graphStore(manager, undefined, frozen.now);
 		graph.create({
