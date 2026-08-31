@@ -1423,6 +1423,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 	] satisfies readonly { name: string; revision: number; operation: ToolGatewayRoute["operation"] }[])(
 		"fails a prepared Connector scope closed on $name",
 		async ({ revision: replacementRevision, operation: replacementOperation }) => {
+		const clock = new DeterministicClock({ wallTimeMs: Date.parse(NOW) });
 		let providerEffects = 0;
 		const providerId = "builtin.revision-tools";
 		const provider = (revision: number, operation: ToolGatewayRoute["operation"]) => createLocalToolGatewayProvider({
@@ -1454,8 +1455,9 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		const fixture = createSupportedConnector({
 			toolGateway: true,
 			driver: new ThirdPartyZetaDriver({ emitToolGatewayRequest: true }),
+			supervisionClock: clock,
 		});
-		const registry = createExternalConnectorRegistry({ toolGateway });
+		const registry = createExternalConnectorRegistry({ toolGateway, clock });
 		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
 		const admission = await prepareExternalConnectorProductRun(
 			productInput(fixture, registry, "run-zeta-revision-mismatch"),
