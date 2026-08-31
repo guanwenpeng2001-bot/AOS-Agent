@@ -2,7 +2,7 @@
 
 ## Status
 
-settings entry composition is implemented; final promotion gate (multi-platform smoke, upgrade, soak, vendor certification) is not done; do not claim product readiness.
+Settings-based External Connector entry composition is implemented. Line 13 promotion evidence includes Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release upgrade/restart, deterministic soak, pinned vendor handshake (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, ACP SDK 1.4.0), and Codex subscription print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully certified. Lines 14 and 15 remain later work.
 
 `ExternalAgentConnector` is the only public execution contract for an external
 agent. It implements the shared `TaskExecutorProvider` boundary and therefore
@@ -478,8 +478,8 @@ projection, and a durable terminal retry decision for `side_effect_unknown`.
 They do not substitute a scheduler-shaped fixture or inspect private Host
 fields.
 
-The following promotion evidence was not run in this closure: Bun package and
-compiled artifacts, Windows/Linux/macOS CI, upgrade and restart from a
-previously published package, pinned vendor certification, and exact-head remote
-artifacts. These checks are part of the final promotion gate and are not complete
-in this checkout.
+The following remain outside this Line 13 closure: Bun compiled artifacts,
+exact-head remote artifacts, and full vendor certification beyond pinned
+handshake. Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release
+upgrade/restart, deterministic soak, and pinned Claude/Codex/ACP handshake are
+recorded. Codex subscription print, SDK, and TUI returned real replies.

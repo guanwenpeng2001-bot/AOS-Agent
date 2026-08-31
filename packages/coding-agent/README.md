@@ -95,10 +95,12 @@ missing-asset error.
 Local regressions also exercise the standard product composition across
 run/switch/fork/import/reload/cancel/restart, immutable RuntimeLimits with
 no-widen rules, passive connector runtime-status projection, and terminal
-`side_effect_unknown` retry handling. They do not prove Bun or compiled
-artifacts, Windows/Linux/macOS CI, upgrade from a previously published package,
-vendor certification, or exact-head remote artifacts. The External Agent
-settings entry composition is implemented; final promotion gate (multi-platform smoke, upgrade, soak, vendor certification) is not done; do not claim product readiness.
+`side_effect_unknown` retry handling. They do not prove Bun compiled artifacts
+or exact-head remote artifacts. Packaged smoke (Windows local plus Linux/macOS
+CI), previous-release upgrade/restart, deterministic soak, and pinned vendor
+handshake are recorded for this Line 13 checkout. Codex subscription print,
+SDK, and TUI returned real replies. Vendors are pinned-and-handshake certified,
+not fully certified. Lines 14 and 15 remain later work.
 
 ## Package contents
 

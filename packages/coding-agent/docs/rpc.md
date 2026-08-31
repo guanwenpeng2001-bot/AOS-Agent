@@ -2699,9 +2699,11 @@ The local connector closure regression exercises this RPC selection through the
 standard product composition and separately verifies RuntimeLimits, passive
 runtime-status projection, and terminal `side_effect_unknown` retry handling.
 Runtime status is projected in `initialize`; it adds no writable RPC command.
-Settings-based product entry composition is implemented, while the final
-promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor
-certification) is not complete. This checkout does not claim product readiness.
+Settings-based product entry composition is implemented. Line 13 promotion
+evidence includes multi-OS packaged smoke, previous-release upgrade/restart,
+deterministic soak, pinned vendor handshake, and Codex subscription
+print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully
+certified. Lines 14 and 15 remain later work.
 
 ### Structured errors
 
