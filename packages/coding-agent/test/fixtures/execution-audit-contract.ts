@@ -1,5 +1,5 @@
 /**
- * T0-only Execution Audit / Replay contract fixture.
+ * -only Execution Audit / Replay contract fixture.
  *
  * This file intentionally does not import production code. It records the
  * values and public shapes that the implementation tasks must preserve. The

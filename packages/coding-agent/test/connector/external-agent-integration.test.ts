@@ -260,7 +260,7 @@ async function fixture(options: {
 	return { session, ledger, driver, connector, registry, descriptor, supervision };
 }
 
-describe("T4 final acceptance: External Connector product integration", () => {
+describe("final acceptance: External Connector product integration", () => {
 	it("runs Task -> Dispatch -> Attempt -> AttemptReceipt -> TaskResult -> RunReceipt without AgentInstance", async () => {
 		const current = await fixture();
 		// wire/ledger field name; local alias below

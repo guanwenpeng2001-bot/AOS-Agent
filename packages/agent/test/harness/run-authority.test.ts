@@ -148,7 +148,7 @@ function sourceFiles(root: string): readonly string[] {
 	return files.sort();
 }
 
-describe("T2 Foundation Run terminal authority", () => {
+describe("Foundation Run terminal authority", () => {
 	it.each([
 		{ name: "completed", receiptStatus: "succeeded" as const, terminalStatus: "completed" as const, terminalErrorCode: undefined },
 		{ name: "failed", receiptStatus: "failed" as const, terminalStatus: "failed" as const, terminalErrorCode: "agent_run_failed" },

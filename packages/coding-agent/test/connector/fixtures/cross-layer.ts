@@ -73,10 +73,10 @@ import {
 } from "../../../src/core/policy/task-credential-provider.ts";
 import type { TaskCredentialDeliveryReceipt, TaskCredentialScope } from "../../../src/core/policy/task-credential-lease.ts";
 
-export const PR11_NOW = "2026-08-31T00:00:00.000Z";
-export const PR11_CREDENTIAL_CANARY = "pr11-external-credential-material-canary";
-export const PR11_JSONL_FIXTURE_PATH = join(import.meta.dirname, "../../fixtures/external-connector-jsonl-driver.mjs");
-export const PR11_SCOPE: TaskCredentialScope = {
+export const CROSS_LAYER_NOW = "2026-08-31T00:00:00.000Z";
+export const EXTERNAL_CREDENTIAL_CANARY = "connector-external-credential-material-canary";
+export const EXTERNAL_CONNECTOR_JSONL_FIXTURE_PATH = join(import.meta.dirname, "../../fixtures/external-connector-jsonl-driver.mjs");
+export const EXTERNAL_CONNECTOR_CREDENTIAL_SCOPE: TaskCredentialScope = {
 	credentialName: "external_registry",
 	purpose: "dependency_read",
 	operations: ["read"],
@@ -87,7 +87,7 @@ export function fileIdentity(path: string): string {
 	return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
 }
 
-export interface Pr11TargetOptions {
+export interface CrossLayerTargetOptions {
 	readonly targetId?: string;
 	readonly providerId?: string;
 	readonly modulePath?: string;
@@ -98,12 +98,12 @@ export interface Pr11TargetOptions {
 	readonly toolGateway?: boolean;
 }
 
-export function pr11TargetDefinition(cwd: string, options: Pr11TargetOptions = {}): ExternalConnectorTargetDefinition {
-	const modulePath = options.modulePath ?? PR11_JSONL_FIXTURE_PATH;
+export function crossLayerTargetDefinition(cwd: string, options: CrossLayerTargetOptions = {}): ExternalConnectorTargetDefinition {
+	const modulePath = options.modulePath ?? EXTERNAL_CONNECTOR_JSONL_FIXTURE_PATH;
 	const executablePath = process.execPath;
 	return {
 		schemaVersion: 1,
-		targetId: options.targetId ?? "pr11-cross-layer-target",
+		targetId: options.targetId ?? "connector-cross-layer-target",
 		providerId: options.providerId ?? "fixture.external-jsonl",
 		executablePath,
 		modulePath,
@@ -124,31 +124,31 @@ export function pr11TargetDefinition(cwd: string, options: Pr11TargetOptions = {
 	};
 }
 
-export function pr11TargetConfig(cwd: string, options: Pr11TargetOptions = {}): ExternalConnectorTargetConfig {
-	const definition = pr11TargetDefinition(cwd, options);
+export function crossLayerTargetConfig(cwd: string, options: CrossLayerTargetOptions = {}): ExternalConnectorTargetConfig {
+	const definition = crossLayerTargetDefinition(cwd, options);
 	return buildExternalConnectorTargetConfig({
 		global: { schemaVersion: 1, targets: [definition] },
 		explicitTargetId: definition.targetId,
 	});
 }
 
-export type Pr11DriverMode = "complete" | "tool_gateway" | "unknown" | "unauthorized" | "orphan" | "nonce";
+export type RecordingDriverMode = "complete" | "tool_gateway" | "unknown" | "unauthorized" | "orphan" | "nonce";
 
-export class Pr11RecordingDriver implements ExternalConnectorVendorDriver {
-	readonly mode: Pr11DriverMode;
+export class RecordingExternalConnectorDriver implements ExternalConnectorVendorDriver {
+	readonly mode: RecordingDriverMode;
 	readonly spawnRequests: ExternalConnectorDriverSpawnRequest[] = [];
 	readonly writes: ExternalConnectorDriverWriteRequest[] = [];
 	readCalls = 0;
 
-	constructor(mode: Pr11DriverMode) {
+	constructor(mode: RecordingDriverMode) {
 		this.mode = mode;
 	}
 
 	async spawn(request: ExternalConnectorDriverSpawnRequest): Promise<ExternalConnectorDriverHandle> {
 		this.spawnRequests.push(request);
 		return {
-			externalSessionId: `pr11-session-${request.attempt.attemptId}`,
-			externalTurnId: `pr11-turn-${request.attempt.attemptId}`,
+			externalSessionId: `connector-session-${request.attempt.attemptId}`,
+			externalTurnId: `connector-turn-${request.attempt.attemptId}`,
 			supervisorRef: request.supervisorRef,
 			operationNonce: request.operationNonce,
 		};
@@ -162,12 +162,12 @@ export class Pr11RecordingDriver implements ExternalConnectorVendorDriver {
 			type: "started",
 			externalSessionId: handle.externalSessionId,
 			...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
-			producedAt: PR11_NOW,
+			producedAt: CROSS_LAYER_NOW,
 		};
 		if (this.mode === "complete") return;
 		const operationId = request.correlation.operationId;
-		if (operationId === undefined) throw new Error("PR-11 fixture requires an operation id");
-		const requestOperationId = this.mode === "orphan" ? "pr11-orphan-operation" : operationId;
+		if (operationId === undefined) throw new Error("cross-layer connector fixture requires an operation id");
+		const requestOperationId = this.mode === "orphan" ? "connector-orphan-operation" : operationId;
 		const toolName =
 			this.mode === "unknown"
 				? "workspace.unknown"
@@ -176,11 +176,11 @@ export class Pr11RecordingDriver implements ExternalConnectorVendorDriver {
 					: "workspace.read";
 		const toolRequest: ToolGatewayRequest = {
 			schemaVersion: 1,
-			toolCallId: `pr11-tool-call-${requestOperationId}`,
+			toolCallId: `connector-tool-call-${requestOperationId}`,
 			toolName,
 			namespace: "workspace",
 			originalArguments: { path: "docs/input.txt" },
-			idempotencyKey: `pr11-idempotency-${requestOperationId}`,
+			idempotencyKey: `connector-idempotency-${requestOperationId}`,
 			context: {
 				schemaVersion: 1,
 				bindingId: request.attempt.bindingId,
@@ -199,7 +199,7 @@ export class Pr11RecordingDriver implements ExternalConnectorVendorDriver {
 			...(handle.externalTurnId === undefined ? {} : { externalTurnId: handle.externalTurnId }),
 			operationNonce: this.mode === "nonce" ? `${handle.operationNonce}-orphan` : handle.operationNonce,
 			request: toolRequest as unknown as FoundationJsonValue,
-			producedAt: PR11_NOW,
+			producedAt: CROSS_LAYER_NOW,
 		} as unknown as FoundationJsonValue;
 	}
 
@@ -225,7 +225,7 @@ export class Pr11RecordingDriver implements ExternalConnectorVendorDriver {
 			status: "succeeded",
 			artifacts: [],
 			sideEffectState: "none",
-			producedAt: PR11_NOW,
+			producedAt: CROSS_LAYER_NOW,
 		};
 	}
 
@@ -243,31 +243,31 @@ export class Pr11RecordingDriver implements ExternalConnectorVendorDriver {
 			status: "cancelled",
 			artifacts: [],
 			sideEffectState: "none",
-			producedAt: PR11_NOW,
+			producedAt: CROSS_LAYER_NOW,
 		};
 	}
 
 	async dispose(): Promise<void> {}
 }
 
-export interface Pr11RegistryCapture {
+export interface ExternalConnectorRegistryCapture {
 	readonly target: ExternalConnectorResolvedTarget;
 	readonly authority: ExternalConnectorProductAuthority;
 	readonly credential: ExternalConnectorCredentialRuntime | undefined;
 	readonly toolGateway: ToolGateway | undefined;
 	readonly capability: ConnectorCapabilitySnapshot;
-	readonly driver: Pr11RecordingDriver;
+	readonly driver: RecordingExternalConnectorDriver;
 	readonly connector: DurableExternalAgentConnector;
 	readonly registry: ExternalConnectorRegistry;
 }
 
-export function createPr11RegistryFactory(options: {
-	readonly mode: Pr11DriverMode;
+export function createExternalConnectorRegistryFactory(options: {
+	readonly mode: RecordingDriverMode;
 	readonly bindBehaviorManifest?: boolean;
-	readonly captures?: Pr11RegistryCapture[];
+	readonly captures?: ExternalConnectorRegistryCapture[];
 }): ExternalConnectorRegistryFactory {
 	return (context, toolGateway, target, authority, credential) => {
-		if (target === undefined) throw new TypeError("PR-11 fixture requires an explicitly selected target");
+		if (target === undefined) throw new TypeError("cross-layer connector fixture requires an explicitly selected target");
 		const capability = createConnectorCapabilitySnapshot({
 			schemaVersion: 1,
 			providerId: target.providerId,
@@ -279,9 +279,9 @@ export function createPr11RegistryFactory(options: {
 			artifacts: target.capabilityCeiling.artifacts,
 			images: target.capabilityCeiling.images,
 		});
-		const driver = new Pr11RecordingDriver(options.mode);
+		const driver = new RecordingExternalConnectorDriver(options.mode);
 		const ledger = new SessionLedger(context.session, {
-			ownerId: `pr11-cross-layer:${context.sessionId}`,
+			ownerId: `connector-cross-layer:${context.sessionId}`,
 			writer: context.harness.ledger.writer,
 		});
 		const connector = createDurableExternalAgentConnector({
@@ -292,8 +292,8 @@ export function createPr11RegistryFactory(options: {
 			driver,
 			supervision: createExternalConnectorTestSupervision().options,
 			...(credential === undefined ? {} : { credential }),
-			now: () => PR11_NOW,
-			operationNonce: () => `pr11-nonce-${context.sessionId}`,
+			now: () => CROSS_LAYER_NOW,
+			operationNonce: () => `connector-nonce-${context.sessionId}`,
 		});
 		if (capability.toolGateway && options.bindBehaviorManifest !== false) {
 			bindExternalConnectorVendorBehaviorManifest(connector, () => ({
@@ -325,8 +325,8 @@ export function createPr11RegistryFactory(options: {
 	};
 }
 
-export function createPr11ToolGateway(onExecute?: (request: ToolGatewayRequest) => void): ToolGateway {
-	const providerId = "pr11-builtin-tools";
+export function createCrossLayerToolGateway(onExecute?: (request: ToolGatewayRequest) => void): ToolGateway {
+	const providerId = "connector-builtin-tools";
 	const routes: readonly ToolGatewayRoute[] = [
 		{
 			kind: "local",
@@ -346,7 +346,7 @@ export function createPr11ToolGateway(onExecute?: (request: ToolGatewayRequest) 
 		},
 	];
 	return createFoundationToolGateway({
-		gatewayId: "pr11-cross-layer-gateway",
+		gatewayId: "connector-cross-layer-gateway",
 		providers: [createLocalToolGatewayProvider({
 			providerId,
 			revision: 1,
@@ -359,28 +359,28 @@ export function createPr11ToolGateway(onExecute?: (request: ToolGatewayRequest) 
 					toolName: request.toolName,
 					ok: true,
 					sideEffectState: "none",
-					toolReceiptRef: `pr11-tool-receipt-${request.toolCallId}`,
+					toolReceiptRef: `connector-tool-receipt-${request.toolCallId}`,
 				});
 			},
 		})],
 	});
 }
 
-export function pr11CapabilityBinding(runId: string): CapabilityBinding {
+export function crossLayerCapabilityBinding(runId: string): CapabilityBinding {
 	return {
-		id: `pr11-capability-${runId}`,
-		profile: `pr11-policy-${runId}`,
-		createdAt: PR11_NOW,
+		id: `connector-capability-${runId}`,
+		profile: `connector-policy-${runId}`,
+		createdAt: CROSS_LAYER_NOW,
 		descriptors: [
 			{
-				id: "pr11-workspace-read",
+				id: "connector-workspace-read",
 				revision: "1",
 				kind: "builtin_tool",
 				name: "workspace.read",
 				exposedToolName: "workspace.read",
 			},
 			{
-				id: "pr11-workspace-write",
+				id: "connector-workspace-write",
 				revision: "1",
 				kind: "builtin_tool",
 				name: "workspace.write",
@@ -392,9 +392,9 @@ export function pr11CapabilityBinding(runId: string): CapabilityBinding {
 	};
 }
 
-export function pr11PolicyBinding(runId: string, capability: CapabilityBinding): PolicyBinding {
+export function crossLayerPolicyBinding(runId: string, capability: CapabilityBinding): PolicyBinding {
 	const profile: ExecutionPolicyProfile = {
-		id: `pr11-policy-${runId}`,
+		id: `connector-policy-${runId}`,
 		enforcement: "host",
 		defaultAction: "deny",
 		workspace: { read: ["workspace"], write: [], deny: ["credentials", "agent-internal"] },
@@ -406,22 +406,22 @@ export function pr11PolicyBinding(runId: string, capability: CapabilityBinding):
 	const resolved = resolveExecutionPolicyProfile({
 		profiles: { [profile.id]: profile },
 		defaultProfile: profile.id,
-		workspaceIdentity: "workspace-pr11-cross-layer",
+		workspaceIdentity: "workspace-connector-cross-layer",
 		runId,
-		createdAt: PR11_NOW,
+		createdAt: CROSS_LAYER_NOW,
 		capabilityBinding: { id: capability.id },
 	});
 	if (!resolved.ok) throw resolved.error;
 	return resolved.binding;
 }
 
-export async function executePr11ProductRun(
+export async function executeCrossLayerProductRun(
 	context: AgentRuntimeCompositionContext,
-	capture: Pr11RegistryCapture,
+	capture: ExternalConnectorRegistryCapture,
 	runId: string,
 ): Promise<ExternalConnectorProductExecution> {
-	const capabilityBinding = pr11CapabilityBinding(runId);
-	const message = `Execute PR-11 cross-layer run ${runId}`;
+	const capabilityBinding = crossLayerCapabilityBinding(runId);
+	const message = `Execute cross-layer connector cross-layer run ${runId}`;
 	return executeExternalConnectorProductRun({
 		session: context.session,
 		writer: context.harness.ledger.writer as SessionLedgerWriter,
@@ -434,23 +434,23 @@ export async function executePr11ProductRun(
 		runId,
 		message,
 		canonicalInput: { schemaVersion: 1, text: message, artifacts: [] },
-		inputAdmission: { inspectArtifact: () => { throw new Error("PR-11 fixture has no artifacts"); } },
-		workspace: "workspace-pr11-cross-layer",
-		policyBinding: pr11PolicyBinding(runId, capabilityBinding),
+		inputAdmission: { inspectArtifact: () => { throw new Error("cross-layer connector fixture has no artifacts"); } },
+		workspace: "workspace-connector-cross-layer",
+		policyBinding: crossLayerPolicyBinding(runId, capabilityBinding),
 		capabilityBinding: capture.capability.toolGateway ? capabilityBinding : undefined,
-		now: () => PR11_NOW,
+		now: () => CROSS_LAYER_NOW,
 	});
 }
 
-export interface Pr11SyntheticCompositionContext {
+export interface ExternalConnectorSyntheticCompositionContext {
 	readonly session: Session;
 	readonly context: AgentRuntimeCompositionContext;
 	readonly writer: SessionLedgerWriter;
 }
 
-export function createPr11SyntheticCompositionContext(sessionId: string): Pr11SyntheticCompositionContext {
+export function createExternalConnectorSyntheticCompositionContext(sessionId: string): ExternalConnectorSyntheticCompositionContext {
 	const session = new Session(new InMemorySessionStorage({ id: sessionId, createdAt: 1 }));
-	const ledger = new ContextLedger(session, { ownerId: `pr11-context:${sessionId}` });
+	const ledger = new ContextLedger(session, { ownerId: `connector-context:${sessionId}` });
 	const writer = ledger.writer as SessionLedgerWriter;
 	return {
 		session,
@@ -464,7 +464,7 @@ export function createPr11SyntheticCompositionContext(sessionId: string): Pr11Sy
 	};
 }
 
-export class Pr11CredentialTarget {
+export class RecordingCredentialTarget {
 	readonly projectedMaterials: string[] = [];
 	readonly renewals: TaskCredentialTargetRenewRequest[] = [];
 	readonly revocations: TaskCredentialTargetRevokeRequest[] = [];
@@ -500,7 +500,7 @@ export class Pr11CredentialTarget {
 			grantId: request.grantId,
 			bindingId: request.bindingId,
 			status: "succeeded",
-			recordedAt: PR11_NOW,
+			recordedAt: CROSS_LAYER_NOW,
 			...(request.targetId === undefined ? {} : { targetId: request.targetId }),
 		};
 	}
@@ -513,7 +513,7 @@ export class Pr11CredentialTarget {
 			grantId: request.grantId,
 			bindingId: request.bindingId,
 			status: "renewed",
-			recordedAt: PR11_NOW,
+			recordedAt: CROSS_LAYER_NOW,
 		};
 	}
 
@@ -525,30 +525,30 @@ export class Pr11CredentialTarget {
 			grantId: request.grantId,
 			bindingId: request.bindingId,
 			status: "revoked",
-			recordedAt: PR11_NOW,
+			recordedAt: CROSS_LAYER_NOW,
 		};
 	}
 }
 
-export function createPr11CredentialProvider(target = new Pr11CredentialTarget()): {
+export function createRecordingCredentialProvider(target = new RecordingCredentialTarget()): {
 	readonly provider: TaskCredentialTestProvider;
-	readonly target: Pr11CredentialTarget;
+	readonly target: RecordingCredentialTarget;
 } {
 	return {
 		provider: createTaskCredentialTestProvider({
-			materials: { external_registry: PR11_CREDENTIAL_CANARY },
+			materials: { external_registry: EXTERNAL_CREDENTIAL_CANARY },
 			target,
-			now: () => PR11_NOW,
+			now: () => CROSS_LAYER_NOW,
 		}),
 		target,
 	};
 }
 
-export function pr11CredentialPolicySettings(): {
+export function externalCredentialPolicySettings(): {
 	readonly defaultProfile: string;
 	readonly profiles: Record<string, unknown>;
 } {
-	const profileId = "pr11-external-credential-policy";
+	const profileId = "connector-external-credential-policy";
 	return {
 		defaultProfile: profileId,
 		profiles: {

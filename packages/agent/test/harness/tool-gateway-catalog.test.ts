@@ -35,7 +35,7 @@ function success(toolCallId: string, toolName: string) {
 	return Result.ok({ schemaVersion: 1 as const, toolCallId, toolName, ok: true, sideEffectState: "none" as const });
 }
 
-describe("T5 immutable Tool Gateway catalog", () => {
+describe("immutable Tool Gateway catalog", () => {
 	it("performs exact route lookup and rejects ambiguity", () => {
 		const selected = lookupToolGatewayRoute([route("provider-1")], "read", "mcp-server");
 		expect(selected).toMatchObject({ ok: true, value: { providerId: "provider-1", revision: 1 } });

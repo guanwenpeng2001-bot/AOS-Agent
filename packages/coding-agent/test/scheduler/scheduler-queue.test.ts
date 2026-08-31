@@ -180,7 +180,7 @@ function expectCode(result: { ok: false; error: { code: string } } | { ok: true 
 	if (!result.ok) expect(result.error.code).toBe(code);
 }
 
-describe("scheduler T1 type freeze", () => {
+describe("scheduler type freeze", () => {
 	it("freezes the complete scheduler_* error family onto the Foundation catalog", () => {
 		expect(SCHEDULER_ERROR_CODES).toHaveLength(22);
 		expect(new Set(SCHEDULER_ERROR_CODES).size).toBe(22);
@@ -765,7 +765,7 @@ function createQueueHarness(
 	return { session, ledger, store };
 }
 
-describe("scheduler T2 durable queue store", () => {
+describe("scheduler durable queue store", () => {
 	it("enqueues idempotently by business key on the Session ledger", async () => {
 		const { store } = createQueueHarness();
 		const first = await store.enqueue(queued());
@@ -977,7 +977,7 @@ describe("scheduler T2 durable queue store", () => {
 		expect(snapshot.value.dispatches[0]?.status).toBe("in_flight");
 	});
 
-	it("renews with T1 sliding remaining TTL and rejects a stale fencing token", async () => {
+	it("renews with sliding remaining TTL and rejects a stale fencing token", async () => {
 		let now = NOW;
 		const { store } = createQueueHarness({ now: () => now });
 		expect((await store.enqueue(queued())).ok).toBe(true);

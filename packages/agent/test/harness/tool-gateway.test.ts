@@ -19,7 +19,7 @@ const request = {
 	context: { schemaVersion: 1 as const, bindingId: "binding-1", bindingEpochId: "epoch-1", taskId: "task-1" },
 };
 
-describe("T4 ToolGateway and SandboxOperationProvider", () => {
+describe("ToolGateway and SandboxOperationProvider", () => {
 	it("routes by namespace and tool name and validates provider results", async () => {
 		const gateway = createFoundationToolGateway({
 			gatewayId: "gateway-1",

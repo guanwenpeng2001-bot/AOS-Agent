@@ -583,7 +583,7 @@ describe("scheduler production fan-in", () => {
 		await harness.fanIn.release();
 	});
 
-	it("runs a dependent DAG through ready scan, T4 dispatchRunClaimed, settlement, and successor readiness", async () => {
+	it("runs a dependent DAG through ready scan, dispatchRunClaimed, settlement, and successor readiness", async () => {
 		const harness = await createHarness([
 			{ nodeId: "root", dependsOn: [] },
 			{ nodeId: "child", dependsOn: ["root"] },

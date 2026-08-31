@@ -40,7 +40,7 @@ const SENTINEL = "sentinel-secret-42";
 
 /**
  * Fake sandbox provider: declares per-binding isolation AND credential
- * delivery so the T3 per-binding sandbox facts resolve honestly.
+ * delivery so the per-binding sandbox facts resolve honestly.
  */
 function makeSandboxProvider(): SandboxProvider {
 	const capabilities = {

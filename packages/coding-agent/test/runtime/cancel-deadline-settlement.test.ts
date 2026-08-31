@@ -119,7 +119,7 @@ async function expectOneCanonicalTerminal(session: Session, runId: string) {
 	}
 }
 
-describe("T2 canonical abort settlement", () => {
+describe("canonical abort settlement", () => {
 	it("projects the missing parent receipt without repeating provider work and recovers it after restart", async () => {
 		const fixture = await createFixture("pending");
 		const runId = "t2-parent-receipt-recovery";

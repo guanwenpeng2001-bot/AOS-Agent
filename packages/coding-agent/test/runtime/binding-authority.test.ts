@@ -89,7 +89,7 @@ function source(relativePath: string): string {
 	return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
 }
 
-describe("T3 AgentBinding authority", () => {
+describe("AgentBinding authority", () => {
 	it("keeps binding fingerprints and public projections deterministic across revisions", () => {
 		const first = binding();
 		const repeated = binding();
@@ -121,7 +121,7 @@ describe("T3 AgentBinding authority", () => {
 		expect(projectRunBindingAssociation("run-1", executionBinding)).not.toEqual(mutableView);
 	});
 
-	it("keeps association writers and execution inputs out of the T3 call graph", () => {
+	it("keeps association writers and execution inputs out of the call graph", () => {
 		const ingress = source("../../src/core/runtime/prompt-ingress.ts");
 		const runLifecycle = source("../../src/core/session/run-lifecycle.ts");
 		const externalConnector = source("../../src/core/connector/durable-connector.ts");

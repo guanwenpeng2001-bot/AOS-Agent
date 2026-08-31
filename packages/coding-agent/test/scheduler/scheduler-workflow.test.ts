@@ -82,9 +82,9 @@ vi.mock("@aos-agent/ai/compat", () => ({
 
 vi.mock("@aos-agent/ai/providers/all", () => ({}));
 
-const T0 = "2026-08-22T12:00:00.000Z";
-const T1 = "2026-08-22T12:01:00.000Z";
-const T2 = "2026-08-22T12:02:00.000Z";
+const BASE_TIME = "2026-08-22T12:00:00.000Z";
+const FIRST_TIME = "2026-08-22T12:01:00.000Z";
+const SECOND_TIME = "2026-08-22T12:02:00.000Z";
 const T_EXPIRED = "2026-08-22T12:11:00.000Z";
 const RUN_MODEL = { provider: "host", id: "host", thinkingLevel: "off" as const };
 const OWNER_ID = "workflow_owner";
@@ -182,8 +182,8 @@ function taskEnvelope(taskId: string, goalId: string): TaskEnvelope {
 		budget: { tokens: 100, concurrency: 4 },
 		acceptanceCriteria: [],
 		status: "ready",
-		createdAt: T0,
-		updatedAt: T0,
+		createdAt: BASE_TIME,
+		updatedAt: BASE_TIME,
 	};
 }
 
@@ -203,7 +203,7 @@ function roleRevision() {
 			skillSelector: { policy: "none" },
 			mcpSelector: { policy: "none" },
 		},
-		now: () => T0,
+		now: () => BASE_TIME,
 	});
 }
 
@@ -215,7 +215,7 @@ function modelProfile(): ModelProfile {
 		model: "host",
 		budget: { tokens: 100 },
 		revision: 1,
-		createdAt: T0,
+		createdAt: BASE_TIME,
 	});
 }
 
@@ -234,7 +234,7 @@ function bindingFor(task: TaskEnvelope): AgentBinding {
 		modelBrokerBindingRevision: immutableFact("model_broker_binding", "broker_workflow"),
 		policyRevision: immutableFact("policy_binding", "policy_workflow"),
 		newBindingId: "binding_workflow",
-		now: () => T0,
+		now: () => BASE_TIME,
 	});
 	if (!resolved.ok) throw resolved.error;
 	return resolved.value;
@@ -264,7 +264,7 @@ function runtimeSnapshot(providerId: string, binding: AgentBinding) {
 		reviewRevisionDigests: [],
 		credentialTargetRefs: [],
 		sandboxTargetRefs: [],
-		observedAt: T0,
+		observedAt: BASE_TIME,
 		expiresAt: "2026-08-22T14:00:00.000Z",
 	});
 	if (!snapshot.ok) throw snapshot.error;
@@ -365,7 +365,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 			providerId: this.providerId,
 			initialBindingEpoch: context.initialBindingEpoch,
 			providerClass: this.providerClass,
-			now: () => T0,
+			now: () => BASE_TIME,
 		});
 	}
 
@@ -404,7 +404,7 @@ class ScriptedTaskExecutor implements TaskExecutorProvider {
 			provenance: {
 				producerKind: this.providerClass === PROVIDER_CLASS.externalConnector ? "external_connector" : "scheduler",
 				providerId: attempt.providerId,
-				producedAt: T0,
+				producedAt: BASE_TIME,
 				correlation: { ...correlation, attemptReceiptId },
 			},
 			sideEffectState,
@@ -498,7 +498,7 @@ async function createHarness(
 	harnessOrdinal += 1;
 	const sourceSessionId = `session_source_${harnessOrdinal}`;
 	const targetSessionId = `session_target_${harnessOrdinal}`;
-	let nowIso = T0;
+	let nowIso = BASE_TIME;
 	const now = () => options.clock === undefined ? nowIso : new Date(options.clock.wallNow()).toISOString();
 	const task = taskEnvelope(`task_workflow_${harnessOrdinal}`, `goal_workflow_${harnessOrdinal}`);
 	const binding = bindingFor(task);
@@ -524,7 +524,7 @@ async function createHarness(
 			descriptor: { schemaVersion: 1, providerId: provider.providerId, providerClass: provider.providerClass },
 			capabilities: [CAPABILITY],
 			costClass: "local",
-			registeredAt: T0,
+			registeredAt: BASE_TIME,
 		},
 		provider,
 		trusted: true,
@@ -596,7 +596,7 @@ async function reopenController(
 			},
 			capabilities: [CAPABILITY],
 			costClass: "local",
-			registeredAt: T0,
+			registeredAt: BASE_TIME,
 		},
 		provider: harness.provider,
 		trusted: true,
@@ -699,7 +699,7 @@ async function seedTargetTaskResult(
 		provenance: {
 			producerKind: "host",
 			providerId: "host-gate",
-			producedAt: T0,
+			producedAt: BASE_TIME,
 			correlation: {
 				sessionId,
 				laneId: "main",
@@ -760,7 +760,7 @@ async function completeExternal(
 	});
 }
 
-describe("scheduler T7 production Workflow controller", () => {
+describe("scheduler  production Workflow controller", () => {
 	it("is default-off and does not schedule, dispatch, or fire wakes", async () => {
 		const harness = await createHarness();
 		expect(harness.controller.enabled).toBe(false);
@@ -796,8 +796,8 @@ describe("scheduler T7 production Workflow controller", () => {
 			status: "active",
 			goalId: harness.task.goalId,
 			steps: [step],
-			createdAt: T0,
-			updatedAt: T0,
+			createdAt: BASE_TIME,
+			updatedAt: BASE_TIME,
 		};
 		const transition = vi.spyOn(harness.store, "transitionStep").mockResolvedValue({
 			...workflow,
@@ -1045,7 +1045,7 @@ describe("scheduler T7 production Workflow controller", () => {
 			wakeId: "wake_due",
 			workflowId: workflow.workflowId,
 			stepId: "tool1",
-			dueAt: T1,
+			dueAt: FIRST_TIME,
 			revision: 0,
 		};
 		const scheduled = await harness.controller.scheduleWake(wake);
@@ -1061,28 +1061,28 @@ describe("scheduler T7 production Workflow controller", () => {
 			expect(loaded.value).toHaveLength(1);
 			expect(loaded.value[0]?.firedAt).toBeUndefined();
 		}
-		harness.setNow(T1);
+		harness.setNow(FIRST_TIME);
 		const due = await reloaded.tick();
 		expect(due.wakesFired).toBe(1);
 		expect(due.completed).toBe(1);
 		const after = await reloaded.reload();
 		expect(after.ok).toBe(true);
-		if (after.ok) expect(after.value[0]?.firedAt).toBe(T1);
+		if (after.ok) expect(after.value[0]?.firedAt).toBe(FIRST_TIME);
 		const again = await reloaded.tick();
 		expect(again.wakesFired).toBe(0);
-		harness.setNow(T2);
+		harness.setNow(SECOND_TIME);
 		const overdueWake: SchedulerWake = {
 			schemaVersion: 1,
 			wakeId: "wake_overdue",
 			workflowId: (await reloaded.store.get(workflow.workflowId)).workflowId,
-			dueAt: T1,
+			dueAt: FIRST_TIME,
 			revision: 0,
 		};
 		const overdue = await reloaded.scheduleWake(overdueWake);
 		expect(overdue.ok).toBe(true);
-		if (overdue.ok) expect(overdue.value.firedAt).toBe(T2);
+		if (overdue.ok) expect(overdue.value.firedAt).toBe(SECOND_TIME);
 		const dueWake = await harness.sourceSession.getFoundationObject(SCHEDULER_WORKFLOW_WAKE_OBJECT_TYPE, "wake_due");
-		expect(dueWake).toMatchObject({ payload: { firedAt: T1, wakeId: "wake_due" } });
+		expect(dueWake).toMatchObject({ payload: { firedAt: FIRST_TIME, wakeId: "wake_due" } });
 		expect(paused.status).toBe("paused");
 		await reloaded.dispose();
 	});
@@ -1127,7 +1127,7 @@ describe("scheduler T7 production Workflow controller", () => {
 	});
 
 	it("delays eligible connector retry across ticks and replays the durable deadline after restart", async () => {
-		const clock = new DeterministicClock({ wallTimeMs: Date.parse(T0), monotonicTimeMs: 0 });
+		const clock = new DeterministicClock({ wallTimeMs: Date.parse(BASE_TIME), monotonicTimeMs: 0 });
 		const retryPolicy: ConnectorRetryPolicy = {
 			maxAttempts: 3,
 			baseDelayMs: 100,
@@ -1176,7 +1176,7 @@ describe("scheduler T7 production Workflow controller", () => {
 				attemptCount: 1,
 				targetId: connectorRetry.targetId,
 				delayMs: 100,
-				nextEligibleAt: new Date(Date.parse(T0) + 100).toISOString(),
+				nextEligibleAt: new Date(Date.parse(BASE_TIME) + 100).toISOString(),
 			},
 		});
 		expect((await harness.store.get(workflow.workflowId)).status).toBe("active");
@@ -1422,7 +1422,7 @@ describe("scheduler T7 production Workflow controller", () => {
 				attempt: 2,
 				nodeId: "compensate_tool1_r2",
 				state: "scheduled",
-				scheduledAt: T0,
+				scheduledAt: BASE_TIME,
 			} satisfies SchedulerWorkflowCompensationFact,
 			{
 				clientRequestId: "seed-compensation-missing",

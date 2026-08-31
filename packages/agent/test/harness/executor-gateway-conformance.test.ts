@@ -32,7 +32,7 @@ const EXPIRES = "2026-01-01T00:05:00.000Z";
 const CREDENTIAL_SENTINEL = "credential-material-must-not-cross";
 const capability: FoundationProviderCapability = { schemaVersion: 1, id: "foundation.t6.gateway", version: 1 };
 
-interface CredentialTargetReferenceV1 {
+interface CredentialTargetReference {
 	readonly schemaVersion: 1;
 	readonly targetId: string;
 	readonly targetKind: string;
@@ -41,7 +41,7 @@ interface CredentialTargetReferenceV1 {
 	readonly expiresAt: string;
 }
 
-interface CredentialLeaseReferenceV1 {
+interface CredentialLeaseReference {
 	readonly schemaVersion: 1;
 	readonly leaseId: string;
 	readonly targetId: string;
@@ -51,7 +51,7 @@ interface CredentialLeaseReferenceV1 {
 	readonly expiresAt: string;
 }
 
-interface ExternalExecutorRequestV1 {
+interface ExternalExecutorRequest {
 	readonly requestId: string;
 	readonly taskId: string;
 	readonly bindingEpochId: string;
@@ -85,7 +85,7 @@ function roleRevision(): RoleRevision {
 			roleId: "role-t6-gateway",
 			scope: "project",
 			slug: "t6-gateway",
-			name: "T6 gateway role",
+			name: "gateway role",
 			description: "A credential-free external executor role",
 			revision: 1,
 			persona: "Use the scoped gateway",
@@ -140,15 +140,15 @@ function epoch(currentBinding: AgentBinding): BindingEpoch {
 	return result.value;
 }
 
-function targetReference(currentBinding: AgentBinding): CredentialTargetReferenceV1 {
+function targetReference(currentBinding: AgentBinding): CredentialTargetReference {
 	return { schemaVersion: 1, targetId: "target-t6-gateway", targetKind: "external-model", bindingId: currentBinding.bindingId, issuedAt: NOW, expiresAt: EXPIRES };
 }
 
-function leaseReference(currentBinding: AgentBinding, currentEpoch: BindingEpoch): CredentialLeaseReferenceV1 {
+function leaseReference(currentBinding: AgentBinding, currentEpoch: BindingEpoch): CredentialLeaseReference {
 	return { schemaVersion: 1, leaseId: "lease-t6-gateway", targetId: "target-t6-gateway", bindingId: currentBinding.bindingId, bindingEpochId: currentEpoch.bindingEpochId, issuedAt: NOW, expiresAt: EXPIRES };
 }
 
-function isShortLivedReference(value: unknown, now = NOW): value is CredentialTargetReferenceV1 | CredentialLeaseReferenceV1 {
+function isShortLivedReference(value: unknown, now = NOW): value is CredentialTargetReference | CredentialLeaseReference {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
 	const record = value as Record<string, unknown>;
 	if (record.schemaVersion !== 1 || typeof record.bindingId !== "string" || typeof record.issuedAt !== "string" || typeof record.expiresAt !== "string") return false;
@@ -193,7 +193,7 @@ class ConsumerShapedExternalExecutor {
 		this.gateway = gateway;
 	}
 
-	async execute(request: ExternalExecutorRequestV1, target: CredentialTargetReferenceV1, lease: CredentialLeaseReferenceV1): Promise<ResultValue<ScopedModelResult, FoundationError>> {
+	async execute(request: ExternalExecutorRequest, target: CredentialTargetReference, lease: CredentialLeaseReference): Promise<ResultValue<ScopedModelResult, FoundationError>> {
 		if (!isShortLivedReference(target) || !isShortLivedReference(lease) || !("leaseId" in lease)) return Result.err(new FoundationError("tool_guard_denied", "External executor requires short-lived credential references"));
 		if (target.bindingId !== this.gateway.scope.bindingId || lease.bindingId !== this.gateway.scope.bindingId || lease.bindingEpochId !== this.gateway.scope.bindingEpochId || lease.targetId !== target.targetId) return Result.err(new FoundationError("invalid_correlation", "Credential references do not match the scoped gateway"));
 		this.logs.push(JSON.stringify({ requestId: request.requestId, bindingId: lease.bindingId, bindingEpochId: lease.bindingEpochId, targetId: target.targetId, leaseId: lease.leaseId }));
@@ -203,7 +203,7 @@ class ConsumerShapedExternalExecutor {
 	logEntries(): readonly string[] { return [...this.logs]; }
 }
 
-function request(currentBinding: AgentBinding, currentEpoch: BindingEpoch, overrides: Partial<ExternalExecutorRequestV1> = {}): ExternalExecutorRequestV1 {
+function request(currentBinding: AgentBinding, currentEpoch: BindingEpoch, overrides: Partial<ExternalExecutorRequest> = {}): ExternalExecutorRequest {
 	return {
 		requestId: "model-request-t6-gateway",
 		taskId: currentBinding.taskId,
@@ -225,7 +225,7 @@ async function persistCredentialFreeFacts(session: Session, currentBinding: Agen
 	await ledger.release();
 }
 
-describe("T6 external executor scoped gateway conformance", () => {
+describe("external executor scoped gateway conformance", () => {
 	it("uses only the scoped gateways and short-lived credential references", async () => {
 		const currentBinding = binding();
 		const currentEpoch = epoch(currentBinding);

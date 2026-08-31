@@ -46,15 +46,15 @@ const artifact = { schemaVersion: 1 as const, artifactId: "artifact-1", mediaTyp
 const capability = { schemaVersion: 1 as const, artifactId: "capability-1", mediaType: "application/json", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
 
 function task(taskId = "task-t6"): TaskEnvelope {
-	return { schemaVersion: 1, taskId, goalId: taskId === "task-t6" ? "goal-t6" : `${taskId}-goal`, goal: "exercise the T6 provider consumer", workspace: "workspace-t6", capabilityRefs: [capability], inputs: [], expectedOutputs: [artifact], budget: {}, acceptanceCriteria: [{ schemaVersion: 1, criterionId: "criterion-t6", description: "provider output is accepted", satisfiedBy: "evidence", required: true }], status: "ready", createdAt: now, updatedAt: now };
+	return { schemaVersion: 1, taskId, goalId: taskId === "task-t6" ? "goal-t6" : `${taskId}-goal`, goal: "exercise the provider consumer", workspace: "workspace-t6", capabilityRefs: [capability], inputs: [], expectedOutputs: [artifact], budget: {}, acceptanceCriteria: [{ schemaVersion: 1, criterionId: "criterion-t6", description: "provider output is accepted", satisfiedBy: "evidence", required: true }], status: "ready", createdAt: now, updatedAt: now };
 }
 
 function roleRevision() {
-	return createRoleRevision({ definition: { schemaVersion: 1, roleId: "role-t6", scope: "project", slug: "t6", name: "T6", description: "T6 provider", revision: 1, persona: "execute T6", modelProfileRef: { schemaVersion: 1, type: "model_profile", id: "profile-t6", revision: 1 }, capabilitySelector: { policy: "all" }, skillSelector: { policy: "none" }, mcpSelector: { policy: "none" } }, now: () => now });
+	return createRoleRevision({ definition: { schemaVersion: 1, roleId: "role-t6", scope: "project", slug: "t6", name: "Fixture provider", description: "provider", revision: 1, persona: "execute ", modelProfileRef: { schemaVersion: 1, type: "model_profile", id: "profile-t6", revision: 1 }, capabilitySelector: { policy: "all" }, skillSelector: { policy: "none" }, mcpSelector: { policy: "none" } }, now: () => now });
 }
 
 function roleDefinition() {
-	return { schemaVersion: 1 as const, roleId: "role-t6", scope: "project" as const, slug: "t6", name: "T6", description: "T6 provider", revision: 1, persona: "execute T6", modelProfileRef: { schemaVersion: 1 as const, type: "model_profile", id: "profile-t6", revision: 1 }, capabilitySelector: { policy: "all" as const }, skillSelector: { policy: "none" as const }, mcpSelector: { policy: "none" as const } };
+	return { schemaVersion: 1 as const, roleId: "role-t6", scope: "project" as const, slug: "t6", name: "Fixture provider", description: "provider", revision: 1, persona: "execute ", modelProfileRef: { schemaVersion: 1 as const, type: "model_profile", id: "profile-t6", revision: 1 }, capabilitySelector: { policy: "all" as const }, skillSelector: { policy: "none" as const }, mcpSelector: { policy: "none" as const } };
 }
 
 function immutableFact(type: string, id: string, revision = 1): RevisionReference {
@@ -187,7 +187,7 @@ class ChildProvider implements ChildAgentProvider {
 	async dispose() {}
 }
 
-describe("T6 provider-driven role binding and result settlement", () => {
+describe("provider-driven role binding and result settlement", () => {
 	it("keeps raw child spawn execution behind the settlement boundary", () => {
 		expect("executeAgentSpawnV1" in AgentPublic).toBe(false);
 	});

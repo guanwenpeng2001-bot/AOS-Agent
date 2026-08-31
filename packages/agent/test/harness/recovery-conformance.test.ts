@@ -90,7 +90,7 @@ afterEach(() => {
 	while (tempDirs.length > 0) rmSync(tempDirs.pop()!, { recursive: true, force: true });
 });
 
-describe("T2 single Session ledger", () => {
+describe("single Session ledger", () => {
 	it("uses one sequence for legacy entries and Foundation facts", async () => {
 		const session = new Session(new InMemorySessionStorage({ id: "single", createdAt: 1 }));
 		await session.appendCustomEntry("legacy.anchor", { value: 1 });
@@ -154,7 +154,7 @@ describe("T2 single Session ledger", () => {
 	});
 });
 
-describe("T2 JSONL recovery and writer fencing", () => {
+describe("JSONL recovery and writer fencing", () => {
 	it("forks durable facts and intents without inheriting the writer lease", async () => {
 		const root = tempRoot();
 		const env = new NodeExecutionEnv({ cwd: root });

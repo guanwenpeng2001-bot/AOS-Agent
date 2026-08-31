@@ -19,7 +19,7 @@ import {
 import type { ExternalConnectorTargetDefinition } from "../../src/external-connector.ts";
 import { createRpcHostController } from "../../src/modes/rpc/rpc-host.ts";
 import type { RpcHostOutputRecord } from "../../src/modes/rpc/rpc-host.ts";
-import { pr11TargetDefinition } from "./fixtures/cross-layer.ts";
+import { crossLayerTargetDefinition } from "./fixtures/cross-layer.ts";
 
 const directories: string[] = [];
 const DEFAULT_MODEL: Model<"anthropic-messages"> = {
@@ -78,7 +78,7 @@ function genericSettings(
 	overrides: Partial<ExternalConnectorTargetDefinition> = {},
 ): SettingsManager {
 	const target = {
-		...pr11TargetDefinition(cwd, {
+		...crossLayerTargetDefinition(cwd, {
 			targetId: "settings-generic-jsonl",
 			providerId: "fixture.external-jsonl",
 		}),

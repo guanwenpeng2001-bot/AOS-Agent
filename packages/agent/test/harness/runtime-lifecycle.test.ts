@@ -111,7 +111,7 @@ function faultInjectingFileSystem(base: NodeExecutionEnv, operation: FaultOperat
 	};
 }
 
-describe("T4 runtime service and extension lifecycle", () => {
+describe("runtime service and extension lifecycle", () => {
 	it("topologically orders the runtime service DAG and rejects missing/cyclic dependencies", () => {
 		const valid = validateRuntimeServiceDAG([
 			{ serviceId: "tool", version: "1", providerId: "host", dependencies: [{ serviceId: "sandbox", version: "2" }] },

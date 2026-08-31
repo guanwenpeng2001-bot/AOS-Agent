@@ -342,7 +342,7 @@ function revokedEntries(session: FakeSession): Extract<SessionEntry, { type: "cu
 }
 
 describe("issueForTaskRun", () => {
-	it("runs the T3 preflight BEFORE the provider, the store, and every append", () => {
+	it("runs the preflight BEFORE the provider, the store, and every append", () => {
 		const { service, session, provider } = makeService({ preflightDenyCode: "task_credential_policy_denied" });
 		const result = service.issueForTaskRun(issueContext());
 		expect(result).toEqual({ ok: false, code: "task_credential_policy_denied" });
