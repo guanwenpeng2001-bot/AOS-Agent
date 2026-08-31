@@ -8,6 +8,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -326,10 +327,15 @@ function parseProbeOutput(output, packageDirectory, requireResolvedPath) {
 		if (typeof probe.resolved !== "string") throw new Error("Packaged runtime did not report its resolved export");
 		const resolvedEntry = realpathSync(fileURLToPath(probe.resolved));
 		const installedPackage = realpathSync(packageDirectory);
-		if (!isWithinPath(resolvedEntry, installedPackage)) {
+		const installedEntry = realpathSync(join(installedPackage, "dist", "external-connector.js"));
+		const resolvedIdentity = statSync(resolvedEntry, { bigint: true });
+		const installedIdentity = statSync(installedEntry, { bigint: true });
+		const resolvesInstalledEntry =
+			resolvedIdentity.dev === installedIdentity.dev && resolvedIdentity.ino === installedIdentity.ino;
+		if (!resolvesInstalledEntry && !isWithinPath(resolvedEntry, installedPackage)) {
 			throw new Error("Packaged runtime resolved repository-owned files outside its install");
 		}
-		if (resolvedEntry !== realpathSync(join(installedPackage, "dist", "external-connector.js"))) {
+		if (!resolvesInstalledEntry) {
 			throw new Error("Packaged runtime resolved an unexpected public export entry");
 		}
 	}
