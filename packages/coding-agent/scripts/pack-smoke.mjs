@@ -150,6 +150,38 @@ function createMinimalEnvironment(runDirectory, npmCache) {
 	return environment;
 }
 
+function createWarmupEnvironment(minimalEnvironment) {
+	return {
+		...process.env,
+		NPM_CONFIG_CACHE: minimalEnvironment.NPM_CONFIG_CACHE,
+		NPM_CONFIG_USERCONFIG: minimalEnvironment.NPM_CONFIG_USERCONFIG,
+		NPM_CONFIG_GLOBALCONFIG: minimalEnvironment.NPM_CONFIG_GLOBALCONFIG,
+		NPM_CONFIG_UPDATE_NOTIFIER: "false",
+		NPM_CONFIG_AUDIT: "false",
+		NPM_CONFIG_FUND: "false",
+	};
+}
+
+function warmNpmInstallCache(installDirectory, environment) {
+	const warmupDirectory = join(dirname(installDirectory), "cache-warmup");
+	mkdirSync(warmupDirectory, { recursive: true });
+	copyFileSync(join(installDirectory, "package.json"), join(warmupDirectory, "package.json"));
+	try {
+		console.log("Warming npm cache for offline packaged-runtime install");
+		runCommand(
+			npmCommand(),
+			["install", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"],
+			{
+				cwd: warmupDirectory,
+				env: createWarmupEnvironment(environment),
+				timeoutMs: 600_000,
+			},
+		);
+	} finally {
+		rmSync(warmupDirectory, { recursive: true, force: true });
+	}
+}
+
 function parsePackResult(output, context) {
 	let value;
 	try {
@@ -646,6 +678,11 @@ export function runPackageSmoke(options) {
 			encoding: "utf8",
 			mode: 0o600,
 		});
+		if (options.warmNpmCache === true) {
+			warmNpmInstallCache(installDirectory, environment);
+		}
+		// Keep lockfile/shrinkwrap consumption enabled. `--package-lock=false`
+		// ignores aos-agent's published shrinkwrap and forces packument fetches.
 		runCommand(
 			npmCommand(),
 			[
@@ -655,7 +692,6 @@ export function runPackageSmoke(options) {
 				"--omit=dev",
 				"--no-audit",
 				"--no-fund",
-				"--package-lock=false",
 			],
 			{ cwd: installDirectory, env: environment, timeoutMs: 600_000 },
 		);
@@ -688,6 +724,7 @@ Options:
   --work-root <dir>             Temporary parent outside the repository
   --candidate-tarball-out <p>   Persistent candidate tarball output
   --out <path>                  Sanitized package-smoke evidence output
+  --warm-npm-cache              Online-install the same package set into the npm cache first
   --dry-run                     Validate metadata/schema without building or executing
 `);
 }
@@ -699,6 +736,7 @@ function main() {
 		"--work-root": "value",
 		"--candidate-tarball-out": "value",
 		"--out": "value",
+		"--warm-npm-cache": "boolean",
 		"--dry-run": "boolean",
 		"--help": "boolean",
 	});
@@ -722,6 +760,7 @@ function main() {
 		candidateTarballOut: resolve(args["--candidate-tarball-out"] ?? (dryRun
 			? join(workRoot, "aos-agent.tgz")
 			: required(args, "--candidate-tarball-out"))),
+		warmNpmCache: args["--warm-npm-cache"] === true,
 		dryRun,
 	});
 	if (outputPath !== undefined) writeJsonAtomic(resolve(outputPath), result);

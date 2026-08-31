@@ -55,6 +55,7 @@ jobs:
           SMOKE_PLATFORM: ${{ matrix.platform }}
           SMOKE_ROOT: ${{ runner.temp }}/aos-pack-smoke/${{ matrix.platform }}
         run: |
+          set -o pipefail
           test "$HEAD_SHA" = "$(git rev-parse HEAD)"
           mkdir -p "$SMOKE_ROOT"
           node packages/coding-agent/scripts/pack-smoke.mjs \
@@ -62,7 +63,9 @@ jobs:
             --platform "$SMOKE_PLATFORM" \
             --work-root "$SMOKE_ROOT/work" \
             --candidate-tarball-out "$SMOKE_ROOT/aos-agent.tgz" \
-            --out "$SMOKE_ROOT/package-smoke.json"
+            --out "$SMOKE_ROOT/package-smoke.json" \
+            --warm-npm-cache \
+            2>&1 | tee "$SMOKE_ROOT/pack-smoke.log"
 
       - name: Upload packaged smoke evidence
         if: always()

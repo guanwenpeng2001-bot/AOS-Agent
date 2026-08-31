@@ -75,7 +75,12 @@
 ### Fixed
 
 - Packaged-runtime smoke now prints execution and per-runtime probe failures, and the Node-only unit test skips Bun compile probes when Bun is not installed.
-- Offline packaged-runtime install uses workspace package overrides so npm honors the candidate shrinkwrap cache instead of fetching packuments.
+- Offline packaged-runtime install uses workspace package overrides and the candidate shrinkwrap cache instead of fetching packuments.
+- Packaged-runtime smoke can warm the npm cache with one online install of the same package set before the offline install, and CI writes the run log into the evidence artifact.
+- Crash-resume composition and Worker fail-closed/cancel tests wait for the terminal marker or record instead of a one-second poll.
+- Protocol drain waits until the deterministic clock has a pending timer before advancing it.
+- Theme FSWatcher regression waits until the watcher handle exists before emitting the simulated error.
+- MCP auth abort waits for the auth URL with a bounded timeout and observes the authorization promise before aborting.
 - Installed packages now boot successfully through the CLI and SDK entrypoints.
 - Moved the public execution-association views from `core/migrations/` to `core/session/` so package-root exports no longer come from the private migrations layer, and corrected test fixture and repository-root paths that broke after the directory-domain move.
 - Source naming contract now flags Trusted named re-exports and version-suffixed `export abstract class` declarations.
