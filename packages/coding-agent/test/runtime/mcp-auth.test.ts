@@ -18,6 +18,7 @@ interface FakeInteractionResult {
 	interaction: AuthInteraction;
 	events: AuthEvent[];
 	prompts: AuthPrompt[];
+	authUrlReady: Promise<URL>;
 }
 
 function createFakeInteraction(
@@ -25,6 +26,10 @@ function createFakeInteraction(
 ): FakeInteractionResult {
 	const events: AuthEvent[] = [];
 	const prompts: AuthPrompt[] = [];
+	let resolveAuthUrl: ((url: URL) => void) | undefined;
+	const authUrlReady = new Promise<URL>((resolve) => {
+		resolveAuthUrl = resolve;
+	});
 	const interaction: AuthInteraction = {
 		async prompt(prompt) {
 			prompts.push(prompt);
@@ -44,9 +49,13 @@ function createFakeInteraction(
 		},
 		notify(event) {
 			events.push(event);
+			if (event.type === "auth_url") {
+				resolveAuthUrl?.(new URL(event.url));
+				resolveAuthUrl = undefined;
+			}
 		},
 	};
-	return { interaction, events, prompts };
+	return { interaction, events, prompts, authUrlReady };
 }
 
 function authUrlFrom(events: AuthEvent[]): URL | undefined {
@@ -54,15 +63,13 @@ function authUrlFrom(events: AuthEvent[]): URL | undefined {
 	return event !== undefined && event.type === "auth_url" ? new URL(event.url) : undefined;
 }
 
-async function waitForAuthUrl(events: AuthEvent[], timeoutMs = 5_000): Promise<URL> {
-	const start = Date.now();
-	while (authUrlFrom(events) === undefined) {
-		if (Date.now() - start > timeoutMs) {
-			throw new Error("waitForAuthUrl timed out");
-		}
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	return authUrlFrom(events) as URL;
+function waitForAuthUrl(authUrlReady: Promise<URL>, authorization: Promise<unknown>): Promise<URL> {
+	return Promise.race([
+		authUrlReady,
+		authorization.then(() => {
+			throw new Error("MCP authorization completed before emitting an auth URL");
+		}),
+	]);
 }
 
 /** Simulates the user agent completing the authorization redirect. */
@@ -282,11 +289,11 @@ function createFlow(server: FakeOAuthServer, interaction: AuthInteraction, optio
 describe("MCPAuthFlow loopback flow", () => {
 	it("runs discovery, DCR, PKCE + state authorization, loopback callback, and code exchange", async () => {
 		const fake = await startFakeOAuthServer();
-		const { interaction, events, prompts } = createFakeInteraction();
+		const { interaction, prompts, authUrlReady } = createFakeInteraction();
 		const flow = createFlow(fake, interaction);
 
 		const promise = flow.authorize();
-		const authUrl = await waitForAuthUrl(events);
+		const authUrl = await waitForAuthUrl(authUrlReady, promise);
 		expect(authUrl.searchParams.get("response_type")).toBe("code");
 		expect(authUrl.searchParams.get("code_challenge")).not.toBeNull();
 		expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
@@ -315,11 +322,11 @@ describe("MCPAuthFlow loopback flow", () => {
 
 	it("rejects a second authorize() call (one-shot)", async () => {
 		const fake = await startFakeOAuthServer();
-		const { interaction, events } = createFakeInteraction();
+		const { interaction, authUrlReady } = createFakeInteraction();
 		const flow = createFlow(fake, interaction);
 
 		const promise = flow.authorize();
-		await completeBrowserStep(await waitForAuthUrl(events));
+		await completeBrowserStep(await waitForAuthUrl(authUrlReady, promise));
 		await expect(promise).resolves.toEqual({ status: "authorized" });
 
 		await expect(flow.authorize()).rejects.toMatchObject({ kind: "flow_used", mcpKind: "auth_required" });
@@ -337,46 +344,46 @@ describe("MCPAuthFlow loopback flow", () => {
 
 	it("rejects with state_mismatch when the callback state does not match", async () => {
 		const fake = await startFakeOAuthServer({ stateOverride: "wrong-state" });
-		const { interaction, events } = createFakeInteraction();
+		const { interaction, authUrlReady } = createFakeInteraction();
 		const flow = createFlow(fake, interaction);
 
 		const promise = flow.authorize();
 		// Attach the rejection handler before the browser step: the callback can
 		// reject the flow while the test is still awaiting the browser fetch.
 		const assertion = expect(promise).rejects.toMatchObject({ kind: "state_mismatch", mcpKind: "auth_required" });
-		await completeBrowserStep(await waitForAuthUrl(events));
+		await completeBrowserStep(await waitForAuthUrl(authUrlReady, promise));
 		await assertion;
 	});
 
 	it("rejects with user_cancelled when the authorization server returns access_denied", async () => {
 		const fake = await startFakeOAuthServer({ authorizeError: "access_denied" });
-		const { interaction, events } = createFakeInteraction();
+		const { interaction, authUrlReady } = createFakeInteraction();
 		const flow = createFlow(fake, interaction);
 
 		const promise = flow.authorize();
 		const assertion = expect(promise).rejects.toMatchObject({ kind: "user_cancelled" });
-		await completeBrowserStep(await waitForAuthUrl(events));
+		await completeBrowserStep(await waitForAuthUrl(authUrlReady, promise));
 		await assertion;
 	});
 
 	it("times out waiting for the callback and closes the listener", async () => {
 		const fake = await startFakeOAuthServer();
-		const { interaction, events } = createFakeInteraction();
+		const { interaction, authUrlReady } = createFakeInteraction();
 		const flow = createFlow(fake, interaction, { timeoutMs: 250 });
 
 		const promise = flow.authorize();
-		await waitForAuthUrl(events);
+		await waitForAuthUrl(authUrlReady, promise);
 		await expect(promise).rejects.toMatchObject({ kind: "callback_timeout", mcpKind: "auth_required" });
 	});
 
 	it("aborts with an AbortError when the caller signal fires during capture", async () => {
 		const fake = await startFakeOAuthServer();
-		const { interaction, events } = createFakeInteraction();
+		const { interaction, authUrlReady } = createFakeInteraction();
 		const controller = new AbortController();
 		const flow = createFlow(fake, interaction, { signal: controller.signal });
 
 		const promise = flow.authorize();
-		await waitForAuthUrl(events);
+		await waitForAuthUrl(authUrlReady, promise);
 		controller.abort();
 		await expect(promise).rejects.toMatchObject({ name: "AbortError" });
 	});
@@ -416,7 +423,7 @@ describe("MCPAuthFlow token refresh and retry mapping", () => {
 
 	it("retries exactly once after an invalid_grant refresh failure with a fresh authorization", async () => {
 		const fake = await startFakeOAuthServer({ refreshBehavior: "invalid_grant" });
-		const { interaction, events, prompts } = createFakeInteraction();
+		const { interaction, prompts, authUrlReady } = createFakeInteraction();
 		const flow = createFlow(fake, interaction);
 		await flow.provider.saveTokens({
 			access_token: "at-old",
@@ -426,7 +433,7 @@ describe("MCPAuthFlow token refresh and retry mapping", () => {
 		});
 
 		const promise = flow.authorize();
-		await completeBrowserStep(await waitForAuthUrl(events));
+		await completeBrowserStep(await waitForAuthUrl(authUrlReady, promise));
 		await expect(promise).resolves.toEqual({ status: "authorized" });
 
 		expect(fake.counts.refresh).toBe(1);
@@ -438,11 +445,11 @@ describe("MCPAuthFlow token refresh and retry mapping", () => {
 
 	it("maps a failing code exchange to auth_failed after the SDK's single retry", async () => {
 		const fake = await startFakeOAuthServer({ tokenError: "invalid_grant" });
-		const { interaction, events, prompts } = createFakeInteraction();
+		const { interaction, prompts, authUrlReady } = createFakeInteraction();
 		const flow = createFlow(fake, interaction);
 
 		const promise = flow.authorize();
-		await completeBrowserStep(await waitForAuthUrl(events));
+		await completeBrowserStep(await waitForAuthUrl(authUrlReady, promise));
 		await expect(promise).rejects.toMatchObject({ kind: "auth_failed", mcpKind: "auth_required" });
 
 		expect(fake.counts.token).toBe(2);
@@ -521,11 +528,11 @@ describe("MCPAuthFlow discovery", () => {
 
 	it("supports legacy discovery: no protected resource metadata but AS metadata at the server origin", async () => {
 		const fake = await startFakeOAuthServer({ prm: false });
-		const { interaction, events } = createFakeInteraction();
+		const { interaction, authUrlReady } = createFakeInteraction();
 		const flow = createFlow(fake, interaction);
 
 		const promise = flow.authorize();
-		await completeBrowserStep(await waitForAuthUrl(events));
+		await completeBrowserStep(await waitForAuthUrl(authUrlReady, promise));
 		await expect(promise).resolves.toEqual({ status: "authorized" });
 		expect(fake.counts.metadata).toBeGreaterThan(0);
 	});
@@ -647,7 +654,7 @@ describe("MCPAuthError classification and redaction", () => {
 			expect(message).not.toContain("wrong-state");
 			return true;
 		});
-		await completeBrowserStep(await waitForAuthUrl(cancelled.events));
+		await completeBrowserStep(await waitForAuthUrl(cancelled.authUrlReady, promise));
 		await assertion;
 	});
 });
