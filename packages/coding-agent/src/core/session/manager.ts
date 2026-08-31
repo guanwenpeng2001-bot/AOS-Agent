@@ -395,7 +395,7 @@ function generateId(byId: { has(id: string): boolean }): string {
 }
 
 /** Migrate v1 → v2: add id/parentId tree structure. Mutates in place. */
-function migrateV1ToV2(entries: FileEntry[]): void {
+function migrateVersionOneToVersionTwo(entries: FileEntry[]): void {
 	const ids = new Set<string>();
 	const header = entries.find((entry): entry is SessionHeader => entry.type === "session");
 	if (header === undefined) throw new Error("Session migration requires a header");
@@ -441,7 +441,7 @@ function migrateV1ToV2(entries: FileEntry[]): void {
 }
 
 /** Migrate v2 → v3: rename hookMessage role to custom. Mutates in place. */
-function migrateV2ToV3(entries: FileEntry[]): void {
+function migrateVersionTwoToVersionThree(entries: FileEntry[]): void {
 	for (const entry of entries) {
 		if (entry.type === "session") {
 			entry.version = 3;
@@ -468,8 +468,8 @@ function migrateToCurrentVersion(entries: FileEntry[]): boolean {
 
 	if (version >= CURRENT_SESSION_VERSION) return false;
 
-	if (version < 2) migrateV1ToV2(entries);
-	if (version < 3) migrateV2ToV3(entries);
+	if (version < 2) migrateVersionOneToVersionTwo(entries);
+	if (version < 3) migrateVersionTwoToVersionThree(entries);
 
 	return true;
 }

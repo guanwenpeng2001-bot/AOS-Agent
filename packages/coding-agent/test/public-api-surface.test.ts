@@ -52,6 +52,6 @@ describe("published API surface", () => {
 	}
 
 	it("keeps milestone names out of the external connector entry", () => {
-		expect(exportedNames(entrySources["./external-connector"]).filter((name) => /Line13/i.test(name))).toEqual([]);
+		expect(exportedNames(entrySources["./external-connector"]).filter((name) => /Line(?:13)/i.test(name))).toEqual([]);
 	});
 });

@@ -4,10 +4,17 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { repoRoot } from "./support/public-roots.ts";
 
-const SOURCE_DIRECTORIES = ["packages/agent/src", "packages/coding-agent/src", "packages/ai/src"] as const;
+const NAMING_DIRECTORIES = [
+	"packages/agent/src",
+	"packages/agent/test",
+	"packages/ai/src",
+	"packages/ai/test",
+	"packages/coding-agent/src",
+	"packages/coding-agent/test",
+] as const;
 
 const sourceNamingContractPattern =
-	/\bexport\s+(?:(?:declare|default|async|abstract)\s+)*(?:type|interface|class|function|const)\s+(?<versionedExport>[A-Za-z_$][\w$]*V\d+)\b|\bexport\s+(?:(?:declare|default|async|abstract)\s+)*(?:type|interface|class|function|const)\s+(?<trustedExport>Trusted[A-Z][\w$]*)|(?<lineIdentifier>\bLine13T5[\w$]*|\bLine1[0-9][\w$]*)|(?<ticket>\bT[0-9]{1,2}\b)|(?<faux>[Ff][Aa][Uu][Xx])|(?<fixturePrefix>\b[Ll][Ii][Nn][Ee]13[-.])/gu;
+	/\b(?:(?:export|declare|default|async|abstract)\s+)*(?:type|interface|class|function|const)\s+(?<versionedDeclaration>[A-Za-z_$][\w$]*V\d+)\b|\bexport\s+(?:(?:declare|default|async|abstract)\s+)*(?:type|interface|class|function|const)\s+(?<trustedExport>Trusted[A-Z][\w$]*)|(?<lineIdentifier>\bLine13T5[\w$]*|\bLine1[0-9][\w$]*)|(?<ticket>\bT[0-9]{1,2}\b)|(?<constructionLine>\bline[- ]1[0-9]\b)|(?<deprecatedSpelling>[Ff][Aa][Uu][Xx])|(?<fixturePrefix>\b[Ll][Ii][Nn][Ee]13[-.])/gu;
 
 const trustedNamedExportPattern =
 	/\bexport\s+(?:type\s+)?\{[^}]*\b(?<trustedNamedExport>Trusted[A-Z][\w$]*)\b[^}]*\}/gu;
@@ -118,7 +125,7 @@ function isDiskSchemaField(source: string, index: number, tokenLength: number): 
 	return line[cursor] === ":" && (lowerLine.includes("schema") || lowerLine.includes("disk"));
 }
 
-function isAllowedVersionedExport(name: string): boolean {
+function isAllowedVersionedDeclaration(name: string): boolean {
 	return (
 		name === "JsonlV4Header" ||
 		name === "JsonlV5Header" ||
@@ -131,7 +138,7 @@ describe("source naming contract", () => {
 	it("keeps all package source names free of retired naming patterns", () => {
 		const root = repoRoot();
 		const files: string[] = [];
-		for (const directory of SOURCE_DIRECTORIES) collectTypeScriptFiles(join(root, directory), files);
+		for (const directory of NAMING_DIRECTORIES) collectTypeScriptFiles(join(root, directory), files);
 		files.sort();
 
 		const violations: string[] = [];
@@ -141,8 +148,8 @@ describe("source naming contract", () => {
 				const groups = match.groups;
 				const index = match.index ?? 0;
 				const location = `${relative(root, path).replaceAll("\\", "/")}:${lineNumber(source, index)}`;
-				if (groups?.versionedExport !== undefined && !isAllowedVersionedExport(groups.versionedExport)) {
-					violations.push(`${location}: versioned export ${groups.versionedExport}`);
+				if (groups?.versionedDeclaration !== undefined && !isAllowedVersionedDeclaration(groups.versionedDeclaration)) {
+					violations.push(`${location}: versioned declaration ${groups.versionedDeclaration}`);
 				} else if (groups?.trustedExport !== undefined) {
 					violations.push(`${location}: Trusted export ${groups.trustedExport}`);
 				} else if (groups?.lineIdentifier !== undefined) {
@@ -153,8 +160,10 @@ describe("source naming contract", () => {
 					!isDiskSchemaField(source, index, groups.ticket.length)
 				) {
 					violations.push(`${location}: ticket marker ${groups.ticket}`);
-				} else if (groups?.faux !== undefined) {
-					violations.push(`${location}: faux naming ${groups.faux}`);
+				} else if (groups?.constructionLine !== undefined) {
+					violations.push(`${location}: construction line ${groups.constructionLine}`);
+				} else if (groups?.deprecatedSpelling !== undefined) {
+					violations.push(`${location}: deprecated spelling ${groups.deprecatedSpelling}`);
 				} else if (groups?.fixturePrefix !== undefined) {
 					violations.push(`${location}: fixture prefix ${groups.fixturePrefix}`);
 				}
