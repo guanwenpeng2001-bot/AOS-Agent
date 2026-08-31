@@ -8,7 +8,7 @@ This file records the isolated upstream baseline for the standalone AOS Agent. K
 - Immutable baseline: `936aff00918de1187f085f123c2812d8f2d67745`
 - Baseline selection: the full commit SHA above; do not record a mutable branch or tag as the baseline.
 - Import date: 2026-08-10
-- License: MIT, Copyright (c) 2025 Mario Zechner. The upstream [`LICENSE`](LICENSE) is retained verbatim.
+- License: MIT, Copyright (c) 2025 Mario Zechner. The product [`LICENSE`](LICENSE) now attributes AOS Agent; this line records the imported upstream copyright.
 
 The former `badlogic/pi-mono` repository URL redirects to the canonical upstream URL above. The upstream repository URL, source-origin comments, and third-party notices remain part of the provenance record and are not product branding.
 

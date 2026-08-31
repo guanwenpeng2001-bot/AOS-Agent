@@ -81,7 +81,7 @@ npm run check:aos-model-registry
 
 AOS Agent runs with the permissions of the local user and can execute shell commands and modify files in its working directory. Review project instructions, extensions, skills, packages, and model/provider configuration before trusting them. Use a container or another policy-controlled sandbox for untrusted repositories or unattended work.
 
-The source baseline is imported from an upstream open-source coding-agent baseline at immutable revision `936aff00918de1187f085f123c2812d8f2d67745`. The upstream MIT license, copyright, third-party notices, and source-origin records remain in [`LICENSE`](LICENSE) and [`UPSTREAM.md`](UPSTREAM.md). They are legal and technical provenance, not the AOS product identity.
+AOS Agent is an independent product. Maintainer-only source provenance lives in [`UPSTREAM.md`](UPSTREAM.md) and is not part of the product identity.
 
 ## Contributing and release boundaries
 
