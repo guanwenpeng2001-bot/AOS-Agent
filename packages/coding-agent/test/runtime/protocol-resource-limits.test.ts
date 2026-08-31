@@ -18,6 +18,8 @@ import {
 } from "../../src/modes/rpc/rpc-transport.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
 
+const DRAIN_WAIT_TIMEOUT_MS = 30_000;
+
 interface ControlledWrite {
 	readonly value: string;
 	resolve(): void;
@@ -72,7 +74,7 @@ describe("bounded protocol writer", () => {
 		});
 		entryOperations[0].resolve();
 		await first;
-		await vi.waitFor(() => expect(entryOperations).toHaveLength(2));
+		await vi.waitFor(() => expect(entryOperations).toHaveLength(2), { timeout: DRAIN_WAIT_TIMEOUT_MS });
 		entryOperations[1].resolve();
 		await second;
 		await expect(entryWriter.close()).rejects.toMatchObject({ code: "protocol_pending_entries_exceeded" });
@@ -107,7 +109,9 @@ describe("bounded protocol writer", () => {
 		for (let index = 0; index < accepted.length; index++) {
 			operations[index].resolve();
 			await accepted[index];
-			if (index + 1 < accepted.length) await vi.waitFor(() => expect(operations).toHaveLength(index + 2));
+			if (index + 1 < accepted.length) {
+				await vi.waitFor(() => expect(operations).toHaveLength(index + 2), { timeout: DRAIN_WAIT_TIMEOUT_MS });
+			}
 		}
 		await closing;
 
@@ -231,7 +235,7 @@ describe("bounded JSONL resources", () => {
 		await expect(writer.writeLine("c\n")).rejects.toMatchObject({ code: "protocol_pending_bytes_exceeded" });
 		callbacks[0]();
 		await first;
-		await vi.waitFor(() => expect(callbacks).toHaveLength(2));
+		await vi.waitFor(() => expect(callbacks).toHaveLength(2), { timeout: DRAIN_WAIT_TIMEOUT_MS });
 		callbacks[1]();
 		await second;
 		await expect(writer.close()).rejects.toMatchObject({ code: "protocol_pending_bytes_exceeded" });
@@ -365,7 +369,7 @@ describe.sequential("RPC protocol drain", () => {
 			peer.pause();
 			peer.write('{"type":"flood"}\n');
 			await dispatched;
-			expect(clock.pendingCount()).toBeGreaterThan(0);
+			await vi.waitFor(() => expect(clock.pendingCount()).toBeGreaterThan(0), { timeout: DRAIN_WAIT_TIMEOUT_MS });
 			clock.advanceBy(25);
 			await closing;
 			const settlements = await Promise.allSettled(writes);

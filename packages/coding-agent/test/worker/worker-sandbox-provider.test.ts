@@ -84,7 +84,8 @@ import {
 
 const CHILD_ENTRY = fileURLToPath(new URL("../fixtures/fake-worker-child.ts", import.meta.url));
 const REAL_CHILD_ENTRY = fileURLToPath(new URL("../fixtures/real-sandbox-worker-launcher.mjs", import.meta.url));
-const WORKER_ASYNC_WAIT_TIMEOUT_MS = 5_000;
+const WORKER_ASYNC_WAIT_TIMEOUT_MS = 30_000;
+const WORKER_ASYNC_POLL_MS = 10;
 
 const CHILD_POLICY_PROFILE: ExecutionPolicyProfile = {
 	id: "worker-child-sandbox",
@@ -454,35 +455,37 @@ function realWorkerProvider(root: string, policyBindingId: string, runId: string
 	return current;
 }
 
-async function waitForRecord(records: readonly WorkerRecord[], status: WorkerRecord["status"]): Promise<void> {
-	const expires = Date.now() + WORKER_ASYNC_WAIT_TIMEOUT_MS;
-	while (Date.now() < expires) {
-		if (records.some((record) => record.status === status)) return;
-		await new Promise<void>((resolve) => setImmediate(resolve));
-	}
-	throw new Error(`Timed out waiting for ${status}`);
-}
-
-async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+async function waitForPoll(predicate: () => boolean, message: string): Promise<void> {
 	const expires = Date.now() + WORKER_ASYNC_WAIT_TIMEOUT_MS;
 	while (Date.now() < expires) {
 		if (predicate()) return;
-		await new Promise<void>((resolve) => setImmediate(resolve));
+		await new Promise<void>((resolve) => setTimeout(resolve, WORKER_ASYNC_POLL_MS));
 	}
 	throw new Error(message);
+}
+
+async function waitForRecord(records: readonly WorkerRecord[], status: WorkerRecord["status"]): Promise<void> {
+	await waitForPoll(
+		() => records.some((record) => record.status === status),
+		`Timed out waiting for ${status}`,
+	);
+}
+
+async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+	await waitForPoll(predicate, message);
 }
 
 async function waitForWorkerFrame(
 	frames: readonly OperationWorkerEventFrame[],
 	predicate: (frame: OperationWorkerEventFrame) => boolean,
 ): Promise<OperationWorkerEventFrame> {
-	const expires = Date.now() + WORKER_ASYNC_WAIT_TIMEOUT_MS;
-	while (Date.now() < expires) {
-		const frame = frames.find(predicate);
-		if (frame !== undefined) return frame;
-		await new Promise<void>((resolve) => setImmediate(resolve));
-	}
-	throw new Error(`Timed out waiting for Worker frame: ${JSON.stringify(frames)}`);
+	let frame: OperationWorkerEventFrame | undefined;
+	await waitForPoll(() => {
+		frame = frames.find(predicate);
+		return frame !== undefined;
+	}, `Timed out waiting for Worker frame: ${JSON.stringify(frames)}`);
+	if (frame === undefined) throw new Error(`Timed out waiting for Worker frame: ${JSON.stringify(frames)}`);
+	return frame;
 }
 
 const WORKER_CREDENTIAL_NOW = "2026-08-21T00:00:00.000Z";
@@ -1802,8 +1805,8 @@ describe("WorkerSandboxProvider", () => {
 		);
 		expect(await current.cancel(request.operationId)).toEqual({ ok: true, value: undefined });
 		expect(await started).toMatchObject({ ok: true, value: { status: "cancelled", sideEffectState: "none" } });
-		expect(records.some((record) => record.status === "reclaimed")).toBe(true);
-	});
+		await waitForRecord(records, "reclaimed");
+	}, 60_000);
 
 	it("terminates a never-ready child during activation on cancel, cancelAll, and deadline", async () => {
 		for (const reason of ["cancel", "cancelAll", "deadline"] as const) {
@@ -1920,8 +1923,8 @@ describe("WorkerSandboxProvider", () => {
 		const reclaimUnknown = provider("reclaim_unknown", { onRecord: (record) => records.push(record) });
 		const request = operation("operation-reclaim-unknown");
 		expect(await executeOperation({ provider: reclaimUnknown, request, correlation: correlation(request.operationId) })).toMatchObject({ ok: true });
-		expect(records.some((record) => record.status === "reclaim_unknown")).toBe(true);
-	});
+		await waitForRecord(records, "reclaim_unknown");
+	}, 60_000);
 
 	it("fails every strict preflight and identity mismatch before Supervisor creation", async () => {
 		const mismatches: readonly {

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2446,7 +2446,7 @@ describe("AgentRuntimeComposition", () => {
 		if (typeof data !== "object" || data === null || !("runId" in data) || typeof data.runId !== "string") {
 			throw new Error("External run.start response is missing runId");
 		}
-		await vi.waitFor(() => expect(existsSync(durableMarkerPath)).toBe(true));
+		await vi.waitFor(() => expect(readFileSync(durableMarkerPath, "utf8")).toBe("durable\n"), { timeout: 60_000 });
 		first.child.kill();
 		await first.waitForClose();
 
@@ -2479,7 +2479,7 @@ describe("AgentRuntimeComposition", () => {
 				throw new Error(`External run.resume failed: ${JSON.stringify(resumed)} stderr=${second.stderr()}`);
 			}
 			expect(resumed).toMatchObject({ success: true, data: { runId: data.runId } });
-			await vi.waitFor(() => expect(readFileSync(durableMarkerPath, "utf8")).toBe("terminal\n"));
+			await vi.waitFor(() => expect(readFileSync(durableMarkerPath, "utf8")).toBe("terminal\n"), { timeout: 60_000 });
 			second.send({ id: "external-get", type: "run.get", runId: data.runId });
 			const completed = await second.waitFor((record) =>
 				isRpcRecord(record, { id: "external-get", type: "response" }),

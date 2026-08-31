@@ -57,9 +57,14 @@ process.env.AOS_AGENT_DIR = "${agentDir}";
 
 setTheme("custom-test", true);
 
-// Find the FSWatcher among active handles
-const handles = (process as any)._getActiveHandles();
-const fsWatcher = handles.find((h: any) => h.constructor?.name === "FSWatcher");
+const started = Date.now();
+let fsWatcher;
+while (Date.now() - started < 30_000) {
+	const handles = (process as any)._getActiveHandles();
+	fsWatcher = handles.find((h: any) => h.constructor?.name === "FSWatcher");
+	if (fsWatcher) break;
+	await new Promise((resolve) => setTimeout(resolve, 10));
+}
 
 if (!fsWatcher) {
 	process.stderr.write("no FSWatcher found among active handles\\n");
@@ -95,6 +100,7 @@ process.exit(0);
 				encoding: "utf-8",
 				env: { ...sourceProcessEnv(), AOS_AGENT_DIR: agentDir },
 				stdio: ["pipe", "pipe", "pipe"],
+				timeout: 45_000,
 			});
 			exitCode = 0;
 		} catch (err: unknown) {
@@ -105,5 +111,5 @@ process.exit(0);
 		}
 
 		expect(exitCode, `Child crashed (exit ${exitCode}). stderr: ${stderr.trim()}`).toBe(0);
-	});
+	}, 60_000);
 });

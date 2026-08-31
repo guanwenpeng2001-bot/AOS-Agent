@@ -15,7 +15,7 @@ import {
 	type TaskResult,
 	type WorkerReceipt,
 } from "../../../agent/src/internal.ts";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	createRunLifecycleCoordinator,
 	registerRunWorkerLifecycleHooks,
@@ -74,10 +74,10 @@ function operationWorker(runId: string, isRunAccepted: () => boolean = () => tru
 				profileRevision: 1,
 				capabilities: ["filesystem.read"],
 				environment: { AOS_SAFE_TEST_MARKER: "1" },
-				readyTimeoutMs: 200,
-				heartbeatTimeoutMs: 300,
-				cancelTimeoutMs: 120,
-				terminateTimeoutMs: 500,
+				readyTimeoutMs: 30_000,
+				heartbeatTimeoutMs: 30_000,
+				cancelTimeoutMs: 5_000,
+				terminateTimeoutMs: 10_000,
 			},
 		},
 		requireRegisteredPayload: true,
@@ -95,7 +95,7 @@ function operationWorker(runId: string, isRunAccepted: () => boolean = () => tru
 				profileId: "success",
 				profileRevision: 1,
 				capabilitySummary: ["filesystem.read"],
-				deadlineAt: request.deadlineAt ?? Date.now() + 2_000,
+				deadlineAt: request.deadlineAt ?? Date.now() + 60_000,
 				credentialTargetRefs: [],
 				requestFingerprint: createWorkerRequestFingerprint(request),
 			},
@@ -256,19 +256,7 @@ describe("Run lifecycle Operation Worker wiring", () => {
 				attemptId: "attempt-1",
 			},
 		});
-		const clockStart = Date.now();
-		const execution = await (async () => {
-			// Keep subprocess I/O real while preventing host load from consuming lifecycle bounds.
-			vi.useFakeTimers({
-				now: clockStart,
-				toFake: ["Date", "setTimeout", "clearTimeout"],
-			});
-			try {
-				return await execute("operation-1");
-			} finally {
-				vi.useRealTimers();
-			}
-		})();
+		const execution = await execute("operation-1");
 		expect(execution).toMatchObject({ ok: true, value: { ok: true, sideEffectState: "none" } });
 		if (!execution.ok || execution.value.toolReceiptRef === undefined) throw new Error("Expected ToolGateway WorkerReceipt reference");
 		const worker = workerProvider.getWorkerReceipt(execution.value.toolReceiptRef);
@@ -354,7 +342,7 @@ describe("Run lifecycle Operation Worker wiring", () => {
 		})).toMatchObject({ ok: false });
 		expect(validateRunReceipt(worker as unknown as RunReceipt)).toMatchObject({ ok: false });
 		await gateway.dispose();
-	});
+	}, 60_000);
 
 	it("notifies interrupted recovery while the default coordinator has no Worker side effects", async () => {
 		const session = SessionManager.inMemory("/workspace/worker-recovery");

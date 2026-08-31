@@ -63,11 +63,20 @@ function authUrlFrom(events: AuthEvent[]): URL | undefined {
 	return event !== undefined && event.type === "auth_url" ? new URL(event.url) : undefined;
 }
 
-function waitForAuthUrl(authUrlReady: Promise<URL>, authorization: Promise<unknown>): Promise<URL> {
+function waitForAuthUrl(
+	authUrlReady: Promise<URL>,
+	authorization: Promise<unknown>,
+	timeoutMs = 30_000,
+): Promise<URL> {
 	return Promise.race([
 		authUrlReady,
 		authorization.then(() => {
 			throw new Error("MCP authorization completed before emitting an auth URL");
+		}),
+		new Promise<URL>((_, reject) => {
+			setTimeout(() => {
+				reject(new Error("waitForAuthUrl timed out"));
+			}, timeoutMs);
 		}),
 	]);
 }
@@ -383,9 +392,10 @@ describe("MCPAuthFlow loopback flow", () => {
 		const flow = createFlow(fake, interaction, { signal: controller.signal });
 
 		const promise = flow.authorize();
+		const expectedAbort = expect(promise).rejects.toMatchObject({ name: "AbortError" });
 		await waitForAuthUrl(authUrlReady, promise);
 		controller.abort();
-		await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+		await expectedAbort;
 	});
 
 	it("rejects immediately when the signal is already aborted", async () => {

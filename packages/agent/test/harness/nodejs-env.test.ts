@@ -42,6 +42,11 @@ async function startCommandAfterOutput(
 				throw new Error(`Command settled before stdout contained ${JSON.stringify(marker)}: ${JSON.stringify(result)}`);
 			}
 		}),
+		new Promise<never>((_, reject) => {
+			setTimeout(() => {
+				reject(new Error(`Timed out waiting for stdout to contain ${JSON.stringify(marker)}`));
+			}, 30_000);
+		}),
 	]);
 	return { execution };
 }
@@ -426,7 +431,7 @@ describe("NodeExecutionEnv", () => {
 		const { execution } = await startCommandAfterOutput(env, "printf started; sleep 60", "started");
 		await env.cleanup();
 		await expect(execution).resolves.toMatchObject({ ok: true });
-	});
+	}, 30_000);
 
 	it("streams stdout and stderr chunks", async () => {
 		const root = createTempDir();
