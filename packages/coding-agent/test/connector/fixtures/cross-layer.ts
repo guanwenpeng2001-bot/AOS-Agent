@@ -52,7 +52,7 @@ import type {
 	AgentRuntimeCompositionContext,
 	ExternalConnectorProductAuthority,
 	ExternalConnectorRegistryFactory,
-} from "../../../src/core/runtime/composition.ts";
+} from "../../../src/core/runtime/composition-factory.ts";
 import {
 	executeExternalConnectorProductRun,
 	type ExternalConnectorProductExecution,

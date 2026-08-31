@@ -14,7 +14,7 @@ import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../../src/core/session/agent-session.ts";
-import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition.ts";
+import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition-factory.ts";
 import { getAgentCanonicalSession, getAgentSessionLedger } from "../../src/core/session/facade.ts";
 import type { AgentSessionRuntime } from "../../src/core/session/runtime.ts";
 import { createExtensionRuntime } from "../../src/core/extensions/loader.ts";

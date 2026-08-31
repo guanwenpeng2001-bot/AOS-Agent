@@ -31,7 +31,7 @@ export {
 	type WorkerSandboxComposition,
 	type WorkerSandboxFactory,
 	type WorkerSandboxCompositionOptions,
-} from "./runtime/composition.ts";
+} from "./runtime/composition-factory.ts";
 export {
 	EXTERNAL_CONNECTOR_TARGET_CONFIG_SCHEMA_VERSION,
 	ExternalConnectorTargetConfigError,

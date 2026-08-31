@@ -25,7 +25,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	FoundationControlPlane,
 	type FoundationControlPlaneOptions,
-} from "../../src/core/runtime/control-plane.ts";
+} from "../../src/core/runtime/foundation-control-plane.ts";
 import { CanonicalAgentSessionServices } from "../../src/core/session/facade.ts";
 import {
 	resolveExecutionPolicyProfile,

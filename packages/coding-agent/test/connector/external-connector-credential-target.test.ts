@@ -15,7 +15,7 @@ import type { TaskCredentialScope } from "../../src/core/policy/task-credential-
 import {
 	createAgentRuntimeCompositionFactory,
 	materializeAgentRuntimeComposition,
-} from "../../src/core/runtime/composition.ts";
+} from "../../src/core/runtime/composition-factory.ts";
 import { SettingsManager } from "../../src/core/runtime/settings-manager.ts";
 import { AgentSession } from "../../src/core/session/agent-session.ts";
 import { SessionManager } from "../../src/core/session/manager.ts";

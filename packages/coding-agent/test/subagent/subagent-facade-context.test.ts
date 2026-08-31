@@ -19,7 +19,7 @@ import {
 import { createAssistantMessageEventStream, type Context, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../../src/core/session/agent-session.ts";
-import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition.ts";
+import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition-factory.ts";
 import { createAgentSessionWithRuntimeComposition } from "../../src/core/session/facade.ts";
 import { createExtensionRuntime } from "../../src/core/extensions/loader.ts";
 import type { ModelRuntime } from "../../src/core/runtime/model-runtime.ts";

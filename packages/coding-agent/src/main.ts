@@ -35,7 +35,7 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
 import { APP_NAME, expandTildePath, getAgentDir, getEnvSessionDirOverride, getPackageDir, VERSION } from "./config.ts";
-import type { AgentRuntimeCompositionFactory } from "./core/runtime/composition.ts";
+import type { AgentRuntimeCompositionFactory } from "./core/runtime/composition-factory.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntimeFromManager,

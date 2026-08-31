@@ -6,7 +6,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import {
 	type AgentRuntimeCompositionFactory,
 	createAgentRuntimeCompositionFactory,
-} from "../runtime/composition.ts";
+} from "../runtime/composition-factory.ts";
 import { CapabilityPublicIdentity } from "../policy/capability-public-identity.ts";
 import { CapabilityRegistry } from "../policy/capability-registry.ts";
 import type { SessionStartEvent, ToolDefinition } from "../extensions/index.ts";

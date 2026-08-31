@@ -9,7 +9,7 @@ import {
 	createWorkerSandboxComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
-} from "./composition.ts";
+} from "./composition-factory.ts";
 import {
 	createAgentSessionWithRuntimeComposition,
 	recordInitialAgentSessionConfiguration,
@@ -84,7 +84,7 @@ export type {
 	WorkerSandboxComposition,
 	WorkerSandboxFactory,
 	WorkerSandboxCompositionOptions,
-} from "./composition.ts";
+} from "./composition-factory.ts";
 
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: process.cwd() */

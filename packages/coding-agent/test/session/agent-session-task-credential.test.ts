@@ -15,7 +15,7 @@ import { Agent } from "@aos-agent/agent-core";
 import type { Model } from "@aos-agent/ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../../src/core/session/agent-session.ts";
-import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition.ts";
+import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition-factory.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import type { SandboxProvider } from "../../src/core/policy/sandbox.ts";
 import { SessionManager } from "../../src/core/session/manager.ts";

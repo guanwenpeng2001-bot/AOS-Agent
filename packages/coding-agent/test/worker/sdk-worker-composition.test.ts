@@ -13,7 +13,7 @@ import {
 import {
 	createWorkerSandboxComposition,
 	type AgentRuntimeCompositionFactory,
-} from "../../src/core/runtime/composition.ts";
+} from "../../src/core/runtime/composition-factory.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import { ModelRuntime } from "../../src/core/runtime/model-runtime.ts";
 import { DefaultResourceLoader } from "../../src/core/runtime/resource-loader.ts";

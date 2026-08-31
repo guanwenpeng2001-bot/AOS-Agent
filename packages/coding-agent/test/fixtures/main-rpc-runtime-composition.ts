@@ -34,7 +34,7 @@ import {
 	createWorkerSandboxComposition,
 	type AgentRuntimeCompositionContext,
 	type SchedulerRuntimeOptions,
-} from "../../src/core/runtime/composition.ts";
+} from "../../src/core/runtime/composition-factory.ts";
 import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
 import { SessionExternalConnectorDurableStore } from "../../src/core/connector/operation.ts";
 import {

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type AgentRuntimeComposition,
 	createAgentRuntimeCompositionFactory,
-} from "../../src/core/runtime/composition.ts";
+} from "../../src/core/runtime/composition-factory.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,

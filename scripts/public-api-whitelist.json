@@ -3079,7 +3079,7 @@
       "evidence": [
         "packages/coding-agent/src/core/policy/sandbox-host.ts:19",
         "packages/coding-agent/src/core/subagent/binding.ts:45",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:62",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:62",
         "packages/coding-agent/test/connector/external-connector-registry.test.ts:34"
       ]
     },
@@ -3512,7 +3512,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/policy/mcp-auth-manager.ts:33",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:105",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:105",
         "packages/coding-agent/test/runtime/mcp-auth-storage.test.ts:11"
       ]
     },
@@ -3523,7 +3523,7 @@
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:64",
         "packages/coding-agent/src/core/connector/product-run.ts:52",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:30",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:30",
         "packages/coding-agent/test/interactive-tui.test.ts:5",
         "packages/coding-agent/test/connector/external-connector-registry.test.ts:31",
         "packages/coding-agent/test/runtime/binding-handles.test.ts:11"
@@ -3550,7 +3550,7 @@
         "packages/coding-agent/src/modes/interactive/capabilities.ts:19",
         "packages/coding-agent/src/modes/rpc/rpc-types.ts:13",
         "packages/coding-agent/src/modes/index.ts:7",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:33"
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:33"
       ]
     },
     {
@@ -4149,7 +4149,7 @@
       "evidence": [
         "packages/coding-agent/src/core/policy/execution.ts:51",
         "packages/coding-agent/src/core/policy/execution-ledger.ts:35",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:63",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:63",
         "packages/coding-agent/src/core/index.ts:102",
         "packages/coding-agent/test/policy/protected-path-review.test.ts:33"
       ]
@@ -4691,7 +4691,7 @@
       "evidence": [
         "packages/coding-agent/src/core/extensions/index.ts:63",
         "packages/coding-agent/src/core/extensions/loader.ts:30",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:122",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:122",
         "packages/coding-agent/src/core/extensions/types.ts:54",
         "packages/coding-agent/src/core/extensions/types.ts:87",
         "packages/coding-agent/src/core/index.ts:264"
@@ -4703,7 +4703,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/extensions/index.ts:64",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:122",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:122",
         "packages/coding-agent/src/core/extensions/types.ts:54",
         "packages/coding-agent/src/core/extensions/types.ts:87",
         "packages/coding-agent/src/core/index.ts:265",
@@ -4786,7 +4786,7 @@
         "packages/coding-agent/src/core/policy/process.ts:1",
         "packages/coding-agent/src/core/policy/sandbox-host.ts:20",
         "packages/coding-agent/src/core/subagent/binding.ts:47",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:46",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:46",
         "packages/coding-agent/src/core/index.ts:99"
       ]
     },
@@ -4975,7 +4975,7 @@
         "packages/coding-agent/src/core/session/facade.ts:65",
         "packages/coding-agent/src/core/runtime/sdk.ts:21",
         "packages/coding-agent/src/modes/interactive/interactive-mode.ts:78",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:117"
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:117"
       ]
     },
     {
@@ -5168,8 +5168,8 @@
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:81",
         "packages/coding-agent/src/core/connector/product-run.ts:59",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:113",
-        "packages/coding-agent/src/core/runtime/composition.ts:6",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:113",
+        "packages/coding-agent/src/core/runtime/composition-factory.ts:6",
         "packages/coding-agent/test/runtime/agent-runtime-composition.test.ts:62"
       ]
     },
@@ -5199,7 +5199,7 @@
       "evidence": [
         "packages/coding-agent/src/core/connector/production.ts:22",
         "packages/coding-agent/src/core/connector/packaged-runtime.ts:21",
-        "packages/coding-agent/src/core/runtime/composition.ts:9",
+        "packages/coding-agent/src/core/runtime/composition-factory.ts:9",
         "packages/coding-agent/src/core/index.ts:43",
         "packages/coding-agent/test/connector/external-connector-production.test.ts:46",
         "packages/coding-agent/test/runtime/agent-runtime-composition.test.ts:65"
@@ -5242,7 +5242,7 @@
       "evidence": [
         "packages/coding-agent/src/core/connector/settings.ts:5",
         "packages/coding-agent/src/core/runtime/settings-manager.ts:32",
-        "packages/coding-agent/src/core/runtime/composition.ts:10",
+        "packages/coding-agent/src/core/runtime/composition-factory.ts:10",
         "packages/coding-agent/src/core/index.ts:46"
       ]
     },
@@ -7753,7 +7753,7 @@
         "packages/coding-agent/src/core/session/run-lifecycle.ts:56",
         "packages/coding-agent/src/core/session/facade.ts:148",
         "packages/coding-agent/src/core/session/execution-audit.ts:58",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:49",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:49",
         "packages/coding-agent/src/core/index.ts:110"
       ]
     },
@@ -7779,7 +7779,7 @@
         "packages/coding-agent/src/core/policy/execution-ledger.ts:22",
         "packages/coding-agent/src/core/subagent/binding.ts:50",
         "packages/coding-agent/src/core/session/run-lifecycle.ts:58",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:51",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:51",
         "packages/coding-agent/src/core/index.ts:112"
       ]
     },
@@ -7862,7 +7862,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/connector/tool-policy.ts:6",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:52"
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:52"
       ]
     },
     {
@@ -7872,7 +7872,7 @@
       "evidence": [
         "packages/coding-agent/src/core/policy/sandbox-host.ts:23",
         "packages/coding-agent/src/modes/interactive/policy.ts:5",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:53"
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:53"
       ]
     },
     {
@@ -7911,7 +7911,7 @@
       "evidence": [
         "packages/coding-agent/src/core/policy/execution.ts:61",
         "packages/coding-agent/src/core/session/facade.ts:150",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:54",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:54",
         "packages/coding-agent/src/core/index.ts:119"
       ]
     },
@@ -7923,7 +7923,7 @@
         "packages/coding-agent/src/core/policy/execution.ts:64",
         "packages/coding-agent/src/core/policy/execution-ledger.ts:43",
         "packages/coding-agent/src/core/session/facade.ts:152",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:56",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:56",
         "packages/coding-agent/src/core/index.ts:122"
       ]
     },
@@ -7945,7 +7945,7 @@
         "packages/coding-agent/src/core/policy/execution.ts:62",
         "packages/coding-agent/src/core/policy/execution-ledger.ts:42",
         "packages/coding-agent/src/core/session/facade.ts:151",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:55",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:55",
         "packages/coding-agent/src/core/index.ts:120"
       ]
     },
@@ -8145,7 +8145,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/prompt-binding-authority.ts:16",
+        "packages/coding-agent/src/core/runtime/prompt-binding.ts:16",
         "packages/coding-agent/src/core/index.ts:319",
         "packages/coding-agent/test/runtime/prompt-task-adapter.test.ts:29"
       ]
@@ -8171,7 +8171,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/prompt-binding-authority.ts:17",
+        "packages/coding-agent/src/core/runtime/prompt-binding.ts:17",
         "packages/coding-agent/src/core/index.ts:323",
         "packages/coding-agent/test/runtime/prompt-task-adapter.test.ts:32"
       ]
@@ -8223,7 +8223,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/prompt-binding-authority.ts:18",
+        "packages/coding-agent/src/core/runtime/prompt-binding.ts:18",
         "packages/coding-agent/src/core/runtime/prompt-ingress.ts:35",
         "packages/coding-agent/src/core/session/facade.ts:178",
         "packages/coding-agent/src/core/index.ts:327",
@@ -8235,7 +8235,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/prompt-binding-authority.ts:19",
+        "packages/coding-agent/src/core/runtime/prompt-binding.ts:19",
         "packages/coding-agent/src/core/index.ts:328"
       ]
     },
@@ -8989,7 +8989,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/policy/execution-settings.ts:7",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:66",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:66",
         "packages/coding-agent/src/core/index.ts:130",
         "packages/coding-agent/test/connector/external-agent-integration.test.ts:26",
         "packages/coding-agent/test/connector/external-connector-registry.test.ts:35",
@@ -9060,7 +9060,7 @@
       "evidence": [
         "packages/coding-agent/src/core/policy/execution.ts:37",
         "packages/coding-agent/src/core/policy/execution.ts:57",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:65",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:65",
         "packages/coding-agent/src/core/index.ts:131"
       ]
     },
@@ -9069,7 +9069,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/control-plane.ts:58",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:58",
         "packages/coding-agent/src/core/index.ts:132",
         "packages/coding-agent/test/worker/task-credential-policy.test.ts:8"
       ]
@@ -9887,7 +9887,7 @@
         "packages/coding-agent/src/core/policy/sandbox-host.ts:39",
         "packages/coding-agent/src/core/runtime/bash-executor.ts:15",
         "packages/coding-agent/src/core/tools/index.ts:78",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:115",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:115",
         "packages/coding-agent/test/public-api-contract.test.ts:12",
         "packages/coding-agent/test/fixtures/fake-sandbox-provider.ts:9"
       ]
@@ -9956,8 +9956,8 @@
         "packages/coding-agent/src/core/tools/index.ts:82",
         "packages/coding-agent/src/core/session/services.ts:24",
         "packages/coding-agent/src/core/runtime/sdk.ts:38",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:115",
-        "packages/coding-agent/src/core/runtime/composition.ts:28",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:115",
+        "packages/coding-agent/src/core/runtime/composition-factory.ts:28",
         "packages/coding-agent/src/core/session/agent-session.ts:30"
       ]
     },
@@ -9993,7 +9993,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/composition.ts:18",
+        "packages/coding-agent/src/core/runtime/composition-factory.ts:18",
         "packages/coding-agent/test/scheduler/scheduler-composition.test.ts:28"
       ]
     },
@@ -10002,7 +10002,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/control-plane.ts:154",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:154",
         "packages/coding-agent/test/scheduler/scheduler-composition.test.ts:30",
         "packages/coding-agent/test/scheduler/scheduler-deadlock.test.ts:5"
       ]
@@ -10033,7 +10033,7 @@
       "evidence": [
         "packages/coding-agent/src/core/scheduler/dispatch.ts:78",
         "packages/coding-agent/src/core/scheduler/workflow.ts:38",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:159",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:159",
         "packages/coding-agent/test/fixtures/main-rpc-runtime-composition.ts:31",
         "packages/coding-agent/test/runtime/agent-runtime-composition.test.ts:54",
         "packages/coding-agent/test/scheduler/scheduler-composition.test.ts:34"
@@ -10045,7 +10045,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/workflow.ts:39",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:162",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:162",
         "packages/coding-agent/test/scheduler/scheduler-composition.test.ts:38",
         "packages/coding-agent/test/scheduler/scheduler-fan-in.test.ts:44",
         "packages/coding-agent/test/scheduler/scheduler-workflow.test.ts:40"
@@ -10058,7 +10058,7 @@
       "evidence": [
         "packages/coding-agent/src/core/scheduler/workflow.ts:40",
         "packages/coding-agent/src/core/scheduler/deadlock.ts:30",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:163",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:163",
         "packages/coding-agent/test/scheduler/scheduler-composition.test.ts:39",
         "packages/coding-agent/test/scheduler/scheduler-deadlock.test.ts:10",
         "packages/coding-agent/test/scheduler/scheduler-handoff.test.ts:20"
@@ -10070,7 +10070,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/workflow.ts:60",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:173",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:173",
         "packages/coding-agent/test/runtime/runtime-clock.test.ts:4",
         "packages/coding-agent/test/scheduler/scheduler-composition.test.ts:45",
         "packages/coding-agent/test/scheduler/scheduler-fan-in.test.ts:33",
@@ -10082,7 +10082,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/control-plane.ts:175",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:175",
         "packages/coding-agent/test/runtime/runtime-clock.test.ts:4",
         "packages/coding-agent/test/scheduler/scheduler-fan-in.test.ts:31"
       ]
@@ -10112,7 +10112,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/scheduler/workflow.ts:42",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:164",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:164",
         "packages/coding-agent/test/scheduler/scheduler-composition.test.ts:40",
         "packages/coding-agent/test/scheduler/scheduler-deadlock.test.ts:11",
         "packages/coding-agent/test/scheduler/scheduler-messages.test.ts:15",
@@ -10169,7 +10169,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/control-plane.ts:166",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:166",
         "packages/coding-agent/test/scheduler/scheduler-composition.test.ts:41",
         "packages/coding-agent/test/scheduler/scheduler-workflow.test.ts:56"
       ]
@@ -10833,7 +10833,7 @@
         "packages/coding-agent/src/core/policy/sandbox.ts:15",
         "packages/coding-agent/src/core/policy/task-credential-store.ts:59",
         "packages/coding-agent/src/core/session/execution-audit.ts:98",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:133",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:133",
         "packages/coding-agent/src/core/index.ts:199"
       ]
     },
@@ -11038,7 +11038,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/control-plane.ts:59",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:59",
         "packages/coding-agent/src/core/index.ts:142",
         "packages/coding-agent/test/worker/task-credential-policy.test.ts:9"
       ]
@@ -11056,7 +11056,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/control-plane.ts:138"
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:138"
       ]
     },
     {
@@ -11094,7 +11094,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/policy/task-credential-service.ts:60",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:60",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:60",
         "packages/coding-agent/src/core/index.ts:139",
         "packages/coding-agent/test/worker/task-credential-policy.test.ts:13"
       ]
@@ -11106,8 +11106,8 @@
       "evidence": [
         "packages/coding-agent/src/core/policy/task-credential-store.ts:89",
         "packages/coding-agent/src/core/policy/task-credential-service.ts:79",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:127",
-        "packages/coding-agent/src/core/runtime/composition.ts:38",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:127",
+        "packages/coding-agent/src/core/runtime/composition-factory.ts:38",
         "packages/coding-agent/src/core/index.ts:218",
         "packages/coding-agent/test/runtime/agent-runtime-composition.test.ts:60"
       ]
@@ -11118,7 +11118,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/session/facade.ts:157",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:128",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:128",
         "packages/coding-agent/src/core/session/agent-session.ts:33",
         "packages/coding-agent/src/core/index.ts:219"
       ]
@@ -11241,7 +11241,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/control-plane.ts:61",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:61",
         "packages/coding-agent/src/core/index.ts:141"
       ]
     },
@@ -11266,7 +11266,7 @@
         "packages/coding-agent/src/core/connector/durable-connector.ts:71",
         "packages/coding-agent/src/core/session/facade.ts:156",
         "packages/coding-agent/src/modes/rpc/rpc-host.ts:130",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:138",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:138",
         "packages/coding-agent/test/connector/external-agent-connector-lifecycle.test.ts:83",
         "packages/coding-agent/test/worker/task-credential-service.test.ts:46"
       ]
@@ -11381,7 +11381,7 @@
       "evidence": [
         "packages/coding-agent/src/core/policy/execution.ts:26",
         "packages/coding-agent/src/core/policy/sandbox.ts:35",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:129",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:129",
         "packages/coding-agent/src/core/index.ts:227",
         "packages/coding-agent/test/connector/external-agent-connector-lifecycle.test.ts:72",
         "packages/coding-agent/test/session/agent-session-task-credential.test.ts:26"
@@ -11763,7 +11763,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/control-plane.ts:34",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:34",
         "packages/coding-agent/test/runtime/binding-handles.test.ts:11"
       ]
     },
@@ -11934,7 +11934,7 @@
       "entry": ".",
       "decision": "internal",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/control-plane.ts:67",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:67",
         "packages/coding-agent/test/runtime/binding-handles.test.ts:12"
       ]
     },
@@ -12008,7 +12008,7 @@
       "decision": "internal",
       "evidence": [
         "packages/coding-agent/src/core/session/run-lifecycle.ts:67",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:68",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:68",
         "packages/coding-agent/test/automation-run-ledger-migration.test.ts:6",
         "packages/coding-agent/test/suite/regressions/fake-sandbox.test.ts:11"
       ]
@@ -15520,7 +15520,7 @@
       "evidence": [
         "packages/coding-agent/src/core/scheduler/dispatch.ts:28",
         "packages/coding-agent/src/core/connector/packaged-runtime.ts:6",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:6",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:6",
         "packages/agent/test/harness/foundation-external-connector-contract.test.ts:5",
         "packages/coding-agent/test/connector/acp-connector.test.ts:26",
         "packages/coding-agent/test/connector/claude-connector.test.ts:3"
@@ -15680,7 +15680,7 @@
       "decision": "keep",
       "evidence": [
         "packages/coding-agent/src/server/create-harness.ts:4",
-        "packages/coding-agent/src/core/runtime/composition.ts:2",
+        "packages/coding-agent/src/core/runtime/composition-factory.ts:2",
         "packages/agent/test/harness/tool-gateway-catalog.test.ts:4",
         "packages/agent/test/harness/tool-gateway.test.ts:5",
         "packages/coding-agent/test/connector/external-connector-registry.test.ts:11",
@@ -17396,7 +17396,7 @@
       "evidence": [
         "packages/agent/src/harness/foundation/providers.ts:12",
         "packages/coding-agent/src/core/session/execution-audit.ts:29",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:14",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:14",
         "packages/agent/test/harness/foundation-contracts.test.ts:75"
       ]
     },
@@ -18375,7 +18375,7 @@
         "packages/coding-agent/src/child-agent-entry.ts:24",
         "packages/coding-agent/src/server/create-harness.ts:23",
         "packages/coding-agent/src/core/session/facade.ts:18",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:15",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:15",
         "packages/agent/test/harness/agent-harness-pipeline.test.ts:4",
         "packages/agent/test/harness/agent-harness-runtime.test.ts:9"
       ]
@@ -19405,7 +19405,7 @@
       "evidence": [
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:33",
         "packages/coding-agent/src/core/session/facade.ts:22",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:16",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:16",
         "packages/coding-agent/test/runtime/product-prompt-ingress.test.ts:16"
       ]
     },
@@ -25255,7 +25255,7 @@
       "entry": "@aos-agent/agent-core",
       "decision": "keep",
       "evidence": [
-        "packages/coding-agent/src/core/runtime/composition.ts:1",
+        "packages/coding-agent/src/core/runtime/composition-factory.ts:1",
         "packages/coding-agent/test/connector/external-connector-registry.test.ts:21",
         "packages/coding-agent/test/runtime/agent-runtime-composition.test.ts:34"
       ]
@@ -25838,7 +25838,7 @@
         "packages/agent/src/harness/foundation/binding.ts:5",
         "packages/coding-agent/src/core/binding-handles.ts:11",
         "packages/coding-agent/src/core/connector/registry.ts:10",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:9",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:9",
         "packages/agent/test/harness/foundation-contracts.test.ts:39",
         "packages/coding-agent/test/runtime/mcp-exact-selection.test.ts:13"
       ]
@@ -26115,7 +26115,7 @@
       "evidence": [
         "packages/coding-agent/src/core/session/automation-run-projection.ts:4",
         "packages/coding-agent/src/core/session/execution-audit.ts:20",
-        "packages/coding-agent/src/core/runtime/control-plane.ts:11",
+        "packages/coding-agent/src/core/runtime/foundation-control-plane.ts:11",
         "packages/agent/test/harness/foundation-contracts.test.ts:51",
         "packages/agent/test/harness/foundation-subagent-contracts.test.ts:12",
         "packages/coding-agent/test/scheduler/scheduler-executors.test.ts:38"
@@ -26582,7 +26582,7 @@
         "packages/coding-agent/src/core/subagent/context-fork.ts:24",
         "packages/coding-agent/src/core/subagent/binding.ts:26",
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:19",
-        "packages/coding-agent/src/core/runtime/prompt-binding-authority.ts:6"
+        "packages/coding-agent/src/core/runtime/prompt-binding.ts:6"
       ]
     },
     {
@@ -26676,7 +26676,7 @@
         "packages/agent/src/harness/foundation/settlement.ts:29",
         "packages/coding-agent/src/core/subagent/binding.ts:27",
         "packages/coding-agent/src/core/runtime/prompt-task-adapter.ts:20",
-        "packages/coding-agent/src/core/runtime/prompt-binding-authority.ts:7",
+        "packages/coding-agent/src/core/runtime/prompt-binding.ts:7",
         "packages/agent/test/harness/executor-gateway-conformance.test.ts:14"
       ]
     },

@@ -60,7 +60,7 @@ import {
 	materializeAgentRuntimeComposition,
 	type AgentRuntimeComposition,
 	type AgentRuntimeCompositionFactory,
-} from "../runtime/composition.ts";
+} from "../runtime/composition-factory.ts";
 import type { CapabilityBinding, CapabilityCatalogView } from "../policy/capability-registry.ts";
 import { ExtensionRunner, type ContextUsage, type ReplacedSessionContext, type SessionStartEvent, type ToolDefinition, type ToolInfo } from "../extensions/index.ts";
 import { emitSessionShutdownEvent } from "../extensions/runner.ts";
@@ -165,7 +165,7 @@ import { stripFrontmatter } from "../../utils/frontmatter.ts";
 import {
 	FoundationControlPlane,
 	type SchedulerSafeStatus,
-} from "../runtime/control-plane.ts";
+} from "../runtime/foundation-control-plane.ts";
 import type { WorkerSandboxProvider } from "../worker/sandbox-provider.ts";
 import { createAllTools } from "../tools/index.ts";
 import { normalizeToolResultImages } from "../../utils/tool-result-images.ts";

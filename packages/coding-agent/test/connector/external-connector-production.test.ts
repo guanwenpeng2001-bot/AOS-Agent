@@ -46,7 +46,7 @@ import {
 	type ExternalConnectorTargetDefinition,
 } from "../../src/external-connector.ts";
 import { createExternalConnectorRegistry } from "../../src/core/connector/registry.ts";
-import type { AgentRuntimeCompositionContext } from "../../src/core/runtime/composition.ts";
+import type { AgentRuntimeCompositionContext } from "../../src/core/runtime/composition-factory.ts";
 import type { ExternalConnectorVendorDriver } from "../../src/core/connector/vendor/types.ts";
 
 const processOptions = {
