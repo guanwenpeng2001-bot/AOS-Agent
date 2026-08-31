@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { createConnection, createServer } from "node:net";
-import { PassThrough, Writable } from "node:stream";
+import { PassThrough, type Readable, Writable } from "node:stream";
 import { describe, expect, test, vi } from "vitest";
 import {
 	BoundedProtocolWriter,
@@ -244,7 +244,7 @@ describe("bounded JSONL resources", () => {
 	});
 });
 
-describe("RPC protocol drain", () => {
+describe.sequential("RPC protocol drain", () => {
 	test("rejects output beyond the exact pending-entry boundary without dropping admitted records", async () => {
 		let writes: Promise<void>[] = [];
 		let dispatchStarted!: () => void;
@@ -265,8 +265,7 @@ describe("RPC protocol drain", () => {
 		await transport.start();
 		const peer = createConnection({ host: transport.address!.host, port: transport.address!.port });
 		peer.on("error", () => {});
-		const records: TestOutput[] = [];
-		attachJsonlLineReader(peer, (line) => records.push(JSON.parse(line) as TestOutput));
+		const output = collectJsonlRecords<TestOutput>(peer, 2);
 		try {
 			await once(peer, "connect");
 			peer.write('{"type":"close-race"}\n');
@@ -278,10 +277,11 @@ describe("RPC protocol drain", () => {
 				status: "rejected",
 				reason: expect.objectContaining({ code: "rpc_transport_pending_write_limit" }),
 			});
-			await vi.waitFor(() => expect(records).toHaveLength(2));
-			expect(records.map((record) => record.sequence)).toEqual([1, 2]);
+			await output.received;
+			expect(output.records.map((record) => record.sequence)).toEqual([1, 2]);
 			expect(errors.some((error) => error.code === "rpc_transport_pending_write_limit")).toBe(true);
 		} finally {
+			output.detach();
 			if (!peer.destroyed) peer.destroy();
 			await transport.close();
 		}
@@ -311,8 +311,7 @@ describe("RPC protocol drain", () => {
 		await transport.start();
 		const peer = createConnection({ host: transport.address!.host, port: transport.address!.port });
 		peer.on("error", () => {});
-		const records: TestOutput[] = [];
-		attachJsonlLineReader(peer, (line) => records.push(JSON.parse(line) as TestOutput));
+		const output = collectJsonlRecords<TestOutput>(peer, 2);
 		try {
 			await once(peer, "connect");
 			peer.write('{"type":"close-race"}\n');
@@ -320,9 +319,10 @@ describe("RPC protocol drain", () => {
 			await expect(late).rejects.toMatchObject({ code: "rpc_transport_closed" });
 			await Promise.all(accepted);
 			await closing;
-			await vi.waitFor(() => expect(records).toHaveLength(2));
-			expect(records.map((record) => record.sequence)).toEqual([1, 2]);
+			await output.received;
+			expect(output.records.map((record) => record.sequence)).toEqual([1, 2]);
 		} finally {
+			output.detach();
 			if (!peer.destroyed) peer.destroy();
 			await transport.close();
 		}
@@ -332,6 +332,7 @@ describe("RPC protocol drain", () => {
 		const clock = new DeterministicClock();
 		const errors: RpcTransportError[] = [];
 		let writes: Promise<void>[] = [];
+		let closing: Promise<void> | undefined;
 		let dispatchStarted!: () => void;
 		const dispatched = new Promise<void>((resolve) => {
 			dispatchStarted = resolve;
@@ -348,6 +349,7 @@ describe("RPC protocol drain", () => {
 						writes = Array.from({ length: 8 }, (_, sequence) =>
 							sink.send({ type: "event", sequence, payload: "x".repeat(900_000) }),
 						);
+						closing = transport.close();
 						dispatchStarted();
 					},
 					onError: (error: RpcTransportError) => errors.push(error),
@@ -363,10 +365,9 @@ describe("RPC protocol drain", () => {
 			peer.pause();
 			peer.write('{"type":"flood"}\n');
 			await dispatched;
-			const closed = transport.close();
 			expect(clock.pendingCount()).toBeGreaterThan(0);
 			clock.advanceBy(25);
-			await closed;
+			await closing;
 			const settlements = await Promise.allSettled(writes);
 
 			expect(settlements.some((result) => result.status === "rejected")).toBe(true);
@@ -386,6 +387,22 @@ describe("RPC protocol drain", () => {
 		}
 	});
 });
+
+function collectJsonlRecords<T>(
+	stream: Readable,
+	expectedCount: number,
+): { readonly records: T[]; readonly received: Promise<void>; readonly detach: () => void } {
+	const records: T[] = [];
+	let resolveReceived!: () => void;
+	const received = new Promise<void>((resolve) => {
+		resolveReceived = resolve;
+	});
+	const detach = attachJsonlLineReader(stream, (line) => {
+		records.push(JSON.parse(line) as T);
+		if (records.length === expectedCount) resolveReceived();
+	});
+	return { records, received, detach };
+}
 
 function controlledWriter(
 	operations: ControlledWrite[],
