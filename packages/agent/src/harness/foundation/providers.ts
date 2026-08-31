@@ -46,7 +46,7 @@ export interface ChildAgentProvider extends FoundationProvider { readonly provid
 export interface TaskExecutorAttemptContext { readonly initialBindingEpoch: BindingEpoch; readonly correlation?: ExecutionCorrelation; readonly signal?: AbortSignal; /** Canonical durable source facts selected by the resolver/settlement gate. */ readonly roleRevision?: RoleRevision; readonly modelProfile?: ModelProfile; readonly modelRoute?: { readonly provider: string; readonly model: string; readonly effort?: string; readonly serviceTier?: string }; readonly agentInstance?: AgentInstance; }
 /** A TaskExecutor creates Attempts and settles AttemptReceipts; Operation Workers are excluded. */
 export interface TaskExecutorProvider extends FoundationProvider { readonly providerClass: "scheduler" | "task_executor" | "agent" | "external_connector"; createAttempt(dispatch: Dispatch, binding: AgentBinding, context?: TaskExecutorAttemptContext): Promise<Result<Attempt, FoundationError>>; runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions): Promise<Result<AttemptReceipt, FoundationError>>; cancelAttempt(attemptId: string): Promise<Result<void, FoundationError>>; }
-/** Explicit line-12B non-agent scheduler surface. It cannot carry an AgentInstance. */
+/** Explicit non-agent scheduler surface. It cannot carry an AgentInstance. */
 export interface SchedulerTaskExecutorProvider extends TaskExecutorProvider { readonly providerClass: "scheduler" | "task_executor"; }
 /** Host-verified executable facts frozen before an external Attempt is created. */
 export interface ConnectorCapabilitySnapshot {

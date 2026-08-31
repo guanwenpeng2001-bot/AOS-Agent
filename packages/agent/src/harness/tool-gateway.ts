@@ -807,7 +807,7 @@ export function createLocalToolGatewayProvider(options: LocalToolGatewayProvider
 }
 
 /**
- * Sandbox translator consumed by {@link createSandboxOperationToolGatewayProviderV1}.
+ * Sandbox translator consumed by {@link createSandboxOperationToolGatewayProvider}.
  * It maps a ToolGateway request onto a SandboxOperationRequest; the
  * provider stays opaque about how the operation is performed.
  */
@@ -852,7 +852,7 @@ export interface SandboxOperationToolGatewayProviderOptions {
 	readonly routes: readonly ToolGatewayRoute[];
 	readonly sandbox: SandboxOperationProvider;
 	readonly translator?: SandboxOperationTranslator;
-	/** Records the invocation payload per operation id so a real line-11 Worker can resolve it later. */
+	/** Records the invocation payload per operation id so a sandbox operation Worker can resolve it later. */
 	readonly onOperationPayload?: (operationId: string, args: FoundationJsonValue) => void;
 	readonly capabilities?: readonly FoundationProviderCapability[];
 }

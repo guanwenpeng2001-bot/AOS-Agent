@@ -45,7 +45,7 @@ function resultError<T>(error: unknown, fallback: FoundationErrorCode): ResultVa
 	return Result.err(error instanceof DurableLedgerError ? new FoundationError(error.code, error.message, { cause: error }) : toFoundationError(error, fallback));
 }
 
-interface StoredRoleRecordV1 {
+interface StoredRoleRecord {
 	readonly payload: RoleRegistryRecord;
 	readonly revision: number;
 }
@@ -203,9 +203,9 @@ export class DurableRoleRegistry {
 		return (await this.loadRecordFacts()).map((fact) => fact.payload);
 	}
 
-	private async loadRecordFacts(): Promise<readonly StoredRoleRecordV1[]> {
+	private async loadRecordFacts(): Promise<readonly StoredRoleRecord[]> {
 		const records = await this.ledger.find({ kind: "fact", objectType: ROLE_REGISTRY_OBJECT_TYPE, order: "oldestFirst" });
-		const latest: StoredRoleRecordV1[] = [];
+		const latest: StoredRoleRecord[] = [];
 		for (const record of records) {
 			if (record.kind !== "fact") continue;
 			const checked = validateRoleRegistryRecord(record.payload);
@@ -286,7 +286,7 @@ export class DurableRoleRegistry {
 		return undefined;
 	}
 
-	private async persistChanged(before: readonly StoredRoleRecordV1[], after: readonly RoleRegistryRecord[]): Promise<void> {
+	private async persistChanged(before: readonly StoredRoleRecord[], after: readonly RoleRegistryRecord[]): Promise<void> {
 		for (const record of after) {
 			const previous = before.find((candidate) => candidate.payload.roleId === record.roleId && candidate.payload.scope === record.scope);
 			if (previous !== undefined && fingerprintFoundationValue(previous.payload).value === fingerprintFoundationValue(record).value) continue;

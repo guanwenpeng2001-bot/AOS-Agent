@@ -367,7 +367,7 @@ export interface HookOrderReport {
 	conflicts: readonly HookConflict[];
 }
 
-interface HookEdgeV1 {
+interface HookEdge {
 	from: string;
 	to: string;
 }
@@ -387,7 +387,7 @@ function hookPolicy(spec: RuntimeHookSpec | undefined): RuntimeHookConflictPolic
 
 function hookOrderFromEdges(
 	byId: ReadonlyMap<string, RuntimeHookSpec>,
-	edges: readonly HookEdgeV1[],
+	edges: readonly HookEdge[],
 ): { order: string[]; remaining: Set<string> } {
 	const adjacency = new Map<string, Set<string>>();
 	const inDegree = new Map<string, number>();
@@ -438,7 +438,7 @@ export function orderRuntimeHooks(specs: readonly RuntimeHookSpec[]): ResultValu
 	if (conflicts.length > 0) {
 		return Result.err(new FoundationError("profile_conflict", "hook ids must be unique", { details: { conflicts: conflicts.map((item) => ({ ...item })) } }));
 	}
-	const edges: HookEdgeV1[] = [];
+	const edges: HookEdge[] = [];
 	for (const spec of specs) {
 		for (const target of [...(spec.before ?? [])].sort()) {
 			if (!byId.has(target)) {

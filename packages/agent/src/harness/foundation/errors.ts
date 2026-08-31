@@ -186,7 +186,7 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"scheduler_persistence_failed",
 ] as const;
 
-/** Canonical line-12A Child Agent error catalog. Keep this tuple as the only source for its union. */
+/** Canonical Child Agent error catalog. Keep this tuple as the only source for its union. */
 export const SUBAGENT_ERROR_CODES = Object.freeze([
 	"subagent_spawn_invalid",
 	"subagent_provider_unavailable",

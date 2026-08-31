@@ -110,8 +110,8 @@ const correlationFor = (category: EventCategoryId): readonly (keyof EventCorrela
 	if (category.startsWith("stream") || category.startsWith("turn")) return ["sessionId", "laneId", "runId", "turnId", "stepId"];
 	return ["sessionId", "laneId", "operationId", "runId", "turnId", "stepId"];
 };
-interface EventPayloadRuleV1 { required: readonly string[]; allowed: readonly string[]; stringFields: readonly string[]; integerFields: readonly string[]; optionalStringFields?: readonly string[]; stringValues?: Readonly<Record<string, readonly string[]>>; }
-const typedPayloadRules: Readonly<Record<string, EventPayloadRuleV1>> = {
+interface EventPayloadRule { required: readonly string[]; allowed: readonly string[]; stringFields: readonly string[]; integerFields: readonly string[]; optionalStringFields?: readonly string[]; stringValues?: Readonly<Record<string, readonly string[]>>; }
+const typedPayloadRules: Readonly<Record<string, EventPayloadRule>> = {
 	"role.created": { required: ["schemaVersion", "roleId", "roleRevisionId", "revision", "scope"], allowed: ["schemaVersion", "roleId", "roleRevisionId", "revision", "scope", "fingerprint"], stringFields: ["roleId", "roleRevisionId", "scope"], integerFields: ["revision"] },
 	"role.revised": { required: ["schemaVersion", "roleId", "roleRevisionId", "revision", "scope"], allowed: ["schemaVersion", "roleId", "roleRevisionId", "revision", "scope", "fingerprint"], stringFields: ["roleId", "roleRevisionId", "scope"], integerFields: ["revision"] },
 	"role.tombstoned": { required: ["schemaVersion", "roleId", "roleRevisionId", "revision", "scope"], allowed: ["schemaVersion", "roleId", "roleRevisionId", "revision", "scope", "fingerprint"], stringFields: ["roleId", "roleRevisionId", "scope"], integerFields: ["revision"] },

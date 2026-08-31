@@ -567,9 +567,9 @@ interface FoundationReceiptBundle {
 	correlation: ExecutionCorrelation;
 }
 
-type FoundationModelInvocationStatusV1 = "pending" | "succeeded" | "failed" | "unknown";
+type FoundationModelInvocationStatus = "pending" | "succeeded" | "failed" | "unknown";
 
-interface FoundationModelInvocationV1 {
+interface FoundationModelInvocation {
 	readonly invocationId: string;
 	readonly turnId: string;
 	readonly ordinal: number;
@@ -581,7 +581,7 @@ interface FoundationModelInvocationV1 {
 	readonly correlation: ExecutionCorrelation;
 }
 
-interface FoundationModelUsageSummaryV1 {
+interface FoundationModelUsageSummary {
 	modelCalls: number;
 	input: number;
 	output: number;
@@ -589,8 +589,8 @@ interface FoundationModelUsageSummaryV1 {
 	costUsd: number;
 }
 
-interface FoundationModelInvocationPreparationV1 {
-	readonly invocation: FoundationModelInvocationV1;
+interface FoundationModelInvocationPreparation {
+	readonly invocation: FoundationModelInvocation;
 	readonly remainingOutputTokens?: number;
 }
 
@@ -1060,7 +1060,7 @@ function foundationToolResultArtifacts(payload: ToolResultPayload): readonly Art
 	return payload.content.flatMap((item) => item.type === "image" ? [item.artifact] : []);
 }
 
-interface FoundationReceiptFoldV1 {
+interface FoundationReceiptFold {
 	representative: ToolReceipt;
 	outcome: ToolReceiptOutcome;
 	sideEffectState: SideEffectState;
@@ -1820,8 +1820,8 @@ export class AgentHarness implements AgentLane {
 		return (await this.durableSession.findFoundationRecords({ objectType: "model_invocation", includePruned: true, order: "oldestFirst" })).filter((record): record is Exclude<FoundationRecord, { readonly kind: "retention" }> => record.kind !== "retention" && record.correlation.taskId === execution.task.taskId && record.correlation.bindingId === execution.binding.bindingId);
 	}
 
-	private foundationModelUsage(records: readonly Exclude<FoundationRecord, { readonly kind: "retention" }>[]): FoundationModelUsageSummaryV1 {
-		const usage: FoundationModelUsageSummaryV1 = { modelCalls: 0, input: 0, output: 0, totalTokens: 0, costUsd: 0 };
+	private foundationModelUsage(records: readonly Exclude<FoundationRecord, { readonly kind: "retention" }>[]): FoundationModelUsageSummary {
+		const usage: FoundationModelUsageSummary = { modelCalls: 0, input: 0, output: 0, totalTokens: 0, costUsd: 0 };
 		for (const record of records) {
 			if (record.kind !== "fact") continue;
 			const payload = asRecord(record.payload);
@@ -1846,7 +1846,7 @@ export class AgentHarness implements AgentLane {
 		return usage;
 	}
 
-	private foundationModelBudget(usage: FoundationModelUsageSummaryV1): { readonly remainingOutputTokens?: number } {
+	private foundationModelBudget(usage: FoundationModelUsageSummary): { readonly remainingOutputTokens?: number } {
 		const budget = this.foundationExecution?.binding.budget ?? {};
 		const exhausted = budget.modelCalls !== undefined && usage.modelCalls >= budget.modelCalls
 			? "model_calls"
@@ -1885,7 +1885,7 @@ export class AgentHarness implements AgentLane {
 			turnId,
 			revision: 0,
 		};
-		const invocation: FoundationModelInvocationV1 = {
+		const invocation: FoundationModelInvocation = {
 			invocationId,
 			turnId,
 			ordinal: 0,
@@ -1899,7 +1899,7 @@ export class AgentHarness implements AgentLane {
 		await this.persistFoundationModelInvocationFact(invocation, "unknown", emptyModelUsage(), "recovery_required", "unknown", "model_invocation_recovery_required", "A model invocation intent had no terminal fact during recovery");
 	}
 
-	private async prepareFoundationModelInvocation(lane: string, runId: string, model?: Model<Api>): Promise<FoundationModelInvocationPreparationV1> {
+	private async prepareFoundationModelInvocation(lane: string, runId: string, model?: Model<Api>): Promise<FoundationModelInvocationPreparation> {
 		const execution = this.foundationExecution;
 		if (execution === undefined) throw new HarnessFault("Foundation model invocation requested without execution authority", undefined);
 		const records = await this.foundationModelInvocationRecords(runId);
@@ -1932,7 +1932,7 @@ export class AgentHarness implements AgentLane {
 		if (correlation === undefined) throw new HarnessFault("Missing execution correlation for model invocation", undefined);
 		const route = this.foundationModelRoute(model);
 		const contextSnapshotId = this.contextSnapshotIdForOperation?.(runId, "agent_turn");
-		const invocation: FoundationModelInvocationV1 = {
+		const invocation: FoundationModelInvocation = {
 			invocationId,
 			turnId,
 			ordinal,
@@ -1981,8 +1981,8 @@ export class AgentHarness implements AgentLane {
 	}
 
 	private async persistFoundationModelInvocationFact(
-		invocation: FoundationModelInvocationV1,
-		status: FoundationModelInvocationStatusV1,
+		invocation: FoundationModelInvocation,
+		status: FoundationModelInvocationStatus,
 		usage: Usage,
 		stopReason?: string,
 		sideEffectState: SideEffectState = status === "succeeded" ? "none" : "unknown",
@@ -2094,7 +2094,7 @@ export class AgentHarness implements AgentLane {
 		const modelRequest = { route, model, context, options, budget: this.foundationExecution.binding.budget };
 		const validationError = this.foundationModelCallAdapter.validate(modelRequest);
 		if (validationError !== undefined) return foundationModelCallErrorStream(validationError, model);
-		let preparation: FoundationModelInvocationPreparationV1;
+		let preparation: FoundationModelInvocationPreparation;
 		try {
 			preparation = await this.prepareFoundationModelInvocation(lane, runId, this.modelCallBoundary === undefined ? undefined : model);
 		} catch (error) {
@@ -2124,7 +2124,7 @@ export class AgentHarness implements AgentLane {
 						|| (event.type === "thinking_delta" && event.delta.length > 0)
 					) visibleOutput = true;
 					if (event.type === "done") {
-						const status: FoundationModelInvocationStatusV1 = event.message.stopReason === "aborted" ? "unknown" : event.message.stopReason === "error" ? "failed" : "succeeded";
+						const status: FoundationModelInvocationStatus = event.message.stopReason === "aborted" ? "unknown" : event.message.stopReason === "error" ? "failed" : "succeeded";
 						await this.persistFoundationModelInvocationFact(invocation, status, event.message.usage, event.message.stopReason, status === "succeeded" ? "none" : "unknown", status === "failed" ? "provider_error" : status === "unknown" ? "model_stream_unknown" : undefined, event.message.errorMessage);
 						output.push({ ...event, message: durableAssistantMessage(event.message) });
 						output.end();
@@ -3533,7 +3533,7 @@ export class AgentHarness implements AgentLane {
 		return Result.ok(ordered[0]!);
 	}
 
-	private async foundationReceiptForToolCall(lane: string, runId: string, toolCallId: string): Promise<ResultValue<FoundationReceiptFoldV1, FoundationError>> {
+	private async foundationReceiptForToolCall(lane: string, runId: string, toolCallId: string): Promise<ResultValue<FoundationReceiptFold, FoundationError>> {
 		const intent = await this.foundationIntentForToolCall(lane, runId, toolCallId);
 		if (!intent.ok) return intent;
 		const metadata = await this.durableSession.getMetadata();

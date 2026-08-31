@@ -297,7 +297,7 @@ function spawnCorrelationValid(correlation: ExecutionCorrelation, request: Child
 	return typeof correlation.sessionId === "string" && correlation.sessionId.length > 0 && typeof correlation.laneId === "string" && correlation.laneId.length > 0 && Number.isSafeInteger(correlation.revision) && correlation.revision >= 0 && correlation.taskId === request.taskEnvelope.taskId && typeof correlation.agentInstanceId === "string" && correlation.agentInstanceId.length > 0;
 }
 
-interface SpawnContextRecordV1 {
+interface SpawnContextRecord {
 	readonly schemaVersion: 1;
 	readonly contextId: string;
 	readonly taskId: string;
@@ -325,7 +325,7 @@ function validateSpawnIntentIdentity(intent: SpawnAgentIntent, request: ChildSpa
 	return Result.ok(checked.value);
 }
 
-function parseSpawnContext(payload: unknown, expectedContextId: string): ResultValue<SpawnContextRecordV1, FoundationError> {
+function parseSpawnContext(payload: unknown, expectedContextId: string): ResultValue<SpawnContextRecord, FoundationError> {
 	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context is not a durable object", { details: { contextId: expectedContextId } }));
 	const candidate = payload as Record<string, unknown>;
 	if (candidate.schemaVersion !== 1 || candidate.contextId !== expectedContextId || typeof candidate.taskId !== "string" || candidate.taskId.length === 0 || typeof candidate.spawnId !== "string" || candidate.spawnId.length === 0 || typeof candidate.forkScope !== "string" || !["none", "all", "recent_n", "task_package"].includes(candidate.forkScope) || typeof candidate.createdAt !== "string") return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context identity is incomplete", { details: { contextId: expectedContextId } }));
@@ -337,7 +337,7 @@ function parseSpawnContext(payload: unknown, expectedContextId: string): ResultV
 	if (candidate.parentContextId !== undefined && (typeof candidate.parentContextId !== "string" || candidate.parentContextId.length === 0)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context parent identity is invalid", { details: { contextId: expectedContextId } }));
 	if (candidate.parentAttemptId !== undefined && (typeof candidate.parentAttemptId !== "string" || candidate.parentAttemptId.length === 0)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context Attempt identity is invalid", { details: { contextId: expectedContextId } }));
 	if (candidate.parentAgentInstanceId !== undefined && (typeof candidate.parentAgentInstanceId !== "string" || candidate.parentAgentInstanceId.length === 0)) return Result.err(new FoundationError("invalid_correlation", "Agent spawn parent Context AgentInstance identity is invalid", { details: { contextId: expectedContextId } }));
-	return Result.ok({ schemaVersion: 1, contextId: expectedContextId, taskId: candidate.taskId, spawnId: candidate.spawnId, forkScope: candidate.forkScope as SpawnContextRecordV1["forkScope"], ...(candidate.parentTaskId === undefined ? {} : { parentTaskId: candidate.parentTaskId }), ...(candidate.parentContextId === undefined ? {} : { parentContextId: candidate.parentContextId }), ...(candidate.parentAttemptId === undefined ? {} : { parentAttemptId: candidate.parentAttemptId }), ...(candidate.parentAgentInstanceId === undefined ? {} : { parentAgentInstanceId: candidate.parentAgentInstanceId }), lineage: lineage.value, createdAt: candidate.createdAt });
+	return Result.ok({ schemaVersion: 1, contextId: expectedContextId, taskId: candidate.taskId, spawnId: candidate.spawnId, forkScope: candidate.forkScope as SpawnContextRecord["forkScope"], ...(candidate.parentTaskId === undefined ? {} : { parentTaskId: candidate.parentTaskId }), ...(candidate.parentContextId === undefined ? {} : { parentContextId: candidate.parentContextId }), ...(candidate.parentAttemptId === undefined ? {} : { parentAttemptId: candidate.parentAttemptId }), ...(candidate.parentAgentInstanceId === undefined ? {} : { parentAgentInstanceId: candidate.parentAgentInstanceId }), lineage: lineage.value, createdAt: candidate.createdAt });
 }
 
 function parseSpawnFact(payload: unknown, spawnId: string, providerId: string): ResultValue<AgentSpawnFactPayload, FoundationError> {
@@ -638,7 +638,7 @@ export class LayeredResultSettlement {
 		if (intent.newTaskEnvelopeRef.fingerprint !== undefined && task.value.fingerprint?.value !== intent.newTaskEnvelopeRef.fingerprint.value) throw new FoundationError("invalid_correlation", "Agent spawn TaskEnvelope reference fingerprint does not match the durable child Task", { details: { spawnId: request.spawnId, taskId: request.taskEnvelope.taskId } });
 	}
 
-	private async requireParentSpawnContext(intent: SpawnAgentIntent, parentTask: TaskEnvelope, request: ChildSpawnRequest): Promise<SpawnContextRecordV1> {
+	private async requireParentSpawnContext(intent: SpawnAgentIntent, parentTask: TaskEnvelope, request: ChildSpawnRequest): Promise<SpawnContextRecord> {
 		const expectedContextId = spawnContextId(intent.spawnId);
 		const stored = await this.ledger.get("context", expectedContextId);
 		if (stored === undefined || stored.kind !== "fact") throw new FoundationError("role_resolver_task_required", "Agent spawn requires a durable parent Context", { details: { spawnId: request.spawnId, parentTaskId: intent.parentTaskId, parentContextId: expectedContextId } });
@@ -663,7 +663,7 @@ export class LayeredResultSettlement {
 		return checked.value;
 	}
 
-	private createChildSpawnContext(request: ChildSpawnRequest, parentContext: SpawnContextRecordV1): SpawnContextRecordV1 {
+	private createChildSpawnContext(request: ChildSpawnRequest, parentContext: SpawnContextRecord): SpawnContextRecord {
 		if (request.parentSpawn === undefined) throw new FoundationError("role_resolver_task_required", "Agent spawn requires a parent intent before creating child Context", { details: { spawnId: request.spawnId } });
 		const contextId = spawnContextId(request.spawnId);
 		if (contextId === parentContext.contextId || parentContext.lineage.ancestorIds?.includes(contextId)) throw new FoundationError("invalid_correlation", "Agent spawn child Context would reuse or cycle through the parent Context", { details: { spawnId: request.spawnId, parentContextId: parentContext.contextId } });

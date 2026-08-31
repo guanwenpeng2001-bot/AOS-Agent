@@ -50,7 +50,7 @@ function decodeWrapper(value: unknown): LegacyFoundationSchemaWrapper {
 
 const PRIVATE_CORRELATION_FIELDS = ["operationId", "providerId", "toolCallId"] as const;
 
-function validateLegacyRetentionPolicyShapeV1(value: unknown): void {
+function validateLegacyRetentionPolicyShape(value: unknown): void {
 	if (!isRecord(value) || !hasExactKeys(value, ["schemaVersion", "cutSequence"], ["reason"])) {
 		throw new LegacyFoundationSchemaMigrationError("Historical Foundation retention policy has an invalid exact shape");
 	}
@@ -68,7 +68,7 @@ export function decodeLegacyFoundationRecordV1(value: unknown): FoundationRecord
 	} catch {
 		throw new LegacyFoundationSchemaMigrationError("Historical Foundation record is not canonical JSON");
 	}
-	if (isRecord(value) && value.kind === "retention") validateLegacyRetentionPolicyShapeV1(value.policy);
+	if (isRecord(value) && value.kind === "retention") validateLegacyRetentionPolicyShape(value.policy);
 	const extensions: Partial<Record<(typeof PRIVATE_CORRELATION_FIELDS)[number], string>> = {};
 	let candidate = value;
 	if (isRecord(value) && isRecord(value.correlation)) {
