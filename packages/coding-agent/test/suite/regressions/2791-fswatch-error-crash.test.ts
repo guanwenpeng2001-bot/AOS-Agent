@@ -89,8 +89,9 @@ process.exit(0);
 		let stderr = "";
 		let exitCode: number;
 		try {
+			// The child exits after every assertion outcome. Wait for that exit so
+			// concurrent source-mode startup cannot be mistaken for a watcher crash.
 			_stdout = execFileSync(process.execPath, sourceProcessArgs(scriptPath), {
-				timeout: 10000,
 				encoding: "utf-8",
 				env: { ...sourceProcessEnv(), AOS_AGENT_DIR: agentDir },
 				stdio: ["pipe", "pipe", "pipe"],
