@@ -6,6 +6,8 @@ AOS Agent uses environment variables for process configuration, provider credent
 
 The CLI and RPC entry points set `AOS_AGENT=true`. Child processes inherit it and can use it to detect that they run inside AOS Agent. The previous `AOS_AGENT_CODING_AGENT` name is no longer written.
 
+`AI_AGENT` is also set to `aos-agent` by the CLI and RPC entry points. This is an interoperability marker for terminals and wrappers that detect the active agent; child processes inherit it. There are no in-repository readers, but the variable is intentionally retained for external tooling and is not a product configuration or credential variable.
+
 ## AOS Agent configuration
 
 These are the product-specific variables:
@@ -22,6 +24,10 @@ These are the product-specific variables:
 | `AOS_AGENT_EXPERIMENTAL` | Enable experimental first-time setup features when set to `1` |
 
 Provider credentials such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and cloud-provider configuration are listed in [Providers](providers.md#environment-variables-or-auth-file).
+
+## External OAuth dependency
+
+The Radius OAuth client currently uses the legacy `pi-gateway` client ID because the gateway has not issued an AOS client ID. This is an intentional, pending external dependency; keep the value until the gateway publishes and registers its replacement, then update the client and gateway together.
 
 ## Bash-tool session metadata
 
