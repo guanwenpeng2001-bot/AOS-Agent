@@ -2447,7 +2447,7 @@ describe("AgentRuntimeComposition", () => {
 			throw new Error("External run.start response is missing runId");
 		}
 		await vi.waitFor(() => expect(readFileSync(durableMarkerPath, "utf8")).toBe("durable\n"), { timeout: 60_000 });
-		first.child.kill();
+		first.child.kill("SIGKILL");
 		await first.waitForClose();
 
 		const sessionDir = join(cwd, "agent", "sessions");
@@ -2489,7 +2489,7 @@ describe("AgentRuntimeComposition", () => {
 			await second.waitForClose();
 			expect(second.stderr()).not.toContain("Error:");
 		} finally {
-			if (second.child.exitCode === null) second.child.kill();
+			if (second.child.exitCode === null) second.child.kill("SIGKILL");
 		}
 	}, 130_000);
 
