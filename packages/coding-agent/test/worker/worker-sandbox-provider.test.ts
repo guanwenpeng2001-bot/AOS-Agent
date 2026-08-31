@@ -1786,11 +1786,20 @@ describe("WorkerSandboxProvider", () => {
 
 	it("converges cancellation without inventing a terminal receipt", async () => {
 		const records: WorkerRecord[] = [];
-		const current = provider("cancel_success", { onRecord: (record) => records.push(record) });
+		let supervisor: OperationWorkerSupervisor | undefined;
+		const current = provider("cancel_success", {
+			onRecord: (record) => records.push(record),
+			createSupervisor: (config) => {
+				supervisor = new OperationWorkerSupervisor(config);
+				return supervisor;
+			},
+		});
 		const request = operation("operation-cancel");
 		const started = executeOperation({ provider: current, request, correlation: correlation(request.operationId) });
-		await waitForRecord(records, "ready");
-		await new Promise((resolve) => setTimeout(resolve, 30));
+		await waitForCondition(
+			() => supervisor?.snapshot.record?.status === "running",
+			"Timed out waiting for Worker operation start",
+		);
 		expect(await current.cancel(request.operationId)).toEqual({ ok: true, value: undefined });
 		expect(await started).toMatchObject({ ok: true, value: { status: "cancelled", sideEffectState: "none" } });
 		expect(records.some((record) => record.status === "reclaimed")).toBe(true);
