@@ -45,6 +45,8 @@ const REQUIRED_PACKAGE_FILES = Object.freeze([
 	"package/dist/cli.js",
 	"package/dist/external-connector.js",
 	"package/dist/external-connector.d.ts",
+	"package/dist/external-connector-testing.js",
+	"package/dist/external-connector-testing.d.ts",
 	"package/dist/index.js",
 	"package/dist/index.d.ts",
 	"package/dist/core/connector/packaged-driver.js",
@@ -327,7 +329,7 @@ function parseProbeOutput(output, packageDirectory, requireResolvedPath) {
 		if (typeof probe.resolved !== "string") throw new Error("Packaged runtime did not report its resolved export");
 		const resolvedEntry = realpathSync(fileURLToPath(probe.resolved));
 		const installedPackage = realpathSync(packageDirectory);
-		const installedEntry = realpathSync(join(installedPackage, "dist", "external-connector.js"));
+		const installedEntry = realpathSync(join(installedPackage, "dist", "external-connector-testing.js"));
 		const resolvedIdentity = statSync(resolvedEntry, { bigint: true });
 		const installedIdentity = statSync(installedEntry, { bigint: true });
 		const resolvesInstalledEntry =
@@ -371,14 +373,16 @@ function bunIsAvailable(environment, cwd) {
 
 function writeRuntimeProbes(installDirectory) {
 	const source = [
-		'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector";',
+		'import * as externalConnector from "aos-agent/external-connector";',
+		'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector/testing";',
+		'if ("runPackagedExternalAgentDriverFixture" in externalConnector || "PackagedExternalAgentDriverTrace" in externalConnector) throw new Error("Main External Connector subpath exposes test support");',
 		'const trace = await runPackagedExternalAgentDriverFixture();',
-		'const resolved = import.meta.resolve("aos-agent/external-connector");',
+		'const resolved = import.meta.resolve("aos-agent/external-connector/testing");',
 		'process.stdout.write(`${JSON.stringify({ resolved, trace })}\\n`);',
 		"",
 	].join("\n");
 	const compiledSource = [
-		'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector";',
+		'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector/testing";',
 		'const trace = await runPackagedExternalAgentDriverFixture();',
 		'process.stdout.write(`${JSON.stringify({ trace })}\\n`);',
 		"",
@@ -565,6 +569,9 @@ function validateDryRunInputs(repoRoot) {
 	}
 	if (packageJson.exports?.["./external-connector"]?.import !== "./dist/external-connector.js") {
 		throw new Error("Package metadata does not expose the External Connector subpath");
+	}
+	if (packageJson.exports?.["./external-connector/testing"]?.import !== "./dist/external-connector-testing.js") {
+		throw new Error("Package metadata does not expose the External Connector test-support subpath");
 	}
 	for (const scriptName of ["copy-assets", "copy-binary-assets"]) {
 		if (!packageJson.scripts?.[scriptName]?.includes("fake-connector")) {

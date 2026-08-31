@@ -117,6 +117,9 @@
         "WorkingIndicatorOptions",
         "WriteOperations"
       ],
+      "docs": [
+        "packages/coding-agent/docs/public-api.md"
+      ],
       "internal": [
         "AgentEndEvent",
         "AgentRuntimeComposition",
@@ -1113,12 +1116,24 @@
         "PackagedExternalAgentDriverOperationKind",
         "PackagedExternalAgentDriverReceipt",
         "PackagedExternalAgentDriverToolResult",
-        "PackagedExternalAgentDriverTrace",
         "projectExternalModelForExecution",
         "resolveExternalConnectorTargetConfig",
-        "runPackagedExternalAgentDriverFixture",
         "serializeExternalConnectorSelection",
         "validateCanonicalExternalAgentInput"
+      ],
+      "docs": [
+        "packages/coding-agent/docs/public-api.md"
+      ],
+      "internal": [],
+      "delete": []
+    },
+    "./external-connector/testing": {
+      "keep": [
+        "PackagedExternalAgentDriverTrace",
+        "runPackagedExternalAgentDriverFixture"
+      ],
+      "docs": [
+        "packages/coding-agent/docs/public-api.md"
       ],
       "internal": [],
       "delete": []
@@ -1439,6 +1454,9 @@
         "validateVersionedReference",
         "validateWorkerReceipt",
         "validateWorkerReceiptForProvider"
+      ],
+      "docs": [
+        "packages/agent/README.md"
       ],
       "internal": [
         "AbortRequestedRecord",
@@ -12913,11 +12931,11 @@
     },
     {
       "name": "PackagedExternalAgentDriverTrace",
-      "entry": "./external-connector",
+      "entry": "./external-connector/testing",
       "decision": "keep",
       "evidence": [
-        "packages/coding-agent/README.md:84",
-        "packages/coding-agent/src/external-connector.ts:48"
+        "packages/coding-agent/README.md",
+        "packages/coding-agent/src/external-connector-testing.ts"
       ]
     },
     {
@@ -12940,11 +12958,11 @@
     },
     {
       "name": "runPackagedExternalAgentDriverFixture",
-      "entry": "./external-connector",
+      "entry": "./external-connector/testing",
       "decision": "keep",
       "evidence": [
-        "packages/coding-agent/README.md:84",
-        "packages/coding-agent/src/external-connector.ts:39"
+        "packages/coding-agent/README.md",
+        "packages/coding-agent/src/external-connector-testing.ts"
       ]
     },
     {

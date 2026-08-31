@@ -98,6 +98,10 @@
       "title": "Reference",
       "items": [
         {
+          "title": "Public API",
+          "path": "public-api.md"
+        },
+        {
           "title": "Native Subagent Contract",
           "path": "subagent-contract.md"
         },

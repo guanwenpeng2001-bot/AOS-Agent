@@ -19,6 +19,7 @@ const entrySources = {
 	".": "../src/index.ts",
 	"./client": "../src/client/index.ts",
 	"./external-connector": "../src/external-connector.ts",
+	"./external-connector/testing": "../src/external-connector-testing.ts",
 	"./rpc-entry": "../src/rpc-entry.ts",
 } as const;
 
@@ -53,5 +54,10 @@ describe("published API surface", () => {
 
 	it("keeps milestone names out of the external connector entry", () => {
 		expect(exportedNames(entrySources["./external-connector"]).filter((name) => /Line(?:13)/i.test(name))).toEqual([]);
+	});
+
+	it("keeps package-smoke fixtures out of the main external connector entry", () => {
+		expect(exportedNames(entrySources["./external-connector"])).not.toContain("runPackagedExternalAgentDriverFixture");
+		expect(exportedNames(entrySources["./external-connector"])).not.toContain("PackagedExternalAgentDriverTrace");
 	});
 });

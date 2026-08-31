@@ -542,6 +542,169 @@ for await (const event of agentLoopContinue(context, config, undefined, streamFn
 
 These low-level streams are observational. They preserve event order, but they do not wait for your async event handling to settle before later producer phases continue. If you need message processing to act as a barrier before tool preflight, use the `Agent` class instead of raw `agentLoop()` or `agentLoopContinue()`.
 
+## Public API
+
+### Loop and durable contracts
+
+The following exports are the cross-package loop contract retained for
+`aos-agent`. Each description names the primary consumer; lower-level
+applications may also compose these contracts directly.
+
+**`ScopedExecutionGateway`.** Executes provider work under an admitted scope; the coding-agent in-process Subagent provider consumes it.
+
+**`validateAsk`.** Validates an Ask record before persistence; the coding-agent Ask store consumes it.
+
+**`validateGoal`.** Validates a Goal aggregate; the coding-agent goal store consumes it.
+
+**`validatePlan`.** Validates a Plan and its ordered stages; the coding-agent goal store consumes it.
+
+**`validateStage`.** Validates one Stage in a Plan; the coding-agent goal store consumes it.
+
+**`validateTaskResultRef`.** Validates a durable Task result reference; the coding-agent goal store consumes it.
+
+**`validateTodo`.** Validates a Todo owned by a Stage; the coding-agent goal store consumes it.
+
+**`AcceptanceCriterion`.** Describes one condition a Goal or Task must satisfy; the coding-agent orchestration store consumes it.
+
+**`AcceptanceFact`.** Records evidence against an acceptance condition; the coding-agent scheduler, prompt adapter, and orchestration store consume it.
+
+**`Ask`.** Represents a durable question in the orchestration loop; the coding-agent Ask store, query API, and scheduler messaging consume it.
+
+**`AskReply`.** Represents the answer attached to an Ask; the coding-agent Ask store consumes it.
+
+**`AskStatus`.** Enumerates the lifecycle state of an Ask; the coding-agent Ask store consumes it.
+
+**`Goal`.** Defines the desired orchestration outcome and its acceptance contract; the coding-agent goal store and query API consume it.
+
+**`Plan`.** Defines the staged route to a Goal; the coding-agent goal store and query API consume it.
+
+**`PlanStatus`.** Enumerates Plan lifecycle states; the coding-agent goal store consumes it.
+
+**`Stage`.** Defines one ordered unit of a Plan; the coding-agent goal store and query API consume it.
+
+**`StageStatus`.** Enumerates Stage lifecycle states; the coding-agent goal store consumes it.
+
+**`TaskResultRef`.** Points from orchestration state to a settled Task result; the coding-agent goal store consumes it.
+
+**`Todo`.** Defines a concrete pending action within a Stage; the coding-agent goal store and query API consume it.
+
+**`TodoStatus`.** Enumerates Todo lifecycle states; the coding-agent goal store consumes it.
+
+**`ServiceContract`.** Describes a service requirement exposed through orchestration queries; the coding-agent query API consumes it.
+
+**`SessionLedger`.** Provides typed fact and intent access over one canonical Session; coding-agent Connector, Scheduler, Subagent, and session services consume it.
+
+**`LayeredResultSettlement`.** Validates and writes Dispatch, Attempt, TaskResult, and Run settlement through the canonical ledger; coding-agent Scheduler, Subagent, RPC, and runtime composition consume it.
+
+**`persistTaskEnvelopeBeforeResolver`.** Persists an immutable Task before dependency resolution or provider effects; coding-agent product-run, prompt, and Subagent composition consume it.
+
+**`CanonicalRunResult`.** Projects the canonical settled Run and receipt; coding-agent lifecycle, audit, Automation, and RPC surfaces consume it.
+
+**`DispatchStartResult`.** Reports the admitted Dispatch and Attempt start state; the coding-agent Scheduler dispatch path consumes it.
+
+**`isSideEffectRetryable`.** Decides whether an idempotency declaration permits replay for a side-effect state; coding-agent Scheduler host policy consumes it.
+
+**`Idempotency`.** Describes an operation's replay guarantee; coding-agent Scheduler and tool-pipeline consumers use it for retry decisions.
+
+**`SideEffectState`.** Records whether an operation had no, known, or unknown side effects; coding-agent Worker, Connector, and settlement consumers use it.
+
+**`TaskEnvelopePublicProjectionSchema`.** Validates the safe public subset of a Task envelope; coding-agent Subagent context-fork consumes it.
+
+**`createAttempt`.** Constructs a validated Attempt from an admitted Dispatch; coding-agent Connector, Scheduler, Subagent, and prompt ingress consume it.
+
+**`createTaskEnvelope`.** Constructs an immutable Task envelope; coding-agent product-run, prompt, and Subagent composition consume it.
+
+**`projectTaskEnvelope`.** Produces a safe Task projection for child context; coding-agent Subagent context-fork consumes it.
+
+**`validateAttempt`.** Validates an Attempt before execution or settlement; coding-agent Connector, Scheduler, and Subagent consumers use it.
+
+**`validateDispatch`.** Validates a Dispatch before execution or settlement; coding-agent Scheduler, Subagent, and AgentHarness consumers use it.
+
+**`validateSpawnAgentIntent`.** Validates a child-agent spawn intent before settlement; the coding-agent Subagent supervisor consumes it.
+
+**`validateTaskEnvelope`.** Validates a Task envelope and immutable references; coding-agent Scheduler, Subagent, and runtime consumers use it.
+
+**`validateTaskEnvelopePublicProjection`.** Validates a safe child-facing Task projection; coding-agent Subagent context-fork consumes it.
+
+**`Attempt`.** Identifies one provider execution attempt under a Dispatch; coding-agent Connector, Scheduler, and Subagent consumers use it.
+
+**`Dispatch`.** Binds a Task, provider, and execution authority; coding-agent Connector, Scheduler, Subagent, and AgentHarness consumers use it.
+
+**`TaskArtifactProjection`.** Describes artifacts safe to include in child context; coding-agent Subagent context-fork and fork protocol consume it.
+
+**`TaskEnvelope`.** Carries the immutable Task contract into execution; coding-agent Scheduler, Subagent, Connector, and settlement consumers use it.
+
+**`TaskEnvelopePublicProjection`.** Carries the safe child-facing subset of a Task; coding-agent Subagent context-fork consumes it.
+
+**`MemoryError`.** Provides stable errors for scoped memory operations; coding-agent Subagent memory consumes it.
+
+**`ScopedMemoryStore`.** Reads and writes memory within provenance and scope boundaries; coding-agent Subagent composition consumes it.
+
+**`MemoryProvenanceBoundary`.** Describes the allowed provenance of scoped memory; coding-agent Subagent memory and context-ledger consumers use it.
+
+**`bashExecutionToText`.** Converts a Bash execution message into model-facing text; repository smoke tooling consumes it.
+
+**`convertToLlm`.** Converts Agent messages into provider messages; AgentHarness, compaction, and repository smoke tooling consume it.
+
+**`createCompactionSummaryMessage`.** Creates the transcript message that carries a compaction summary; coding-agent session composition consumes it.
+
+**`createCustomMessage`.** Creates a typed custom Agent message; repository smoke tooling consumes it.
+
+**`formatPromptTemplateInvocation`.** Formats prompt-template arguments into an Agent message; AgentHarness and resource consumers use it.
+
+**`parseCommandArgs`.** Parses command-style resource arguments; AgentHarness resource consumers and smoke tooling use it.
+
+**`Result`.** Provides the success-or-error constructor used by Foundation operations; agent-core and coding-agent contract implementations consume it.
+
+**`ResultValue`.** Describes the typed success-or-error value produced by Foundation operations; agent-core and coding-agent contract implementations consume it.
+
+**`parseFoundationMutation`.** Decodes a durable Foundation mutation from storage; JSONL storage, migration, audit, and coding-agent lifecycle consumers use it.
+
+**`DurableLedgerError`.** Provides stable durable-ledger failure codes; ledger, settlement, and coding-agent lifecycle consumers use it.
+
+**`invalidDurableRecord`.** Constructs a stable invalid-record error without leaking raw data; durable state and coding-agent lifecycle consumers use it.
+
+**`FoundationLedgerState`.** Folds durable Foundation records, revisions, leases, and retention in memory; agent-core storage backends and coding-agent lifecycle, storage, and audit services consume it.
+
+**`AcquireWriterLeaseOptions`.** Configures acquisition of the ledger's single-writer lease; Session storage and coding-agent manager storage consume it.
+
+**`AppendFoundationRecordResult`.** Reports an appended record and resulting revision; Session, ledger writer, storage, and tool-pipeline consumers use it.
+
+**`DurableLedgerApi`.** Defines the durable record, query, lease, and retention storage interface; agent-core backends and coding-agent Scheduler/session services implement or consume it.
+
+**`FoundationFactRecord`.** Represents an immutable durable fact; ledger, settlement, storage, and coding-agent lifecycle consumers use it.
+
+**`FoundationObjectResult`.** Represents the current folded state of a Foundation object; Session, ledger, storage, and coding-agent consumers use it.
+
+**`FoundationRecord`.** Represents any durable Foundation fact or intent record; Session, codec, storage, and coding-agent consumers use it.
+
+**`FoundationRecordQuery`.** Filters durable Foundation record reads; Session, ledger, storage, and coding-agent consumers use it.
+
+**`FoundationRetentionPolicy`.** Defines retention limits for durable Foundation records; storage and coding-agent session management consume it.
+
+**`LedgerWriterLease`.** Identifies the active single-writer authority and revision; Session, ledger writer, storage, and coding-agent consumers use it.
+
+**`ProvisionedFoundationRecord`.** Represents a durable record with assigned revision metadata; Session, ledger, and storage consumers use it.
+
+**`ReleaseWriterLeaseOptions`.** Configures release of a writer lease; Session storage and coding-agent manager storage consume it.
+
+**`RenewWriterLeaseOptions`.** Configures renewal of a writer lease; Session storage and coding-agent manager storage consume it.
+
+**`SetRetentionPolicyOptions`.** Configures a retention-policy update; Session storage and coding-agent manager storage consume it.
+
+**`SessionLedgerWriter`.** Serializes canonical ledger mutations under one Session and writer identity; agent-core artifact, context, memory, and settlement services plus coding-agent Scheduler and Subagent consumers use it.
+
+### Complete exported-name index
+
+This index is checked against the public API whitelist. It provides searchable
+documentation evidence for every retained package-root export; the sections
+above and the rest of this README provide behavioral guidance for the primary
+contracts.
+
+```text
+AcceptanceCriterion, AcceptanceFact, AcquireWriterLeaseOptions, Agent, AgentBinding, AgentContext, AgentEvent, AgentHarness, AgentHarnessFoundationExecution, AgentHarnessOptions, AgentHarnessTool, AgentInstance, AgentLoopConfig, AgentMessage, AgentOperationError, AgentOperationSignal, AgentState, AgentTool, AgentToolResult, AgentToolUpdateCallback, AppendFoundationRecordResult, ArtifactDigest, ArtifactRef, ArtifactRefSchema, ArtifactStoreProvider, Ask, AskReply, AskStatus, Attempt, AttemptReceipt, AttemptReceiptUsage, BindingEpoch, BranchBounds, Budget, BudgetSchema, BudgetUsage, BudgetUsageSchema, CanonicalRunResult, ChildAgentProvider, ChildSpawnRequest, ChildSpawnResult, ConnectorCapabilitySnapshot, ContextForkMode, ContextSnapshot, ContextSnapshotRecord, ContextSnapshotSource, Dispatch, DispatchExecutionResult, DispatchStartResult, DurableEventCategory, DurableEventEnvelope, DurableLedgerApi, DurableLedgerError, EXTERNAL_ERROR_CODES, EXTERNAL_ERROR_MESSAGES, Entry, EntryOrder, EntryQuery, EventCorrelationRef, ExecutionCorrelation, ExecutionEnv, ExecutionProviderDescriptor, ExecutionToolContext, ExternalAgentConnector, ExternalErrorCode, FOUNDATION_ERROR_CODES, FOUNDATION_TOOL_RESULT_CUSTOM_TYPE, FileError, FileSystem, Fingerprint, FingerprintSchema, ForkOptions, FoundationEnvelope, FoundationError, FoundationErrorCode, FoundationEventEnvelope, FoundationFactRecord, FoundationJsonValue, FoundationLedgerState, FoundationObjectResult, FoundationObserver, FoundationProviderCapability, FoundationProviderExecutionOptions, FoundationRecord, FoundationRecordQuery, FoundationRetentionPolicy, FoundationToolGatewayAuthority, Goal, HarnessCompactionHookInput, HarnessCompactionHookResult, HarnessCompactionResult, HarnessContextPreparationInput, HarnessModelCallBoundaryInput, HarnessTool, Idempotency, InMemoryArtifactBlobStore, InMemorySessionRepo, InMemorySessionStorage, LanePointer, LaneRecord, LayeredResultSettlement, LedgerWriterLease, LogItem, LogOptions, McpCapabilityBinding, McpSelection, McpToolRoute, MemoryError, MemoryProvenanceBoundary, MessageEntry, ModelProfile, ModelRoute, ModelRouteSchema, NewRecord, ObserverCursor, OperationStartedRecord, Plan, PlanStatus, PluginContract, PrepareNextTurnContext, ProfileContract, ProvisionedEntry, ProvisionedFoundationRecord, PublicExecutionError, PublicExecutionErrorCategory, QueueMode, QuotaAttribution, QuotaProvider, QuotaReservation, ROLE_RESOLUTION_ORDER, RecordQuery, ReleaseWriterLeaseOptions, RenewWriterLeaseOptions, ResourceSelector, ResourceSelectorSchema, Result, ResultProvenance, ResultValidation, ResultValue, RevisionReference, RevisionReferenceSchema, RoleDefinition, RoleRegistry, RoleRevision, RunOutcome, RunReceipt, SandboxOperationProvider, SandboxOperationRequest, SchedulerClaimEventPayload, SchedulerDeadlockEventPayload, SchedulerDispatchEventPayload, SchedulerHandoffEventPayload, SchedulerQueueEventPayload, SchedulerTaskExecutorProvider, SchedulerWakeEventPayload, ScopedExecutionGateway, ScopedMemoryStore, ScopedModelGateway, ServiceContract, Session, SessionCreateOptions, SessionError, SessionLedger, SessionLedgerWriter, SessionLedgerWriterOptions, SessionMetadata, SessionRepo, SessionSearch, SessionSearchHit, SessionSearchOptions, SessionStats, SessionStorage, SetRetentionPolicyOptions, SettleTaskResultInput, SideEffectState, Stage, StageStatus, StepAttemptRecord, StreamFn, TaskArtifactProjection, TaskContextPackage, TaskEnvelope, TaskEnvelopePublicProjection, TaskEnvelopePublicProjectionSchema, TaskExecutorAttemptContext, TaskExecutorProvider, TaskResult, TaskResultRef, ThinkingLevel, Todo, TodoStatus, ToolExecutionMode, ToolExecutionResult, ToolGateway, ToolGatewayProvider, ToolGatewayRequest, ToolGatewayRoute, ToolGatewayRouteCatalog, ValidationResult, VersionedReference, WorkerReceipt, WorkerReceiptRef, agentLoop, agentLoopContinue, artifactDigestFromId, assertJsonSerializable, bashExecutionToText, budgetExhaustionReason, canonicalFoundationJson, cloneDeepFrozen, contextSnapshotFromJSON, convertToLlm, createAgentInstance, createAgentOperationSignal, createAttempt, createBashTool, createBindingEpoch, createCompactionSummaryMessage, createConnectorCapabilitySnapshot, createContextSnapshot, createCustomMessage, createDurableEvent, createEditTool, createExecutionCorrelation, createFoundationToolGateway, createFoundationToolGatewayAuthority, createHostTerminalGateAuthority, createModelProfileRevision, createOrderedBindingEpoch, createReadTool, createRoleRevision, createSandboxOperationToolGatewayProvider, createTaskEnvelope, createWriteTool, decodeLegacyFoundationRecordV1, executeOperation, fingerprintFoundationValue, formatPromptTemplateInvocation, formatSkillInvocation, formatSkillsForSystemPrompt, getFileSystemResultOrThrow, getOrThrow, invalidDurableRecord, isSideEffectRetryable, isToolGatewayRoute, isValidArtifactDigest, isValidArtifactId, newFoundationId, ok, parseCommandArgs, parseExactShape, parseFoundationMutation, persistTaskEnvelopeBeforeResolver, projectMcpSelectionToSelector, projectTaskEnvelope, redactText, resolveAgentBinding, resolveMcpSelection, selectorsNarrow, serializeExactShape, setDefaultStreamFn, sha256HexValue, streamProxy, toError, truncateHead, validateAgentBinding, validateAgentInstance, validateAndVerifyToolReceipt, validateArtifactRef, validateAsk, validateAttempt, validateAttemptReceipt, validateAttemptReceiptForProvider, validateAttemptReceiptUsage, validateBindingEpoch, validateBudget, validateBudgetUsage, validateChildMcpSelection, validateChildSpawnRequest, validateConnectorCapabilitySnapshot, validateConnectorCapabilitySnapshotForProvider, validateDispatch, validateDurableEvent, validateEventPayloadForCategory, validateExactShape, validateExecutionCorrelation, validateFingerprint, validateFoundationProviderCapability, validateFoundationToolResultEntry, validateGoal, validateImmutableAgentBinding, validateMcpSelection, validateMcpSelectionForBinding, validatePlan, validateProviderJson, validatePublicExecutionError, validateQuotaAttribution, validateQuotaReservation, validateRoleRevision, validateRunReceipt, validateSandboxOperationRequest, validateSecretFreeModelProfile, validateSpawnAgentIntent, validateStage, validateTaskEnvelope, validateTaskEnvelopePublicProjection, validateTaskResult, validateTaskResultRef, validateTodo, validateToolExecutionResult, validateToolGatewayRequest, validateVersionedReference, validateWorkerReceipt, validateWorkerReceiptForProvider
+```
+
 ## License
 
 MIT
