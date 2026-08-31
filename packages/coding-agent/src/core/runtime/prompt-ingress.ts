@@ -66,7 +66,7 @@ function isDeadlineAbortReason(value: unknown): boolean {
 		reason.name === "HarnessDeadlineExceeded";
 }
 
-interface WorkerToolExecutionFactV1 {
+interface WorkerToolExecutionFact {
 	readonly schemaVersion: 1;
 	readonly type: typeof WORKER_TOOL_EXECUTION_OBJECT_TYPE;
 	readonly id: string;
@@ -105,13 +105,13 @@ const WORKER_TOOL_EXECUTION_FACT_KEYS = new Set([
 ]);
 const REQUIRED_WORKER_TOOL_EXECUTION_FACT_KEYS = new Set([...WORKER_TOOL_EXECUTION_FACT_KEYS].filter((key) => key !== "runId" && key !== "agentInstanceId"));
 
-function isExactWorkerToolExecutionFactPayload(value: unknown): value is WorkerToolExecutionFactV1 {
+function isExactWorkerToolExecutionFactPayload(value: unknown): value is WorkerToolExecutionFact {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
 	const keys = Object.keys(value);
 	return keys.every((key) => WORKER_TOOL_EXECUTION_FACT_KEYS.has(key)) && [...REQUIRED_WORKER_TOOL_EXECUTION_FACT_KEYS].every((key) => keys.includes(key));
 }
 
-type ProductPromptIngressFactV1 = {
+type ProductPromptIngressFact = {
 	readonly schemaVersion: 1;
 	readonly type: "coding_agent.product_prompt_ingress";
 	readonly id: string;
@@ -455,10 +455,10 @@ export class ProductPromptIngress {
 		prompt: string,
 		images: readonly ImageContent[] | undefined,
 		surface: RuntimeSessionSurface,
-	): Promise<ProductPromptIngressFactV1> {
+	): Promise<ProductPromptIngressFact> {
 		const id = `product_prompt_${promptToken(runId)}`;
 		const digest = inputDigest(prompt, images, surface);
-		const existing = await this.options.harness.ledger.writer.readFact<ProductPromptIngressFactV1>(
+		const existing = await this.options.harness.ledger.writer.readFact<ProductPromptIngressFact>(
 			PRODUCT_PROMPT_INGRESS_OBJECT_TYPE,
 			id,
 		);
@@ -481,7 +481,7 @@ export class ProductPromptIngress {
 		}
 		const submittedAt = (this.options.now ?? (() => new Date().toISOString()))();
 		if (Number.isNaN(Date.parse(submittedAt))) throw new FoundationError("foundation_schema_invalid_shape", "Product prompt clock returned an invalid timestamp");
-		const fact: ProductPromptIngressFactV1 = {
+		const fact: ProductPromptIngressFact = {
 			schemaVersion: 1,
 			type: PRODUCT_PROMPT_INGRESS_OBJECT_TYPE,
 			id,
@@ -491,7 +491,7 @@ export class ProductPromptIngress {
 			inputDigest: digest,
 			submittedAt,
 		};
-		const written = await this.options.harness.ledger.writer.writeFact<ProductPromptIngressFactV1>({
+		const written = await this.options.harness.ledger.writer.writeFact<ProductPromptIngressFact>({
 			objectType: PRODUCT_PROMPT_INGRESS_OBJECT_TYPE,
 			objectId: id,
 			payload: fact,

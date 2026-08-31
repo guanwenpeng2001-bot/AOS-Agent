@@ -112,7 +112,7 @@ export interface ChildAgentBackgroundAttach {
 	readonly cursor: ObserverCursor;
 }
 
-interface InProcessChildHandleV1 {
+interface InProcessChildHandle {
 	readonly spawnId: string;
 	readonly spawn: ChildSpawnResult;
 	readonly request: ChildSpawnRequest;
@@ -151,11 +151,11 @@ function isPositiveTimeoutMs(value: number): boolean {
 	return Number.isSafeInteger(value) && value > 0;
 }
 
-function attemptReceiptIsTerminalV1(status: AttemptReceipt["status"]): boolean {
+function attemptReceiptIsTerminal(status: AttemptReceipt["status"]): boolean {
 	return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 
-type ChildHarnessOutcomeV1 = {
+type ChildHarnessOutcome = {
 	readonly kind: "completed" | "aborted" | "failed" | "suspended" | "pending";
 	readonly error?: { readonly code: string; readonly message: string };
 };
@@ -249,8 +249,8 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 	private readonly resolveExecutionWorkspace: NonNullable<InProcessChildAgentProviderOptions["resolveExecutionWorkspace"]>;
 	private readonly loadTurnBoundaryContext: NonNullable<InProcessChildAgentProviderOptions["loadTurnBoundaryContext"]>;
 	private readonly declaredCapabilities: readonly FoundationProviderCapability[];
-	private readonly bySpawnId = new Map<string, InProcessChildHandleV1>();
-	private readonly byAttemptId = new Map<string, InProcessChildHandleV1>();
+	private readonly bySpawnId = new Map<string, InProcessChildHandle>();
+	private readonly byAttemptId = new Map<string, InProcessChildHandle>();
 	private disposed = false;
 
 	constructor(options: InProcessChildAgentProviderOptions) {
@@ -332,7 +332,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 		}
 		const bindingResult = validateImmutableAgentBinding(bindingFact.payload);
 		if (!bindingResult.ok) return bindingResult;
-		const handle: InProcessChildHandleV1 = {
+		const handle: InProcessChildHandle = {
 			spawnId: request.spawnId,
 			spawn: created.value,
 			request,
@@ -458,7 +458,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 		if (handle === undefined) return Result.err(fail("subagent_not_found", "Child Agent attempt is not held by this provider"));
 		if (handle.lost) return Result.err(fail("subagent_lost", "Child Agent handle is lost"));
 		if (handle.closed) return Result.err(fail("subagent_resume_failed", "Child Agent handle is closed"));
-		if (handle.receipt !== undefined && attemptReceiptIsTerminalV1(handle.receipt.status)) {
+		if (handle.receipt !== undefined && attemptReceiptIsTerminal(handle.receipt.status)) {
 			return Result.ok(cloneDeepFrozen(handle.receipt));
 		}
 		handle.suspendedReceipt = undefined;
@@ -603,7 +603,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 	}
 
 	private async executeAttempt(
-		handle: InProcessChildHandleV1,
+		handle: InProcessChildHandle,
 		attempt: Attempt,
 		options: FoundationProviderExecutionOptions | undefined,
 		resume: boolean,
@@ -713,7 +713,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 	}
 
 	private async continueExistingHarness(
-		handle: InProcessChildHandleV1,
+		handle: InProcessChildHandle,
 		attempt: Attempt,
 		options?: FoundationProviderExecutionOptions,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
@@ -772,8 +772,8 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 
 	private async invokeChildPrompt(
 		harness: AgentHarness,
-		handle: InProcessChildHandleV1,
-	): Promise<ResultValue<ChildHarnessOutcomeV1, FoundationError>> {
+		handle: InProcessChildHandle,
+	): Promise<ResultValue<ChildHarnessOutcome, FoundationError>> {
 		const recorded = await this.supervisor.recordTurn({
 			schemaVersion: 1,
 			childAgentInstanceId: handle.spawn.agentInstance.agentInstanceId,
@@ -805,8 +805,8 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 
 	private async invokeChildResume(
 		harness: AgentHarness,
-		handle: InProcessChildHandleV1,
-	): Promise<ResultValue<ChildHarnessOutcomeV1, FoundationError>> {
+		handle: InProcessChildHandle,
+	): Promise<ResultValue<ChildHarnessOutcome, FoundationError>> {
 		await this.ensureChildLane(harness, handle.childLaneId);
 		const resumed =
 			typeof harness.resumeOnLane === "function"
@@ -823,10 +823,10 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 	}
 
 	private async applyHarnessOutcome(
-		handle: InProcessChildHandleV1,
+		handle: InProcessChildHandle,
 		attempt: Attempt,
 		controller: AbortController,
-		outcome: ResultValue<ChildHarnessOutcomeV1, FoundationError>,
+		outcome: ResultValue<ChildHarnessOutcome, FoundationError>,
 	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
 		if (!outcome.ok) {
 			if (controller.signal.aborted) return this.finishAttempt(handle, attempt, "cancelled", "none");
@@ -859,7 +859,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 		return this.finishAttempt(handle, attempt, "succeeded", "none");
 	}
 
-	private async resumeContext(handle: InProcessChildHandleV1): Promise<ResultValue<ChildContextForkResult, FoundationError>> {
+	private async resumeContext(handle: InProcessChildHandle): Promise<ResultValue<ChildContextForkResult, FoundationError>> {
 		const base = await this.forkContext(handle);
 		if (!base.ok) return base;
 		try {
@@ -885,7 +885,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 		}
 	}
 
-	private async forkContext(handle: InProcessChildHandleV1): Promise<ResultValue<ChildContextForkResult, FoundationError>> {
+	private async forkContext(handle: InProcessChildHandle): Promise<ResultValue<ChildContextForkResult, FoundationError>> {
 		if (handle.contextFork !== undefined) return Result.ok(handle.contextFork);
 		const projected = await projectProviderChildContext({
 			schemaVersion: 1,
@@ -897,7 +897,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 		return projected;
 	}
 
-	private async reserveQuota(handle: InProcessChildHandleV1): Promise<ResultValue<QuotaReservation, FoundationError>> {
+	private async reserveQuota(handle: InProcessChildHandle): Promise<ResultValue<QuotaReservation, FoundationError>> {
 		const attribution = childAgentQuotaAttribution({
 			taskId: handle.spawn.attempt.taskId,
 			attemptId: handle.spawn.attempt.attemptId,
@@ -929,7 +929,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 		}
 	}
 
-	private async settleQuota(handle: InProcessChildHandleV1, usage: BudgetUsage): Promise<ResultValue<BudgetUsage, FoundationError>> {
+	private async settleQuota(handle: InProcessChildHandle, usage: BudgetUsage): Promise<ResultValue<BudgetUsage, FoundationError>> {
 		if (handle.quotaReservation === undefined) {
 			return Result.err(fail("quota_attribution_error", "Child Agent quota was not reserved"));
 		}
@@ -945,7 +945,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 	}
 
 	private async finishAttempt(
-		handle: InProcessChildHandleV1,
+		handle: InProcessChildHandle,
 		attempt: Attempt,
 		status: AttemptReceipt["status"],
 		sideEffectState: AttemptReceipt["sideEffectState"],
@@ -988,7 +988,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 		return Result.ok(cloneDeepFrozen(receipt.value));
 	}
 
-	private async cleanupMemory(handle: InProcessChildHandleV1): Promise<ResultValue<void, FoundationError>> {
+	private async cleanupMemory(handle: InProcessChildHandle): Promise<ResultValue<void, FoundationError>> {
 		if (handle.memory === undefined) return Result.ok(undefined);
 		const cleaned = await cleanupChildMemoryScope(handle.memory);
 		if (!cleaned.ok) return cleaned;
@@ -996,7 +996,7 @@ export class InProcessChildAgentProvider implements ChildAgentProvider, TaskExec
 		return Result.ok(undefined);
 	}
 
-	private async releaseHandle(handle: InProcessChildHandleV1): Promise<ResultValue<void, FoundationError>> {
+	private async releaseHandle(handle: InProcessChildHandle): Promise<ResultValue<void, FoundationError>> {
 		if (handle.closed) return Result.ok(undefined);
 		handle.closed = true;
 		if (handle.deadlineTimer !== undefined) {

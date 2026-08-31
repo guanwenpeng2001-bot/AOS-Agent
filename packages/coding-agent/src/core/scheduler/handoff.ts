@@ -132,7 +132,7 @@ export interface SchedulerHandoffAcceptance {
 	readonly revision: number;
 }
 
-interface SchedulerHandoffRecordV1 {
+interface SchedulerHandoffRecord {
 	readonly schemaVersion: 1;
 	readonly queueEntryId: string;
 	readonly transfer: SchedulerOwnershipTransfer;
@@ -191,7 +191,7 @@ function mapLedgerError(error: unknown): FoundationError {
 	return schedulerError("scheduler_persistence_failed");
 }
 
-function serializeHandoffRecord(value: SchedulerHandoffRecordV1): SchedulerHandoffRecordV1 {
+function serializeHandoffRecord(value: SchedulerHandoffRecord): SchedulerHandoffRecord {
 	return {
 		schemaVersion: 1,
 		queueEntryId: value.queueEntryId,
@@ -199,7 +199,7 @@ function serializeHandoffRecord(value: SchedulerHandoffRecordV1): SchedulerHando
 	};
 }
 
-function parseHandoffRecord(value: unknown): ResultValue<SchedulerHandoffRecordV1, FoundationError> {
+function parseHandoffRecord(value: unknown): ResultValue<SchedulerHandoffRecord, FoundationError> {
 	if (
 		!isRecord(value) ||
 		Object.keys(value).some((key) => !HANDOFF_RECORD_KEYS.has(key)) ||
@@ -330,7 +330,7 @@ export class SchedulerHandoffController {
 	private readonly cancelSourceDispatch: SchedulerCancelSourceDispatch | undefined;
 	private readonly targetAvailable: SchedulerHandoffTargetAvailable | undefined;
 	private writerLease: LedgerWriterLease | undefined;
-	private transfers = new Map<string, SchedulerHandoffRecordV1>();
+	private transfers = new Map<string, SchedulerHandoffRecord>();
 	private acceptances = new Map<string, SchedulerHandoffAcceptance>();
 	private objectRevisions = new Map<string, number>();
 	private mutationTail: Promise<void> = Promise.resolve();
@@ -402,7 +402,7 @@ export class SchedulerHandoffController {
 		if (claim.value.ownerId !== transfer.fromOwnerId || claim.value.fencingToken !== transfer.fencingToken) {
 			return fail("scheduler_lease_lost");
 		}
-		const record: SchedulerHandoffRecordV1 = {
+		const record: SchedulerHandoffRecord = {
 			schemaVersion: 1,
 			queueEntryId: request.queueEntryId,
 			transfer,
@@ -548,7 +548,7 @@ export class SchedulerHandoffController {
 	}
 
 	private async resumeAcceptance(
-		record: SchedulerHandoffRecordV1,
+		record: SchedulerHandoffRecord,
 		initial: SchedulerHandoffAcceptance,
 	): Promise<ResultValue<SchedulerHandoffResult, FoundationError>> {
 		let acceptance = initial;
@@ -613,7 +613,7 @@ export class SchedulerHandoffController {
 		};
 		const accepted = applySchedulerHandoffTransition(latest.transfer, acceptedCandidate, acceptance.startedAt);
 		if (!accepted.ok) return accepted;
-		const acceptedRecord: SchedulerHandoffRecordV1 = {
+		const acceptedRecord: SchedulerHandoffRecord = {
 			schemaVersion: 1,
 			queueEntryId: latest.queueEntryId,
 			transfer: accepted.value,
@@ -643,7 +643,7 @@ export class SchedulerHandoffController {
 		};
 		const applied = applySchedulerHandoffTransition(record.transfer, candidate, decidedAt);
 		if (!applied.ok) return applied;
-		const next: SchedulerHandoffRecordV1 = {
+		const next: SchedulerHandoffRecord = {
 			schemaVersion: 1,
 			queueEntryId: record.queueEntryId,
 			transfer: applied.value,
@@ -737,7 +737,7 @@ export class SchedulerHandoffController {
 		});
 	}
 
-	private async writeHandoffRecord(record: SchedulerHandoffRecordV1): Promise<ResultValue<void, FoundationError>> {
+	private async writeHandoffRecord(record: SchedulerHandoffRecord): Promise<ResultValue<void, FoundationError>> {
 		const transfer = record.transfer;
 		const expectedRevision = this.objectRevisions.get(this.objectKey(SCHEDULER_HANDOFF_OBJECT_TYPE, transfer.transferId)) ?? 0;
 		const written = await this.appendFact(

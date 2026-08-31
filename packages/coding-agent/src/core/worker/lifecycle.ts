@@ -452,7 +452,7 @@ export function validateWorkerRecord(value: unknown): value is WorkerRecord {
 	return recordStatusShape(value);
 }
 
-function validateWorkerTransitionV1(value: unknown): value is WorkerTransition {
+function validateWorkerTransition(value: unknown): value is WorkerTransition {
 	if (!isRecord(value) || hasForbiddenWorkerField(value) || !hasOnlyKeys(value, TRANSITION_KEYS)) return false;
 	return (
 		value.schemaVersion === WORKER_SCHEMA_VERSION &&
@@ -581,7 +581,7 @@ function initialRecord(binding: WorkerBinding, createdAt: string): WorkerRecord 
 	});
 }
 
-function validateWorkerTransitionReceiptV1(value: unknown): value is WorkerTransitionReceipt {
+function validateWorkerTransitionReceipt(value: unknown): value is WorkerTransitionReceipt {
 	if (
 		!isRecord(value) ||
 		hasForbiddenWorkerField(value) ||
@@ -639,7 +639,7 @@ export function validateWorkerLifecycleState(value: unknown): value is WorkerLif
 	const requestFingerprints = new Map<string, string>();
 	for (const item of value.transitions) {
 		if (
-			!validateWorkerTransitionReceiptV1(item) ||
+			!validateWorkerTransitionReceipt(item) ||
 			item.from !== folded.status ||
 			item.previousRevision !== folded.revision ||
 			item.revision !== folded.revision + 1 ||
@@ -700,7 +700,7 @@ export function applyWorkerTransition(
 	if (!validateWorkerLifecycleState(state)) {
 		return Result.err(new FoundationError("worker_persistence_failed", "Worker lifecycle state is invalid"));
 	}
-	if (!validateWorkerTransitionV1(inputValue)) {
+	if (!validateWorkerTransition(inputValue)) {
 		return Result.err(new FoundationError("worker_invalid", "Worker transition is invalid"));
 	}
 	const input = inputValue;

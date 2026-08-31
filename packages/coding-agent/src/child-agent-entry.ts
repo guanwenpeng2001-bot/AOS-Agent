@@ -74,17 +74,17 @@ export interface ChildAgentHarnessRuntimeAuthority {
 	readonly now?: () => string;
 }
 
-interface ExactTurnUsageV1 {
+interface ExactTurnUsage {
 	tokens: number;
 	costUsd: number;
 	modelCalls: number;
 	toolCalls: number;
 	exact: boolean;
 	readonly pending: Promise<void>[];
-	readonly toolExecutions: ToolExecutionEvidenceV1[];
+	readonly toolExecutions: ToolExecutionEvidence[];
 }
 
-interface ToolExecutionEvidenceV1 {
+interface ToolExecutionEvidence {
 	readonly declaredNone: boolean;
 	settled: boolean;
 }
@@ -93,7 +93,7 @@ interface ToolExecutionEvidenceV1 {
 export class AgentHarnessChildAgentEntryRuntime implements ChildAgentEntryRuntime {
 	private initialized: ChildAgentInitializeRequest | undefined;
 	private harness: AgentHarnessType | undefined;
-	private activeUsage: ExactTurnUsageV1 | undefined;
+	private activeUsage: ExactTurnUsage | undefined;
 	private readonly authority: ChildAgentHarnessRuntimeAuthority;
 
 	constructor(authority: ChildAgentHarnessRuntimeAuthority) {
@@ -119,7 +119,7 @@ export class AgentHarnessChildAgentEntryRuntime implements ChildAgentEntryRuntim
 						throw new FoundationError("quota_attribution_error", "Child Agent tool call occurred outside an active turn");
 					}
 					usage.toolCalls += 1;
-					const evidence: ToolExecutionEvidenceV1 = {
+					const evidence: ToolExecutionEvidence = {
 						declaredNone: tool.sideEffectState === "none",
 						settled: false,
 					};
@@ -199,7 +199,7 @@ export class AgentHarnessChildAgentEntryRuntime implements ChildAgentEntryRuntim
 		if (this.activeUsage !== undefined) {
 			return Result.err(new FoundationError("subagent_conflict", "Child Agent harness already has an active turn"));
 		}
-		const exactUsage: ExactTurnUsageV1 = {
+		const exactUsage: ExactTurnUsage = {
 			tokens: 0,
 			costUsd: 0,
 			modelCalls: 0,
@@ -324,7 +324,7 @@ export class AgentHarnessChildAgentEntryRuntime implements ChildAgentEntryRuntim
 	}
 }
 
-interface ActiveTurnV1 {
+interface ActiveTurn {
 	readonly requestId: string;
 	readonly spawnId: string;
 	readonly attemptId: string;
@@ -346,7 +346,7 @@ export function runChildAgentProcess(options: ChildAgentEntryOptions): Promise<v
 	let settled = false;
 	let resolveRun: () => void = () => undefined;
 	let turnController: AbortController | undefined;
-	let activeTurn: ActiveTurnV1 | undefined;
+	let activeTurn: ActiveTurn | undefined;
 	let terminalEmitted = false;
 	const run = new Promise<void>((resolve) => {
 		resolveRun = resolve;
@@ -464,7 +464,7 @@ export function runChildAgentProcess(options: ChildAgentEntryOptions): Promise<v
 		if (frame.type === "turn") {
 			turnController?.abort();
 			turnController = new AbortController();
-			const turn: ActiveTurnV1 = {
+			const turn: ActiveTurn = {
 				requestId: frame.requestId,
 				spawnId: frame.spawnId,
 				attemptId: frame.attemptId,

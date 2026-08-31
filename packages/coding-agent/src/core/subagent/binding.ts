@@ -193,7 +193,7 @@ function projectionError(message: string): ResultValue<never, FoundationError> {
 	return Result.err(new FoundationError("subagent_binding_projection_invalid", message));
 }
 
-interface McpInheritanceApprovalAuthorityStateV1 {
+interface McpInheritanceApprovalAuthorityState {
 	readonly profile: ExecutionPolicyProfile;
 	readonly binding: PolicyBinding;
 	readonly policyRevision: RevisionReference;
@@ -203,7 +203,7 @@ interface McpInheritanceApprovalAuthorityStateV1 {
 
 const MCP_INHERITANCE_AUTHORITIES = new WeakMap<
 	McpInheritanceApprovalAuthority,
-	McpInheritanceApprovalAuthorityStateV1
+	McpInheritanceApprovalAuthorityState
 >();
 const TRUSTED_CHILD_BINDING_PROJECTIONS = new WeakSet<ChildBindingProjection>();
 

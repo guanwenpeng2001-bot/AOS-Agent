@@ -53,7 +53,7 @@ export interface CodingAgentHarnessTool extends HarnessTool {
 
 const WORKER_TOOL_EXECUTION_OBJECT_TYPE = "coding_agent.worker_tool_execution";
 
-interface WorkerToolExecutionFactV1 {
+interface WorkerToolExecutionFact {
 	readonly schemaVersion: 1;
 	readonly type: typeof WORKER_TOOL_EXECUTION_OBJECT_TYPE;
 	readonly id: string;
@@ -136,7 +136,7 @@ async function persistWorkerToolExecution(
 		(receiptCorrelation.bindingId !== undefined && receiptCorrelation.bindingId !== request.bindingId) ||
 		(receiptCorrelation.bindingEpochId !== undefined && receiptCorrelation.bindingEpochId !== request.bindingEpochId) || receiptCorrelation.agentInstanceId !== undefined
 	) throw new FoundationError("invalid_correlation", "WorkerReceipt does not match the exact Host execution correlation");
-	const fact: WorkerToolExecutionFactV1 = {
+	const fact: WorkerToolExecutionFact = {
 		schemaVersion: 1,
 		type: WORKER_TOOL_EXECUTION_OBJECT_TYPE,
 		id: request.operationId,

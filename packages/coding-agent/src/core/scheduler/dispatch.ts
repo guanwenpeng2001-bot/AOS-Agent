@@ -255,7 +255,7 @@ export interface SchedulerInProcessHostBindingOptions {
 	readonly runtimeSnapshot?: SchedulerExecutorRuntimeSnapshot;
 }
 
-interface SchedulerProviderResumeSurfaceV1 extends TaskExecutorProvider {
+interface SchedulerProviderResumeSurface extends TaskExecutorProvider {
 	readonly resumeAttempt?: (
 		attemptId: string,
 		options: FoundationProviderExecutionOptions,
@@ -266,7 +266,7 @@ interface SchedulerProviderResumeSurfaceV1 extends TaskExecutorProvider {
 	) => Promise<ResultValue<AttemptReceipt, FoundationError>>;
 }
 
-interface SchedulerPreparedDispatchV1 {
+interface SchedulerPreparedDispatch {
 	readonly entry: SchedulerQueueEntry;
 	readonly claim: SchedulerClaim;
 	readonly selection: {
@@ -279,7 +279,7 @@ interface SchedulerPreparedDispatchV1 {
 	readonly dispatchRecord: SchedulerDispatchRecord | undefined;
 }
 
-interface SchedulerDurableAttemptV1 {
+interface SchedulerDurableAttempt {
 	readonly queueEntryId: string;
 	readonly provider: TaskExecutorProvider;
 	readonly dispatch: Dispatch;
@@ -289,12 +289,12 @@ interface SchedulerDurableAttemptV1 {
 	readonly agentInstance?: AgentInstance;
 }
 
-interface SchedulerExecutionSignalV1 {
+interface SchedulerExecutionSignal {
 	readonly signal: AbortSignal | undefined;
 	dispose(): void;
 }
 
-interface SchedulerRunDispatchCancellationV1 {
+interface SchedulerRunDispatchCancellation {
 	readonly runId: RunId;
 	readonly queueEntryId: string;
 	readonly controller: AbortController;
@@ -304,7 +304,7 @@ interface SchedulerRunDispatchCancellationV1 {
 	cancellation?: Promise<ResultValue<void, FoundationError>>;
 }
 
-type SchedulerRunLedgerStateV1 = "live" | "terminal";
+type SchedulerRunLedgerState = "live" | "terminal";
 
 function schedulerError(code: SchedulerErrorCode): FoundationError {
 	return new FoundationError(code, ERROR_MESSAGES[code], { retryable: RETRYABLE.has(code) });
@@ -356,7 +356,7 @@ function failClosedInProcessRuntimeSnapshot(
 
 /** True when the selected provider exposes the settlement resume surface. */
 export function schedulerProviderResumeSupported(provider: TaskExecutorProvider): boolean {
-	const surface: SchedulerProviderResumeSurfaceV1 = provider;
+	const surface: SchedulerProviderResumeSurface = provider;
 	return typeof surface.resumeAttempt === "function" || typeof surface.resume === "function";
 }
 
@@ -387,7 +387,7 @@ export function schedulerDispatchIdentity(
 
 /**
  * Deterministically assemble DispatchV1, the initial BindingEpochV1, and a
- * complete ExecutionCorrelationV1. deadlineAt is copied from the queue entry
+ * complete ExecutionCorrelation. deadlineAt is copied from the queue entry
  * onto DispatchV1. Non-agent epochs never carry an AgentInstance.
  */
 export function assembleSchedulerDispatch(
@@ -577,7 +577,7 @@ function schedulerExecutionSignal(
 	nowIso: string,
 	parent: AbortSignal | undefined,
 	clock: RuntimeClock,
-): SchedulerExecutionSignalV1 {
+): SchedulerExecutionSignal {
 	if (deadlineAt === undefined) return { signal: parent, dispose() {} };
 	const controller = new AbortController();
 	let remainingMs = Date.parse(deadlineAt) - Date.parse(nowIso);
@@ -609,11 +609,11 @@ function schedulerExecutionSignal(
 	};
 }
 
-function schedulerRunLedgerStateV1(
+function schedulerRunLedgerState(
 	session: RunLedgerSession,
 	sessionId: string,
 	runId: RunId,
-): SchedulerRunLedgerStateV1 | undefined {
+): SchedulerRunLedgerState | undefined {
 	let accepted = false;
 	let terminal = false;
 	for (const entry of session.getEntries()) {
@@ -639,11 +639,11 @@ function schedulerRunLedgerStateV1(
 	return terminal ? "terminal" : "live";
 }
 
-function schedulerRunDispatchSignalV1(requestSignal: AbortSignal | undefined, runSignal: AbortSignal): AbortSignal {
+function schedulerRunDispatchSignal(requestSignal: AbortSignal | undefined, runSignal: AbortSignal): AbortSignal {
 	return requestSignal === undefined ? runSignal : AbortSignal.any([requestSignal, runSignal]);
 }
 
-function schedulerSelectionFailureReasonV1(
+function schedulerSelectionFailureReason(
 	error: FoundationError,
 	signal: AbortSignal | undefined,
 	deadlineAt: string | undefined,
@@ -686,7 +686,7 @@ function schedulerSelectionFailureReasonV1(
 	return "failed";
 }
 
-function schedulerSelectionOutcomeReasonV1(receipt: AttemptReceipt): SchedulerSelectionSettlementReason | undefined {
+function schedulerSelectionOutcomeReason(receipt: AttemptReceipt): SchedulerSelectionSettlementReason | undefined {
 	if (receipt.status === "suspended") return undefined;
 	if (receipt.status === "succeeded") return "succeeded";
 	if (receipt.status === "cancelled") return "cancelled";
@@ -760,9 +760,9 @@ export class SchedulerDispatchController {
 	private readonly workspaceDigest: Fingerprint | undefined;
 	private readonly nativeAgentBridge: SchedulerNativeAgentBridge | undefined;
 	private readonly runsRequiringCancellation = new Set<RunId>();
-	private readonly runDispatches = new Map<RunId, Set<SchedulerRunDispatchCancellationV1>>();
-	private readonly queueRunDispatches = new Map<string, Set<SchedulerRunDispatchCancellationV1>>();
-	private readonly attemptRunDispatches = new Map<string, SchedulerRunDispatchCancellationV1>();
+	private readonly runDispatches = new Map<RunId, Set<SchedulerRunDispatchCancellation>>();
+	private readonly queueRunDispatches = new Map<string, Set<SchedulerRunDispatchCancellation>>();
+	private readonly attemptRunDispatches = new Map<string, SchedulerRunDispatchCancellation>();
 	private runLifecycleDisposed = false;
 
 	constructor(options: SchedulerDispatchControllerOptions) {
@@ -836,9 +836,9 @@ export class SchedulerDispatchController {
 		} catch {
 			return fail("scheduler_dispatch_invalid");
 		}
-		let runState: SchedulerRunLedgerStateV1 | undefined;
+		let runState: SchedulerRunLedgerState | undefined;
 		try {
-			runState = schedulerRunLedgerStateV1(this.runLifecycleSession, this.sessionId, request.runId);
+			runState = schedulerRunLedgerState(this.runLifecycleSession, this.sessionId, request.runId);
 		} catch {
 			return fail("scheduler_dispatch_invalid");
 		}
@@ -858,7 +858,7 @@ export class SchedulerDispatchController {
 			...(request.requiredCapabilities === undefined ? {} : { requiredCapabilities: request.requiredCapabilities }),
 			...(request.workspaceDigest === undefined ? {} : { workspaceDigest: request.workspaceDigest }),
 			...(request.executorRequirements === undefined ? {} : { executorRequirements: request.executorRequirements }),
-			signal: schedulerRunDispatchSignalV1(request.signal, association.controller.signal),
+			signal: schedulerRunDispatchSignal(request.signal, association.controller.signal),
 		};
 		let result: ResultValue<SchedulerDispatchOutcome, FoundationError> | undefined;
 		try {
@@ -871,7 +871,7 @@ export class SchedulerDispatchController {
 
 	private async dispatchClaimedInternal(
 		request: SchedulerDispatchRequest,
-		runAssociation?: SchedulerRunDispatchCancellationV1,
+		runAssociation?: SchedulerRunDispatchCancellation,
 	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
 		const prepared = await this.prepareClaimed(request);
 		if (!prepared.ok) return prepared;
@@ -918,8 +918,8 @@ export class SchedulerDispatchController {
 			);
 		}
 		const reason = result.ok
-			? schedulerSelectionOutcomeReasonV1(result.value.receipt)
-			: schedulerSelectionFailureReasonV1(
+			? schedulerSelectionOutcomeReason(result.value.receipt)
+			: schedulerSelectionFailureReason(
 					result.error,
 					request.signal,
 					prepared.value.assembly.dispatch.deadlineAt,
@@ -970,11 +970,11 @@ export class SchedulerDispatchController {
 	private createRunDispatchAssociation(
 		runId: RunId,
 		queueEntryId: string,
-	): ResultValue<SchedulerRunDispatchCancellationV1, FoundationError> {
+	): ResultValue<SchedulerRunDispatchCancellation, FoundationError> {
 		for (const existing of this.queueRunDispatches.get(queueEntryId) ?? []) {
 			if (existing.runId !== runId) return fail("scheduler_dispatch_invalid");
 		}
-		const association: SchedulerRunDispatchCancellationV1 = {
+		const association: SchedulerRunDispatchCancellation = {
 			runId,
 			queueEntryId,
 			controller: new AbortController(),
@@ -996,8 +996,8 @@ export class SchedulerDispatchController {
 	}
 
 	private activateRunDispatchAssociation(
-		association: SchedulerRunDispatchCancellationV1,
-		prepared: SchedulerPreparedDispatchV1,
+		association: SchedulerRunDispatchCancellation,
+		prepared: SchedulerPreparedDispatch,
 		binding: AgentBinding,
 	): ResultValue<void, FoundationError> {
 		if (association.durable) {
@@ -1020,7 +1020,7 @@ export class SchedulerDispatchController {
 		return Result.ok(undefined);
 	}
 
-	private beginRunDispatchCancellation(association: SchedulerRunDispatchCancellationV1): void {
+	private beginRunDispatchCancellation(association: SchedulerRunDispatchCancellation): void {
 		if (!association.durable || association.cancel === undefined || association.cancellation !== undefined) return;
 		const cancellation: Promise<ResultValue<void, FoundationError>> = association
 			.cancel()
@@ -1042,7 +1042,7 @@ export class SchedulerDispatchController {
 		}
 	}
 
-	private releaseRunDispatchAssociation(association: SchedulerRunDispatchCancellationV1): void {
+	private releaseRunDispatchAssociation(association: SchedulerRunDispatchCancellation): void {
 		if (association.attemptId !== undefined && this.attemptRunDispatches.get(association.attemptId) === association) {
 			this.attemptRunDispatches.delete(association.attemptId);
 		}
@@ -1060,7 +1060,7 @@ export class SchedulerDispatchController {
 
 	private async prepareClaimed(
 		request: SchedulerDispatchRequest,
-	): Promise<ResultValue<SchedulerPreparedDispatchV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerPreparedDispatch, FoundationError>> {
 		const entryResult = await this.queue.getEntry(request.queueEntryId);
 		if (!entryResult.ok) return entryResult;
 		const entry = entryResult.value;
@@ -1111,7 +1111,7 @@ export class SchedulerDispatchController {
 			if (failure.ok) return failure;
 			const released = await this.registry.settleSelection(
 				entry.queueEntryId,
-				schedulerSelectionFailureReasonV1(failure.error, request.signal, entry.deadlineAt, this.nowIso()),
+				schedulerSelectionFailureReason(failure.error, request.signal, entry.deadlineAt, this.nowIso()),
 				{},
 			);
 			return released.ok ? failure : Result.err(released.error);
@@ -1204,8 +1204,8 @@ export class SchedulerDispatchController {
 
 	private async executePrepared(
 		request: SchedulerDispatchRequest,
-		prepared: SchedulerPreparedDispatchV1,
-		runAssociation?: SchedulerRunDispatchCancellationV1,
+		prepared: SchedulerPreparedDispatch,
+		runAssociation?: SchedulerRunDispatchCancellation,
 	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
 		const scheduled = schedulerExecutionSignal(
 			prepared.assembly.dispatch.deadlineAt,
@@ -1290,8 +1290,8 @@ export class SchedulerDispatchController {
 
 	private async resumePrepared(
 		request: SchedulerDispatchRequest,
-		prepared: SchedulerPreparedDispatchV1,
-		runAssociation?: SchedulerRunDispatchCancellationV1,
+		prepared: SchedulerPreparedDispatch,
+		runAssociation?: SchedulerRunDispatchCancellation,
 	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
 		if (prepared.dispatchRecord === undefined || prepared.dispatchRecord.status !== "in_flight") {
 			return fail("scheduler_dispatch_invalid");
@@ -1361,7 +1361,7 @@ export class SchedulerDispatchController {
 	}
 
 	private async cancelPrepared(
-		prepared: SchedulerPreparedDispatchV1,
+		prepared: SchedulerPreparedDispatch,
 		binding: AgentBinding,
 	): Promise<ResultValue<void, FoundationError>> {
 		return this.settlementFor(prepared.assembly.correlation).cancelAttempt({
@@ -1375,7 +1375,7 @@ export class SchedulerDispatchController {
 	}
 
 	private async revalidateNativeAgent(
-		prepared: SchedulerPreparedDispatchV1,
+		prepared: SchedulerPreparedDispatch,
 		binding: AgentBinding,
 		signal: AbortSignal | undefined,
 	): Promise<ResultValue<void, FoundationError>> {
@@ -1407,7 +1407,7 @@ export class SchedulerDispatchController {
 	}
 
 	private executionAgentIdentityMatches(
-		prepared: SchedulerPreparedDispatchV1,
+		prepared: SchedulerPreparedDispatch,
 		attempt: Attempt,
 		receipt: AttemptReceipt,
 	): boolean {
@@ -1429,7 +1429,7 @@ export class SchedulerDispatchController {
 	}
 
 	private async persistInFlight(
-		prepared: SchedulerPreparedDispatchV1,
+		prepared: SchedulerPreparedDispatch,
 		attempt: Attempt,
 	): Promise<ResultValue<void, FoundationError>> {
 		const checked = validateAttempt(attempt);
@@ -1481,7 +1481,7 @@ export class SchedulerDispatchController {
 	}
 
 	private async completeOutcome(
-		prepared: SchedulerPreparedDispatchV1,
+		prepared: SchedulerPreparedDispatch,
 		attempt: Attempt,
 		receipt: AttemptReceipt,
 	): Promise<ResultValue<SchedulerDispatchOutcome, FoundationError>> {
@@ -1529,7 +1529,7 @@ export class SchedulerDispatchController {
 
 	private async loadDurableAttempt(
 		attemptId: string,
-	): Promise<ResultValue<SchedulerDurableAttemptV1, FoundationError>> {
+	): Promise<ResultValue<SchedulerDurableAttempt, FoundationError>> {
 		const queueSnapshot = await this.queue.snapshot();
 		if (!queueSnapshot.ok) return queueSnapshot;
 		const queueDispatches = queueSnapshot.value.dispatches.filter(

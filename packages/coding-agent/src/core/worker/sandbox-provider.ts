@@ -78,7 +78,7 @@ export interface WorkerCredentialQueueTarget {
 	revoke(lease: SafeLeaseReference): { readonly ok: boolean };
 }
 
-export type WorkerCredentialDetachReason = WorkerInvalidationReasonV1 | "lost" | "reclaim";
+export type WorkerCredentialDetachReason = WorkerInvalidationReason | "lost" | "reclaim";
 
 export interface WorkerCredentialDetach {
 	readonly workerId: string;
@@ -105,20 +105,20 @@ export type WorkerSandboxFact =
 	}
 	| { readonly type: "receipt"; readonly workerId: string; readonly terminalRecordRevision: number; readonly receipt: WorkerReceipt };
 
-interface ActiveWorkerOperationV1 {
+interface ActiveWorkerOperation {
 	readonly request: SandboxOperationRequest;
 	readonly supervisor: OperationWorkerSupervisor;
 	readonly runId?: string;
 }
 
-type WorkerCredentialCommandV1 =
+type WorkerCredentialCommand =
 	| { readonly type: "project" | "renew"; readonly lease: SafeLeaseProjection }
 	| { readonly type: "revoke"; readonly lease: SafeLeaseReference };
 
-interface WorkerCredentialQueueV1 {
+interface WorkerCredentialQueue {
 	readonly workerId: string;
 	readonly target: WorkerCredentialQueueTarget;
-	readonly commands: WorkerCredentialCommandV1[];
+	readonly commands: WorkerCredentialCommand[];
 	supervisor?: OperationWorkerSupervisor;
 	drain?: Promise<ResultValue<void, FoundationError>>;
 	liveDrain?: Promise<void>;
@@ -128,16 +128,16 @@ interface WorkerCredentialQueueV1 {
 	detachNotified: boolean;
 }
 
-interface StagedWorkerFactsV1 {
+interface StagedWorkerFacts {
 	readonly records: Map<string, WorkerRecord>;
 	readonly receipts: Map<string, WorkerReceipt>;
 	readonly completedOperationIds: Set<string>;
 	readonly consumedWorkerIds: Set<string>;
 }
 
-type WorkerInvalidationReasonV1 = WorkerCancelReason | "terminal";
+type WorkerInvalidationReason = WorkerCancelReason | "terminal";
 
-class WorkerCredentialTargetRegistryV1 implements ReadonlyMap<string, WorkerCredentialQueueTarget> {
+class WorkerCredentialTargetRegistry implements ReadonlyMap<string, WorkerCredentialQueueTarget> {
 	private readonly targets: Map<string, WorkerCredentialQueueTarget>;
 	private readonly resolveTarget: (workerId: string) => WorkerCredentialQueueTarget | undefined;
 
@@ -164,11 +164,11 @@ class WorkerCredentialTargetRegistryV1 implements ReadonlyMap<string, WorkerCred
 	}
 }
 
-interface WorkerOperationReservationV1 {
+interface WorkerOperationReservation {
 	readonly operationId: string;
 	runId?: string;
-	invalidated?: WorkerInvalidationReasonV1;
-	readonly pendingRunInvalidations: Map<string, WorkerInvalidationReasonV1>;
+	invalidated?: WorkerInvalidationReason;
+	readonly pendingRunInvalidations: Map<string, WorkerInvalidationReason>;
 	readonly invalidation: Promise<void>;
 	readonly resolveInvalidation: () => void;
 	readonly settled: Promise<void>;
@@ -290,14 +290,14 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 	private readonly declaredCapabilities: readonly FoundationProviderCapability[];
 	private readonly capabilityConfigurationValid: boolean;
 	private readonly maxRetainedRecords: number;
-	private readonly operations = new Map<string, ActiveWorkerOperationV1>();
-	private readonly reservations = new Map<string, WorkerOperationReservationV1>();
+	private readonly operations = new Map<string, ActiveWorkerOperation>();
+	private readonly reservations = new Map<string, WorkerOperationReservation>();
 	private readonly completedOperationIds = new Set<string>();
 	private readonly consumedWorkerIds = new Set<string>();
 	private readonly operationPayloads = new Map<string, FoundationJsonValue>();
 	private readonly records = new Map<string, WorkerRecord>();
 	private readonly receipts = new Map<string, WorkerReceipt>();
-	private readonly credentialQueues = new Map<string, WorkerCredentialQueueV1>();
+	private readonly credentialQueues = new Map<string, WorkerCredentialQueue>();
 	private readonly credentialTargets = new Map<string, WorkerCredentialQueueTarget>();
 	private readonly credentialTargetRegistry: ReadonlyMap<string, WorkerCredentialQueueTarget>;
 	private readonly factSubscribers = new Set<(fact: WorkerSandboxFact) => void>();
@@ -324,7 +324,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 		if (!Number.isSafeInteger(this.maxRetainedRecords) || this.maxRetainedRecords < 1) {
 			throw new RangeError("maxRetainedRecords must be a positive safe integer");
 		}
-		this.credentialTargetRegistry = new WorkerCredentialTargetRegistryV1(
+		this.credentialTargetRegistry = new WorkerCredentialTargetRegistry(
 			this.credentialTargets,
 			(workerId) => this.resolveCredentialTarget(workerId),
 		);
@@ -437,7 +437,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 		return Result.ok(undefined);
 	}
 
-	private stageWorkerFacts(recovery: WorkerSandboxRecovery): ResultValue<StagedWorkerFactsV1, FoundationError> {
+	private stageWorkerFacts(recovery: WorkerSandboxRecovery): ResultValue<StagedWorkerFacts, FoundationError> {
 		if (this.disposed) {
 			return Result.err(providerError("worker_persistence_failed", "Disposed Operation Worker cannot restore durable facts"));
 		}
@@ -685,7 +685,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 		const reservationSettled = new Promise<void>((resolve) => { resolveReservation = resolve; });
 		let resolveInvalidation: () => void = () => undefined;
 		const invalidation = new Promise<void>((resolve) => { resolveInvalidation = resolve; });
-		const reservation: WorkerOperationReservationV1 = {
+		const reservation: WorkerOperationReservation = {
 			operationId: requestSnapshot.value.operationId,
 			...(correlationSnapshot?.runId === undefined ? {} : { runId: correlationSnapshot.runId }),
 			pendingRunInvalidations: new Map(),
@@ -702,7 +702,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 		let outcome: ResultValue<WorkerReceipt, FoundationError> = Result.err(
 			providerError("worker_unavailable", "Operation Worker operation did not start"),
 		);
-		const invalidateLiveReservation = (reason: WorkerInvalidationReasonV1): void => {
+		const invalidateLiveReservation = (reason: WorkerInvalidationReason): void => {
 			this.invalidateReservation(reservation, reason);
 			if (supervisor === undefined || cancellation !== undefined) return;
 			cancellation = this.convergeInvalidation(supervisor, reason, requestSnapshot.value.operationId)
@@ -791,7 +791,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 				});
 				const planned = supervisor.preflight({ binding: normalizedBinding, runAccepted: facts.runAccepted });
 				if (!planned.ok) return planned;
-				const active: ActiveWorkerOperationV1 = {
+				const active: ActiveWorkerOperation = {
 					request: requestSnapshot.value,
 					supervisor,
 					...(normalizedBinding.runId === undefined ? {} : { runId: normalizedBinding.runId }),
@@ -983,7 +983,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 		const existing = this.credentialQueues.get(workerId);
 		if (existing !== undefined) return existing.target;
 		if (this.credentialQueues.size >= this.maxRetainedRecords) return undefined;
-		const queue = {} as WorkerCredentialQueueV1;
+		const queue = {} as WorkerCredentialQueue;
 		const enqueueProjection = (
 			type: "project" | "renew",
 			leaseValue: SafeLeaseProjection,
@@ -1020,7 +1020,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 		return target;
 	}
 
-	private enqueueCredentialCommand(queue: WorkerCredentialQueueV1, command: WorkerCredentialCommandV1): boolean {
+	private enqueueCredentialCommand(queue: WorkerCredentialQueue, command: WorkerCredentialCommand): boolean {
 		if (
 			this.disposed || !queue.accepting || queue.quarantined ||
 			queue.commands.length >= this.maxRetainedRecords
@@ -1030,13 +1030,13 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 		return true;
 	}
 
-	private startLiveCredentialDrain(queue: WorkerCredentialQueueV1, supervisor: OperationWorkerSupervisor): void {
+	private startLiveCredentialDrain(queue: WorkerCredentialQueue, supervisor: OperationWorkerSupervisor): void {
 		if (queue.liveDrain !== undefined) return;
 		queue.liveDrain = this.convergeLiveCredentialDrain(queue, supervisor);
 	}
 
 	private async convergeLiveCredentialDrain(
-		queue: WorkerCredentialQueueV1,
+		queue: WorkerCredentialQueue,
 		supervisor: OperationWorkerSupervisor,
 	): Promise<void> {
 		try {
@@ -1141,7 +1141,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 	}
 
 	private publishCredentialDetach(
-		queue: WorkerCredentialQueueV1,
+		queue: WorkerCredentialQueue,
 		supervisor: OperationWorkerSupervisor,
 		reason: WorkerCredentialDetachReason,
 	): void {
@@ -1187,7 +1187,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 		return undefined;
 	}
 
-	private reservationError(reservation: WorkerOperationReservationV1): FoundationError | undefined {
+	private reservationError(reservation: WorkerOperationReservation): FoundationError | undefined {
 		if (this.disposed && reservation.invalidated === undefined) this.invalidateReservation(reservation, "shutdown");
 		if (reservation.invalidated === undefined) return undefined;
 		return reservation.invalidated === "deadline"
@@ -1195,7 +1195,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 			: providerError("worker_cancel_failed", "Operation Worker was invalidated before execution");
 	}
 
-	private invalidateReservation(reservation: WorkerOperationReservationV1, reason: WorkerInvalidationReasonV1): void {
+	private invalidateReservation(reservation: WorkerOperationReservation, reason: WorkerInvalidationReason): void {
 		if (reservation.invalidated !== undefined) return;
 		reservation.invalidated = reason;
 		reservation.resolveInvalidation();
@@ -1203,7 +1203,7 @@ export class WorkerSandboxProvider implements SandboxOperationProvider {
 
 	private async convergeInvalidation(
 		supervisor: OperationWorkerSupervisor,
-		reason: WorkerInvalidationReasonV1,
+		reason: WorkerInvalidationReason,
 		operationId: string,
 	): Promise<ResultValue<void, FoundationError>> {
 		await this.detachCredentialWorker(supervisor, reason);

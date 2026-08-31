@@ -95,7 +95,7 @@ import type {
 	SchedulerNativeAgentRevalidateInput,
 } from "../scheduler/dispatch.ts";
 
-type ExecutableChildProviderV1 = ChildAgentProvider & TaskExecutorProvider & {
+type ExecutableChildProvider = ChildAgentProvider & TaskExecutorProvider & {
 	close(attemptId: string): Promise<ResultValue<void, FoundationError>>;
 };
 
@@ -109,7 +109,7 @@ export interface SchedulerNativeAgentPlanner {
 }
 
 /** Trusted product-only lane projection over the canonical parent writer lease. */
-class ChildLaneSessionLedgerWriterV1 extends SessionLedgerWriter {
+class ChildLaneSessionLedgerWriter extends SessionLedgerWriter {
 	private readonly parent: SessionLedgerWriter;
 
 	constructor(parent: SessionLedgerWriter, childLaneId: string) {
@@ -311,9 +311,9 @@ function isHostParentRunInput(value: unknown): value is {
 }
 
 function providerForKind(
-	providers: ReadonlyMap<SubagentProviderKind, ExecutableChildProviderV1>,
+	providers: ReadonlyMap<SubagentProviderKind, ExecutableChildProvider>,
 	kind: SubagentProviderKind,
-): ExecutableChildProviderV1 {
+): ExecutableChildProvider {
 	const provider = providers.get(kind);
 	if (provider === undefined) throw new FoundationError("subagent_provider_unavailable", `Trusted provider ${kind} is unavailable`);
 	return provider;
@@ -348,7 +348,7 @@ export class SubagentComposition {
 	private readonly laneWriters = new Map<string, SessionLedgerWriter>();
 	private readonly laneLedgers = new Map<string, SessionLedger>();
 	private readonly laneSettlements = new Map<string, LayeredResultSettlement>();
-	private readonly providers: ReadonlyMap<SubagentProviderKind, ExecutableChildProviderV1>;
+	private readonly providers: ReadonlyMap<SubagentProviderKind, ExecutableChildProvider>;
 	private readonly runByChild = new Map<string, string>();
 	private readonly executionWorkspaces = new Map<string, string>();
 	private readonly worktreeRecords = new Map<string, ChildWorktreeRecord>();
@@ -512,7 +512,7 @@ export class SubagentComposition {
 			...(options.fork.environment === undefined ? {} : { environment: options.fork.environment }),
 			...(options.now === undefined ? {} : { now: options.now }),
 		});
-		this.providers = new Map<SubagentProviderKind, ExecutableChildProviderV1>([
+		this.providers = new Map<SubagentProviderKind, ExecutableChildProvider>([
 			["in_process", inProcess],
 			["fork", fork],
 		]);
@@ -1350,7 +1350,7 @@ export class SubagentComposition {
 		const deadlineAt = input.deadlineMs === undefined
 			? undefined
 			: new Date(Date.parse(input.timestamp) + input.deadlineMs).toISOString();
-		let provider: ExecutableChildProviderV1 | undefined;
+		let provider: ExecutableChildProvider | undefined;
 		let plannedChildId: string | undefined;
 		try {
 			const descriptor = this.registry.resolve(policy.providerId, {
@@ -1871,7 +1871,7 @@ export class SubagentComposition {
 
 	private async lookupProviderHandle(
 		record: ChildAgentRecord,
-		provider: ExecutableChildProviderV1,
+		provider: ExecutableChildProvider,
 		signal?: AbortSignal,
 	): Promise<ChildSpawnResult | undefined> {
 		if (provider.lookupSpawn === undefined) return undefined;
@@ -1909,7 +1909,7 @@ export class SubagentComposition {
 		}
 		const existing = this.laneWriters.get(laneId);
 		if (existing !== undefined) return existing;
-		const writer = new ChildLaneSessionLedgerWriterV1(this.writer, laneId);
+		const writer = new ChildLaneSessionLedgerWriter(this.writer, laneId);
 		this.laneWriters.set(laneId, writer);
 		return writer;
 	}
@@ -1927,7 +1927,7 @@ export class SubagentComposition {
 
 	private async convergeProductTerminal(
 		childAgentInstanceId: string,
-		provider: ExecutableChildProviderV1 | undefined,
+		provider: ExecutableChildProvider | undefined,
 	): Promise<void> {
 		const record = this.supervisor.get(childAgentInstanceId);
 		if (record === undefined) return;
@@ -1954,7 +1954,7 @@ export class SubagentComposition {
 
 	private async convergePostSpawnFailure(
 		childAgentInstanceId: string,
-		provider: ExecutableChildProviderV1,
+		provider: ExecutableChildProvider,
 	): Promise<void> {
 		await this.convergeProductTerminal(childAgentInstanceId, provider);
 		this.runByChild.delete(childAgentInstanceId);

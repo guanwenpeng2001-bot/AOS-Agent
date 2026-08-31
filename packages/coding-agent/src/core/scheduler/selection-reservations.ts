@@ -109,13 +109,13 @@ export interface SchedulerSelectionBeginSettlement {
 	readonly shouldSettleQuota: boolean;
 }
 
-interface SchedulerSelectionReservationAggregateV1 {
+interface SchedulerSelectionReservationAggregate {
 	readonly schemaVersion: 1;
 	readonly records: readonly SchedulerSelectionReservationRecord[];
 }
 
-interface LoadedAggregateV1 {
-	readonly aggregate: SchedulerSelectionReservationAggregateV1;
+interface LoadedAggregate {
+	readonly aggregate: SchedulerSelectionReservationAggregate;
 	readonly revision: number;
 }
 
@@ -409,7 +409,7 @@ function validateReservationRecord(
 	return Result.ok(cloneFrozen({ ...candidate, fact: fact.value }));
 }
 
-function validateAggregate(value: unknown): ResultValue<SchedulerSelectionReservationAggregateV1, FoundationError> {
+function validateAggregate(value: unknown): ResultValue<SchedulerSelectionReservationAggregate, FoundationError> {
 	if (
 		!isRecord(value) ||
 		!hasExactKeys(value, ["schemaVersion", "records"]) ||
@@ -438,9 +438,9 @@ function validateAggregate(value: unknown): ResultValue<SchedulerSelectionReserv
 }
 
 function replaceRecord(
-	aggregate: SchedulerSelectionReservationAggregateV1,
+	aggregate: SchedulerSelectionReservationAggregate,
 	record: SchedulerSelectionReservationRecord,
-): SchedulerSelectionReservationAggregateV1 {
+): SchedulerSelectionReservationAggregate {
 	const records = aggregate.records
 		.filter((item) => item.fact.queueEntryId !== record.fact.queueEntryId)
 		.concat(record)
@@ -560,8 +560,8 @@ export class SchedulerSelectionReservationStore {
 	}
 
 	private retainBoundedBacklog(
-		aggregate: SchedulerSelectionReservationAggregateV1,
-	): SchedulerSelectionReservationAggregateV1 {
+		aggregate: SchedulerSelectionReservationAggregate,
+	): SchedulerSelectionReservationAggregate {
 		if (aggregate.records.length < this.maxBacklog) return aggregate;
 		const removable = aggregate.records
 			.filter((record) => record.status === "settled")
@@ -728,7 +728,7 @@ export class SchedulerSelectionReservationStore {
 		}
 	}
 
-	private async load(): Promise<ResultValue<LoadedAggregateV1, FoundationError>> {
+	private async load(): Promise<ResultValue<LoadedAggregate, FoundationError>> {
 		try {
 			const found = await this.ledger.getFact<unknown>(
 				SCHEDULER_SELECTION_RESERVATIONS_OBJECT_TYPE,
@@ -746,8 +746,8 @@ export class SchedulerSelectionReservationStore {
 	}
 
 	private async persist(
-		loaded: LoadedAggregateV1,
-		aggregate: SchedulerSelectionReservationAggregateV1,
+		loaded: LoadedAggregate,
+		aggregate: SchedulerSelectionReservationAggregate,
 		taskId: string,
 		operationId: string,
 	): Promise<ResultValue<void, FoundationError>> {

@@ -341,7 +341,7 @@ export function createSchedulerExecutorRuntimeSnapshot(
 	return Result.ok(deepFreeze({ ...base, digest: fingerprintFoundationValue(base) }));
 }
 
-function validateSchedulerExecutorRuntimeSnapshotV1(
+function validateSchedulerExecutorRuntimeSnapshot(
 	value: SchedulerExecutorRuntimeSnapshot,
 ): ResultValue<SchedulerExecutorRuntimeSnapshot, FoundationError> {
 	if (
@@ -493,7 +493,7 @@ function runtimeRejectionStage(
 	return undefined;
 }
 
-function schedulerSelectionBudgetUsageV1(
+function schedulerSelectionBudgetUsage(
 	value: SchedulerSelectionSettlementUsage,
 ): ResultValue<BudgetUsage, FoundationError> {
 	if (Object.keys(value).length === 0) return Result.ok({});
@@ -751,7 +751,7 @@ export class SchedulerExecutorRegistry {
 		}
 		let runtimeSnapshot: SchedulerExecutorRuntimeSnapshot | undefined;
 		if (registration.runtimeSnapshot !== undefined) {
-			const runtimeResult = validateSchedulerExecutorRuntimeSnapshotV1(registration.runtimeSnapshot);
+			const runtimeResult = validateSchedulerExecutorRuntimeSnapshot(registration.runtimeSnapshot);
 			if (!runtimeResult.ok) return runtimeResult;
 			if (runtimeResult.value.capabilitySnapshot.providerId !== parsed.value.descriptor.providerId) {
 				return Result.err(
@@ -883,7 +883,7 @@ export class SchedulerExecutorRegistry {
 		usage: SchedulerSelectionSettlementUsage = {},
 	): Promise<ResultValue<void, FoundationError>> {
 		if (this.reservationStore === undefined) return Result.ok(undefined);
-		const budgetUsage = schedulerSelectionBudgetUsageV1(usage);
+		const budgetUsage = schedulerSelectionBudgetUsage(usage);
 		if (!budgetUsage.ok) return budgetUsage;
 		const current = await this.reservationStore.get(queueEntryId);
 		if (!current.ok) return current;
