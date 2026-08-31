@@ -39,6 +39,7 @@ import {
 import * as builtinProviderCatalog from "@aos-agent/ai/providers/all";
 import { getAgentDir } from "../../config.ts";
 import { operationSignal, raceWithAbortSignal } from "../../utils/abort.ts";
+import { getFileRevision } from "../../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "../policy/auth-storage.ts";
 import { ModelBroker, type ModelBudget, type ModelRouteCandidate } from "./model-broker.ts";
 import type { ModelBrokerSettings } from "./model-broker-settings.ts";
@@ -63,6 +64,12 @@ interface ModelRuntimeSnapshot {
 	configuredProviders: ReadonlySet<string>;
 	storedProviders: ReadonlySet<string>;
 	auth: ReadonlyMap<string, AuthCheck | undefined>;
+}
+
+interface ActiveModelRefresh {
+	controller: AbortController;
+	promise: Promise<ModelsRefreshResult>;
+	waiters: number;
 }
 
 export interface CreateModelRuntimeOptions {
@@ -200,6 +207,8 @@ export class ModelRuntime implements Models {
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private availabilityError: string | undefined;
 	private readonly credentialOperations = new Map<string, Promise<unknown>>();
+	private readonly activeModelRefreshes = new Map<string, ActiveModelRefresh>();
+	private providerRevision = 0;
 
 	private constructor(
 		credentials: RuntimeCredentials,
@@ -738,7 +747,18 @@ export class ModelRuntime implements Models {
 		});
 	}
 
-	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
+	private modelRefreshKey(options: ModelsRefreshOptions): string {
+		const providers = options.providers ? [...new Set(options.providers)].sort() : undefined;
+		return JSON.stringify({
+			allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
+			force: options.force === true,
+			modelsRevision: this.modelsPath ? getFileRevision(this.modelsPath) : undefined,
+			providers,
+			providerRevision: this.providerRevision,
+		});
+	}
+
+	private async runModelRefresh(options: ModelsRefreshOptions): Promise<ModelsRefreshResult> {
 		this.config = await ModelConfig.load(this.modelsPath);
 		this.configureRadiusProviders();
 		if (options.providers) {
@@ -781,10 +801,47 @@ export class ModelRuntime implements Models {
 		return { aborted: result.aborted || (options.signal?.aborted ?? false), errors };
 	}
 
+	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {
+		const callerSignal = operationSignal(options.signal);
+		if (callerSignal.aborted) return { aborted: true, errors: new Map() };
+
+		const key = this.modelRefreshKey(options);
+		let active = this.activeModelRefreshes.get(key);
+		if (!active) {
+			const controller = new AbortController();
+			let created!: ActiveModelRefresh;
+			const promise = this.runModelRefresh({
+				...options,
+				allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
+				signal: controller.signal,
+			}).finally(() => {
+				if (this.activeModelRefreshes.get(key) === created) this.activeModelRefreshes.delete(key);
+			});
+			created = { controller, promise, waiters: 0 };
+			active = created;
+			this.activeModelRefreshes.set(key, active);
+		}
+
+		active.waiters++;
+		try {
+			return await raceWithAbortSignal(active.promise, callerSignal);
+		} catch (error) {
+			if (callerSignal.aborted) return { aborted: true, errors: new Map() };
+			throw error;
+		} finally {
+			active.waiters--;
+			if (active.waiters === 0 && this.activeModelRefreshes.get(key) === active) {
+				this.activeModelRefreshes.delete(key);
+				active.controller.abort();
+			}
+		}
+	}
+
 	registerNativeProvider(provider: Provider): void {
 		if (!provider.id.trim()) throw new Error("Provider id must not be empty.");
 		this.extensionProviders.delete(provider.id);
 		this.nativeExtensionProviders.set(provider.id, provider);
+		this.providerRevision++;
 		this.recomposeProvider(provider.id);
 		this.updateModelSnapshot();
 		void this.refresh({ allowNetwork: false });
@@ -803,6 +860,7 @@ export class ModelRuntime implements Models {
 			if (value !== undefined) (effective as Record<string, unknown>)[key] = value;
 		}
 		this.extensionProviders.set(providerId, effective);
+		this.providerRevision++;
 		this.recomposeProvider(providerId);
 		this.updateModelSnapshot();
 		if (
@@ -831,6 +889,7 @@ export class ModelRuntime implements Models {
 	unregisterProvider(providerId: string): void {
 		this.extensionProviders.delete(providerId);
 		this.nativeExtensionProviders.delete(providerId);
+		this.providerRevision++;
 		this.recomposeProvider(providerId);
 		this.updateModelSnapshot();
 		void this.refresh({ allowNetwork: false });

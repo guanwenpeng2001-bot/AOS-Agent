@@ -4,6 +4,7 @@ import { fetchWithRetry } from "../../utils/management-http.ts";
 import { getAosUserAgent } from "../../utils/aos-user-agent.ts";
 
 export const REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS = 4_000;
 
 function mergeModels(baseline: readonly Model<Api>[], dynamic: readonly Model<Api>[]): Model<Api>[] {
 	const merged = [...baseline];
@@ -82,14 +83,18 @@ export function withRemoteCatalog(
 			// leave the overlay empty.
 			const validator = stored?.models.length ? stored.etag : undefined;
 			const url = new URL(`/api/models/providers/${encodeURIComponent(provider.id)}`, baseUrl);
-			const response = await fetchWithRetry(url, {
-				headers: {
-					accept: "application/json",
-					"User-Agent": getAosUserAgent(VERSION),
-					...(validator ? { "if-none-match": validator } : {}),
+			const response = await fetchWithRetry(
+				url,
+				{
+					headers: {
+						accept: "application/json",
+						"User-Agent": getAosUserAgent(VERSION),
+						...(validator ? { "if-none-match": validator } : {}),
+					},
+					signal: context.signal,
 				},
-				signal: context.signal,
-			});
+				{ attemptTimeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS },
+			);
 			if (context.signal.aborted) return;
 			// wire/ledger field name; local alias below
 			const refreshedAt = Date.now();
