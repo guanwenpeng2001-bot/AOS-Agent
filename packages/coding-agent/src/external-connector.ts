@@ -36,7 +36,6 @@ export {
 	PACKAGED_EXTERNAL_AGENT_DRIVER_NAMES,
 	PackagedExternalAgentDriverAssetError,
 	loadPackagedExternalAgentDriver,
-	runPackagedExternalAgentDriverFixture,
 	type PackagedExternalAgentDriver,
 	type PackagedExternalAgentDriverAssetErrorCode,
 	type PackagedExternalAgentDriverLifecycle,
@@ -45,7 +44,6 @@ export {
 	type PackagedExternalAgentDriverOperationKind,
 	type PackagedExternalAgentDriverReceipt,
 	type PackagedExternalAgentDriverToolResult,
-	type PackagedExternalAgentDriverTrace,
 } from "./core/connector/packaged-driver.ts";
 export {
 	CANONICAL_EXTERNAL_AGENT_INPUT_HARD_LIMITS,

@@ -10,6 +10,7 @@ import {
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import * as externalConnectorApi from "../../src/external-connector.ts";
+import * as externalConnectorTestingApi from "../../src/external-connector-testing.ts";
 import * as publicApi from "../../src/index.ts";
 import {
 	isAutomationErrorCode,
@@ -243,11 +244,10 @@ describe("External Connector public exports", () => {
 		expect(typeof externalConnectorApi.gateCanonicalExternalAgentInputBeforeAcceptance).toBe("function");
 		expect(typeof externalConnectorApi.projectExternalModelForExecution).toBe("function");
 		expect(typeof externalConnectorApi.loadPackagedExternalAgentDriver).toBe("function");
-		expect(typeof externalConnectorApi.runPackagedExternalAgentDriverFixture).toBe("function");
+		expect("runPackagedExternalAgentDriverFixture" in externalConnectorApi).toBe(false);
+		expect(typeof externalConnectorTestingApi.runPackagedExternalAgentDriverFixture).toBe("function");
 		expect("gateCanonicalExternalAgentInputBeforeAcceptance" in publicApi).toBe(false);
 		expect("projectExternalModelForExecution" in publicApi).toBe(false);
-		expect(typeof externalConnectorApi.loadPackagedExternalAgentDriver).toBe("function");
-		expect(typeof externalConnectorApi.runPackagedExternalAgentDriverFixture).toBe("function");
 	});
 
 	it("keeps Tool Gateway consumer authority out of the public resolved selection", () => {

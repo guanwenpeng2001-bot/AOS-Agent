@@ -82,10 +82,15 @@ are rejected.
 ### External Agent Connector
 
 The supported package surface is `aos-agent/external-connector`. It exposes the
-packaged driver loader and deterministic, default-off fake fixture used by the
-Node package smoke test. The smoke test packs a staged package, installs it
-outside the repository, resolves only the public subpath, and checks the shipped
-asset and safe missing-asset error.
+connector registry, target configuration, input admission, model projection,
+and packaged driver loader contracts.
+
+`aos-agent/external-connector/testing` is test-support only. It exports
+`runPackagedExternalAgentDriverFixture` and `PackagedExternalAgentDriverTrace`
+for the package smoke test; application code should not depend on that fixture
+surface. The smoke test packs a staged package, installs it outside the
+repository, resolves the testing subpath, and checks the shipped asset and safe
+missing-asset error.
 
 Local regressions also exercise the standard product composition across
 run/switch/fork/import/reload/cancel/restart, immutable RuntimeLimits with

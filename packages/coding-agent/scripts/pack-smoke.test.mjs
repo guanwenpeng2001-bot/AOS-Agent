@@ -126,13 +126,24 @@ function createStagedPackage(root) {
 	writeFileSync(join(distConnector, "packaged-driver.js"), transpiled.outputText);
 	writeFileSync(
 		join(distConnector, "packaged-driver.d.ts"),
-		"export declare function loadPackagedExternalAgentDriver(name: string): unknown;\nexport declare function runPackagedExternalAgentDriverFixture(): Promise<unknown>;\n",
+		"export declare function loadPackagedExternalAgentDriver(name: string): unknown;\nexport declare function runPackagedExternalAgentDriverFixture(): Promise<unknown>;\nexport type PackagedExternalAgentDriverTrace = unknown;\n",
 	);
 	writeFileSync(
 		join(staged, "dist", "external-connector.js"),
-		'export { loadPackagedExternalAgentDriver, runPackagedExternalAgentDriverFixture } from "./core/connector/packaged-driver.js";\n',
+		'export { loadPackagedExternalAgentDriver } from "./core/connector/packaged-driver.js";\n',
 	);
-	writeFileSync(join(staged, "dist", "external-connector.d.ts"), "export * from './core/connector/packaged-driver.js';\n");
+	writeFileSync(
+		join(staged, "dist", "external-connector.d.ts"),
+		"export { loadPackagedExternalAgentDriver } from './core/connector/packaged-driver.js';\n",
+	);
+	writeFileSync(
+		join(staged, "dist", "external-connector-testing.js"),
+		'export { runPackagedExternalAgentDriverFixture } from "./core/connector/packaged-driver.js";\n',
+	);
+	writeFileSync(
+		join(staged, "dist", "external-connector-testing.d.ts"),
+		"export { runPackagedExternalAgentDriverFixture, type PackagedExternalAgentDriverTrace } from './core/connector/packaged-driver.js';\n",
+	);
 	copyFileSync(fixturePath, join(assets, "fake-connector.json"));
 	copyFileSync(processModulePath, join(assets, "fake-connector-process.mjs"));
 	writeFileSync(join(staged, "npm-shrinkwrap.json"), '{"name":"aos-agent","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"aos-agent","version":"1.0.0"}}}\n');
@@ -152,6 +163,10 @@ function createStagedPackage(root) {
 					types: "./dist/external-connector.d.ts",
 					import: "./dist/external-connector.js",
 				},
+				"./external-connector/testing": {
+					types: "./dist/external-connector-testing.d.ts",
+					import: "./dist/external-connector-testing.js",
+				},
 			},
 			files: ["dist", "npm-shrinkwrap.json"],
 			scripts: { install: "node -e \"process.exit(91)\"" },
@@ -160,7 +175,7 @@ function createStagedPackage(root) {
 	return staged;
 }
 
-test("package metadata owns the CLI, SDK, external Connector export, and both asset copies", () => {
+test("package metadata owns the CLI, SDK, External Connector exports, and both asset copies", () => {
 	const packageJson = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"));
 	assert.equal(packageJson.bin.aos, "dist/cli.js");
 	assert.deepEqual(packageJson.exports["."], {
@@ -170,6 +185,10 @@ test("package metadata owns the CLI, SDK, external Connector export, and both as
 	assert.deepEqual(packageJson.exports["./external-connector"], {
 		types: "./dist/external-connector.d.ts",
 		import: "./dist/external-connector.js",
+	});
+	assert.deepEqual(packageJson.exports["./external-connector/testing"], {
+		types: "./dist/external-connector-testing.d.ts",
+		import: "./dist/external-connector-testing.js",
 	});
 	assert.match(packageJson.scripts["copy-assets"], /fake-connector\.json/u);
 	assert.match(packageJson.scripts["copy-binary-assets"], /fake-connector\.json/u);
@@ -184,6 +203,8 @@ test("package-content validation catches missing public exports and assets", () 
 		"dist/cli.js",
 		"dist/external-connector.js",
 		"dist/external-connector.d.ts",
+		"dist/external-connector-testing.js",
+		"dist/external-connector-testing.d.ts",
 		"dist/index.js",
 		"dist/index.d.ts",
 		"dist/core/connector/packaged-driver.js",
@@ -245,7 +266,7 @@ test("outside-repository validation rejects a link or junction targeting the rep
 	}
 });
 
-test("external npm install boots the CLI and SDK before executing the public subpath runtimes", () => {
+test("external npm install boots the CLI and SDK before executing the test-support subpath runtimes", () => {
 	const root = mkdtempSync(join(tmpdir(), "aos-pack-test-"));
 	try {
 		assertOutsideRepository(root, repoRoot);
@@ -270,8 +291,10 @@ test("external npm install boots the CLI and SDK before executing the public sub
 		writeFileSync(
 			runner,
 			[
-				'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector";',
-				'const resolved = import.meta.resolve("aos-agent/external-connector");',
+				'import * as externalConnector from "aos-agent/external-connector";',
+				'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector/testing";',
+				'if ("runPackagedExternalAgentDriverFixture" in externalConnector || "PackagedExternalAgentDriverTrace" in externalConnector) throw new Error("Main External Connector subpath exposes test support");',
+				'const resolved = import.meta.resolve("aos-agent/external-connector/testing");',
 				'const trace = await runPackagedExternalAgentDriverFixture();',
 				'process.stdout.write(`${JSON.stringify({ resolved, trace })}\\n`);',
 				"",
@@ -279,7 +302,7 @@ test("external npm install boots the CLI and SDK before executing the public sub
 		);
 		for (const command of [process.execPath, "bun"]) {
 			const output = JSON.parse(run(command, [runner], install));
-			assert.match(output.resolved, /external-install[\\/]node_modules[\\/]aos-agent[\\/]dist[\\/]external-connector\.js$/u);
+			assert.match(output.resolved, /external-install[\\/]node_modules[\\/]aos-agent[\\/]dist[\\/]external-connector-testing\.js$/u);
 			assertExecutedTrace(output.trace);
 		}
 
@@ -290,7 +313,7 @@ test("external npm install boots the CLI and SDK before executing the public sub
 		writeFileSync(
 			compiledRunner,
 			[
-				'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector";',
+				'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector/testing";',
 				'const trace = await runPackagedExternalAgentDriverFixture();',
 				'process.stdout.write(`${JSON.stringify({ trace })}\\n`);',
 				"",

@@ -26,6 +26,10 @@
 		"./external-connector": {
 			"types": "./dist/external-connector.d.ts",
 			"import": "./dist/external-connector.js"
+		},
+		"./external-connector/testing": {
+			"types": "./dist/external-connector-testing.d.ts",
+			"import": "./dist/external-connector-testing.js"
 		}
 	},
 	"files": [

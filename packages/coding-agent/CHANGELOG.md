@@ -14,6 +14,7 @@
 - Removed the `Line13*`-named trace and upgrade helper exports from the `aos-agent/external-connector` subpath.
 - Public composition and factory names now use their domain names without the `Trusted` prefix. Update imports and type references to the unprefixed names.
 - Renamed the packaged connector fixture IDs to `aos.fake-connector`, `aos.fake-provider`, and `aos.fake-tool-call`; fixture consumers must read `fakeProviderId` instead of `fauxProviderId`.
+- The package-smoke fixture exports `runPackagedExternalAgentDriverFixture` and `PackagedExternalAgentDriverTrace` moved from `aos-agent/external-connector` to the test-support subpath `aos-agent/external-connector/testing`. Update test-only imports to the new subpath.
 - Renamed the exported configuration constant `ENV_AGENT_DIR` to `ENV_CODING_AGENT_DIR`; the environment variable value remains `AOS_AGENT_CODING_AGENT_DIR`.
 - Internal controllers and implementation helpers are no longer exported from `aos-agent`. The documented SDK contract is unchanged; repository consumers can import internalized names from their package-internal modules, while external consumers should migrate to the documented SDK symbols.
 
