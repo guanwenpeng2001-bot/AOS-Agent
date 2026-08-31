@@ -1,5 +1,5 @@
 import type { AgentSessionRuntime } from "../../src/core/session/runtime.ts";
-import type { SchedulerSafeStatus } from "../../src/core/runtime/control-plane.ts";
+import type { SchedulerSafeStatus } from "../../src/core/runtime/foundation-control-plane.ts";
 import { RpcHostController } from "../../src/modes/rpc/rpc-host.ts";
 import type {
 	InitializeData,

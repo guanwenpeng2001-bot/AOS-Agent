@@ -26,7 +26,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	SchedulerComposition,
 	type SchedulerCompositionOptions,
-} from "../../src/core/runtime/control-plane.ts";
+} from "../../src/core/runtime/foundation-control-plane.ts";
 import { SchedulerDeadlockController } from "../../src/core/scheduler/deadlock.ts";
 import {
 	SCHEDULER_IN_PROCESS_CAPABILITY_ID,

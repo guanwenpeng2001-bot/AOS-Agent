@@ -3,7 +3,7 @@
  * Release script for aos-agent-source
  *
  * Usage:
- *   node scripts/release.mjs <major|minor|patch>
+ *   node scripts/release.mjs <minor|patch>
  *   node scripts/release.mjs <x.y.z>
  *
  * Steps:
@@ -27,11 +27,16 @@ import { findPackageDirectories } from "./package-workspaces.mjs";
 import { getPublicWorkspacePackages } from "./release-packages.mjs";
 
 const RELEASE_TARGET = process.argv[2];
-const BUMP_TYPES = new Set(["major", "minor", "patch"]);
+const BUMP_TYPES = new Set(["minor", "patch"]);
 const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 
+if (RELEASE_TARGET === "major") {
+	console.error("Major releases are not supported; use minor, patch, or an explicit version.");
+	process.exit(1);
+}
+
 if (!RELEASE_TARGET || (!BUMP_TYPES.has(RELEASE_TARGET) && !SEMVER_RE.test(RELEASE_TARGET))) {
-	console.error("Usage: node scripts/release.mjs <major|minor|patch|x.y.z>");
+	console.error("Usage: node scripts/release.mjs <minor|patch|x.y.z>");
 	process.exit(1);
 }
 

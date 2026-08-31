@@ -14,7 +14,7 @@ import { PROVIDER_CLASS } from "./provider-class.ts";
 import type {
 	AgentRuntimeCompositionContext,
 	ExternalConnectorRegistryFactory,
-} from "../runtime/composition.ts";
+} from "../runtime/composition-factory.ts";
 import {
 	type ExternalConnectorDurableStore,
 	SessionExternalConnectorDurableStore,

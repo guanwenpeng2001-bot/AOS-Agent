@@ -7,7 +7,7 @@ import type {
 } from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model } from "@aos-agent/ai";
 import type { CompactionResult } from "../compaction/index.ts";
-import type { AgentRuntimeCompositionFactory } from "../runtime/composition.ts";
+import type { AgentRuntimeCompositionFactory } from "../runtime/composition-factory.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,

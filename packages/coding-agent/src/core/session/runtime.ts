@@ -6,7 +6,7 @@ import type { AgentSession } from "./agent-session.ts";
 import type {
 	AgentRuntimeComposition,
 	AgentRuntimeCompositionFactory,
-} from "../runtime/composition.ts";
+} from "../runtime/composition-factory.ts";
 import {
 	CurrentSessionScope,
 	type PreparedSessionScopeRebind,

@@ -24,7 +24,7 @@ import {
 } from "../../../agent/src/internal.ts";
 import { AgentSession } from "../../src/core/session/agent-session.ts";
 import { getAgentCanonicalSession } from "../../src/core/session/facade.ts";
-import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition.ts";
+import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition-factory.ts";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../../src/core/session/services.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import { buildCapabilitySettings } from "../../src/core/policy/capability-settings.ts";
@@ -45,7 +45,7 @@ import { buildExecutionPolicySettings, ExecutionPolicySettingsError } from "../.
 import {
 	FoundationControlPlane,
 	type FoundationControlPlaneOptions,
-} from "../../src/core/runtime/control-plane.ts";
+} from "../../src/core/runtime/foundation-control-plane.ts";
 import { resolveHostPathForPolicy } from "../../src/core/policy/filesystem.ts";
 import { classifyExternalToolPolicyOperation } from "../../src/core/connector/tool-policy.ts";
 import { ModelRuntime } from "../../src/core/runtime/model-runtime.ts";

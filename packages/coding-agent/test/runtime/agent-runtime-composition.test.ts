@@ -69,7 +69,7 @@ import {
 	type AgentRuntimeCompositionFactory,
 	type AgentRuntimeCompositionOptions,
 	type SchedulerRuntimeOptions,
-} from "../../src/core/runtime/composition.ts";
+} from "../../src/core/runtime/composition-factory.ts";
 import {
 	createExternalConnectorRegistry,
 	type ExternalConnectorRegistry,

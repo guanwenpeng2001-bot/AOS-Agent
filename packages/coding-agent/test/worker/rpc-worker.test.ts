@@ -20,7 +20,7 @@ import {
 	createAgentRuntimeCompositionFactory,
 	createAgentSession,
 } from "../../src/index.ts";
-import { createWorkerSandboxComposition } from "../../src/core/runtime/composition.ts";
+import { createWorkerSandboxComposition } from "../../src/core/runtime/composition-factory.ts";
 import type { WorkerSandboxProvider } from "../../src/core/worker/sandbox-provider.ts";
 import { attachJsonlLineReader } from "../../src/modes/rpc/jsonl.ts";
 import { RpcHostController, type RpcWorkerRegistry } from "../../src/modes/rpc/rpc-host.ts";

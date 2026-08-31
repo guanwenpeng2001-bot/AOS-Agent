@@ -26,7 +26,7 @@ import {
 	type ExternalConnectorCredentialRuntime,
 } from "../../src/core/connector/durable-connector.ts";
 import { fingerprintCanonicalExternalAgentInput } from "../../src/core/connector/input.ts";
-import type { AgentRuntimeCompositionContext } from "../../src/core/runtime/composition.ts";
+import type { AgentRuntimeCompositionContext } from "../../src/core/runtime/composition-factory.ts";
 import { buildExternalConnectorTargetConfig, type ExternalConnectorTargetDefinition } from "../../src/external-connector.ts";
 import { DEFAULT_RUNTIME_LIMITS } from "../../src/core/runtime/limits.ts";
 

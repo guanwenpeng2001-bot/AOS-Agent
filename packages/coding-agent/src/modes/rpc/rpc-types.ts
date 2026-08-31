@@ -26,7 +26,7 @@ import type {
 	ExternalConnectorReadinessStatus,
 	ExternalConnectorSelection,
 } from "../../core/connector/registry.ts";
-import type { SchedulerSafeStatus } from "../../core/runtime/control-plane.ts";
+import type { SchedulerSafeStatus } from "../../core/runtime/foundation-control-plane.ts";
 import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/runtime/mcp-content.ts";
 import type { MCPContentPublicErrorCode } from "../../core/runtime/mcp-error-codes.ts";
 import type {

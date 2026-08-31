@@ -22,7 +22,7 @@ import {
 	bindCanonicalExternalToolGatewayPolicy,
 	createCanonicalExternalToolGateway,
 } from "../connector/tool-gateway.ts";
-import type { SchedulerCompositionOptions } from "./control-plane.ts";
+import type { SchedulerCompositionOptions } from "./foundation-control-plane.ts";
 import type { MCPAuthManagerOptions } from "../policy/mcp-auth-manager.ts";
 import type { MCPAuthProviderResolver, MCPTransportFactory } from "./mcp-types.ts";
 import type { ModelBroker } from "./model-broker.ts";

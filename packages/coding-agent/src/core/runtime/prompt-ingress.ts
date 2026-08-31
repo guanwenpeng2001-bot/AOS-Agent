@@ -39,11 +39,11 @@ import {
 import {
 	ProductPromptBindingRevisionAuthority,
 	type ProductPromptDependencySnapshotContext,
-} from "./prompt-binding-authority.ts";
+} from "./prompt-binding.ts";
 import { isRuntimeSessionSurface, type RuntimeSessionSurface } from "./session-surface.ts";
 import type { SubagentComposition } from "../subagent/composition.ts";
 
-export type { ProductPromptDependencySnapshotContext } from "./prompt-binding-authority.ts";
+export type { ProductPromptDependencySnapshotContext } from "./prompt-binding.ts";
 
 export const BUILTIN_CODING_AGENT_ROLE_ID = "aos.builtin.coding-agent";
 export const BUILTIN_CODING_AGENT_PROVIDER_ID = "aos.builtin.coding-agent";

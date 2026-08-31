@@ -24,7 +24,7 @@ import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Mo
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { AgentSession } from "../../src/core/session/agent-session.ts";
-import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition.ts";
+import { createAgentRuntimeCompositionFactory } from "../../src/core/runtime/composition-factory.ts";
 import {
 	getAgentCanonicalSession,
 	getAgentSessionLedger,
