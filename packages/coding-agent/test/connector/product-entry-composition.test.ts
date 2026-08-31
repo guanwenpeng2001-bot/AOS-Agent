@@ -19,7 +19,7 @@ import {
 import type { ExternalConnectorTargetDefinition } from "../../src/external-connector.ts";
 import { createRpcHostController } from "../../src/modes/rpc/rpc-host.ts";
 import type { RpcHostOutputRecord } from "../../src/modes/rpc/rpc-host.ts";
-import { pr11TargetDefinition } from "./fixtures/pr-11-cross-layer.ts";
+import { pr11TargetDefinition } from "./fixtures/cross-layer.ts";
 
 const directories: string[] = [];
 const DEFAULT_MODEL: Model<"anthropic-messages"> = {

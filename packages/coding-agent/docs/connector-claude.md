@@ -1,6 +1,6 @@
-# Claude Agent SDK capability matrix
+# Claude connector
 
-Inventory target: `@anthropic-ai/claude-agent-sdk` `0.3.246`. The machine-readable pin remains `PRIVATE_CLAUDE_AGENT_SDK_VERSION` in `src/core/connector/vendor/claude.ts`; `PRIVATE_CLAUDE_AGENT_SDK_CAPABILITIES` derives from that constant and records the supported values below.
+Capability matrix and pinned version for the private Claude Agent SDK connector. The machine-readable pin is `PRIVATE_CLAUDE_AGENT_SDK_VERSION` (`0.3.246`) in `src/core/connector/vendor/claude.ts`; `PRIVATE_CLAUDE_AGENT_SDK_CAPABILITIES` records the supported values below.
 
 | Capability | Status | Pinned behavior used by the connector |
 | --- | --- | --- |

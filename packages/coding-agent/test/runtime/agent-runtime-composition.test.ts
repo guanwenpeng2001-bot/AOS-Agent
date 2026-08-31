@@ -110,7 +110,7 @@ import {
 	pr11TargetConfig,
 	executePr11ProductRun,
 	type Pr11RegistryCapture,
-} from "../connector/fixtures/pr-11-cross-layer.ts";
+} from "../connector/fixtures/cross-layer.ts";
 
 const NOW = "2026-08-26T00:00:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("../fixtures/fake-worker-child.ts", import.meta.url));
@@ -708,8 +708,8 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 			cwd,
 			env: {
 				...sourceProcessEnv(),
-				AOS_AGENT_CODING_AGENT_DIR: agentDir,
-				AOS_AGENT_CODING_AGENT_SESSION_DIR: join(agentDir, "sessions"),
+				AOS_AGENT_DIR: agentDir,
+				AOS_AGENT_SESSION_DIR: join(agentDir, "sessions"),
 				AOS_AGENT_OFFLINE: "1",
 				AOS_AGENT_SKIP_VERSION_CHECK: "1",
 			},
@@ -786,8 +786,8 @@ function startMainRpcPeer(
 		cwd,
 		env: {
 			...sourceProcessEnv(),
-			AOS_AGENT_CODING_AGENT_DIR: agentDir,
-			AOS_AGENT_CODING_AGENT_SESSION_DIR: join(agentDir, "sessions"),
+			AOS_AGENT_DIR: agentDir,
+			AOS_AGENT_SESSION_DIR: join(agentDir, "sessions"),
 			AOS_AGENT_OFFLINE: "1",
 			AOS_AGENT_SKIP_VERSION_CHECK: "1",
 			AOS_MAIN_RPC_PHASE: options.phase,

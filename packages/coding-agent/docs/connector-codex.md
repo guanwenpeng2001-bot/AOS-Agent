@@ -1,6 +1,6 @@
-# Codex app-server capability matrix
+# Codex connector
 
-This inventory is frozen to the existing machine-readable `PRIVATE_CODEX_APP_SERVER_IDENTITY` pin:
+Capability matrix and pinned version for the private Codex app-server connector. The machine-readable pin is `PRIVATE_CODEX_APP_SERVER_IDENTITY`:
 
 - `cliVersion`: `0.149.0`
 - `schemaSha256`: `6f76cce25156d405f1da54f205751e38f7b9eb42246ac0742b9958dd60275350`

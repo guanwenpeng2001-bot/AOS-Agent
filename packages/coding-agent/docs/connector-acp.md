@@ -1,6 +1,6 @@
-# ACP stable-v1 capability matrix
+# ACP connector
 
-This inventory is pinned to the dependency and stable schema imported by the private ACP driver. The evidence is `packages/coding-agent/package.json`, `@agentclientprotocol/sdk/package.json`, and the SDK's stable `schema/schema.json` and generated stable TypeScript declarations. Experimental v2 exports are out of scope.
+Capability matrix and pinned version for the private ACP stable-v1 connector. The pin is the official `@agentclientprotocol/sdk` dependency and its stable schema (`schema/schema.json`). Experimental v2 exports are out of scope.
 
 ```json
 {

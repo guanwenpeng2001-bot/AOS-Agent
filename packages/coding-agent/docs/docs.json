@@ -128,6 +128,18 @@
         {
           "title": "External Agent Connector",
           "path": "external-agent-connector.md"
+        },
+        {
+          "title": "Claude Connector",
+          "path": "connector-claude.md"
+        },
+        {
+          "title": "Codex Connector",
+          "path": "connector-codex.md"
+        },
+        {
+          "title": "ACP Connector",
+          "path": "connector-acp.md"
         }
       ]
     },
