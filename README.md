@@ -64,7 +64,12 @@ The detailed reference is in [`packages/coding-agent/docs`](packages/coding-agen
 
 ## Model catalog policy
 
-The build creates a local, provider-neutral registry under `.artifacts/aos-model-registry/`. It is ignored by Git and is not part of the package or this repository's product data.
+The build hydrates ignored model wrappers from the tracked
+[`packages/ai/test/fixtures`](packages/ai/test/fixtures) snapshot. It also
+creates a local, provider-neutral registry under `.artifacts/aos-model-registry/`.
+That registry directory is ignored by Git and is not part of the package or this
+repository's product data. Live catalog fetch is limited to explicit
+`update-aos-model-registry` / `generate:models`.
 
 The registry boundary accepts reviewed source records for official provider catalogs/APIs, model gateways, open-model registries, compatible user-supplied catalogs, and future provider-neutral adapters. Public visibility alone is not permission to copy or redistribute metadata. Every source must record its URL, version or retrieval date, terms boundary, authoritative review evidence, normalization decisions, and review status. Unknown facts remain unknown; conflicts and corrections must be explicit.
 

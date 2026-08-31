@@ -8,4 +8,6 @@ from an upstream catalog.
 the tests only require a non-empty image provider catalog.
 
 `prepare-test-catalog` consumes these snapshots to hydrate the ignored generated
-files under `src/`. Normal model generation still fetches the upstream catalogs.
+files under `src/`. Default `build`, CI, and release use this path so a live
+upstream catalog deletion cannot fail typecheck. Live fetch remains
+`npm run generate-models` / `update-aos-model-registry` from `packages/ai`.

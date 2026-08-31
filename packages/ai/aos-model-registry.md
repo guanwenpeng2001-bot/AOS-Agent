@@ -12,8 +12,11 @@ or redistribute model metadata.
 
 ## Generation contract
 
-- `npm run update-aos-model-registry` from `packages/ai` refreshes the imported
-  provider-normalization inputs and regenerates the ignored local registry.
+- Default `npm run build` in `packages/ai` hydrates ignored wrappers from the
+  tracked `test/fixtures/model-catalog` snapshot. CI and release use that path.
+- `npm run update-aos-model-registry` from `packages/ai` is the explicit live
+  refresh: it fetches public metadata inputs and regenerates the ignored local
+  registry. Do not put that fetch on the default CI/build path.
 - `npm run generate-aos-model-registry` from `packages/ai` reproduces the
   registry from already hydrated input data without fetching new data.
 - `npm run check:aos-model-registry` from the workspace root, or
@@ -215,6 +218,8 @@ catalog dumps. The imported normalizer performs no new AOS-specific provider
 integration in this baseline.
 
 Refreshes must be reproducible from an identified input snapshot and manifest
-hash. Do not silently follow a mutable branch. User-defined sources are
+hash. Default CI and `build` use the tracked `test/fixtures` snapshot. Live
+fetch is an explicit `update-aos-model-registry` / `generate-models` step.
+Do not silently follow a mutable branch. User-defined sources are
 opt-in-only and must use the same source, terms, normalization, and artifact
 boundary.

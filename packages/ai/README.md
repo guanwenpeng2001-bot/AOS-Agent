@@ -6,7 +6,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 
 ## AOS model registry
 
-The standalone AOS Agent build owns its generated provider-neutral registry under `.artifacts/aos-model-registry/`. Run `npm run update-aos-model-registry` to refresh reviewed public metadata inputs, or `npm run generate-aos-model-registry` to reproduce output from an existing hydrated input snapshot. The generation boundary records source URL/name, retrieval timestamp, input hashes, normalization policy, and review status; see [`aos-model-registry.md`](aos-model-registry.md). Public availability alone is not permission to redistribute metadata.
+The standalone AOS Agent build owns its generated provider-neutral registry under `.artifacts/aos-model-registry/`. Default `build` hydrates ignored wrappers from the tracked `test/fixtures` snapshot so CI does not fetch live catalogs. Run `npm run update-aos-model-registry` to refresh reviewed public metadata inputs, or `npm run generate-aos-model-registry` to reproduce output from an existing hydrated input snapshot. The generation boundary records source URL/name, retrieval timestamp, input hashes, normalization policy, and review status; see [`aos-model-registry.md`](aos-model-registry.md). Public availability alone is not permission to redistribute metadata.
 
 ## Table of Contents
 

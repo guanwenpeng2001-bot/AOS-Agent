@@ -83,3 +83,15 @@ describe("strict model generation", () => {
 		expect(generatedPaths.map((path) => readFileSync(join(packageRoot, path), "utf8"))).toEqual(sourceBefore);
 	});
 });
+
+describe("default build catalog source", () => {
+	it("uses the tracked snapshot instead of live catalog fetch", () => {
+		const pkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as {
+			scripts: Record<string, string>;
+		};
+		expect(pkg.scripts.build).toContain("prepare-test-catalog");
+		expect(pkg.scripts.build).not.toContain("generate-models");
+		expect(pkg.scripts.build).not.toContain("generate-image-models");
+		expect(pkg.scripts["update-aos-model-registry"]).toContain("generate-models");
+	});
+});

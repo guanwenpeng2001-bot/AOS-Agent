@@ -9,6 +9,7 @@
 
 ### Changed
 
+- Default `build`, CI, and release regenerate the ignored model wrappers from the tracked `test/fixtures` snapshot. Live catalog fetch is limited to explicit `generate-models` / `update-aos-model-registry`.
 - Package author metadata is AOS Agent.
 - AOS Messages tests use the `x-aos-gateway-upstream-provider` header name. The previous `x-pi-gateway-upstream-provider` name was not present on a shipped gateway in this repository.
 
