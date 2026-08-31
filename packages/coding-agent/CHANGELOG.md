@@ -51,6 +51,7 @@
 
 ### Changed
 
+- Windows full-load regression coverage now bounds and terminates a stalled invalid-session source child and makes reftable watcher changes observable without weakening behavior assertions.
 - The built-in Radius provider points at the upstream-hosted gateway by default, so `/login radius` and its model catalog work out of the box; custom gateways in `models.json` are unchanged.
 - Default workspace `build`, CI, and release hydrate the ignored model wrappers from the tracked AI test-fixture snapshot instead of fetching live catalogs.
 - LICENSE copyright is now AOS Agent. Security reports go through GitHub Security Advisories. Config and session environment variables are `AOS_AGENT_DIR` and `AOS_AGENT_SESSION_DIR`; the previous `AOS_AGENT_CODING_AGENT*` names remain read-only aliases for one release.

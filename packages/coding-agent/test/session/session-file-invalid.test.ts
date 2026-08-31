@@ -7,6 +7,8 @@ import { ENV_AGENT_DIR } from "../../src/config.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
 
 const cliPath = resolve(__dirname, "../../src/cli.ts");
+const CLI_PROCESS_TIMEOUT_MS = 60_000;
+const CLI_TEST_TIMEOUT_MS = 70_000;
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -32,15 +34,30 @@ async function runCli(args: string[], cwd: string, agentDir: string): Promise<{ 
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk.toString();
 		});
-		child.on("error", reject);
-		child.on("close", resolvePromise);
+		let timedOut = false;
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGKILL");
+		}, CLI_PROCESS_TIMEOUT_MS);
+		child.on("error", (error) => {
+			clearTimeout(timeout);
+			reject(error);
+		});
+		child.on("close", (exitCode) => {
+			clearTimeout(timeout);
+			if (timedOut) {
+				reject(new Error(`CLI did not exit within ${CLI_PROCESS_TIMEOUT_MS}ms`));
+				return;
+			}
+			resolvePromise(exitCode);
+		});
 	});
 
 	return { code, stderr };
 }
 
 describe("--session invalid file handling", () => {
-	it("prints a friendly error and preserves non-session file content", async () => {
+	it("prints a friendly error and preserves non-session file content", { timeout: CLI_TEST_TIMEOUT_MS }, async () => {
 		const tempRoot = createTempDir();
 		const agentDir = join(tempRoot, "agent");
 		const projectDir = join(tempRoot, "project");
