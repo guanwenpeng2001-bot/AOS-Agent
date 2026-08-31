@@ -311,13 +311,13 @@ describe("NodeExecutionEnv", () => {
 				cwd: root,
 				shellEnv: {
 					AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl",
-					AOS_AGENT_CODING_AGENT: "true",
+					AOS_AGENT: "true",
 					AOS_AGENT_NODE_ENV_PRESERVED_TEST: "preserved",
 				},
 			});
 			const result = getOrThrow(
 				await env.exec(
-					`printf '%s:%s|%s|%s' "\${AOS_AGENT_SESSION_FILE+x}" "\${AOS_AGENT_SESSION_FILE-}" "$AOS_AGENT_CODING_AGENT" "$AOS_AGENT_NODE_ENV_PRESERVED_TEST"`,
+					`printf '%s:%s|%s|%s' "\${AOS_AGENT_SESSION_FILE+x}" "\${AOS_AGENT_SESSION_FILE-}" "$AOS_AGENT" "$AOS_AGENT_NODE_ENV_PRESERVED_TEST"`,
 					{ env: overrides },
 				),
 			);

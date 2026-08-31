@@ -62,7 +62,7 @@ function createHarnessModels() {
 const defaultPromptTools = [
 	createPromptTool("read", "Read file contents", ["Use read to examine files instead of cat or sed."]),
 	createPromptTool("bash", "Execute bash commands (ls, grep, find, etc.)", [
-		"You can inspect PI_* environment variables for current model and session details.",
+		"You can inspect AOS_AGENT_* environment variables for current model and session details.",
 	]),
 	createPromptTool("edit", "Edit files", ["Edit carefully."]),
 	createPromptTool("write", "Create or overwrite files", ["Use write only for new files or complete rewrites."]),
@@ -108,9 +108,9 @@ describe("coding-agent Harness construction", () => {
 		expect(prompt).toContain("- read: Read file contents");
 		expect(prompt).toContain("- bash: Execute bash commands (ls, grep, find, etc.)");
 		expect(prompt).toContain("Use read to examine files instead of cat or sed.");
-		expect(prompt).toContain("You can inspect PI_* environment variables for current model and session details.");
+		expect(prompt).toContain("You can inspect AOS_AGENT_* environment variables for current model and session details.");
 		expect(prompt.indexOf("Use read to examine files")).toBeLessThan(
-			prompt.indexOf("You can inspect PI_* environment variables"),
+			prompt.indexOf("You can inspect AOS_AGENT_* environment variables"),
 		);
 	});
 
@@ -146,7 +146,7 @@ describe("coding-agent Harness construction", () => {
 		const session = new Session(new InMemorySessionStorage({ id: "session-file-harness", createdAt: 1 }));
 		const env = new CapturingExecutionEnv({
 			cwd: process.cwd(),
-			shellEnv: { AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl", AOS_AGENT_CODING_AGENT: "true" },
+			shellEnv: { AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl", AOS_AGENT: "true" },
 		});
 		const created = await createCodingAgentHarness({
 			session,
@@ -161,7 +161,7 @@ describe("coding-agent Harness construction", () => {
 			if (!bash) throw new Error("Expected the default bash tool");
 
 			const result = await bash.execute("bash-call", {
-				command: `printf '%s' "$AOS_AGENT_SESSION_ID|$AOS_AGENT_SESSION_FILE|$AOS_AGENT_PROVIDER|$AOS_AGENT_MODEL|$AOS_AGENT_REASONING_LEVEL|$AOS_AGENT_CODING_AGENT"`,
+				command: `printf '%s' "$AOS_AGENT_SESSION_ID|$AOS_AGENT_SESSION_FILE|$AOS_AGENT_PROVIDER|$AOS_AGENT_MODEL|$AOS_AGENT_REASONING_LEVEL|$AOS_AGENT"`,
 			});
 
 			expect(env.executionOverrides).toEqual({
@@ -187,7 +187,7 @@ describe("coding-agent Harness construction", () => {
 		const session = new Session(new InMemorySessionStorage({ id: "dynamic-bash-session", createdAt: 1 }));
 		const env = new CapturingExecutionEnv({
 			cwd: process.cwd(),
-			shellEnv: { AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl", AOS_AGENT_CODING_AGENT: "true" },
+			shellEnv: { AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl", AOS_AGENT: "true" },
 		});
 		const created = await createCodingAgentHarness({
 			session,
@@ -203,7 +203,7 @@ describe("coding-agent Harness construction", () => {
 			if (!bash) throw new Error("Expected the default bash tool");
 
 			const result = await bash.execute("bash-call", {
-				command: `printf '%s:%s' "\${AOS_AGENT_SESSION_FILE+x}" "$AOS_AGENT_SESSION_ID|$AOS_AGENT_PROVIDER|$AOS_AGENT_MODEL|$AOS_AGENT_REASONING_LEVEL|$AOS_AGENT_CODING_AGENT"`,
+				command: `printf '%s:%s' "\${AOS_AGENT_SESSION_FILE+x}" "$AOS_AGENT_SESSION_ID|$AOS_AGENT_PROVIDER|$AOS_AGENT_MODEL|$AOS_AGENT_REASONING_LEVEL|$AOS_AGENT"`,
 			});
 
 			expect(env.executionOverrides).toEqual({
@@ -302,7 +302,7 @@ describe("coding-agent Harness construction", () => {
 		[
 			"bash",
 			"Execute bash commands (ls, grep, find, etc.)",
-			"You can inspect PI_* environment variables for current model and session details.",
+			"You can inspect AOS_AGENT_* environment variables for current model and session details.",
 		],
 		["read", "Read file contents", "Use read to examine files instead of cat or sed."],
 		[
@@ -362,7 +362,7 @@ describe("coding-agent Harness construction", () => {
 		expect(prompt).toContain("- write: Create or overwrite files");
 		expect(prompt).toContain("- read: Read file contents");
 		expect(prompt).not.toContain("- bash:");
-		expect(prompt).not.toContain("You can inspect PI_* environment variables");
+		expect(prompt).not.toContain("You can inspect AOS_AGENT_* environment variables");
 		expect(prompt).toContain('<project_instructions path="/workspace/AGENTS.md">');
 		expect(prompt).toContain("<name>review</name>");
 		expect(prompt.indexOf("Use write only for new files or complete rewrites.")).toBeLessThan(

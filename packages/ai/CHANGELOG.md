@@ -7,6 +7,11 @@
 - Renamed `TextSignatureV1` to `TextSignature`; the wire field `v` remains `1`.
 - Renamed the public fake test-provider API from `Faux*`/`faux*` to `Fake*`/`fake*`, including `registerFakeProvider`, with no compatibility aliases.
 
+### Changed
+
+- Package author metadata is AOS Agent.
+- AOS Messages tests use the `x-aos-gateway-upstream-provider` header name. The previous `x-pi-gateway-upstream-provider` name was not present on a shipped gateway in this repository.
+
 ### Fixed
 
 - Made clean and offline checkouts use reproducible tracked model catalogs generated from the canonical catalog scripts.
