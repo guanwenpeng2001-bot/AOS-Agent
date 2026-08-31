@@ -157,9 +157,10 @@ describe("aos-messages", () => {
 		});
 	});
 
+	// No shipped Radius/AOS gateway header name is defined in this repo; use the AOS product header.
 	it("appends debug=1 and reports response headers via onResponse", async () => {
 		const { baseUrl, requests } = await startServer({
-			headers: { "x-pi-gateway-upstream-provider": "anthropic" },
+			headers: { "x-aos-gateway-upstream-provider": "anthropic" },
 			events: [{ type: "done", reason: "stop", usage }],
 		});
 		const model = createModel(baseUrl);
@@ -176,7 +177,7 @@ describe("aos-messages", () => {
 
 		expect(message.stopReason).toBe("stop");
 		expect(requests[0].url).toBe("/v1/messages?debug=1");
-		expect(observedHeaders?.["x-pi-gateway-upstream-provider"]).toBe("anthropic");
+		expect(observedHeaders?.["x-aos-gateway-upstream-provider"]).toBe("anthropic");
 	});
 
 	it("surfaces backend error responses with diagnostics", async () => {

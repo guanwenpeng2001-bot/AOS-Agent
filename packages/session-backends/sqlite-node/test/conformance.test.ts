@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { SessionMetadata, SessionRepo } from "@aos-agent/agent-core";
+import type { SessionMetadata, SessionRepo } from "../../../agent/src/internal.ts";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import {
 	createSessionBackendConformance,

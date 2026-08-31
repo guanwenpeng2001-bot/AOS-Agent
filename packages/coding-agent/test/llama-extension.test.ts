@@ -1,4 +1,3 @@
-import { once } from "node:events";
 import { createServer, type RequestListener, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { AuthContext, AuthPrompt, ModelsPublication, ModelsStoreEntry } from "@aos-agent/ai";
@@ -11,14 +10,41 @@ import llamaExtension from "../src/extensions/llama/index.ts";
 import { createLlamaProvider, LLAMA_PROVIDER_ID } from "../src/extensions/llama/provider.ts";
 
 const servers: Server[] = [];
+const LISTEN_ATTEMPTS = 5;
 
 async function listen(handler: RequestListener): Promise<{ server: Server; url: string }> {
-	const server = createServer(handler);
-	servers.push(server);
-	server.listen(0, "127.0.0.1");
-	await once(server, "listening");
-	const address = server.address() as AddressInfo;
-	return { server, url: `http://127.0.0.1:${address.port}` };
+	for (let attempt = 1; attempt <= LISTEN_ATTEMPTS; attempt += 1) {
+		const server = createServer(handler);
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const onError = (error: Error): void => {
+					server.off("listening", onListening);
+					reject(error);
+				};
+				const onListening = (): void => {
+					server.off("error", onError);
+					resolve();
+				};
+				server.once("error", onError);
+				server.once("listening", onListening);
+				server.listen(0, "127.0.0.1");
+			});
+			servers.push(server);
+			const address = server.address() as AddressInfo;
+			return { server, url: `http://127.0.0.1:${address.port}` };
+		} catch (error: unknown) {
+			if (
+				process.platform !== "win32" ||
+				attempt === LISTEN_ATTEMPTS ||
+				!(error instanceof Error && "code" in error && error.code === "ENOBUFS")
+			) {
+				throw error;
+			}
+			// Full-suite Windows runs can transiently exhaust loopback socket buffers.
+			await new Promise((resolve) => setTimeout(resolve, attempt * 50));
+		}
+	}
+	throw new Error("Unreachable listen retry state");
 }
 
 function json(response: ServerResponse, value: unknown): void {

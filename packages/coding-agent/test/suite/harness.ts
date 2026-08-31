@@ -1,4 +1,4 @@
-import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "../model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry, createModelRegistry, getModelRuntime } from "../runtime/model-runtime-test-utils.ts";
 /**
  * Local test harness for the new coding-agent test suite.
  */
@@ -8,17 +8,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, AgentTool } from "@aos-agent/agent-core";
 import { Agent } from "@aos-agent/agent-core";
-import type { FauxModelDefinition, FauxProviderRegistration, FauxResponseStep, Model } from "@aos-agent/ai/compat";
-import { registerFauxProvider, streamSimple } from "@aos-agent/ai/compat";
-import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
-import { AuthStorage } from "../../src/core/auth-storage.ts";
+import type { FakeModelDefinition, FakeProviderRegistration, FakeResponseStep, Model } from "@aos-agent/ai/compat";
+import { registerFakeProvider, streamSimple } from "@aos-agent/ai/compat";
+import { AgentSession, type AgentSessionEvent } from "../../src/core/session/agent-session.ts";
+import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
-import type { ModelBroker } from "../../src/core/model-broker.ts";
-import type { SandboxProvider } from "../../src/core/sandbox.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
-import type { Settings } from "../../src/core/settings-manager.ts";
-import { SettingsManager } from "../../src/core/settings-manager.ts";
+import type { ModelBroker } from "../../src/core/runtime/model-broker.ts";
+import type { SandboxProvider } from "../../src/core/policy/sandbox.ts";
+import { SessionManager } from "../../src/core/session/manager.ts";
+import type { Settings } from "../../src/core/runtime/settings-manager.ts";
+import { SettingsManager } from "../../src/core/runtime/settings-manager.ts";
 import type { InlineExtension, ResourceLoader } from "../../src/index.ts";
 import {
 	type CreateTestExtensionsResultInput,
@@ -58,7 +58,7 @@ export function getAssistantTexts(harness: Harness): string[] {
 }
 
 export interface HarnessOptions {
-	models?: FauxModelDefinition[];
+	models?: FakeModelDefinition[];
 	settings?: Partial<Settings>;
 	systemPrompt?: string;
 	tools?: AgentTool[];
@@ -79,12 +79,12 @@ export interface Harness {
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
 	authStorage: AuthStorage;
-	faux: FauxProviderRegistration;
+	fake: FakeProviderRegistration;
 	models: [Model<string>, ...Model<string>[]];
 	getModel(): Model<string>;
 	getModel(modelId: string): Model<string> | undefined;
-	setResponses: (responses: FauxResponseStep[]) => void;
-	appendResponses: (responses: FauxResponseStep[]) => void;
+	setResponses: (responses: FakeResponseStep[]) => void;
+	appendResponses: (responses: FakeResponseStep[]) => void;
 	getPendingResponseCount: () => number;
 	events: AgentSessionEvent[];
 	eventsOfType<T extends AgentSessionEvent["type"]>(type: T): Extract<AgentSessionEvent, { type: T }>[];
@@ -100,11 +100,11 @@ function createTempDir(): string {
 
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 	const tempDir = createTempDir();
-	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
+	const fakeProvider: FakeProviderRegistration = registerFakeProvider({
 		models: options.models,
 	});
-	fauxProvider.setResponses([]);
-	const model = fauxProvider.getModel();
+	fakeProvider.setResponses([]);
+	const model = fakeProvider.getModel();
 	const toolMap = options.tools ? Object.fromEntries(options.tools.map((tool) => [tool.name, tool])) : undefined;
 	const withConfiguredAuth = options.withConfiguredAuth ?? true;
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
@@ -114,7 +114,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 
 	const authStorage = AuthStorage.inMemory();
 	if (withConfiguredAuth) {
-		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "fake-key" }));
 	}
 	const modelsPath = options.modelsJson === undefined ? undefined : join(tempDir, "models.json");
 	if (modelsPath) writeFileSync(modelsPath, JSON.stringify(options.modelsJson));
@@ -124,9 +124,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	if (withConfiguredAuth) {
 		modelRegistry.registerProvider(model.provider, {
 			baseUrl: model.baseUrl,
-			apiKey: "faux-key",
-			api: fauxProvider.api,
-			models: fauxProvider.models.map((registeredModel) => ({
+			apiKey: "fake-key",
+			api: fakeProvider.api,
+			models: fakeProvider.models.map((registeredModel) => ({
 				id: registeredModel.id,
 				name: registeredModel.name,
 				api: registeredModel.api,
@@ -141,7 +141,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	}
 
 	const agent = new Agent({
-		getApiKey: () => (withConfiguredAuth ? "faux-key" : undefined),
+		getApiKey: () => (withConfiguredAuth ? "fake-key" : undefined),
 		streamFn: streamSimple,
 		initialState: {
 			model,
@@ -206,12 +206,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		sessionManager,
 		settingsManager,
 		authStorage,
-		faux: fauxProvider,
-		models: fauxProvider.models,
-		getModel: fauxProvider.getModel,
-		setResponses: fauxProvider.setResponses,
-		appendResponses: fauxProvider.appendResponses,
-		getPendingResponseCount: fauxProvider.getPendingResponseCount,
+		fake: fakeProvider,
+		models: fakeProvider.models,
+		getModel: fakeProvider.getModel,
+		setResponses: fakeProvider.setResponses,
+		appendResponses: fakeProvider.appendResponses,
+		getPendingResponseCount: fakeProvider.getPendingResponseCount,
 		events,
 		eventsOfType<T extends AgentSessionEvent["type"]>(type: T) {
 			return events.filter((event): event is Extract<AgentSessionEvent, { type: T }> => event.type === type);
@@ -219,7 +219,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		tempDir,
 		cleanup() {
 			session.dispose();
-			fauxProvider.unregister();
+			fakeProvider.unregister();
 			return session.waitForDispose().finally(() => {
 				if (existsSync(tempDir)) {
 					rmSync(tempDir, { recursive: true });

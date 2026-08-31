@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setKeybindings, type TUI } from "@aos-agent/tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { AuthStorage } from "../../../src/core/auth-storage.ts";
-import { KeybindingsManager } from "../../../src/core/keybindings.ts";
-import { SettingsManager } from "../../../src/core/settings-manager.ts";
+import { AuthStorage } from "../../../src/core/policy/auth-storage.ts";
+import { KeybindingsManager } from "../../../src/core/runtime/keybindings.ts";
+import { SettingsManager } from "../../../src/core/runtime/settings-manager.ts";
 import { ModelSelectorComponent } from "../../../src/modes/interactive/components/model-selector.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
-import { createModelRegistry, getModelRuntime } from "../../model-runtime-test-utils.ts";
+import { createModelRegistry, getModelRuntime } from "../../runtime/model-runtime-test-utils.ts";
 
 function observeRefreshRender(): { tui: TUI; renderedAfterRefresh: Promise<void> } {
 	let renderCount = 0;

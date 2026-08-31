@@ -1,0 +1,76 @@
+name: Packaged runtime smoke
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pack-smoke-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pack-smoke:
+    name: Packaged runtime smoke (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-latest
+          - platform: macos
+            os: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Prepare offline model catalog
+        run: npm run prepare:test-catalog
+
+      - name: Run packaged runtime smoke
+        env:
+          HEAD_SHA: ${{ github.sha }}
+          SMOKE_PLATFORM: ${{ matrix.platform }}
+          SMOKE_ROOT: ${{ runner.temp }}/aos-pack-smoke/${{ matrix.platform }}
+        run: |
+          set -o pipefail
+          test "$HEAD_SHA" = "$(git rev-parse HEAD)"
+          mkdir -p "$SMOKE_ROOT"
+          node packages/coding-agent/scripts/pack-smoke.mjs \
+            --head-sha "$HEAD_SHA" \
+            --platform "$SMOKE_PLATFORM" \
+            --work-root "$SMOKE_ROOT/work" \
+            --candidate-tarball-out "$SMOKE_ROOT/aos-agent.tgz" \
+            --out "$SMOKE_ROOT/package-smoke.json" \
+            --warm-npm-cache \
+            2>&1 | tee "$SMOKE_ROOT/pack-smoke.log"
+
+      - name: Upload packaged smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pack-smoke-${{ matrix.platform }}
+          path: ${{ runner.temp }}/aos-pack-smoke/${{ matrix.platform }}
+          if-no-files-found: warn

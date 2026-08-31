@@ -2,9 +2,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../../../src/config.ts";
-import { AuthStorage } from "../../../src/core/auth-storage.ts";
+import { AuthStorage } from "../../../src/core/policy/auth-storage.ts";
 import { runMigrations } from "../../../src/migrations.ts";
-import { createModelRegistry } from "../../model-runtime-test-utils.ts";
+import { createModelRegistry } from "../../runtime/model-runtime-test-utils.ts";
 import { createHarness } from "../harness.ts";
 
 describe("regression #5661: uppercase models.json header values", () => {

@@ -15,7 +15,7 @@ import {
 	type CompactionEntry,
 	type SessionEntry,
 	sessionEntryToContextMessages,
-} from "../session-manager.ts";
+} from "../session/manager.ts";
 import {
 	computeFileLists,
 	createFileOps,

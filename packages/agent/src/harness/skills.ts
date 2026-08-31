@@ -1,8 +1,8 @@
 import ignore from "ignore";
 import { parse } from "yaml";
 import { type ExecutionEnv, type FileInfo, type Result, type Skill, toError } from "./types.ts";
-import type { SkillMetadataV1 } from "./profile.ts";
-import { ResourceSelectorV1Schema } from "./foundation/reference.ts";
+import type { SkillMetadata } from "./profile.ts";
+import { ResourceSelectorSchema } from "./foundation/reference.ts";
 import { FOUNDATION_SCHEMA_VERSION } from "./foundation/identity.ts";
 import { validateExactShape } from "./foundation/schema.ts";
 import type { FoundationJsonValue } from "./foundation/event-catalog.ts";
@@ -55,7 +55,7 @@ interface SkillFrontmatter {
 	[key: string]: unknown;
 }
 
-export interface SkillExternalProjectionV1 {
+export interface SkillExternalProjection {
 	schemaVersion: 1;
 	name: string;
 	description: string;
@@ -66,12 +66,12 @@ export interface SkillExternalProjectionV1 {
 	effort?: string;
 	fork?: FoundationJsonValue;
 	toolPolicy?: FoundationJsonValue;
-	mcpSelector?: SkillMetadataV1["mcpSelector"];
+	mcpSelector?: SkillMetadata["mcpSelector"];
 	capabilityRefs?: readonly string[];
 	externalProjection?: FoundationJsonValue;
 }
 
-export function projectSkillExternalV1(skill: Skill): SkillExternalProjectionV1 {
+export function projectSkillExternal(skill: Skill): SkillExternalProjection {
 	const metadata = skill.metadata;
 	return {
 		schemaVersion: 1,
@@ -89,10 +89,6 @@ export function projectSkillExternalV1(skill: Skill): SkillExternalProjectionV1 
 		...(metadata?.externalProjection === undefined ? {} : { externalProjection: structuredClone(metadata.externalProjection) }),
 	};
 }
-
-export const skillExternalProjectionV1 = projectSkillExternalV1;
-export const projectSkillForExternalV1 = projectSkillExternalV1;
-export type SkillExternalProjection = SkillExternalProjectionV1;
 
 /** Format a skill invocation prompt, optionally appending additional user instructions. */
 export function formatSkillInvocation(skill: Skill, additionalInstructions?: string): string {
@@ -351,7 +347,7 @@ async function loadSkillFromFile(
 }
 
 /** Parse optional Foundation profile metadata without changing legacy skill behavior. */
-function parseSkillMetadata(frontmatter: SkillFrontmatter, path: string, diagnostics: SkillDiagnostic[]): SkillMetadataV1 | undefined {
+function parseSkillMetadata(frontmatter: SkillFrontmatter, path: string, diagnostics: SkillDiagnostic[]): SkillMetadata | undefined {
 	const nested = isRecord(frontmatter.metadata) ? frontmatter.metadata : {};
 	const rawSelector = frontmatter["mcp-selector"] ?? frontmatter.mcpSelector ?? nested.mcpSelector ?? nested["mcp-selector"];
 	const rawCapabilities = frontmatter["capability-refs"] ?? frontmatter.capabilities ?? nested.capabilityRefs ?? nested["capability-refs"] ?? nested.capabilities;
@@ -369,7 +365,7 @@ function parseSkillMetadata(frontmatter: SkillFrontmatter, path: string, diagnos
 	const hasMetadata = rawSelector !== undefined || rawCapabilities !== undefined || rawTags !== undefined || rawSkillId !== undefined || rawVersion !== undefined || rawSource !== undefined || rawDigest !== undefined || rawParameters !== undefined || rawModel !== undefined || rawEffort !== undefined || rawFork !== undefined || rawToolPolicy !== undefined || rawExternalProjection !== undefined || frontmatter.metadata !== undefined;
 	if (!hasMetadata) return undefined;
 
-	const metadata: SkillMetadataV1 = { schemaVersion: FOUNDATION_SCHEMA_VERSION };
+	const metadata: SkillMetadata = { schemaVersion: FOUNDATION_SCHEMA_VERSION };
 	if (rawSkillId !== undefined) {
 		if (typeof rawSkillId !== "string" || rawSkillId.length === 0) addMetadataDiagnostic("skillId must be a non-empty string", path, diagnostics);
 		else metadata.skillId = rawSkillId;
@@ -391,7 +387,7 @@ function parseSkillMetadata(frontmatter: SkillFrontmatter, path: string, diagnos
 		else metadata.digest = { algorithm: "sha256", value: rawDigest.value };
 	}
 	if (rawSelector !== undefined) {
-		const selector = validateExactShape<NonNullable<SkillMetadataV1["mcpSelector"]>>(ResourceSelectorV1Schema, rawSelector, "skill_mcp_selector");
+		const selector = validateExactShape<NonNullable<SkillMetadata["mcpSelector"]>>(ResourceSelectorSchema, rawSelector, "skill_mcp_selector");
 		if (!selector.ok) addMetadataDiagnostic("mcpSelector is invalid", path, diagnostics);
 		else metadata.mcpSelector = selector.value;
 	}
@@ -487,19 +483,19 @@ async function resolveKind(
 	diagnostics: SkillDiagnostic[],
 ): Promise<"file" | "directory" | undefined> {
 	if (info.kind === "file" || info.kind === "directory") return info.kind;
-	const canonicalPath = await env.canonicalPath(info.path);
-	if (!canonicalPath.ok) {
-		if (canonicalPath.error.code !== "not_found") {
+	const pathResult = await env.canonicalPath(info.path);
+	if (!pathResult.ok) {
+		if (pathResult.error.code !== "not_found") {
 			diagnostics.push({
 				type: "warning",
 				code: "file_info_failed",
-				message: canonicalPath.error.message,
+				message: pathResult.error.message,
 				path: info.path,
 			});
 		}
 		return undefined;
 	}
-	const target = await env.fileInfo(canonicalPath.value);
+	const target = await env.fileInfo(pathResult.value);
 	if (!target.ok) {
 		if (target.error.code !== "not_found") {
 			diagnostics.push({

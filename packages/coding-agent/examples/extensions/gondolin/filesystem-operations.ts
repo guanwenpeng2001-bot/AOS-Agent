@@ -3,7 +3,7 @@ import type {
 	SandboxDirectoryEntry,
 	SandboxOperationRequest,
 	SandboxOperationResult,
-} from "../../../src/core/sandbox.ts";
+} from "../../../src/core/policy/sandbox.ts";
 import {
 	GondolinAdapterError,
 	createGondolinPathMapper,

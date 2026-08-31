@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import {
@@ -261,15 +261,11 @@ function getShellEnv(
 
 function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
-		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
-				stdio: "ignore",
-				detached: true,
-				windowsHide: true,
-			});
-		} catch {
-			// Ignore errors.
-		}
+		spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
+			stdio: "ignore",
+			windowsHide: true,
+			timeout: 30_000,
+		});
 		return;
 	}
 

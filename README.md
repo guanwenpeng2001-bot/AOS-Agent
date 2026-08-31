@@ -4,6 +4,8 @@ AOS Agent is a standalone terminal agent for reading, editing, and running code.
 
 This repository contains the controlled AOS Agent source baseline and its terminal-agent packages.
 
+Package mapping: `packages/coding-agent` is published as npm `aos-agent` (CLI `aos`); `packages/agent` is published as `@aos-agent/agent-core`.
+
 ## Quick start
 
 The current public CLI release is `aos-agent@0.84.3`. Install it globally with Node.js 22.19 or newer:
@@ -42,6 +44,10 @@ The installable package is `aos-agent`, and it exposes the `aos` executable. The
 
 This repository contains the source for the published `0.84.3` package set. Hosted services and generated model catalogs remain outside the release boundary.
 
+Settings-based External Connector entry composition is implemented. Line 13 promotion evidence includes Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release upgrade/restart, deterministic soak, pinned vendor handshake (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, ACP SDK 1.4.0), and Codex subscription print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully certified. Lines 14 and 15 remain later work.
+
+The root `./test.sh` script runs non-e2e product tests.
+
 ## Configuration
 
 User data defaults to `~/.aos-agent/agent/`. Project-local settings and resources use `.aos-agent/`. Provider credentials can be supplied through the provider's documented environment variable or the local auth flow; do not commit credentials or place them in project files that will be shared.
@@ -58,13 +64,18 @@ The detailed reference is in [`packages/coding-agent/docs`](packages/coding-agen
 
 ## Model catalog policy
 
-The build creates a local, provider-neutral registry under `.artifacts/aos-model-registry/`. It is ignored by Git and is not part of the package or this repository's product data.
+The build hydrates ignored model wrappers from the tracked
+[`packages/ai/test/fixtures`](packages/ai/test/fixtures) snapshot. It also
+creates a local, provider-neutral registry under `.artifacts/aos-model-registry/`.
+That registry directory is ignored by Git and is not part of the package or this
+repository's product data. Live catalog fetch is limited to explicit
+`update-aos-model-registry` / `generate:models`.
 
 The registry boundary accepts reviewed source records for official provider catalogs/APIs, model gateways, open-model registries, compatible user-supplied catalogs, and future provider-neutral adapters. Public visibility alone is not permission to copy or redistribute metadata. Every source must record its URL, version or retrieval date, terms boundary, authoritative review evidence, normalization decisions, and review status. Unknown facts remain unknown; conflicts and corrections must be explicit.
 
 The current candidate inputs include sources that are approved for local refresh only and sources that remain pending. They may be used for a local build when the documented conditions are met, but the generated registry must not be committed, packaged, or redistributed. User-supplied catalogs are opt-in only and are not loaded by this baseline.
 
-See [`AOS-MODEL-REGISTRY.md`](packages/ai/AOS-MODEL-REGISTRY.md) for the generation contract:
+See [`aos-model-registry.md`](packages/ai/aos-model-registry.md) for the generation contract:
 
 ```sh
 npm run generate:aos-model-registry
@@ -75,11 +86,11 @@ npm run check:aos-model-registry
 
 AOS Agent runs with the permissions of the local user and can execute shell commands and modify files in its working directory. Review project instructions, extensions, skills, packages, and model/provider configuration before trusting them. Use a container or another policy-controlled sandbox for untrusted repositories or unattended work.
 
-The source baseline is imported from an upstream open-source coding-agent baseline at immutable revision `936aff00918de1187f085f123c2812d8f2d67745`. The upstream MIT license, copyright, third-party notices, and source-origin records remain in [`LICENSE`](LICENSE) and [`UPSTREAM.md`](UPSTREAM.md). They are legal and technical provenance, not the AOS product identity.
+AOS Agent is an independent product. Maintainer-only source provenance lives in [`UPSTREAM.md`](UPSTREAM.md) and is not part of the product identity.
 
 ## Contributing and release boundaries
 
-Keep changes inside the isolated baseline and keep AOS-specific changes separable from imported upstream source. For an upstream update, record a new immutable revision, compare legal notices and generated inputs, review the exact diff, and rerun the build and isolated `aos --help` install check.
+Keep AOS Agent changes organized as an independent product. For an upstream update, record a new immutable revision in `UPSTREAM.md`, compare legal notices and generated inputs, review the exact diff, and rerun the build and isolated `aos --help` install check.
 
 The immutable `v0.84.3` tag identifies the published `0.84.3` release snapshot. `main` may contain post-tag maintenance commits; those commits are not retroactively part of the `v0.84.3` tag or its package artifact. The earlier `v0.84.2` tag remains immutable. Any future release that distributes generated model metadata requires a separate record-level source-terms review, clean artifact and credential checks, and independent review of the upstream provenance boundary; the ignored local registry is not a release artifact.
 

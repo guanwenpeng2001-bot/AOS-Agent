@@ -9,7 +9,7 @@
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Type } from "typebox";
-import { ModelRuntime } from "../../coding-agent/src/core/model-runtime.ts";
+import { ModelRuntime } from "../../coding-agent/src/core/runtime/model-runtime.ts";
 import {
 	closeOpenAICodexWebSocketSessions,
 	getOpenAICodexWebSocketDebugStats,

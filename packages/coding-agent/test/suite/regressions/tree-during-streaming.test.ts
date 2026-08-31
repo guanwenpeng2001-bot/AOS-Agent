@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@aos-agent/ai";
+import { fakeAssistantMessage } from "@aos-agent/ai";
 import { describe, expect, it } from "vitest";
 import { userMsg } from "../../utilities.ts";
 import { createHarness } from "../harness.ts";
@@ -19,7 +19,7 @@ describe("tree navigation during an active response", () => {
 						.navigateTree(targetId, { summarize: false })
 						.catch((error) => error);
 					leafUnchanged = activeLeafId !== targetId && harness.sessionManager.getLeafId() === activeLeafId;
-					return fauxAssistantMessage("response");
+					return fakeAssistantMessage("response");
 				},
 			]);
 			await harness.session.prompt("second");

@@ -1,5 +1,5 @@
-import { PolicyError } from "../execution-policy.ts";
-import type { SandboxDirectoryEntry, SandboxOperationResult } from "../sandbox.ts";
+import { PolicyError } from "../policy/execution.ts";
+import type { SandboxDirectoryEntry, SandboxOperationResult } from "../policy/sandbox.ts";
 
 export function sandboxContentBuffer(result: SandboxOperationResult, operation: string): Buffer {
 	const content = result.content;

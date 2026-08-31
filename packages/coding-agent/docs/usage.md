@@ -91,7 +91,7 @@ Capability trust: project-scoped sources default to untrusted and are force-deni
 
 MCP content (resources and prompts) is never loaded automatically. The `/mcp` command family lists catalogs and reads or attaches one resource or prompt at a time, always as explicit actions with a confirmation step before anything enters the session. Output is restricted to digest/metadata receipts labeled untrusted; raw URIs, prompt names and argument values, tokens, and remote original text are never displayed. Errors use fixed safe messages. OAuth authorization is Streamable HTTP only (stdio servers never use OAuth) and stores credentials only in the MCP credential namespace; see [Capabilities and MCP](capabilities.md#mcp-authentication) for the full contract.
 
-Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP, including explicit MCP resource/prompt inspection and attach and Streamable-HTTP-only MCP OAuth. It does not include the Sandbox, external Agent orchestration, or legacy SSE transports. ModelBroker route selection is documented separately in [Models](models.md).
+Capability layer covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP, including explicit MCP resource/prompt inspection and attach and Streamable-HTTP-only MCP OAuth. It does not include the Sandbox, external Agent orchestration, or legacy SSE transports. ModelBroker route selection is documented separately in [Models](models.md).
 
 ## Message Queue
 
@@ -171,7 +171,7 @@ Use `/export [file]` to write a session to HTML.
 
 Use `/share` to upload a private GitHub gist with a shareable HTML link.
 
-If you use AOS Agent for open source work and want to publish sessions for model, prompt, tool, and evaluation research, see [`aos-agent-share-hf`](UPSTREAM.md). It publishes sessions to Hugging Face datasets.
+If you use AOS Agent for open source work and want to publish sessions for model, prompt, tool, and evaluation research, see [`aos-agent-share-hf`](../../../UPSTREAM.md). It publishes sessions to Hugging Face datasets.
 
 ## CLI Reference
 
@@ -338,4 +338,4 @@ AOS Agent keeps the core small and pushes workflow-specific behavior into extens
 
 It intentionally does not include sub-agents, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages, or use external tools such as containers and tmux.
 
-For implementation background and source history, see the [upstream provenance record](../../UPSTREAM.md).
+For implementation background and source history, see the [upstream provenance record](../../../UPSTREAM.md).

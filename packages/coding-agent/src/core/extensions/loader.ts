@@ -27,10 +27,10 @@ import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.ts";
 import * as _bundledAosCodingAgent from "../../index.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
-import type { ExecOptions } from "../exec.ts";
-import { readAosAgentManifest } from "../aos-agent-manifest.ts";
+import type { ExecOptions } from "../runtime/exec.ts";
+import { readAosAgentManifest } from "../runtime/aos-agent-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
-import { time } from "../timings.ts";
+import { time } from "../runtime/timings.ts";
 import type {
 	EntryRenderer,
 	Extension,

@@ -10,15 +10,15 @@
  * argument values, and remote original text are never rendered here. Errors
  * are fixed safe templates or stable codes.
  */
-import { CapabilityError } from "../../core/capability-registry.ts";
-import { PolicyError } from "../../core/execution-policy.ts";
-import { MCPAuthError } from "../../core/mcp-auth.ts";
-import { MCPAuthStorageError } from "../../core/mcp-auth-storage.ts";
-import type { McpAttachment } from "../../core/mcp-attachment.ts";
-import { MCPContentError } from "../../core/mcp-content.ts";
-import type { MCPGetPromptResult, MCPReadResourceResult } from "../../core/mcp-content.ts";
-import { MCPError, type MCPConnectionStatus } from "../../core/mcp-types.ts";
-import type { MCPPromptListResult, MCPResourceListResult } from "../../core/mcp-types.ts";
+import { CapabilityError } from "../../core/policy/capability-registry.ts";
+import { PolicyError } from "../../core/policy/execution.ts";
+import { MCPAuthError } from "../../core/policy/mcp-auth.ts";
+import { MCPAuthStorageError } from "../../core/policy/mcp-auth-storage.ts";
+import type { McpAttachment } from "../../core/runtime/mcp-attachment.ts";
+import { MCPContentError } from "../../core/runtime/mcp-content.ts";
+import type { MCPGetPromptResult, MCPReadResourceResult } from "../../core/runtime/mcp-content.ts";
+import { MCPError, type MCPConnectionStatus } from "../../core/runtime/mcp-types.ts";
+import type { MCPPromptListResult, MCPResourceListResult } from "../../core/runtime/mcp-types.ts";
 import { theme } from "./theme/theme.ts";
 
 /** The supported `/mcp` subcommands. */

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { executeBashWithOperations } from "../src/core/bash-executor.ts";
+import { executeBashWithOperations } from "../src/core/runtime/bash-executor.ts";
 import { createBashTool, createLocalBashOperations } from "../src/core/tools/bash.ts";
 
 function toBashSingleQuotedArg(value: string): string {

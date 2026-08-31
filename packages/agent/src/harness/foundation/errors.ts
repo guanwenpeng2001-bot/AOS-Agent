@@ -1,5 +1,74 @@
 import type { JsonValue } from "../session/types.ts";
 
+/** Stable External Connector error catalog shared by Foundation and Automation Host. */
+export const EXTERNAL_ERROR_CODES = Object.freeze([
+	"external_connector_unavailable",
+	"external_protocol_unsupported",
+	"external_capability_mismatch",
+	"external_binding_invalid",
+	"external_mapping_conflict",
+	"external_resume_unsupported",
+	"external_event_invalid",
+	"external_tool_route_denied",
+	"external_path_outside_workspace",
+	"external_review_required",
+	"external_review_rejected",
+	"external_credential_unavailable",
+	"external_terminal_ambiguous",
+	"external_connector_config_invalid",
+	"external_connector_not_ready",
+	"external_connector_readiness_stale",
+	"external_connector_circuit_open",
+	"external_connector_dependency_missing",
+	"external_connector_executable_untrusted",
+	"external_resource_limit_exceeded",
+	"external_frame_oversize",
+	"tool_gateway_catalog_invalid",
+	"control_state_corrupt",
+	"control_state_write_failed",
+	"session_transition_failed",
+	"external_process_identity_ambiguous",
+	"control_state_migration_failed",
+	"shutdown_deadline_exceeded",
+	"side_effect_unknown",
+	"run_terminal_conflict",
+] as const);
+export type ExternalErrorCode = (typeof EXTERNAL_ERROR_CODES)[number];
+
+/** Fixed, public-safe messages for the stable External Connector error catalog. */
+export const EXTERNAL_ERROR_MESSAGES: Readonly<Record<ExternalErrorCode, string>> = Object.freeze({
+	external_connector_unavailable: "External connector is unavailable.",
+	external_protocol_unsupported: "External connector protocol is unsupported.",
+	external_capability_mismatch: "External connector capability snapshot is invalid or changed.",
+	external_binding_invalid: "External connector binding is invalid.",
+	external_mapping_conflict: "External connector mapping conflicts with its durable Attempt.",
+	external_resume_unsupported: "External connector Attempt cannot be resumed.",
+	external_event_invalid: "External connector emitted invalid supervised output.",
+	external_tool_route_denied: "External connector Tool Gateway policy or route denied the request.",
+	external_path_outside_workspace: "External connector path is outside the trusted workspace.",
+	external_review_required: "External connector operation requires review.",
+	external_review_rejected: "External connector operation was rejected by review.",
+	external_credential_unavailable: "External connector credential is unavailable.",
+	external_terminal_ambiguous: "External connector terminal state is ambiguous.",
+	external_connector_config_invalid: "External connector configuration is invalid.",
+	external_connector_not_ready: "External connector is not ready.",
+	external_connector_readiness_stale: "External connector readiness is stale.",
+	external_connector_circuit_open: "External connector circuit is open.",
+	external_connector_dependency_missing: "External connector dependency is unavailable.",
+	external_connector_executable_untrusted: "External connector executable is untrusted.",
+	external_resource_limit_exceeded: "External connector exceeded a supervised resource limit.",
+	external_frame_oversize: "External connector frame exceeds the configured limit.",
+	tool_gateway_catalog_invalid: "Tool Gateway route catalog is invalid.",
+	control_state_corrupt: "Control-plane state is corrupt.",
+	control_state_write_failed: "Control-plane state could not be written safely.",
+	session_transition_failed: "Session transition failed.",
+	external_process_identity_ambiguous: "External connector process identity is ambiguous.",
+	control_state_migration_failed: "Control-plane state migration failed.",
+	shutdown_deadline_exceeded: "Shutdown exceeded its bounded deadline.",
+	side_effect_unknown: "An external side effect may have occurred without conclusive durable evidence.",
+	run_terminal_conflict: "Run terminal state conflicts with the canonical receipt.",
+});
+
 /** Foundation-owned errors. Durable-ledger codes are appended below from the same catalog source. */
 const FOUNDATION_CORE_ERROR_CODES = [
 	"foundation_schema_unsupported_version",
@@ -35,7 +104,7 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"tool_guard_denied",
 	"tool_pre_hook_denied",
 	"tool_post_validation_failed",
-	"side_effect_unknown",
+	...EXTERNAL_ERROR_CODES,
 	"role_not_found",
 	"role_slug_conflict",
 	"role_revision_immutable",
@@ -117,7 +186,7 @@ const FOUNDATION_CORE_ERROR_CODES = [
 	"scheduler_persistence_failed",
 ] as const;
 
-/** Canonical line-12A Child Agent error catalog. Keep this tuple as the only source for its union. */
+/** Canonical Child Agent error catalog. Keep this tuple as the only source for its union. */
 export const SUBAGENT_ERROR_CODES = Object.freeze([
 	"subagent_spawn_invalid",
 	"subagent_provider_unavailable",
@@ -174,13 +243,47 @@ export interface StableErrorRecord { _tag: string; code: string; message: string
 
 export type FoundationErrorCategory = "schema" | "concurrency" | "not_found" | "conflict" | "validation" | "budget" | "permission" | "provider" | "unknown";
 
+const EXTERNAL_ERROR_CATEGORIES: Readonly<Record<ExternalErrorCode, FoundationErrorCategory>> = Object.freeze({
+	external_connector_unavailable: "provider",
+	external_protocol_unsupported: "provider",
+	external_capability_mismatch: "provider",
+	external_binding_invalid: "validation",
+	external_mapping_conflict: "conflict",
+	external_resume_unsupported: "provider",
+	external_event_invalid: "provider",
+	external_tool_route_denied: "permission",
+	external_path_outside_workspace: "validation",
+	external_review_required: "permission",
+	external_review_rejected: "permission",
+	external_credential_unavailable: "provider",
+	external_terminal_ambiguous: "provider",
+	external_connector_config_invalid: "validation",
+	external_connector_not_ready: "provider",
+	external_connector_readiness_stale: "provider",
+	external_connector_circuit_open: "provider",
+	external_connector_dependency_missing: "provider",
+	external_connector_executable_untrusted: "permission",
+	external_resource_limit_exceeded: "provider",
+	external_frame_oversize: "validation",
+	tool_gateway_catalog_invalid: "validation",
+	control_state_corrupt: "validation",
+	control_state_write_failed: "provider",
+	session_transition_failed: "provider",
+	external_process_identity_ambiguous: "provider",
+	control_state_migration_failed: "provider",
+	shutdown_deadline_exceeded: "provider",
+	side_effect_unknown: "unknown",
+	run_terminal_conflict: "conflict",
+});
+
 export function foundationErrorCategory(code: FoundationErrorCode): FoundationErrorCategory {
 	if (code.startsWith("foundation_schema") || code.startsWith("structure") || code === "invalid_shape" || code === "unsupported_schema_version") return "schema";
 	if (code.includes("cursor") || code.startsWith("session_writer") || code.startsWith("binding_epoch")) return "concurrency";
 	if (code.endsWith("_not_found")) return "not_found";
 	if (code.endsWith("_conflict")) return "conflict";
+	if (Object.hasOwn(EXTERNAL_ERROR_CATEGORIES, code)) return EXTERNAL_ERROR_CATEGORIES[code as ExternalErrorCode];
 	if (code.includes("budget") || code.includes("quota") || code.includes("not_authorized")) return "permission";
-	if (code.includes("provider") || code.includes("side_effect") || code.includes("service_") || code.includes("plugin_")) return "provider";
+	if (code.startsWith("external_") || code.includes("provider") || code.includes("side_effect") || code.includes("service_") || code.includes("plugin_")) return "provider";
 	if (code === "scheduler_lease_lost" || code === "scheduler_claim_expired") return "concurrency";
 	if (code === "scheduler_no_executor" || code === "scheduler_executor_unavailable") return "provider";
 	return "validation";
@@ -223,10 +326,10 @@ function forbiddenKey(key: string): boolean {
 
 export function redactText(text: string): string {
 	return text
-		.replace(/(prompt|payload|originalArguments|translatedConfig|input)\s*[:=]\s*[^\n]+/gi, `$1=${REDACTED}`)
+		.replace(/(prompt|transcript|payload|originalArguments|translatedConfig|input)\s*[:=]\s*[^\n]+/gi, `$1=${REDACTED}`)
 		.replace(/\bsk-[A-Za-z0-9_-]{16,}/g, REDACTED)
 		.replace(/bearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${REDACTED}`)
-		.replace(/(password|secret|token|api[-_]?key)\s*[:=]\s*[^\s,;]+/gi, `$1=${REDACTED}`)
+		.replace(/(password|credential|secret|token|api[-_]?key)\s*[:=]\s*[^\s,;]+/gi, `$1=${REDACTED}`)
 		.replace(/https?:\/\/[^\s]+/gi, REDACTED_URL)
 		.replace(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|tmp|var|workspace|mnt|private)\/)[^\s,;]+/g, REDACTED_PATH);
 }
@@ -242,14 +345,14 @@ export function redactProjection(value: unknown): unknown {
 	return value;
 }
 
-export interface FoundationPublicErrorV1 {
+export interface FoundationPublicError {
 	code: FoundationErrorCode | string;
 	category: FoundationErrorCategory;
 	message: string;
 }
 
 export type PublicExecutionErrorCategory = "permission" | "parameter" | "transient" | "deadline" | "cancelled" | "side_effect_unknown" | "unknown";
-export interface PublicExecutionErrorV1 {
+export interface PublicExecutionError {
 	code: string;
 	message: string;
 	category?: PublicExecutionErrorCategory;
@@ -277,15 +380,27 @@ export class FoundationError extends Error {
 		return value instanceof FoundationError || (typeof value === "object" && value !== null && (value as { _tag?: unknown })._tag === "FoundationError");
 	}
 
-	redact(): FoundationPublicErrorV1 {
-		return { code: this.code, category: this.category, message: this.message };
+	redact(): FoundationPublicError {
+		return {
+			code: this.code,
+			category: this.category,
+			message: Object.hasOwn(EXTERNAL_ERROR_MESSAGES, this.code)
+				? EXTERNAL_ERROR_MESSAGES[this.code as ExternalErrorCode]
+				: this.message,
+		};
 	}
 
-	toPublicExecutionError(): PublicExecutionErrorV1 {
-		return { code: this.code, message: this.message, retryable: this.retryable };
+	toPublicExecutionError(): PublicExecutionError {
+		return {
+			code: this.code,
+			message: Object.hasOwn(EXTERNAL_ERROR_MESSAGES, this.code)
+				? EXTERNAL_ERROR_MESSAGES[this.code as ExternalErrorCode]
+				: this.message,
+			retryable: this.retryable,
+		};
 	}
 
-	toJSON(): FoundationPublicErrorV1 & { _tag: "FoundationError" } {
+	toJSON(): FoundationPublicError & { _tag: "FoundationError" } {
 		return { _tag: "FoundationError", ...this.redact() };
 	}
 }
@@ -295,10 +410,10 @@ export function toFoundationError(error: unknown, fallbackCode: FoundationErrorC
 	return new FoundationError(fallbackCode, error instanceof Error ? error.message : String(error), { cause: error });
 }
 
-export function publicExecutionError(code: FoundationErrorCode | string, message: string, options: { retryable?: boolean; category?: PublicExecutionErrorCategory } = {}): PublicExecutionErrorV1 {
+export function publicExecutionError(code: FoundationErrorCode | string, message: string, options: { retryable?: boolean; category?: PublicExecutionErrorCategory } = {}): PublicExecutionError {
 	return { code, message: redactText(message), ...(options.category === undefined ? {} : { category: options.category }), retryable: options.retryable ?? false };
 }
 
-export function redactFoundationError(error: FoundationError): FoundationPublicErrorV1 {
+export function redactFoundationError(error: FoundationError): FoundationPublicError {
 	return error.redact();
 }

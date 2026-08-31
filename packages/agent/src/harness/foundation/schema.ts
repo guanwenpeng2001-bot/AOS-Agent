@@ -1,11 +1,11 @@
 import { type TSchema, Type } from "typebox";
 import { Check, Errors } from "typebox/value";
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import { FoundationError, type FoundationErrorCode } from "./errors.ts";
-import { FOUNDATION_SCHEMA_VERSION, canonicalFoundationJson, type ExecutionCorrelationV1, type FingerprintV1, type FoundationLineageV1 } from "./identity.ts";
+import { canonicalFoundationJson, type ExecutionCorrelation, type Fingerprint, type FoundationLineage } from "./identity.ts";
 import type { FoundationJsonValue } from "./event-catalog.ts";
 
-export const ExecutionCorrelationV1Schema = Type.Object(
+export const ExecutionCorrelationSchema = Type.Object(
 	{
 		sessionId: Type.String({ minLength: 1 }),
 		laneId: Type.String({ minLength: 1 }),
@@ -24,11 +24,9 @@ export const ExecutionCorrelationV1Schema = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-export type ExecutionCorrelationV1Shape = ExecutionCorrelationV1;
 
-export const FingerprintV1Schema = Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false });
-export type FingerprintV1Shape = FingerprintV1;
-export const LineageV1Schema = Type.Object({ schemaVersion: Type.Literal(1), entityType: Type.String({ minLength: 1 }), entityId: Type.String({ minLength: 1 }), parentId: Type.Optional(Type.String({ minLength: 1 })), ancestorIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))), depth: Type.Integer({ minimum: 0 }) }, { additionalProperties: false });
+export const FingerprintSchema = Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false });
+export const LineageSchema = Type.Object({ schemaVersion: Type.Literal(1), entityType: Type.String({ minLength: 1 }), entityId: Type.String({ minLength: 1 }), parentId: Type.Optional(Type.String({ minLength: 1 })), ancestorIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))), depth: Type.Integer({ minimum: 0 }) }, { additionalProperties: false });
 
 /** Recursive JSON values are the only unstructured values allowed at a public boundary. */
 export const FoundationJsonValueSchema = Type.Cyclic(
@@ -45,27 +43,26 @@ export const FoundationJsonValueSchema = Type.Cyclic(
 	"FoundationJsonValueV1",
 );
 
-export interface FoundationEnvelopeV1<TType extends string = string, TPayload extends FoundationJsonValue = FoundationJsonValue> {
+export interface FoundationEnvelope<TType extends string = string, TPayload extends FoundationJsonValue = FoundationJsonValue> {
 	schemaVersion: 1;
 	type: TType;
 	id: string;
 	sequence: number;
 	timestamp: string;
-	correlation: ExecutionCorrelationV1;
+	correlation: ExecutionCorrelation;
 	payload: TPayload;
 }
-export type FoundationEnvelope<TType extends string = string, TPayload extends FoundationJsonValue = FoundationJsonValue> = FoundationEnvelopeV1<TType, TPayload>;
 
-export const FoundationEnvelopeV1Schema = Type.Object(
-	{ schemaVersion: Type.Literal(1), type: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }), sequence: Type.Integer({ minimum: 0 }), timestamp: Type.String({ minLength: 1 }), correlation: ExecutionCorrelationV1Schema, payload: FoundationJsonValueSchema },
+export const FoundationEnvelopeSchema = Type.Object(
+	{ schemaVersion: Type.Literal(1), type: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }), sequence: Type.Integer({ minimum: 0 }), timestamp: Type.String({ minLength: 1 }), correlation: ExecutionCorrelationSchema, payload: FoundationJsonValueSchema },
 	{ additionalProperties: false },
 );
 
 export function foundationEnvelopeSchema<TPayloadSchema extends TSchema>(payloadSchema: TPayloadSchema): TSchema {
-	return Type.Object({ schemaVersion: Type.Literal(1), type: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }), sequence: Type.Integer({ minimum: 0 }), timestamp: Type.String({ minLength: 1 }), correlation: ExecutionCorrelationV1Schema, payload: payloadSchema }, { additionalProperties: false });
+	return Type.Object({ schemaVersion: Type.Literal(1), type: Type.String({ minLength: 1 }), id: Type.String({ minLength: 1 }), sequence: Type.Integer({ minimum: 0 }), timestamp: Type.String({ minLength: 1 }), correlation: ExecutionCorrelationSchema, payload: payloadSchema }, { additionalProperties: false });
 }
 
-export function createFoundationEnvelope<TType extends string, TPayload extends FoundationJsonValue>(type: TType, id: string, correlation: ExecutionCorrelationV1, payload: TPayload, options: { sequence?: number; timestamp?: string } = {}): FoundationEnvelopeV1<TType, TPayload> {
+export function createFoundationEnvelope<TType extends string, TPayload extends FoundationJsonValue>(type: TType, id: string, correlation: ExecutionCorrelation, payload: TPayload, options: { sequence?: number; timestamp?: string } = {}): FoundationEnvelope<TType, TPayload> {
 	canonicalFoundationJson(payload);
 	return { schemaVersion: 1, type, id, sequence: options.sequence ?? 0, timestamp: options.timestamp ?? new Date().toISOString(), correlation, payload };
 }
@@ -104,40 +101,32 @@ export function parseExactShape<TShape>(schema: TSchema, text: string, kind: str
 	}
 }
 
-export function validateFoundationEnvelope(value: unknown): ResultValue<FoundationEnvelopeV1<string, FoundationJsonValue>, FoundationError> {
+export function validateFoundationEnvelope(value: unknown): ResultValue<FoundationEnvelope<string, FoundationJsonValue>, FoundationError> {
 	if (value !== null && typeof value === "object" && !Array.isArray(value)) {
 		const payload = (value as Record<string, unknown>).payload;
 		if (payload !== undefined) {
 			try { canonicalFoundationJson(payload); } catch { return Result.err(new FoundationError("foundation_schema_invalid_shape", "foundation_envelope payload must be finite, acyclic JSON")); }
 		}
 	}
-	const checked = validateExactShape<FoundationEnvelopeV1<string, FoundationJsonValue>>(FoundationEnvelopeV1Schema, value, "foundation_envelope");
+	const checked = validateExactShape<FoundationEnvelope<string, FoundationJsonValue>>(FoundationEnvelopeSchema, value, "foundation_envelope");
 	if (!checked.ok) return checked;
 	return checked;
 }
-export function serializeFoundationEnvelopeV1(value: FoundationEnvelopeV1): string {
+export function serializeFoundationEnvelope(value: FoundationEnvelope): string {
 	const checked = validateFoundationEnvelope(value);
 	if (!checked.ok) throw checked.error;
 	return canonicalFoundationJson(checked.value);
 }
-export function parseFoundationEnvelopeV1(text: string): ResultValue<FoundationEnvelopeV1, FoundationError> { return parseExactShape(FoundationEnvelopeV1Schema, text, "foundation_envelope"); }
+export function parseFoundationEnvelope(text: string): ResultValue<FoundationEnvelope, FoundationError> { return parseExactShape(FoundationEnvelopeSchema, text, "foundation_envelope"); }
 
-export const FOUNDATION_SCHEMA_VERSION_V1 = FOUNDATION_SCHEMA_VERSION;
-
-export function validateExecutionCorrelationV1(value: unknown): ResultValue<ExecutionCorrelationV1, FoundationError> {
-	return validateExactShape<ExecutionCorrelationV1>(ExecutionCorrelationV1Schema, value, "execution_correlation");
+export function validateExecutionCorrelation(value: unknown): ResultValue<ExecutionCorrelation, FoundationError> {
+	return validateExactShape<ExecutionCorrelation>(ExecutionCorrelationSchema, value, "execution_correlation");
 }
-export function serializeExecutionCorrelationV1(value: ExecutionCorrelationV1): string { return serializeExactShape(ExecutionCorrelationV1Schema, value, "execution_correlation"); }
-export function parseExecutionCorrelationV1(text: string): ResultValue<ExecutionCorrelationV1, FoundationError> { return parseExactShape(ExecutionCorrelationV1Schema, text, "execution_correlation"); }
-export function validateFingerprintV1(value: unknown): ResultValue<FingerprintV1, FoundationError> { return validateExactShape<FingerprintV1>(FingerprintV1Schema, value, "fingerprint"); }
-export function serializeFingerprintV1(value: FingerprintV1): string { return serializeExactShape(FingerprintV1Schema, value, "fingerprint"); }
-export function parseFingerprintV1(text: string): ResultValue<FingerprintV1, FoundationError> { return parseExactShape(FingerprintV1Schema, text, "fingerprint"); }
-export function validateLineageV1(value: unknown): ResultValue<FoundationLineageV1, FoundationError> { return validateExactShape<FoundationLineageV1>(LineageV1Schema, value, "lineage"); }
-export function serializeLineageV1(value: FoundationLineageV1): string { return serializeExactShape(LineageV1Schema, value, "lineage"); }
-export function parseLineageV1(text: string): ResultValue<FoundationLineageV1, FoundationError> { return parseExactShape(LineageV1Schema, text, "lineage"); }
-export const validateExecutionCorrelation = validateExecutionCorrelationV1;
-export const serializeExecutionCorrelation = serializeExecutionCorrelationV1;
-export const parseExecutionCorrelation = parseExecutionCorrelationV1;
-export const validateFoundationEnvelopeV1 = validateFoundationEnvelope;
-export const serializeFoundationEnvelope = serializeFoundationEnvelopeV1;
-export const parseFoundationEnvelope = parseFoundationEnvelopeV1;
+export function serializeExecutionCorrelation(value: ExecutionCorrelation): string { return serializeExactShape(ExecutionCorrelationSchema, value, "execution_correlation"); }
+export function parseExecutionCorrelation(text: string): ResultValue<ExecutionCorrelation, FoundationError> { return parseExactShape(ExecutionCorrelationSchema, text, "execution_correlation"); }
+export function validateFingerprint(value: unknown): ResultValue<Fingerprint, FoundationError> { return validateExactShape<Fingerprint>(FingerprintSchema, value, "fingerprint"); }
+export function serializeFingerprint(value: Fingerprint): string { return serializeExactShape(FingerprintSchema, value, "fingerprint"); }
+export function parseFingerprint(text: string): ResultValue<Fingerprint, FoundationError> { return parseExactShape(FingerprintSchema, text, "fingerprint"); }
+export function validateLineage(value: unknown): ResultValue<FoundationLineage, FoundationError> { return validateExactShape<FoundationLineage>(LineageSchema, value, "lineage"); }
+export function serializeLineage(value: FoundationLineage): string { return serializeExactShape(LineageSchema, value, "lineage"); }
+export function parseLineage(text: string): ResultValue<FoundationLineage, FoundationError> { return parseExactShape(LineageSchema, text, "lineage"); }

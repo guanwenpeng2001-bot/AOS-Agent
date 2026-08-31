@@ -1,5 +1,5 @@
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, type Harness } from "../harness.ts";
@@ -37,8 +37,8 @@ describe("#5998 blocked tool termination", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("should not run"),
+			fakeAssistantMessage([fakeToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
+			fakeAssistantMessage("should not run"),
 		]);
 
 		await harness.session.prompt("hi");

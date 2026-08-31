@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.ts";
+import type { AgentSessionRuntime } from "../../../src/core/session/runtime.ts";
 import { runRpcMode } from "../../../src/modes/rpc/rpc-mode.ts";
 import { createHarness, type Harness } from "../harness.ts";
 
@@ -10,7 +10,7 @@ const rpcIo = vi.hoisted(() => ({
 	lineHandler: undefined as ((line: string) => void) | undefined,
 }));
 
-vi.mock("../../../src/core/output-guard.js", () => ({
+vi.mock("../../../src/core/runtime/output-guard.js", () => ({
 	flushRawStdout: vi.fn(async () => {}),
 	takeOverStdout: vi.fn(),
 	waitForRawStdoutBackpressure: vi.fn(async () => {}),
@@ -77,7 +77,7 @@ function createRuntimeHost(harness: Harness): AgentSessionRuntime {
 		switchSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
 		dispose: vi.fn(async () => {}),
-		setRebindSession: vi.fn(),
+		setPrepareSessionRebind: vi.fn(),
 	} as unknown as AgentSessionRuntime;
 }
 

@@ -7,7 +7,7 @@ import {
 	type PolicyBinding,
 	type PolicyErrorView,
 	type SandboxCapabilities,
-} from "../../../src/core/execution-policy.ts";
+} from "../../../src/core/policy/execution.ts";
 import {
 	SandboxCapabilityError,
 	SandboxError,
@@ -17,7 +17,7 @@ import {
 	type SandboxOperationRequest,
 	type SandboxOperationResult,
 	type SandboxProvider,
-} from "../../../src/core/sandbox.ts";
+} from "../../../src/core/policy/sandbox.ts";
 import {
 	executeFilesystemOperation,
 	type GondolinOperationContext,

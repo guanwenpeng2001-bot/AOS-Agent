@@ -2,7 +2,7 @@ import { symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
-import { loadSkills, loadSourcedSkills, projectSkillExternalV1 } from "../../src/harness/skills.ts";
+import { loadSkills, loadSourcedSkills, projectSkillExternal } from "../../src/harness/skills.ts";
 import { createTempDir } from "./session-test-utils.ts";
 
 describe("loadSkills", () => {
@@ -170,7 +170,7 @@ Private instructions.
 `);
 		const loaded = await loadSkills(env, "skills");
 		expect(loaded.diagnostics).toEqual([]);
-		const projection = projectSkillExternalV1(loaded.skills[0]!);
+		const projection = projectSkillExternal(loaded.skills[0]!);
 		expect(projection).toEqual({ schemaVersion: 1, name: "advanced", description: "Advanced skill", skillId: "advanced-skill", parameters: { mode: "safe" }, model: "test-model", effort: "high", fork: "child-agent", toolPolicy: { allow: ["read"] }, externalProjection: { version: 1 } });
 		expect(projection).not.toHaveProperty("content");
 	});

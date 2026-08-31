@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../../../src/config.ts";
-import { SessionManager } from "../../../src/core/session-manager.ts";
+import { SessionManager } from "../../../src/core/session/manager.ts";
 
 const DIRECTORY_LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
 

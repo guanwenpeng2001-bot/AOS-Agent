@@ -1,8 +1,12 @@
 import type { OAuthCredential } from "../auth/types.ts";
 import type { Model, ThinkingLevelMap } from "../types.ts";
 
-/** No default host — callers must supply an explicit gateway URL. */
-export const DEFAULT_RADIUS_GATEWAY = "";
+/**
+ * Upstream-hosted default Radius gateway. Matches the OAuth client ID used at
+ * sign-in (same operator); override per provider in models.json for a custom
+ * gateway.
+ */
+export const DEFAULT_RADIUS_GATEWAY = "https://radius.pi.dev";
 
 export type RadiusGatewayModel = {
 	id: string;

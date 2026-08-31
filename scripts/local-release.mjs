@@ -216,9 +216,10 @@ const bunInstallDirectory = join(outDir, "bun-install");
 const binaryDirectory = join(outDir, "bun");
 mkdirSync(tarballDirectory, { recursive: true });
 
-// Release artifacts always use a freshly generated, strictly validated catalog,
-// including when checks or tests are explicitly skipped.
-run("npm", ["run", "generate:models"], { cwd: repoRoot });
+// Release artifacts use the tracked snapshot catalog. Live upstream refresh is
+// an explicit `update-aos-model-registry` / `generate:models` step, not CI or
+// the default build, so a models.dev deletion cannot red the tree.
+run("npm", ["run", "prepare:test-catalog"], { cwd: repoRoot });
 
 if (!options.skipCheck) {
 	run("npm", ["run", "check"], { cwd: repoRoot });

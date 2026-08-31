@@ -66,6 +66,22 @@ See Cursor's [authentication](https://docs.cursor.com/en/cli/reference/authentic
 
 Radius is a dynamic `aos-messages` gateway. `/login radius` stores OAuth tokens in `auth.json`; the gateway catalog is refreshed independently and cached in `models-store.json`. Custom Radius gateways can be declared in `models.json` with `"oauth": "radius"` and a gateway `baseUrl`.
 
+The default gateway is the upstream-hosted `https://radius.pi.dev`; with no configuration the Radius provider discovers OAuth and refreshes its catalog from that host (the catalog endpoint does not require authentication). To use a different gateway, declare its address in `models.json`:
+
+```json
+{
+  "providers": {
+    "radius": {
+      "name": "Radius",
+      "oauth": "radius",
+      "baseUrl": "https://<your-radius-gateway>"
+    }
+  }
+}
+```
+
+The OAuth client ID and the gateway address must belong to the same operator. The client ID only names the client at sign-in time; tokens are still issued by the gateway at `baseUrl`, and that gateway must be one whose authorization server has the `pi-gateway` client ID registered (the default host and the built-in client ID are the same operator). Setting a `pi-gateway` client ID against an arbitrary gateway does not work — identity and address have to match.
+
 ## API Keys
 
 ### Environment Variables or Auth File
@@ -116,7 +132,7 @@ aos
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | `xiaomi-token-plan-sgp` |
 
-Reference for environment variables and `auth.json` keys: [`const envMap`](UPSTREAM.md) in [`packages/ai/src/env-api-keys.ts`](UPSTREAM.md).
+Reference for environment variables and `auth.json` keys: [`const envMap`](../../../UPSTREAM.md) in [`packages/ai/src/env-api-keys.ts`](../../../UPSTREAM.md).
 
 #### Auth File
 

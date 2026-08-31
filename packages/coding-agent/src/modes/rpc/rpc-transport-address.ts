@@ -85,7 +85,7 @@ export function parseRpcTransportAddress(value: string): RpcTransportAddressPars
 	}
 
 	// Bracketed hosts and hostnames containing ':' are IPv6 forms, which are
-	// deliberately outside the v1 contract even when they name ::1.
+	// deliberately outside the RPC transport contract even when they name ::1.
 	if (url.hostname.length === 0 || url.hostname.startsWith("[") || url.hostname.includes(":")) return invalidAddress();
 	if (url.hostname !== RPC_TRANSPORT_LOOPBACK_HOST) return notLoopback();
 

@@ -6,10 +6,10 @@ export type {
 	JsonlSessionMetadata,
 	JsonlSessionRepoFileSystem,
 	JsonlSessionRepoOptions,
-	JsonlV4Header,
+	JsonlSessionHeader,
 } from "./jsonl.ts";
 export { JsonlSessionRepo } from "./jsonl.ts";
 export * from "./memory.ts";
 export * from "./session.ts";
-export * from "./t5.ts";
+export * from "./ledger-writer.ts";
 export * from "./types.ts";

@@ -61,7 +61,7 @@ export function sessionSnapshot(id: string, overrides: Partial<SessionSnapshot> 
 		createdAt: 1,
 		updatedAt: 1,
 		phase: "idle",
-		model: { provider: "faux", id: "model" },
+		model: { provider: "fake", id: "model" },
 		thinkingLevel: "off",
 		attached: true,
 		locked: true,

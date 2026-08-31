@@ -1,23 +1,21 @@
 export * from "./budget.ts";
-export * from "./ask-store.ts";
 export * from "./contracts.ts";
 export * from "./errors.ts";
 export * from "./event-catalog.ts";
 export {
-	executeDispatchV1,
-	executeOperationV1,
-	startDispatchAttemptV1,
-	switchAgentModeV1,
+	executeDispatch,
+	executeOperation,
+	startDispatchAttempt,
+	switchAgentMode,
 } from "./execution.ts";
 export type {
-	DispatchAttemptStartResultV1,
-	DispatchExecutionInputV1,
-	DispatchExecutionResultV1,
-	ModeSwitchExecutionInputV1,
-	OperationExecutionInputV1,
+	DispatchAttemptStartResult,
+	DispatchExecutionInput,
+	DispatchExecutionResult,
+	ModeSwitchExecutionInput,
+	OperationExecutionInput,
 } from "./execution.ts";
 export * from "./goal.ts";
-export * from "./goal-store.ts";
 export * from "./identity.ts";
 export * from "./immutability.ts";
 export * from "./binding.ts";
@@ -25,12 +23,13 @@ export * from "./conformance.ts";
 export * from "./gateway.ts";
 export * from "./model-profile.ts";
 export * from "./model-call.ts";
+export * from "./mcp-selection.ts";
+export { decodeLegacyFoundationRecordV1 } from "./migrations/legacy-foundation-schema.ts";
 export * from "./observer.ts";
 export * from "./plugin.ts";
 export * from "./profile.ts";
 export * from "./protocol.ts";
 export * from "./providers.ts";
-export * from "./query.ts";
 export * from "./reference.ts";
 export * from "./results.ts";
 export * from "./role.ts";
@@ -42,5 +41,3 @@ export * from "./settlement.ts";
 export * from "./service.ts";
 export * from "./side-effect.ts";
 export * from "./task.ts";
-export * from "./workflow.ts";
-export * from "./workflow-store.ts";

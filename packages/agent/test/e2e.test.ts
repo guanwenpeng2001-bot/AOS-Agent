@@ -1,12 +1,12 @@
 import {
 	type AssistantMessage,
-	type FauxProviderRegistration,
-	fauxAssistantMessage,
-	fauxText,
-	fauxThinking,
-	fauxToolCall,
+	type FakeProviderRegistration,
+	fakeAssistantMessage,
+	fakeText,
+	fakeThinking,
+	fakeToolCall,
 	type Model,
-	registerFauxProvider,
+	registerFakeProvider,
 	streamSimple,
 	type ToolResultMessage,
 	type UserMessage,
@@ -15,10 +15,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Agent, type AgentEvent } from "../src/index.ts";
 import { calculateTool } from "./utils/calculate.ts";
 
-const registrations: FauxProviderRegistration[] = [];
+const registrations: FakeProviderRegistration[] = [];
 
-function createFauxRegistration(options: Parameters<typeof registerFauxProvider>[0] = {}): FauxProviderRegistration {
-	const registration = registerFauxProvider(options);
+function createFakeRegistration(options: Parameters<typeof registerFakeProvider>[0] = {}): FakeProviderRegistration {
+	const registration = registerFakeProvider(options);
 	registrations.push(registration);
 	return registration;
 }
@@ -182,72 +182,72 @@ async function multiTurnConversation(model: Model<string>) {
 	expect(getTextContent(lastMessage).toLowerCase()).toContain("alice");
 }
 
-describe("Agent integration with faux provider", () => {
+describe("Agent integration with fake provider", () => {
 	it("handles a basic text prompt", async () => {
-		const faux = createFauxRegistration();
-		faux.setResponses([fauxAssistantMessage("4")]);
-		await basicPrompt(faux.getModel());
+		const fake = createFakeRegistration();
+		fake.setResponses([fakeAssistantMessage("4")]);
+		await basicPrompt(fake.getModel());
 	});
 
 	it("executes tools and tracks pending tool calls", async () => {
-		const faux = createFauxRegistration();
-		faux.setResponses([
-			fauxAssistantMessage(
+		const fake = createFakeRegistration();
+		fake.setResponses([
+			fakeAssistantMessage(
 				[
-					fauxText("Let me calculate that."),
-					fauxToolCall("calculate", { expression: "123 * 456" }, { id: "calc-1" }),
+					fakeText("Let me calculate that."),
+					fakeToolCall("calculate", { expression: "123 * 456" }, { id: "calc-1" }),
 				],
 				{ stopReason: "toolUse" },
 			),
-			fauxAssistantMessage("The result is 56088."),
+			fakeAssistantMessage("The result is 56088."),
 		]);
-		await toolExecution(faux.getModel());
+		await toolExecution(fake.getModel());
 	});
 
 	it("handles abort during streaming", async () => {
-		const faux = createFauxRegistration({
+		const fake = createFakeRegistration({
 			tokensPerSecond: 20,
 			tokenSize: { min: 2, max: 2 },
 		});
-		faux.setResponses([
-			fauxAssistantMessage(
+		fake.setResponses([
+			fakeAssistantMessage(
 				"one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen",
 			),
 		]);
-		await abortExecution(faux.getModel());
+		await abortExecution(fake.getModel());
 	});
 
 	it("emits lifecycle updates while streaming", async () => {
-		const faux = createFauxRegistration({ tokenSize: { min: 1, max: 1 } });
-		faux.setResponses([fauxAssistantMessage("1 2 3 4 5")]);
-		await stateUpdates(faux.getModel());
+		const fake = createFakeRegistration({ tokenSize: { min: 1, max: 1 } });
+		fake.setResponses([fakeAssistantMessage("1 2 3 4 5")]);
+		await stateUpdates(fake.getModel());
 	});
 
 	it("maintains context across multiple turns", async () => {
-		const faux = createFauxRegistration();
-		faux.setResponses([
-			fauxAssistantMessage("Nice to meet you, Alice."),
+		const fake = createFakeRegistration();
+		fake.setResponses([
+			fakeAssistantMessage("Nice to meet you, Alice."),
 			(context) => {
 				const hasAlice = context.messages.some((message) => {
 					if (message.role !== "user") return false;
 					if (typeof message.content === "string") return message.content.includes("Alice");
 					return message.content.some((block) => block.type === "text" && block.text.includes("Alice"));
 				});
-				return fauxAssistantMessage(hasAlice ? "Your name is Alice." : "I do not know your name.");
+				return fakeAssistantMessage(hasAlice ? "Your name is Alice." : "I do not know your name.");
 			},
 		]);
-		await multiTurnConversation(faux.getModel());
+		await multiTurnConversation(fake.getModel());
 	});
 
 	it("preserves thinking content blocks", async () => {
-		const faux = createFauxRegistration({ models: [{ id: "faux-reasoning", reasoning: true }] });
-		faux.setResponses([fauxAssistantMessage([fauxThinking("step by step"), fauxText("4")])]);
+		const fake = createFakeRegistration({ models: [{ id: "fake-reasoning", reasoning: true }] });
+		fake.setResponses([fakeAssistantMessage([fakeThinking("step by step"), fakeText("4")])]);
 
 		const agent = new Agent({
 			streamFn: streamSimple,
 			initialState: {
 				systemPrompt: "You are a helpful assistant.",
-				model: faux.getModel(),
+				model: fake.getModel(),
 				thinkingLevel: "low",
 				tools: [],
 			},
@@ -264,15 +264,15 @@ describe("Agent integration with faux provider", () => {
 	});
 });
 
-describe("Agent.continue() with faux provider", () => {
+describe("Agent.continue() with fake provider", () => {
 	describe("validation", () => {
 		it("throws when no messages in context", async () => {
-			const faux = createFauxRegistration();
+			const fake = createFakeRegistration();
 			const agent = new Agent({
 				streamFn: streamSimple,
 				initialState: {
 					systemPrompt: "Test",
-					model: faux.getModel(),
+					model: fake.getModel(),
 				},
 			});
 
@@ -280,8 +280,8 @@ describe("Agent.continue() with faux provider", () => {
 		});
 
 		it("throws when last message is assistant", async () => {
-			const faux = createFauxRegistration();
-			const model = faux.getModel();
+			const fake = createFakeRegistration();
+			const model = fake.getModel();
 			const agent = new Agent({
 				streamFn: streamSimple,
 				initialState: {
@@ -315,13 +315,13 @@ describe("Agent.continue() with faux provider", () => {
 
 	describe("continue from user message", () => {
 		it("continues and gets a response when last message is user", async () => {
-			const faux = createFauxRegistration();
-			faux.setResponses([fauxAssistantMessage("HELLO WORLD")]);
+			const fake = createFakeRegistration();
+			fake.setResponses([fakeAssistantMessage("HELLO WORLD")]);
 			const agent = new Agent({
 				streamFn: streamSimple,
 				initialState: {
 					systemPrompt: "You are a helpful assistant. Follow instructions exactly.",
-					model: faux.getModel(),
+					model: fake.getModel(),
 					thinkingLevel: "off",
 					tools: [],
 				},
@@ -349,9 +349,9 @@ describe("Agent.continue() with faux provider", () => {
 
 	describe("continue from tool result", () => {
 		it("continues and processes tool results", async () => {
-			const faux = createFauxRegistration();
-			const model = faux.getModel();
-			faux.setResponses([fauxAssistantMessage("The answer is 8.")]);
+			const fake = createFakeRegistration();
+			const model = fake.getModel();
+			fake.setResponses([fakeAssistantMessage("The answer is 8.")]);
 			const agent = new Agent({
 				streamFn: streamSimple,
 				initialState: {

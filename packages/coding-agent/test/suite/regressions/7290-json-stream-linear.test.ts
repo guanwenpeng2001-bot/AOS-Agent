@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@aos-agent/ai";
+import { fakeAssistantMessage } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { toJsonEvent } from "../../../src/modes/json-event.ts";
 import { createHarness, type Harness } from "../harness.ts";
@@ -15,7 +15,7 @@ describe("regression #7290: JSON event streams stay linear", () => {
 	async function measureUpdateBytes(text: string): Promise<number> {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage(text)]);
+		harness.setResponses([fakeAssistantMessage(text)]);
 
 		await harness.session.prompt("respond");
 

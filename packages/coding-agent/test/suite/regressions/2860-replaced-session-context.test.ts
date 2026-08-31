@@ -1,18 +1,17 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@aos-agent/ai/compat";
+import { fakeAssistantMessage, registerFakeProvider } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentSession } from "../../../src/core/agent-session.ts";
+import type { AgentSession, ExtensionBindings } from "../../../src/core/session/agent-session.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-} from "../../../src/core/agent-session-runtime.ts";
-import { AuthStorage } from "../../../src/core/auth-storage.ts";
-import { ModelRuntime } from "../../../src/core/model-runtime.ts";
-import { SessionManager } from "../../../src/core/session-manager.ts";
+} from "../../../src/core/session/runtime.ts";
+import { AuthStorage } from "../../../src/core/policy/auth-storage.ts";
+import { ModelRuntime } from "../../../src/core/runtime/model-runtime.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionFactory } from "../../../src/index.ts";
 
 function getText(message: AgentSession["messages"][number]): string {
@@ -40,19 +39,24 @@ describe("regression #2860: replaced session callbacks", () => {
 		const tempDir = join(tmpdir(), `aos-2860-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
-		const faux = registerFauxProvider({
-			models: [{ id: "faux-1", reasoning: false }],
+		const fake = registerFakeProvider({
+			models: [{ id: "fake-1", reasoning: false }],
 		});
-		faux.setResponses(responses.map((response) => fauxAssistantMessage(response)));
+		fake.setResponses(responses.map((response) => fakeAssistantMessage(response)));
 
 		const authStorage = AuthStorage.inMemory();
-		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(fake.getModel().provider, async () => ({ type: "api_key", key: "fake-key" }));
 		const modelRuntime = await ModelRuntime.create({
 			credentials: authStorage,
 			modelsPath: join(tempDir, "models.json"),
 		});
 
-		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+			cwd,
+			sessionManager,
+			sessionStartEvent,
+			registerCandidateSession,
+		}) => {
 			const services = await createAgentSessionServices({
 				cwd,
 				agentDir: tempDir,
@@ -60,11 +64,11 @@ describe("regression #2860: replaced session callbacks", () => {
 				resourceLoaderOptions: {
 					extensionFactories: [
 						(agent: ExtensionAPI) => {
-							agent.registerProvider(faux.getModel().provider, {
-								baseUrl: faux.getModel().baseUrl,
-								apiKey: "faux-key",
-								api: faux.api,
-								models: faux.models.map((registeredModel) => ({
+							agent.registerProvider(fake.getModel().provider, {
+								baseUrl: fake.getModel().baseUrl,
+								apiKey: "fake-key",
+								api: fake.api,
+								models: fake.models.map((registeredModel) => ({
 									id: registeredModel.id,
 									name: registeredModel.name,
 									api: registeredModel.api,
@@ -83,13 +87,15 @@ describe("regression #2860: replaced session callbacks", () => {
 					noThemes: true,
 				},
 			});
+			const created = await createAgentSessionFromServices({
+				services,
+				sessionManager,
+				sessionStartEvent,
+				model: fake.getModel(),
+			});
+			registerCandidateSession(created.session);
 			return {
-				...(await createAgentSessionFromServices({
-					services,
-					sessionManager,
-					sessionStartEvent,
-					model: faux.getModel(),
-				})),
+				...created,
 				services,
 				diagnostics: services.diagnostics,
 			};
@@ -98,12 +104,10 @@ describe("regression #2860: replaced session callbacks", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			session: { mode: "new" },
 		});
 
-		const rebindSession = async (): Promise<void> => {
-			const session = runtime.session;
-			await session.bindExtensions({
+		const extensionBindings = (session: AgentSession): ExtensionBindings => ({
 				commandContextActions: {
 					waitForIdle: () => session.agent.waitForIdle(),
 					newSession: async (options) => runtime.newSession(options),
@@ -122,26 +126,29 @@ describe("regression #2860: replaced session callbacks", () => {
 					},
 					switchSession: async (sessionPath, options) => runtime.switchSession(sessionPath, options),
 					reload: async () => {
-						await session.reload();
+						await runtime.reload();
 					},
 				},
 			});
-		};
 
-		runtime.setRebindSession(async () => {
-			await rebindSession();
+		runtime.setPrepareSessionRebind(async (session) => {
+			await session.prepareExtensionBindings(extensionBindings(session));
+			return {
+				commit: () => undefined,
+				activate: () => session.activateExtensionBindings(),
+			};
 		});
-		await rebindSession();
+		await runtime.session.bindExtensions(extensionBindings(runtime.session));
 
 		cleanups.push(async () => {
 			await runtime.dispose();
-			faux.unregister();
+			fake.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
 		});
 
-		return { runtime, faux };
+		return { runtime, fake };
 	}
 
 	it("rebinds before withSession, targets the replacement session, and invalidates stale agent/ctx", async () => {
@@ -167,14 +174,14 @@ describe("regression #2860: replaced session callbacks", () => {
 					handler: async (_args, ctx) => {
 						oldCtx = ctx;
 						oldPi = agent;
-						oldSessionFile = ctx.sessionManager.getSessionFile();
+						oldSessionFile = ctx.session.getSessionFile();
 						await ctx.newSession({
 							parentSession: oldSessionFile,
 							withSession: async (replacedCtx) => {
 								events.push(`with:${currentInstance}`);
-								replacementSessionFile = replacedCtx.sessionManager.getSessionFile();
+								replacementSessionFile = replacedCtx.session.getSessionFile();
 								try {
-									oldCtx?.sessionManager.getSessionFile();
+									oldCtx?.session.getSessionFile();
 								} catch {
 									staleCtxThrows = true;
 								}
@@ -213,7 +220,7 @@ describe("regression #2860: replaced session callbacks", () => {
 				agent.registerCommand("fork-it", {
 					description: "fork-it",
 					handler: async (_args, ctx) => {
-						const leafId = ctx.sessionManager.getLeafId();
+						const leafId = ctx.session.getLeafId();
 						if (!leafId) {
 							throw new Error("Missing leaf id");
 						}

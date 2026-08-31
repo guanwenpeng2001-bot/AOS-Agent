@@ -13,7 +13,7 @@ npm install --global --ignore-scripts ./packages/coding-agent
 aos --help
 ```
 
-The build refreshes the ignored AOS-owned model registry under `.artifacts/aos-model-registry/`. See [`../../ai/AOS-MODEL-REGISTRY.md`](../../ai/AOS-MODEL-REGISTRY.md) for source review and update policy.
+The build refreshes the ignored AOS-owned model registry under `.artifacts/aos-model-registry/`. See [`../../ai/aos-model-registry.md`](../../ai/aos-model-registry.md) for source review and update policy.
 
 Then run `aos` in the project you want to work on. See [Quickstart](quickstart.md) for authentication and the first session.
 
@@ -59,4 +59,4 @@ Then run `aos` in the project you want to work on. See [Quickstart](quickstart.m
 - [Terminal setup](terminal-setup.md)
 - [Shell aliases](shell-aliases.md)
 
-For upstream provenance, licensing, and the maintenance boundary, see [`../../UPSTREAM.md`](../../UPSTREAM.md).
+For upstream provenance, licensing, and the maintenance boundary, see [`../../../UPSTREAM.md`](../../../UPSTREAM.md).

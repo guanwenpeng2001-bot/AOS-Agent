@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
 	encodeHeader,
+	encodeV5Header,
 	encodeMutation,
 	metadataFromHeader,
 	parseHeader,
+	parseSessionHeader,
 	parseMutation,
 } from "../../../src/harness/session/jsonl/codec.ts";
 import { JsonlDecodeError } from "../../../src/harness/session/jsonl/errors.ts";
-import type { JsonlV4Header } from "../../../src/harness/session/jsonl/types.ts";
+import { createV5Header } from "../../../src/harness/session/jsonl/migration.ts";
+import type { JsonlV4Header, JsonlV5Header } from "../../../src/harness/session/jsonl/types.ts";
 import type { SessionMutation } from "../../../src/harness/session/state.ts";
 
 function expectHeaderRoundTrip(header: JsonlV4Header): void {
@@ -67,6 +70,33 @@ describe("JSONL v4 codec", () => {
 				sourceFormat: 4,
 				legacyParentSessionPath: "/sessions/missing-parent.jsonl",
 				metadata: { owner: "agent" },
+			});
+		});
+
+		it("keeps v4 and v5 decode and migration semantics distinct", () => {
+			const v4 = {
+				kind: "header",
+				version: 4,
+				id: "historical-v4",
+				createdAt: 1_700_000_000_000,
+				cwd: "/workspace/project",
+				metadata: { owner: "agent" },
+			} satisfies JsonlV4Header;
+			const v5 = createV5Header(v4, 1_700_000_000_100) satisfies JsonlV5Header;
+
+			expect(parseSessionHeader(encodeHeader(v4).trimEnd())).toEqual({ ok: true, value: v4 });
+			expect(parseSessionHeader(encodeV5Header(v5).trimEnd())).toEqual({ ok: true, value: v5 });
+			expect(parseHeader(encodeV5Header(v5).trimEnd())).toMatchObject({ ok: false });
+			expect(v5).toEqual({
+				kind: "header",
+				version: 5,
+				schemaVersion: 1,
+				id: v4.id,
+				createdAt: v4.createdAt,
+				cwd: v4.cwd,
+				metadata: v4.metadata,
+				migratedFromVersion: 4,
+				migratedAt: 1_700_000_000_100,
 			});
 		});
 	});

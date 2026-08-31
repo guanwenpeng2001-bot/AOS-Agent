@@ -1,217 +1,349 @@
-// Core Agent
-
-export { uuidv7 } from "@aos-agent/ai";
+export { agentLoop, agentLoopContinue } from "./agent-loop.ts";
+export { Agent } from "./agent.ts";
+export { AgentHarness } from "./harness/agent-harness.ts";
 export type {
-	AttributeValue,
-	ExactTelemetryAttributes,
-	InferEventAttributes,
-	InferOptionalAttributes,
-	InferRequiredAndOptionalAttributes,
-	InferStartAttributes,
-	RecordedTelemetryEvent,
-	RecordedTelemetrySpan,
-	SchemaTelemetrySpan,
-	SpanAttributes,
-	SpanAttributes as TelemetrySpanAttributes,
-	SpanOptions,
-	SpanStatus,
-	TelemetryAttributeDefinition,
-	TelemetryAttributeMetadata,
-	TelemetryAttributeType,
-	TelemetryContext,
-	TelemetryEventAttributeDefinition,
-	TelemetryEventDefinition,
-	TelemetryParentDefinition,
-	TelemetrySchemaDefinition,
-	TelemetrySchemaSpanEndAttributes,
-	TelemetrySchemaSpanEventAttributes,
-	TelemetrySchemaSpanEventName,
-	TelemetrySchemaSpanName,
-	TelemetrySchemaSpanStartAttributes,
-	TelemetrySchemaSpanUnion,
-	TelemetrySpan,
-	TelemetrySpanDefinition,
-	TelemetryStartAttributeDefinition,
-	TypedSpanStarter,
-} from "@aos-agent/telemetry";
+	AgentHarnessFoundationExecution,
+	AgentHarnessOptions,
+	HarnessCompactionHookInput,
+	HarnessCompactionHookResult,
+	HarnessCompactionResult,
+	HarnessContextPreparationInput,
+	HarnessModelCallBoundaryInput,
+	HarnessTool,
+	RunOutcome,
+} from "./harness/agent-harness.ts";
 export {
-	createTypedSpanStarter,
-	defineTelemetrySchema,
-	InMemoryTelemetryContext,
-	NOOP_TELEMETRY_CONTEXT,
-} from "@aos-agent/telemetry";
-export * from "./agent.ts";
-// Loop functions
-export * from "./agent-loop.ts";
-export {
-	AGENT_LOOP_ERROR_CATEGORIES,
-	AGENT_LOOP_ERROR_CODES,
-	classifyAgentLoopError,
-	classifyAssistantMessageError,
-	decideAgentLoopRetry,
-	getAgentLoopErrorMessage,
-	redactedThrownAgentError,
-	redactAgentLoopErrorMessage,
-	type AgentLoopErrorCategory,
-	type AgentLoopErrorClassification,
-	type AgentLoopErrorCode,
-	type AgentLoopErrorOptions,
-	type AgentLoopErrorSideEffect,
-	type AgentLoopProviderKind,
-	type AgentLoopProviderPhase,
-	type AgentLoopRetryDecision,
-	type AgentLoopRetryDecisionReason,
-	type AgentLoopRetryOptions,
-	type AgentLoopRetryCallbacks,
-} from "./agent-errors.ts";
-export {
-	AgentLoopConvergenceGuard,
-	DEFAULT_AGENT_LOOP_CONVERGENCE,
-	createAgentLoopConvergenceGuard,
-	fingerprintAgentTurn,
-	type AgentLoopConvergenceDecision,
-	type AgentLoopConvergenceObservation,
-	type AgentLoopConvergenceOptions,
-	type AgentLoopConvergenceReason,
-	type AgentLoopConvergenceState,
-} from "./loop-convergence.ts";
-export {
-	AgentDeadlineExceeded,
-	AgentOperationError,
-	createAgentOperationSignal,
-	raceWithAbortSignal,
-	type AgentOperationSignal,
-	type AgentOperationSignalOptions,
-} from "./operation-signal.ts";
-export * from "./harness/agent-harness.ts";
-// Foundation v1 modular public contracts are the single identity/event/protocol authority.
-export * from "./harness/foundation/index.ts";
-export * from "./harness/foundation-v1-capabilities.ts";
-export * from "./harness/artifacts.ts";
-export * from "./harness/context/index.ts";
-export * from "./harness/memory/index.ts";
-export {
-	type BranchPreparation,
-	type BranchSummaryDetails,
-	type BranchSummaryResult,
-	type CollectEntriesResult,
-	collectEntriesForBranchSummary,
-	type FileOperations,
-	type GenerateBranchSummaryOptions,
-	generateBranchSummary,
-	prepareBranchEntries,
-} from "./harness/compaction/branch-summarization.ts";
-export {
-	type CompactionPreparation,
-	type CompactionSettings,
-	type CompactResult,
-	calculateContextTokens,
-	compact,
-	DEFAULT_COMPACTION_SETTINGS,
-	estimateContextTokens,
-	estimateTokens,
-	findCutPoint,
-	findTurnStartIndex,
-	generateSummary,
-	generateSummaryWithUsage,
-	getLastAssistantUsage,
-	prepareCompaction,
-	serializeConversation,
-	shouldCompact,
-} from "./harness/compaction/compaction.ts";
-export * from "./harness/messages.ts";
-export * from "./harness/prompt-templates.ts";
-// Foundation v1 runtime contracts
-export * from "./harness/profile.ts";
-export * from "./harness/plugins.ts";
-export * from "./harness/runtime-services.ts";
-export * from "./harness/tool-gateway.ts";
-export * from "./harness/tool-pipeline.ts";
-// Harness
-export * from "./harness/result.ts";
-export * from "./harness/session/index.ts";
-export * from "./harness/session/search.ts";
-export * from "./harness/skills.ts";
-export * from "./harness/system-prompt.ts";
+	InMemoryArtifactBlobStore,
+	artifactDigestFromId,
+	isValidArtifactDigest,
+	isValidArtifactId,
+} from "./harness/artifacts.ts";
+export type { ArtifactDigest } from "./harness/artifacts.ts";
+export { contextSnapshotFromJSON, createContextSnapshot } from "./harness/context/snapshot.ts";
 export type {
-	AiSpan,
-	AiSpanAttributes,
-	AiSpanEndAttributes,
-	AiSpanEventAttributes,
-	AiSpanEventName,
-	AiSpanName,
-	AiSpanStartAttributes,
-	AiTelemetrySpan,
-	HarnessSpan,
-	HarnessSpanAttributes,
-	HarnessSpanEndAttributes,
-	HarnessSpanEventAttributes,
-	HarnessSpanEventName,
-	HarnessSpanName,
-	HarnessSpanStartAttributes,
-	HarnessTelemetrySpan,
-} from "./harness/telemetry.ts";
+	ContextForkMode,
+	ContextSnapshot,
+	ContextSnapshotRecord,
+	ContextSnapshotSource,
+	TaskContextPackage,
+} from "./harness/context/snapshot.ts";
+export { createOrderedBindingEpoch, validateImmutableAgentBinding } from "./harness/foundation/binding.ts";
 export {
-	AGENT_TELEMETRY_SCHEMAS,
-	AI_TELEMETRY_SCHEMA,
-	HARNESS_TELEMETRY_SCHEMA,
-	startAiSpan,
-	startHarnessSpan,
-} from "./harness/telemetry.ts";
-export * from "./harness/tools/index.ts";
+	BudgetSchema,
+	BudgetUsageSchema,
+	budgetExhaustionReason,
+	validateBudget,
+	validateBudgetUsage,
+} from "./harness/foundation/budget.ts";
+export type { Budget, BudgetUsage } from "./harness/foundation/budget.ts";
 export {
-	type AgentHarnessResources,
-	type AgentHarnessStreamOptions,
-	type AgentHarnessStreamOptionsPatch,
-	type AgentHarnessTool,
-	type AgentHarnessToolContextSource,
-	type HarnessCancellation,
-	type HarnessCancellationOptions,
-	type HarnessOperationContext,
-	type HarnessProviderCallback,
-	type HarnessProviderContext,
-	type HarnessProviderErrorCategory,
-	type HarnessProviderErrorClassification,
-	type HarnessProviderErrorOptions,
-	type HarnessProviderKind,
-	type HarnessProviderPhase,
-	type HarnessRetryDecision,
-	type HarnessRetryDecisionReason,
-	type HarnessRetryOptions,
-	type HarnessSideEffectState,
-	BranchSummaryError,
-	type BranchSummaryErrorCode,
-	CompactionError,
-	type CompactionErrorCode,
-	type ExecutionEnv,
-	ExecutionError,
-	type ExecutionErrorCode,
-	err,
-	FileError,
-	type FileErrorCode,
-	type FileInfo,
-	type FileKind,
-	type FileSystem,
-	HarnessDeadlineExceeded,
-	classifyHarnessProviderError,
-	createHarnessCancellation,
-	createHarnessProviderContext,
-	decideHarnessRetry,
-	getOrThrow,
-	getOrUndefined,
-	ok,
-	type PromptTemplate,
-	type Shell,
-	type ShellExecOptions,
-	type Skill,
-	toError,
-	invokeHarnessProvider,
-} from "./harness/types.ts";
-export * from "./harness/utils/shell-output.ts";
-export * from "./harness/utils/truncate.ts";
-// Proxy utilities
-export * from "./proxy.ts";
-// Stream defaults
+	validateAttemptReceiptForProvider,
+	validateConnectorCapabilitySnapshotForProvider,
+	validateWorkerReceiptForProvider,
+} from "./harness/foundation/conformance.ts";
+export {
+	EXTERNAL_ERROR_CODES,
+	EXTERNAL_ERROR_MESSAGES,
+	FOUNDATION_ERROR_CODES,
+	FoundationError,
+	redactText,
+} from "./harness/foundation/errors.ts";
+export type {
+	ExternalErrorCode,
+	FoundationErrorCode,
+	PublicExecutionError,
+	PublicExecutionErrorCategory,
+} from "./harness/foundation/errors.ts";
+export {
+	createDurableEvent,
+	validateDurableEvent,
+	validateEventPayloadForCategory,
+} from "./harness/foundation/event-catalog.ts";
+export type {
+	DurableEventCategory,
+	DurableEventEnvelope,
+	EventCorrelationRef,
+	FoundationEventEnvelope,
+	FoundationJsonValue,
+	SchedulerClaimEventPayload,
+	SchedulerDeadlockEventPayload,
+	SchedulerDispatchEventPayload,
+	SchedulerHandoffEventPayload,
+	SchedulerQueueEventPayload,
+	SchedulerWakeEventPayload,
+} from "./harness/foundation/event-catalog.ts";
+export { executeOperation } from "./harness/foundation/execution.ts";
+export type { DispatchExecutionResult } from "./harness/foundation/execution.ts";
+export { ScopedExecutionGateway } from "./harness/foundation/gateway.ts";
+export {
+	validateAsk,
+	validateGoal,
+	validatePlan,
+	validateStage,
+	validateTaskResultRef,
+	validateTodo,
+} from "./harness/foundation/goal.ts";
+export type {
+	AcceptanceCriterion,
+	AcceptanceFact,
+	Ask,
+	AskReply,
+	AskStatus,
+	Goal,
+	Plan,
+	PlanStatus,
+	Stage,
+	StageStatus,
+	TaskResultRef,
+	Todo,
+	TodoStatus,
+} from "./harness/foundation/goal.ts";
+export {
+	canonicalFoundationJson,
+	createExecutionCorrelation,
+	fingerprintFoundationValue,
+	newFoundationId,
+	sha256HexValue,
+} from "./harness/foundation/identity.ts";
+export type { ExecutionCorrelation, Fingerprint } from "./harness/foundation/identity.ts";
+export { cloneDeepFrozen } from "./harness/foundation/immutability.ts";
+export { decodeLegacyFoundationRecordV1 } from "./harness/foundation/migrations/legacy-foundation-schema.ts";
+export {
+	projectMcpSelectionToSelector,
+	resolveMcpSelection,
+	validateChildMcpSelection,
+	validateMcpSelection,
+	validateMcpSelectionForBinding,
+} from "./harness/foundation/mcp-selection.ts";
+export type { McpCapabilityBinding, McpSelection, McpToolRoute } from "./harness/foundation/mcp-selection.ts";
+export { validateSecretFreeModelProfile } from "./harness/foundation/model-profile.ts";
+export { FoundationObserver } from "./harness/foundation/observer.ts";
+export type { ObserverCursor } from "./harness/foundation/observer.ts";
+export type { PluginContract } from "./harness/foundation/plugin.ts";
+export type { ProfileContract } from "./harness/foundation/profile.ts";
+export {
+	createConnectorCapabilitySnapshot,
+	validateChildSpawnRequest,
+	validateConnectorCapabilitySnapshot,
+	validateFoundationProviderCapability,
+	validateProviderJson,
+	validateQuotaAttribution,
+	validateQuotaReservation,
+	validateSandboxOperationRequest,
+	validateToolExecutionResult,
+	validateToolGatewayRequest,
+} from "./harness/foundation/providers.ts";
+export type {
+	ArtifactStoreProvider,
+	ChildAgentProvider,
+	ChildSpawnRequest,
+	ChildSpawnResult,
+	ConnectorCapabilitySnapshot,
+	ExecutionProviderDescriptor,
+	ExternalAgentConnector,
+	FoundationProviderCapability,
+	FoundationProviderExecutionOptions,
+	QuotaAttribution,
+	QuotaProvider,
+	QuotaReservation,
+	SandboxOperationProvider,
+	SandboxOperationRequest,
+	SchedulerTaskExecutorProvider,
+	ScopedModelGateway,
+	TaskExecutorAttemptContext,
+	TaskExecutorProvider,
+	ToolExecutionResult,
+	ToolGateway,
+	ToolGatewayRequest,
+} from "./harness/foundation/providers.ts";
+export {
+	ArtifactRefSchema,
+	ResourceSelectorSchema,
+	RevisionReferenceSchema,
+	selectorsNarrow,
+	validateArtifactRef,
+	validateVersionedReference,
+} from "./harness/foundation/reference.ts";
+export type {
+	ArtifactRef,
+	ResourceSelector,
+	RevisionReference,
+	VersionedReference,
+	WorkerReceiptRef,
+} from "./harness/foundation/reference.ts";
+export {
+	createHostTerminalGateAuthority,
+	validateAttemptReceipt,
+	validateAttemptReceiptUsage,
+	validatePublicExecutionError,
+	validateRunReceipt,
+	validateTaskResult,
+	validateWorkerReceipt,
+} from "./harness/foundation/results.ts";
+export type {
+	AttemptReceipt,
+	AttemptReceiptUsage,
+	ResultProvenance,
+	ResultValidation,
+	RunReceipt,
+	SettleTaskResultInput,
+	TaskResult,
+	ValidationResult,
+	WorkerReceipt,
+} from "./harness/foundation/results.ts";
+export { ROLE_RESOLUTION_ORDER } from "./harness/foundation/role-registry.ts";
+export type { RoleRegistry } from "./harness/foundation/role-registry.ts";
+export {
+	ModelRouteSchema,
+	createAgentInstance,
+	createBindingEpoch,
+	createModelProfileRevision,
+	createRoleRevision,
+	resolveAgentBinding,
+	validateAgentBinding,
+	validateAgentInstance,
+	validateBindingEpoch,
+	validateRoleRevision,
+} from "./harness/foundation/role.ts";
+export type {
+	AgentBinding,
+	AgentInstance,
+	BindingEpoch,
+	ModelProfile,
+	ModelRoute,
+	RoleDefinition,
+	RoleRevision,
+} from "./harness/foundation/role.ts";
+export {
+	FingerprintSchema,
+	parseExactShape,
+	serializeExactShape,
+	validateExactShape,
+	validateExecutionCorrelation,
+	validateFingerprint,
+} from "./harness/foundation/schema.ts";
+export type { FoundationEnvelope } from "./harness/foundation/schema.ts";
+export type { ServiceContract } from "./harness/foundation/service.ts";
+export { SessionLedger } from "./harness/foundation/session-ledger.ts";
+export { LayeredResultSettlement, persistTaskEnvelopeBeforeResolver } from "./harness/foundation/settlement.ts";
+export type { CanonicalRunResult, DispatchStartResult } from "./harness/foundation/settlement.ts";
+export { isSideEffectRetryable } from "./harness/foundation/side-effect.ts";
+export type { Idempotency, SideEffectState } from "./harness/foundation/side-effect.ts";
+export {
+	TaskEnvelopePublicProjectionSchema,
+	createAttempt,
+	createTaskEnvelope,
+	projectTaskEnvelope,
+	validateAttempt,
+	validateDispatch,
+	validateSpawnAgentIntent,
+	validateTaskEnvelope,
+	validateTaskEnvelopePublicProjection,
+} from "./harness/foundation/task.ts";
+export type {
+	Attempt,
+	Dispatch,
+	TaskArtifactProjection,
+	TaskEnvelope,
+	TaskEnvelopePublicProjection,
+} from "./harness/foundation/task.ts";
+export { MemoryError, ScopedMemoryStore } from "./harness/memory/memory.ts";
+export type { MemoryProvenanceBoundary } from "./harness/memory/memory.ts";
+export {
+	bashExecutionToText,
+	convertToLlm,
+	createCompactionSummaryMessage,
+	createCustomMessage,
+} from "./harness/messages.ts";
+export { formatPromptTemplateInvocation, parseCommandArgs } from "./harness/prompt-templates.ts";
+export { Result } from "./harness/result.ts";
+export type { ResultValue } from "./harness/result.ts";
+export { parseFoundationMutation } from "./harness/session/durable/codec.ts";
+export { DurableLedgerError, invalidDurableRecord } from "./harness/session/durable/errors.ts";
+export { FoundationLedgerState } from "./harness/session/durable/state.ts";
+export type {
+	AcquireWriterLeaseOptions,
+	AppendFoundationRecordResult,
+	DurableLedgerApi,
+	FoundationFactRecord,
+	FoundationObjectResult,
+	FoundationRecord,
+	FoundationRecordQuery,
+	FoundationRetentionPolicy,
+	LedgerWriterLease,
+	ProvisionedFoundationRecord,
+	ReleaseWriterLeaseOptions,
+	RenewWriterLeaseOptions,
+	SetRetentionPolicyOptions,
+} from "./harness/session/durable/types.ts";
+export { SessionLedgerWriter } from "./harness/session/ledger-writer.ts";
+export type { SessionLedgerWriterOptions } from "./harness/session/ledger-writer.ts";
+export { InMemorySessionRepo, InMemorySessionStorage } from "./harness/session/memory.ts";
+export { getFileSystemResultOrThrow } from "./harness/session/search.ts";
+export type { SessionSearch, SessionSearchHit, SessionSearchOptions } from "./harness/session/search.ts";
+export { Session, assertJsonSerializable } from "./harness/session/session.ts";
+export { SessionError } from "./harness/session/types.ts";
+export type {
+	BranchBounds,
+	Entry,
+	EntryOrder,
+	EntryQuery,
+	ForkOptions,
+	LanePointer,
+	LaneRecord,
+	LogItem,
+	LogOptions,
+	MessageEntry,
+	NewRecord,
+	OperationStartedRecord,
+	ProvisionedEntry,
+	RecordQuery,
+	SessionCreateOptions,
+	SessionMetadata,
+	SessionRepo,
+	SessionStats,
+	SessionStorage,
+	StepAttemptRecord,
+} from "./harness/session/types.ts";
+export { formatSkillInvocation } from "./harness/skills.ts";
+export { formatSkillsForSystemPrompt } from "./harness/system-prompt.ts";
+export {
+	FoundationToolGatewayAuthority,
+	createFoundationToolGateway,
+	createFoundationToolGatewayAuthority,
+	createSandboxOperationToolGatewayProvider,
+	isToolGatewayRoute,
+} from "./harness/tool-gateway.ts";
+export type { ToolGatewayProvider, ToolGatewayRoute, ToolGatewayRouteCatalog } from "./harness/tool-gateway.ts";
+export {
+	FOUNDATION_TOOL_RESULT_CUSTOM_TYPE,
+	validateAndVerifyToolReceipt,
+	validateFoundationToolResultEntry,
+} from "./harness/tool-pipeline.ts";
+export { createBashTool } from "./harness/tools/bash.ts";
+export { createEditTool } from "./harness/tools/edit.ts";
+export { createReadTool } from "./harness/tools/read.ts";
+export type { ExecutionToolContext } from "./harness/tools/tool-context.ts";
+export { createWriteTool } from "./harness/tools/write.ts";
+export { FileError, getOrThrow, ok, toError } from "./harness/types.ts";
+export type { AgentHarnessTool, ExecutionEnv, FileSystem } from "./harness/types.ts";
+export { truncateHead } from "./harness/utils/truncate.ts";
+export { AgentOperationError, createAgentOperationSignal } from "./operation-signal.ts";
+export type { AgentOperationSignal } from "./operation-signal.ts";
+export { streamProxy } from "./proxy.ts";
 export { setDefaultStreamFn } from "./stream-fn.ts";
-// Types
-export * from "./types.ts";
+export type {
+	AgentContext,
+	AgentEvent,
+	AgentLoopConfig,
+	AgentMessage,
+	AgentState,
+	AgentTool,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	PrepareNextTurnContext,
+	QueueMode,
+	StreamFn,
+	ThinkingLevel,
+	ToolExecutionMode,
+} from "./types.ts";

@@ -1,0 +1,380 @@
+/**
+ * CredentialStore implementation backed by auth.json.
+ * Provider auth handling belongs to ModelRuntime and the AOS Agent model layer.
+ */
+
+import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@aos-agent/ai";
+import { join } from "path";
+import { getAgentDir } from "../../config.ts";
+import { raceWithAbortSignal } from "../../utils/abort.ts";
+import { getFileRevision, normalizePath } from "../../utils/paths.ts";
+import {
+	LockedAtomicFileStorage,
+	readControlPlaneState,
+} from "../control-plane-atomic-storage.ts";
+import { isCommandConfigValue, resolveConfigValue } from "../resolve-config-value.ts";
+
+type AuthStorageData = Record<string, Credential>;
+
+type LockResult<T> = {
+	result: T;
+	next?: string;
+};
+
+type AuthFileReload = {
+	controller: AbortController;
+	promise: Promise<AuthStorageData>;
+	readers: number;
+};
+
+type AuthFileReadState = {
+	data: AuthStorageData;
+	valid: boolean;
+	revision?: string;
+	reload?: AuthFileReload;
+};
+
+let sharedAuthFileReadState: { authPath: string; readState: AuthFileReadState } | undefined;
+
+function parseAuthStorageData(content: string): AuthStorageData {
+	const parsed: unknown = JSON.parse(content);
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error("Invalid auth.json: expected an object");
+	}
+	for (const [providerId, credential] of Object.entries(parsed)) {
+		if (typeof credential !== "object" || credential === null || Array.isArray(credential)) {
+			throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
+		}
+		const value = credential as Record<string, unknown>;
+		if (value.type === "api_key") {
+			const validKey = value.key === undefined || typeof value.key === "string";
+			const validEnv =
+				value.env === undefined ||
+				(typeof value.env === "object" &&
+					value.env !== null &&
+					!Array.isArray(value.env) &&
+					Object.values(value.env).every((entry) => typeof entry === "string"));
+			if (validKey && validEnv) continue;
+		} else if (
+			value.type === "oauth" &&
+			typeof value.access === "string" &&
+			typeof value.refresh === "string" &&
+			typeof value.expires === "number" &&
+			Number.isFinite(value.expires)
+		) {
+			continue;
+		}
+		throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
+	}
+	return parsed as AuthStorageData;
+}
+
+const AUTH_STORAGE_OPTIONS = {
+	validate: (content: string) => {
+		parseAuthStorageData(content);
+	},
+	mode: 0o600,
+	directoryMode: 0o700,
+} as const;
+
+export interface AuthStorageBackend {
+	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
+	withLockAsync<T>(
+		fn: (current: string | undefined) => Promise<LockResult<T>>,
+		options?: AuthOperationOptions,
+	): Promise<T>;
+}
+
+export class FileAuthStorageBackend implements AuthStorageBackend {
+	private readonly storage: LockedAtomicFileStorage;
+
+	constructor(authPath: string = join(getAgentDir(), "auth.json")) {
+		this.storage = new LockedAtomicFileStorage(normalizePath(authPath), "{}", AUTH_STORAGE_OPTIONS);
+	}
+
+	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
+		return this.storage.withLock(fn);
+	}
+
+	async withLockAsync<T>(
+		fn: (current: string | undefined) => Promise<LockResult<T>>,
+		options?: AuthOperationOptions,
+	): Promise<T> {
+		return this.storage.withLockAsync(fn, options);
+	}
+}
+
+export class ReadOnlyAuthStorage implements CredentialStore {
+	private readonly authPath: string;
+	private data: AuthStorageData | undefined;
+
+	constructor(authPath: string = join(getAgentDir(), "auth.json")) {
+		this.authPath = normalizePath(authPath);
+	}
+
+	private load(): AuthStorageData {
+		if (this.data) return this.data;
+
+		const content = readControlPlaneState(this.authPath, AUTH_STORAGE_OPTIONS);
+		this.data = content === undefined ? {} : parseAuthStorageData(content);
+		return this.data;
+	}
+
+	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
+		options?.signal?.throwIfAborted();
+		const credential = this.load()[providerId];
+		options?.signal?.throwIfAborted();
+		if (!credential) return undefined;
+		if (credential.type !== "api_key" || !credential.key || isCommandConfigValue(credential.key)) {
+			return structuredClone(credential);
+		}
+		return { ...credential, key: resolveConfigValue(credential.key, credential.env) };
+	}
+
+	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+		options?.signal?.throwIfAborted();
+		const credentials = Object.entries(this.load()).map(([providerId, credential]) => ({
+			providerId,
+			type: credential.type,
+		}));
+		options?.signal?.throwIfAborted();
+		return credentials;
+	}
+
+	async modify(
+		_providerId: string,
+		_fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+		_options?: AuthOperationOptions,
+	): Promise<Credential | undefined> {
+		throw new Error("Read-only credential storage cannot modify auth.json");
+	}
+
+	async delete(_providerId: string, _options?: AuthOperationOptions): Promise<void> {
+		throw new Error("Read-only credential storage cannot modify auth.json");
+	}
+}
+
+export class InMemoryAuthStorageBackend implements AuthStorageBackend {
+	private value: string | undefined;
+	private asyncChain: Promise<unknown> = Promise.resolve();
+
+	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T {
+		const { result, next } = fn(this.value);
+		if (next !== undefined) {
+			this.value = next;
+		}
+		return result;
+	}
+
+	withLockAsync<T>(
+		fn: (current: string | undefined) => Promise<LockResult<T>>,
+		options?: AuthOperationOptions,
+	): Promise<T> {
+		const previous = this.asyncChain;
+		const operation = (async () => {
+			await previous.catch(() => {});
+			options?.signal?.throwIfAborted();
+			const { result, next } = await fn(this.value);
+			options?.signal?.throwIfAborted();
+			if (next !== undefined) {
+				this.value = next;
+			}
+			return result;
+		})();
+		this.asyncChain = operation.catch(() => {});
+		return raceWithAbortSignal(operation, options?.signal);
+	}
+}
+
+/**
+ * Credential storage backed by a JSON file.
+ */
+export class AuthStorage implements CredentialStore {
+	private storage: AuthStorageBackend;
+	private authPath: string | undefined;
+	private readState: AuthFileReadState;
+
+	private constructor(storage: AuthStorageBackend, authPath?: string) {
+		this.storage = storage;
+		this.authPath = authPath;
+		this.readState =
+			authPath && sharedAuthFileReadState?.authPath === authPath
+				? sharedAuthFileReadState.readState
+				: { data: {}, valid: false };
+		if (authPath && !sharedAuthFileReadState) {
+			sharedAuthFileReadState = { authPath, readState: this.readState };
+		}
+		if (authPath) {
+			const revision = getFileRevision(authPath);
+			if (this.readState.valid && revision !== undefined && revision === this.readState.revision) return;
+		}
+		this.reload();
+	}
+
+	static create(authPath: string = join(getAgentDir(), "auth.json")): AuthStorage {
+		const normalizedAuthPath = normalizePath(authPath);
+		return new AuthStorage(new FileAuthStorageBackend(normalizedAuthPath), normalizedAuthPath);
+	}
+
+	static fromStorage(storage: AuthStorageBackend): AuthStorage {
+		return new AuthStorage(storage);
+	}
+
+	static inMemory(data: AuthStorageData = {}): AuthStorage {
+		const storage = new InMemoryAuthStorageBackend();
+		storage.withLock(() => ({ result: undefined, next: JSON.stringify(data, null, 2) }));
+		return AuthStorage.fromStorage(storage);
+	}
+
+	private parseStorageData(content: string | undefined): AuthStorageData {
+		if (!content) {
+			return {};
+		}
+		return parseAuthStorageData(content);
+	}
+
+	private updateReadState(data: AuthStorageData, revision?: string): void {
+		this.readState.data = data;
+		this.readState.valid = true;
+		this.readState.revision = revision;
+	}
+
+	/**
+	 * Reload credentials from storage.
+	 */
+	reload(): void {
+		let content: string | undefined;
+		let revision: string | undefined;
+		try {
+			this.storage.withLock((current) => {
+				content = current;
+				revision = this.authPath ? getFileRevision(this.authPath) : undefined;
+				return { result: undefined };
+			});
+			this.updateReadState(this.parseStorageData(content), revision);
+		} catch {
+			// Preserve the last valid in-memory snapshot.
+		}
+	}
+
+	private async reloadFromStorageAsync(options?: AuthOperationOptions): Promise<AuthStorageData> {
+		return this.storage.withLockAsync(async (content) => {
+			const currentData = this.parseStorageData(content);
+			const revision = this.authPath ? getFileRevision(this.authPath) : undefined;
+			this.updateReadState(currentData, revision);
+			return { result: currentData };
+		}, options);
+	}
+
+	private async readLatestData(options?: AuthOperationOptions): Promise<AuthStorageData> {
+		options?.signal?.throwIfAborted();
+		if (!this.authPath) {
+			const reload = this.reloadFromStorageAsync(options);
+			return options?.signal
+				? reload
+				: reload.catch((error: unknown) => {
+						if (this.readState.valid) return this.readState.data;
+						throw error;
+					});
+		}
+		const revision = getFileRevision(this.authPath);
+		if (revision !== undefined && revision === this.readState.revision) return this.readState.data;
+		if (!this.readState.reload) {
+			const controller = new AbortController();
+			const reload: AuthFileReload = {
+				controller,
+				promise: this.reloadFromStorageAsync({ signal: controller.signal }),
+				readers: 0,
+			};
+			this.readState.reload = reload;
+			void reload.promise.then(
+				() => {
+					if (this.readState.reload === reload) this.readState.reload = undefined;
+				},
+				() => {
+					if (this.readState.reload === reload) this.readState.reload = undefined;
+				},
+			);
+		}
+
+		const reload = this.readState.reload;
+		reload.readers++;
+		try {
+			const result = raceWithAbortSignal(reload.promise, options?.signal);
+			return options?.signal
+				? await result
+				: await result.catch((error: unknown) => {
+						if (this.readState.valid) return this.readState.data;
+						throw error;
+					});
+		} finally {
+			reload.readers--;
+			if (reload.readers === 0 && this.readState.reload === reload) {
+				this.readState.reload = undefined;
+				reload.controller.abort();
+			}
+		}
+	}
+
+	async read(provider: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
+		const credential = (await this.readLatestData(options))[provider];
+		options?.signal?.throwIfAborted();
+		if (credential?.type !== "api_key") return credential;
+		if (credential.key === undefined) return credential;
+		return { ...credential, key: resolveConfigValue(credential.key, credential.env) };
+	}
+
+	async modify(
+		provider: string,
+		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+		options?: AuthOperationOptions,
+	): Promise<Credential | undefined> {
+		let latestData = this.readState.data;
+		let revision: string | undefined;
+		const result = await this.storage.withLockAsync(async (content) => {
+			const currentData = this.parseStorageData(content);
+			const next = await fn(currentData[provider]);
+			if (next === undefined) {
+				latestData = currentData;
+				revision = this.authPath ? getFileRevision(this.authPath) : undefined;
+				return { result: currentData[provider] };
+			}
+
+			const merged: AuthStorageData = { ...currentData, [provider]: next };
+			latestData = merged;
+			return { result: next, next: JSON.stringify(merged, null, 2) };
+		}, options);
+		this.updateReadState(latestData, revision);
+		return result;
+	}
+
+	async delete(provider: string, options?: AuthOperationOptions): Promise<void> {
+		let latestData = this.readState.data;
+		await this.storage.withLockAsync(async (content) => {
+			const currentData = this.parseStorageData(content);
+			delete currentData[provider];
+			latestData = currentData;
+			return { result: undefined, next: JSON.stringify(currentData, null, 2) };
+		}, options);
+		this.updateReadState(latestData);
+	}
+
+	/** List credential metadata without resolving configured key values. */
+	async list(options?: AuthOperationOptions): Promise<readonly CredentialInfo[]> {
+		const entries = Object.entries(await this.readLatestData(options));
+		options?.signal?.throwIfAborted();
+		return entries.map(([providerId, credential]) => ({ providerId, type: credential.type }));
+	}
+}
+
+/**
+ * One-off synchronous read of a stored credential from an auth.json file,
+ * without instantiating a store or resolving configured key values.
+ */
+export function readStoredCredential(
+	providerId: string,
+	authPath: string = join(getAgentDir(), "auth.json"),
+): Credential | undefined {
+	const content = readControlPlaneState(normalizePath(authPath), AUTH_STORAGE_OPTIONS);
+	return content === undefined ? undefined : parseAuthStorageData(content)[providerId];
+}

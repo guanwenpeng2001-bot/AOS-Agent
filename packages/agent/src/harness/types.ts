@@ -1,7 +1,7 @@
 import type { RetryPolicy, SimpleStreamOptions, Transport } from "@aos-agent/ai";
 import type { Static, TSchema } from "typebox";
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "../types.ts";
-import type { SkillMetadataV1 } from "./profile.ts";
+import type { SkillMetadata } from "./profile.ts";
 
 /** Result of a fallible operation. Expected failures are returned as `ok: false` instead of thrown. */
 export type Result<TValue, TError> = { ok: true; value: TValue } | { ok: false; error: TError };
@@ -56,7 +56,7 @@ export interface Skill {
 	/** Exclude this skill from model-visible skill lists while still allowing explicit application invocation. */
 	disableModelInvocation?: boolean;
 	/** Optional Foundation profile metadata for skill extensions. */
-	metadata?: SkillMetadataV1;
+	metadata?: SkillMetadata;
 }
 
 /** Prompt template that can be formatted into a prompt for explicit invocation. */

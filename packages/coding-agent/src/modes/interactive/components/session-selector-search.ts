@@ -1,5 +1,5 @@
 import { fuzzyMatch } from "@aos-agent/tui";
-import type { SessionInfo } from "../../../core/session-manager.ts";
+import type { SessionInfo } from "../../../core/session/manager.ts";
 
 export type SortMode = "threaded" | "recent" | "relevance";
 

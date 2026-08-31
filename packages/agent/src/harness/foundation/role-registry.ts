@@ -1,39 +1,40 @@
-import { Result, type Result as ResultValue } from "../result.ts";
+import { Result, type ResultValue } from "../result.ts";
 import { Type } from "typebox";
 import type { JsonValue } from "../session/types.ts";
 import { FoundationError, redactProjection } from "./errors.ts";
-import { canonicalFoundationJson, fingerprintFoundationValue, newFoundationId, type FingerprintV1 } from "./identity.ts";
+import { canonicalFoundationJson, fingerprintFoundationValue, newFoundationId, type Fingerprint } from "./identity.ts";
 import { cloneDeepFrozen } from "./immutability.ts";
-import { AgentBindingV1Schema, ModelProfileV1Schema, ModelRouteV1Schema, RoleDefinitionV1Schema, RoleRevisionV1Schema, createRoleRevision, resolveAgentBinding, validateRoleDefinitionV1, type ModelProfileV1, type AgentBindingV1, type BindingConflictV1, type BindingSourceTraceV1, type RoleDefinitionV1, type RoleRevisionV1, type RoleScopeV1, type ModelRouteV1 } from "./role.ts";
-import { CapabilitySelectorV1Schema, ResourceSelectorV1Schema, RevisionReferenceV1Schema, selectorsNarrow, type CapabilitySelectorV1, type ResourceSelectorV1, type RevisionReferenceV1, type VersionedReferenceV1, VersionedReferenceV1Schema } from "./reference.ts";
-import { TaskEnvelopeV1Schema, type TaskEnvelopeV1 } from "./task.ts";
-import { BudgetV1Schema } from "./budget.ts";
+import { McpSelectionSchema, type McpSelection } from "./mcp-selection.ts";
+import { AgentBindingSchema, ModelProfileSchema, ModelRouteSchema, RoleDefinitionSchema, RoleRevisionSchema, createRoleRevision, resolveAgentBinding, validateRoleDefinition, type ModelProfile, type AgentBinding, type BindingConflict, type BindingSourceTrace, type RoleDefinition, type RoleRevision, type RoleScope, type ModelRoute } from "./role.ts";
+import { ResourceSelectorSchema, RevisionReferenceSchema, selectorsNarrow, type ResourceSelector, type RevisionReference, type VersionedReference, VersionedReferenceSchema } from "./reference.ts";
+import { TaskEnvelopeSchema, type TaskEnvelope } from "./task.ts";
+import { BudgetSchema } from "./budget.ts";
 import { FoundationJsonValueSchema, parseExactShape, serializeExactShape, validateExactShape } from "./schema.ts";
 
-export interface RoleResolutionOverrideV1 {
+export interface RoleResolutionOverride {
 	schemaVersion: 1;
-	layer: RoleResolutionLayerNameV1;
+	layer: RoleResolutionLayerName;
 	referenceId: string;
 	revision: number;
 	overrideReason: string;
-	roleRevision?: RoleRevisionV1;
-	modelProfile?: ModelProfileV1;
-	modelRoute?: ModelRouteV1;
-	capabilitySelector?: CapabilitySelectorV1;
-	budget?: TaskEnvelopeV1["budget"];
-	contextRevision?: RevisionReferenceV1;
-	externalAgentBindingRevision?: RevisionReferenceV1;
-	modelBrokerBindingRevision?: RevisionReferenceV1;
-	policyRevision?: RevisionReferenceV1;
+	roleRevision?: RoleRevision;
+	modelProfile?: ModelProfile;
+	modelRoute?: ModelRoute;
+	capabilitySelector?: ResourceSelector;
+	budget?: TaskEnvelope["budget"];
+	contextRevision?: RevisionReference;
+	externalAgentBindingRevision?: RevisionReference;
+	modelBrokerBindingRevision?: RevisionReference;
+	policyRevision?: RevisionReference;
 }
 
 /** Ordered precedence layers used by the resolver; later layers may only tighten. */
-export type RoleResolutionLayerNameV1 = BindingSourceTraceV1["layer"];
-export const ROLE_RESOLUTION_ORDER_V1 = ["managed_lock", "global", "project", "path", "goal", "task", "run"] as const;
-export type RoleResolutionOrderV1 = (typeof ROLE_RESOLUTION_ORDER_V1)[number];
-export interface RoleResolutionLayerV1 {
+export type RoleResolutionLayerName = BindingSourceTrace["layer"];
+export const ROLE_RESOLUTION_ORDER = ["managed_lock", "global", "project", "path", "goal", "task", "run"] as const;
+export type RoleResolutionOrder = (typeof ROLE_RESOLUTION_ORDER)[number];
+export interface RoleResolutionLayer {
 	schemaVersion: 1;
-	layer: RoleResolutionLayerNameV1;
+	layer: RoleResolutionLayerName;
 	ordinal: number;
 	referenceId: string;
 	revision: number;
@@ -41,106 +42,107 @@ export interface RoleResolutionLayerV1 {
 }
 
 /** One resolved field with the source and conflict that produced its value. */
-export interface RoleResolvedFieldV1 {
+export interface RoleResolvedField {
 	schemaVersion: 1;
 	field: string;
-	source: BindingSourceTraceV1;
+	source: BindingSourceTrace;
 	revision: number;
 	overrideReason: string;
 	/** Only a redacted safe projection may be returned; raw prompts, paths, URLs and credentials are excluded. */
 	safeValue: JsonValue;
-	conflict?: BindingConflictV1;
+	conflict?: BindingConflict;
 }
 
-export interface RoleResolutionPreviewV1 {
+export interface RoleResolutionPreview {
 	schemaVersion: 1;
 	taskId: string;
 	roleId: string;
-	roleRevision: RevisionReferenceV1;
-	modelProfileRevision: RevisionReferenceV1;
-	modelRoute: ModelRouteV1;
-	contextRevision: RevisionReferenceV1;
-	capabilityRevision: RevisionReferenceV1;
-	modelBrokerBindingRevision: RevisionReferenceV1;
-	policyRevision: RevisionReferenceV1;
-	capabilitySelector: CapabilitySelectorV1;
-	budget: TaskEnvelopeV1["budget"];
-	orderedLayers: readonly RoleResolutionLayerV1[];
-	fields: readonly RoleResolvedFieldV1[];
-	sourceTrace: readonly BindingSourceTraceV1[];
-	conflicts: readonly BindingConflictV1[];
-	binding: AgentBindingV1;
-	fingerprint: FingerprintV1;
+	roleRevision: RevisionReference;
+	modelProfileRevision: RevisionReference;
+	modelRoute: ModelRoute;
+	contextRevision: RevisionReference;
+	capabilityRevision: RevisionReference;
+	modelBrokerBindingRevision: RevisionReference;
+	policyRevision: RevisionReference;
+	capabilitySelector: ResourceSelector;
+	budget: TaskEnvelope["budget"];
+	orderedLayers: readonly RoleResolutionLayer[];
+	fields: readonly RoleResolvedField[];
+	sourceTrace: readonly BindingSourceTrace[];
+	conflicts: readonly BindingConflict[];
+	binding: AgentBinding;
+	fingerprint: Fingerprint;
 }
 
-export interface RoleRegistryRecordV1 {
+export interface RoleRegistryRecord {
 	schemaVersion: 1;
 	roleId: string;
-	scope: RoleScopeV1;
-	definition: RoleDefinitionV1;
-	currentRevision: RoleRevisionV1;
-	revisions: readonly RoleRevisionV1[];
-	tombstone?: RoleTombstoneV1;
+	scope: RoleScope;
+	definition: RoleDefinition;
+	currentRevision: RoleRevision;
+	revisions: readonly RoleRevision[];
+	tombstone?: RoleTombstone;
 }
 
 /** Delete is a durable tombstone; it never erases prior immutable revisions. */
-export interface RoleTombstoneV1 {
+export interface RoleTombstone {
 	schemaVersion: 1;
 	roleId: string;
-	scope: RoleScopeV1;
+	scope: RoleScope;
 	deletedRevision: number;
 	deletedAt: string;
 	deletedBy?: string;
 	reason?: string;
 }
 
-export interface RoleRegistryCreateInputV1 { definition: RoleDefinitionV1; }
-export interface RoleRegistryGetQueryV1 { roleId: string; scope?: RoleScopeV1; includeTombstone?: boolean; revision?: number; }
-export interface RoleRegistryListQueryV1 { scope?: RoleScopeV1; includeTombstones?: boolean; }
-export interface RoleRegistrySearchQueryV1 { text: string; scope?: RoleScopeV1; includeTombstones?: boolean; }
-export interface RoleDefinitionPatchV1 {
+export interface RoleRegistryCreateInput { definition: RoleDefinition; }
+export interface RoleRegistryGetQuery { roleId: string; scope?: RoleScope; includeTombstone?: boolean; revision?: number; }
+export interface RoleRegistryListQuery { scope?: RoleScope; includeTombstones?: boolean; }
+export interface RoleRegistrySearchQuery { text: string; scope?: RoleScope; includeTombstones?: boolean; }
+export interface RoleDefinitionPatch {
 	name?: string;
 	description?: string;
 	whenToUse?: string;
 	persona?: string;
 	customInstructions?: string;
-	modelProfileRef?: VersionedReferenceV1;
-	capabilitySelector?: CapabilitySelectorV1;
-	skillSelector?: ResourceSelectorV1;
-	mcpSelector?: ResourceSelectorV1;
-	contextPolicyRef?: VersionedReferenceV1;
-	memoryPolicyRef?: VersionedReferenceV1;
-	executionPolicyRef?: VersionedReferenceV1;
-	resultPolicyRef?: VersionedReferenceV1;
+	modelProfileRef?: VersionedReference;
+	capabilitySelector?: ResourceSelector;
+	skillSelector?: ResourceSelector;
+	mcpSelector?: ResourceSelector;
+	contextPolicyRef?: VersionedReference;
+	memoryPolicyRef?: VersionedReference;
+	executionPolicyRef?: VersionedReference;
+	resultPolicyRef?: VersionedReference;
 	overridesRoleId?: string;
 }
-export interface RoleRegistryEditInputV1 { roleId: string; scope: RoleScopeV1; expectedRevision: number; patch: RoleDefinitionPatchV1; }
-export interface RoleRegistryCopyInputV1 { sourceRoleId: string; sourceScope: RoleScopeV1; targetRoleId: string; targetScope: RoleScopeV1; expectedRevision: number; }
-export interface RoleRegistryDeleteInputV1 { roleId: string; scope: RoleScopeV1; expectedRevision: number; deletedAt: string; deletedBy?: string; reason?: string; }
-export interface RoleRegistryImportV1 { schemaVersion: 1; exportedAt: string; records: readonly RoleRegistryRecordV1[]; }
-export interface RoleRegistryExportQueryV1 { scope?: RoleScopeV1; includeTombstones?: boolean; }
-export interface RoleRegistryExportV1 { schemaVersion: 1; exportedAt: string; records: readonly RoleRegistryRecordV1[]; fingerprint: FingerprintV1; }
+export interface RoleRegistryEditInput { roleId: string; scope: RoleScope; expectedRevision: number; patch: RoleDefinitionPatch; }
+export interface RoleRegistryCopyInput { sourceRoleId: string; sourceScope: RoleScope; targetRoleId: string; targetScope: RoleScope; expectedRevision: number; }
+export interface RoleRegistryDeleteInput { roleId: string; scope: RoleScope; expectedRevision: number; deletedAt: string; deletedBy?: string; reason?: string; }
+export interface RoleRegistryImport { schemaVersion: 1; exportedAt: string; records: readonly RoleRegistryRecord[]; }
+export interface RoleRegistryExportQuery { scope?: RoleScope; includeTombstones?: boolean; }
+export interface RoleRegistryExport { schemaVersion: 1; exportedAt: string; records: readonly RoleRegistryRecord[]; fingerprint: Fingerprint; }
 
 /** Resolver input is task-first: a role cannot be resolved from a bare task id. */
-export interface RoleResolveInputV1 {
+export interface RoleResolveInput {
 	schemaVersion: 1;
-	task: TaskEnvelopeV1;
+	task: TaskEnvelope;
 	roleId: string;
-	scope: RoleScopeV1;
-	modelProfile: ModelProfileV1;
-	orderedLayers: readonly RoleResolutionLayerV1[];
-	contextRevision?: RevisionReferenceV1;
-	externalAgentBindingRevision?: RevisionReferenceV1;
-	capabilityRevision?: RevisionReferenceV1;
-	modelBrokerBindingRevision?: RevisionReferenceV1;
-	policyRevision?: RevisionReferenceV1;
-	overrides?: readonly RoleResolutionOverrideV1[];
+	scope: RoleScope;
+	modelProfile: ModelProfile;
+	orderedLayers: readonly RoleResolutionLayer[];
+	contextRevision?: RevisionReference;
+	externalAgentBindingRevision?: RevisionReference;
+	capabilityRevision?: RevisionReference;
+	modelBrokerBindingRevision?: RevisionReference;
+	policyRevision?: RevisionReference;
+	mcpSelection?: McpSelection;
+	overrides?: readonly RoleResolutionOverride[];
 	bindingId?: string;
 	now?: () => string;
 }
 
-export interface RoleResolverV1 {
-	resolve(input: RoleResolveInputV1): ResultValue<RoleResolutionPreviewV1, FoundationError>;
+export interface RoleResolver {
+	resolve(input: RoleResolveInput): ResultValue<RoleResolutionPreview, FoundationError>;
 }
 
 /**
@@ -148,59 +150,57 @@ export interface RoleResolverV1 {
  * persistence algorithm. `edit` and `copy` create immutable revisions, and `delete` creates a
  * tombstone. `scope` is always explicit so Global/Project overrides retain the stable roleId.
  */
-export interface RoleRegistryV1 extends RoleResolverV1 {
-	create(input: RoleRegistryCreateInputV1): ResultValue<RoleRegistryRecordV1, FoundationError>;
-	get(query: RoleRegistryGetQueryV1): ResultValue<RoleRegistryRecordV1, FoundationError>;
-	list(query?: RoleRegistryListQueryV1): ResultValue<readonly RoleRegistryRecordV1[], FoundationError>;
-	search(query: RoleRegistrySearchQueryV1): ResultValue<readonly RoleRegistryRecordV1[], FoundationError>;
-	edit(input: RoleRegistryEditInputV1): ResultValue<RoleRegistryRecordV1, FoundationError>;
-	copy(input: RoleRegistryCopyInputV1): ResultValue<RoleRegistryRecordV1, FoundationError>;
-	delete(input: RoleRegistryDeleteInputV1): ResultValue<RoleTombstoneV1, FoundationError>;
-	import(input: RoleRegistryImportV1): ResultValue<readonly RoleRegistryRecordV1[], FoundationError>;
-	export(query?: RoleRegistryExportQueryV1): ResultValue<RoleRegistryExportV1, FoundationError>;
+export interface RoleRegistry extends RoleResolver {
+	create(input: RoleRegistryCreateInput): ResultValue<RoleRegistryRecord, FoundationError>;
+	get(query: RoleRegistryGetQuery): ResultValue<RoleRegistryRecord, FoundationError>;
+	list(query?: RoleRegistryListQuery): ResultValue<readonly RoleRegistryRecord[], FoundationError>;
+	search(query: RoleRegistrySearchQuery): ResultValue<readonly RoleRegistryRecord[], FoundationError>;
+	edit(input: RoleRegistryEditInput): ResultValue<RoleRegistryRecord, FoundationError>;
+	copy(input: RoleRegistryCopyInput): ResultValue<RoleRegistryRecord, FoundationError>;
+	delete(input: RoleRegistryDeleteInput): ResultValue<RoleTombstone, FoundationError>;
+	import(input: RoleRegistryImport): ResultValue<readonly RoleRegistryRecord[], FoundationError>;
+	export(query?: RoleRegistryExportQuery): ResultValue<RoleRegistryExport, FoundationError>;
 }
 
-export type RoleRegistryContractV1 = RoleRegistryV1;
-
 const roleScopeSchema = Type.Union([Type.Literal("global"), Type.Literal("project")]);
-const roleTraceSchema = Type.Object({ field: Type.String({ minLength: 1 }), layer: Type.Union(ROLE_RESOLUTION_ORDER_V1.map((layer) => Type.Literal(layer))), referenceId: Type.String({ minLength: 1 }), revision: Type.Optional(Type.Integer({ minimum: 0 })), overrideReason: Type.Optional(Type.String()) }, { additionalProperties: false });
-export const RoleResolutionLayerV1Schema = Type.Object({ schemaVersion: Type.Literal(1), layer: Type.Union(ROLE_RESOLUTION_ORDER_V1.map((layer) => Type.Literal(layer))), ordinal: Type.Integer({ minimum: 0 }), referenceId: Type.String({ minLength: 1 }), revision: Type.Integer({ minimum: 0 }), overrideReason: Type.String({ minLength: 1 }) }, { additionalProperties: false });
-export const RoleResolvedFieldV1Schema = Type.Object({ schemaVersion: Type.Literal(1), field: Type.String({ minLength: 1 }), source: roleTraceSchema, revision: Type.Integer({ minimum: 0 }), overrideReason: Type.String({ minLength: 1 }), safeValue: FoundationJsonValueSchema, conflict: Type.Optional(Type.Object({ field: Type.String({ minLength: 1 }), source: roleTraceSchema, conflictsWith: roleTraceSchema }, { additionalProperties: false })) }, { additionalProperties: false });
-export const RoleTombstoneV1Schema = Type.Object({ schemaVersion: Type.Literal(1), roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, deletedRevision: Type.Integer({ minimum: 0 }), deletedAt: Type.String({ minLength: 1 }), deletedBy: Type.Optional(Type.String({ minLength: 1 })), reason: Type.Optional(Type.String()) }, { additionalProperties: false });
-export const RoleRegistryRecordV1Schema = Type.Object({ schemaVersion: Type.Literal(1), roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, definition: RoleDefinitionV1Schema, currentRevision: RoleRevisionV1Schema, revisions: Type.Array(RoleRevisionV1Schema), tombstone: Type.Optional(RoleTombstoneV1Schema) }, { additionalProperties: false });
-export const RoleRegistryCreateInputV1Schema = Type.Object({ definition: RoleDefinitionV1Schema }, { additionalProperties: false });
-export const RoleRegistryGetQueryV1Schema = Type.Object({ roleId: Type.String({ minLength: 1 }), scope: Type.Optional(roleScopeSchema), includeTombstone: Type.Optional(Type.Boolean()), revision: Type.Optional(Type.Integer({ minimum: 0 })) }, { additionalProperties: false });
-export const RoleRegistryListQueryV1Schema = Type.Object({ scope: Type.Optional(roleScopeSchema), includeTombstones: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
-export const RoleRegistrySearchQueryV1Schema = Type.Object({ text: Type.String(), scope: Type.Optional(roleScopeSchema), includeTombstones: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
-export const RoleDefinitionPatchV1Schema = Type.Object({ name: Type.Optional(Type.String()), description: Type.Optional(Type.String()), whenToUse: Type.Optional(Type.String()), persona: Type.Optional(Type.String()), customInstructions: Type.Optional(Type.String()), modelProfileRef: Type.Optional(VersionedReferenceV1Schema), capabilitySelector: Type.Optional(CapabilitySelectorV1Schema), skillSelector: Type.Optional(ResourceSelectorV1Schema), mcpSelector: Type.Optional(ResourceSelectorV1Schema), contextPolicyRef: Type.Optional(VersionedReferenceV1Schema), memoryPolicyRef: Type.Optional(VersionedReferenceV1Schema), executionPolicyRef: Type.Optional(VersionedReferenceV1Schema), resultPolicyRef: Type.Optional(VersionedReferenceV1Schema), overridesRoleId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
-export const RoleRegistryEditInputV1Schema = Type.Object({ roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, expectedRevision: Type.Integer({ minimum: 0 }), patch: RoleDefinitionPatchV1Schema }, { additionalProperties: false });
-export const RoleRegistryCopyInputV1Schema = Type.Object({ sourceRoleId: Type.String({ minLength: 1 }), sourceScope: roleScopeSchema, targetRoleId: Type.String({ minLength: 1 }), targetScope: roleScopeSchema, expectedRevision: Type.Integer({ minimum: 0 }) }, { additionalProperties: false });
-export const RoleRegistryDeleteInputV1Schema = Type.Object({ roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, expectedRevision: Type.Integer({ minimum: 0 }), deletedAt: Type.String({ minLength: 1 }), deletedBy: Type.Optional(Type.String({ minLength: 1 })), reason: Type.Optional(Type.String()) }, { additionalProperties: false });
-export const RoleRegistryImportV1Schema = Type.Object({ schemaVersion: Type.Literal(1), exportedAt: Type.String({ minLength: 1 }), records: Type.Array(RoleRegistryRecordV1Schema) }, { additionalProperties: false });
-export const RoleRegistryExportQueryV1Schema = Type.Object({ scope: Type.Optional(roleScopeSchema), includeTombstones: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
-export const RoleRegistryExportV1Schema = Type.Object({ schemaVersion: Type.Literal(1), exportedAt: Type.String({ minLength: 1 }), records: Type.Array(RoleRegistryRecordV1Schema), fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }) }, { additionalProperties: false });
-export const RoleResolutionOverrideV1Schema = Type.Object({ schemaVersion: Type.Literal(1), layer: Type.Union(ROLE_RESOLUTION_ORDER_V1.map((layer) => Type.Literal(layer))), referenceId: Type.String({ minLength: 1 }), revision: Type.Integer({ minimum: 0 }), overrideReason: Type.String({ minLength: 1 }), roleRevision: Type.Optional(RoleRevisionV1Schema), modelProfile: Type.Optional(ModelProfileV1Schema), modelRoute: Type.Optional(ModelRouteV1Schema), capabilitySelector: Type.Optional(CapabilitySelectorV1Schema), budget: Type.Optional(BudgetV1Schema), contextRevision: Type.Optional(RevisionReferenceV1Schema), externalAgentBindingRevision: Type.Optional(RevisionReferenceV1Schema), modelBrokerBindingRevision: Type.Optional(RevisionReferenceV1Schema), policyRevision: Type.Optional(RevisionReferenceV1Schema) }, { additionalProperties: false });
-export const RoleResolveInputV1Schema = Type.Object({ schemaVersion: Type.Literal(1), task: TaskEnvelopeV1Schema, roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, modelProfile: ModelProfileV1Schema, orderedLayers: Type.Array(RoleResolutionLayerV1Schema), contextRevision: Type.Optional(RevisionReferenceV1Schema), externalAgentBindingRevision: Type.Optional(RevisionReferenceV1Schema), capabilityRevision: Type.Optional(RevisionReferenceV1Schema), modelBrokerBindingRevision: Type.Optional(RevisionReferenceV1Schema), policyRevision: Type.Optional(RevisionReferenceV1Schema), overrides: Type.Optional(Type.Array(RoleResolutionOverrideV1Schema)), bindingId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
-export const RoleResolutionPreviewV1Schema = Type.Object({ schemaVersion: Type.Literal(1), taskId: Type.String({ minLength: 1 }), roleId: Type.String({ minLength: 1 }), roleRevision: RevisionReferenceV1Schema, modelProfileRevision: RevisionReferenceV1Schema, modelRoute: ModelRouteV1Schema, contextRevision: RevisionReferenceV1Schema, capabilityRevision: RevisionReferenceV1Schema, modelBrokerBindingRevision: RevisionReferenceV1Schema, policyRevision: RevisionReferenceV1Schema, capabilitySelector: CapabilitySelectorV1Schema, budget: BudgetV1Schema, orderedLayers: Type.Array(RoleResolutionLayerV1Schema), fields: Type.Array(RoleResolvedFieldV1Schema), sourceTrace: Type.Array(roleTraceSchema), conflicts: Type.Array(Type.Object({ field: Type.String({ minLength: 1 }), source: roleTraceSchema, conflictsWith: roleTraceSchema }, { additionalProperties: false })), binding: AgentBindingV1Schema, fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }) }, { additionalProperties: false });
-export function validateRoleResolutionLayerV1(value: unknown): ResultValue<RoleResolutionLayerV1, FoundationError> { return validateExactShape<RoleResolutionLayerV1>(RoleResolutionLayerV1Schema, value, "role_resolution_layer"); }
-export function serializeRoleResolutionLayerV1(value: RoleResolutionLayerV1): string { return serializeExactShape(RoleResolutionLayerV1Schema, value, "role_resolution_layer"); }
-export function parseRoleResolutionLayerV1(text: string): ResultValue<RoleResolutionLayerV1, FoundationError> { return parseExactShape(RoleResolutionLayerV1Schema, text, "role_resolution_layer"); }
-export function validateRoleRegistryRecordV1(value: unknown): ResultValue<RoleRegistryRecordV1, FoundationError> { return validateExactShape<RoleRegistryRecordV1>(RoleRegistryRecordV1Schema, value, "role_registry_record"); }
-export function serializeRoleRegistryRecordV1(value: RoleRegistryRecordV1): string { return serializeExactShape(RoleRegistryRecordV1Schema, value, "role_registry_record"); }
-export function parseRoleRegistryRecordV1(text: string): ResultValue<RoleRegistryRecordV1, FoundationError> { return parseExactShape(RoleRegistryRecordV1Schema, text, "role_registry_record"); }
-export function validateRoleResolutionPreviewV1(value: unknown): ResultValue<RoleResolutionPreviewV1, FoundationError> { return validateExactShape<RoleResolutionPreviewV1>(RoleResolutionPreviewV1Schema, value, "role_resolution_preview"); }
-export function serializeRoleResolutionPreviewV1(value: RoleResolutionPreviewV1): string { return serializeExactShape(RoleResolutionPreviewV1Schema, value, "role_resolution_preview"); }
-export function parseRoleResolutionPreviewV1(text: string): ResultValue<RoleResolutionPreviewV1, FoundationError> { return parseExactShape(RoleResolutionPreviewV1Schema, text, "role_resolution_preview"); }
-export function validateRoleResolveInputV1(value: unknown): ResultValue<RoleResolveInputV1, FoundationError> { return validateExactShape<RoleResolveInputV1>(RoleResolveInputV1Schema, value, "role_resolve_input"); }
-export function serializeRoleResolveInputV1(value: RoleResolveInputV1): string { return serializeExactShape(RoleResolveInputV1Schema, value, "role_resolve_input"); }
-export function parseRoleResolveInputV1(text: string): ResultValue<RoleResolveInputV1, FoundationError> { return parseExactShape<RoleResolveInputV1>(RoleResolveInputV1Schema, text, "role_resolve_input"); }
+const roleTraceSchema = Type.Object({ field: Type.String({ minLength: 1 }), layer: Type.Union(ROLE_RESOLUTION_ORDER.map((layer) => Type.Literal(layer))), referenceId: Type.String({ minLength: 1 }), revision: Type.Optional(Type.Integer({ minimum: 0 })), overrideReason: Type.Optional(Type.String()) }, { additionalProperties: false });
+export const RoleResolutionLayerSchema = Type.Object({ schemaVersion: Type.Literal(1), layer: Type.Union(ROLE_RESOLUTION_ORDER.map((layer) => Type.Literal(layer))), ordinal: Type.Integer({ minimum: 0 }), referenceId: Type.String({ minLength: 1 }), revision: Type.Integer({ minimum: 0 }), overrideReason: Type.String({ minLength: 1 }) }, { additionalProperties: false });
+export const RoleResolvedFieldSchema = Type.Object({ schemaVersion: Type.Literal(1), field: Type.String({ minLength: 1 }), source: roleTraceSchema, revision: Type.Integer({ minimum: 0 }), overrideReason: Type.String({ minLength: 1 }), safeValue: FoundationJsonValueSchema, conflict: Type.Optional(Type.Object({ field: Type.String({ minLength: 1 }), source: roleTraceSchema, conflictsWith: roleTraceSchema }, { additionalProperties: false })) }, { additionalProperties: false });
+export const RoleTombstoneSchema = Type.Object({ schemaVersion: Type.Literal(1), roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, deletedRevision: Type.Integer({ minimum: 0 }), deletedAt: Type.String({ minLength: 1 }), deletedBy: Type.Optional(Type.String({ minLength: 1 })), reason: Type.Optional(Type.String()) }, { additionalProperties: false });
+export const RoleRegistryRecordSchema = Type.Object({ schemaVersion: Type.Literal(1), roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, definition: RoleDefinitionSchema, currentRevision: RoleRevisionSchema, revisions: Type.Array(RoleRevisionSchema), tombstone: Type.Optional(RoleTombstoneSchema) }, { additionalProperties: false });
+export const RoleRegistryCreateInputSchema = Type.Object({ definition: RoleDefinitionSchema }, { additionalProperties: false });
+export const RoleRegistryGetQuerySchema = Type.Object({ roleId: Type.String({ minLength: 1 }), scope: Type.Optional(roleScopeSchema), includeTombstone: Type.Optional(Type.Boolean()), revision: Type.Optional(Type.Integer({ minimum: 0 })) }, { additionalProperties: false });
+export const RoleRegistryListQuerySchema = Type.Object({ scope: Type.Optional(roleScopeSchema), includeTombstones: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
+export const RoleRegistrySearchQuerySchema = Type.Object({ text: Type.String(), scope: Type.Optional(roleScopeSchema), includeTombstones: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
+export const RoleDefinitionPatchSchema = Type.Object({ name: Type.Optional(Type.String()), description: Type.Optional(Type.String()), whenToUse: Type.Optional(Type.String()), persona: Type.Optional(Type.String()), customInstructions: Type.Optional(Type.String()), modelProfileRef: Type.Optional(VersionedReferenceSchema), capabilitySelector: Type.Optional(ResourceSelectorSchema), skillSelector: Type.Optional(ResourceSelectorSchema), mcpSelector: Type.Optional(ResourceSelectorSchema), contextPolicyRef: Type.Optional(VersionedReferenceSchema), memoryPolicyRef: Type.Optional(VersionedReferenceSchema), executionPolicyRef: Type.Optional(VersionedReferenceSchema), resultPolicyRef: Type.Optional(VersionedReferenceSchema), overridesRoleId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
+export const RoleRegistryEditInputSchema = Type.Object({ roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, expectedRevision: Type.Integer({ minimum: 0 }), patch: RoleDefinitionPatchSchema }, { additionalProperties: false });
+export const RoleRegistryCopyInputSchema = Type.Object({ sourceRoleId: Type.String({ minLength: 1 }), sourceScope: roleScopeSchema, targetRoleId: Type.String({ minLength: 1 }), targetScope: roleScopeSchema, expectedRevision: Type.Integer({ minimum: 0 }) }, { additionalProperties: false });
+export const RoleRegistryDeleteInputSchema = Type.Object({ roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, expectedRevision: Type.Integer({ minimum: 0 }), deletedAt: Type.String({ minLength: 1 }), deletedBy: Type.Optional(Type.String({ minLength: 1 })), reason: Type.Optional(Type.String()) }, { additionalProperties: false });
+export const RoleRegistryImportSchema = Type.Object({ schemaVersion: Type.Literal(1), exportedAt: Type.String({ minLength: 1 }), records: Type.Array(RoleRegistryRecordSchema) }, { additionalProperties: false });
+export const RoleRegistryExportQuerySchema = Type.Object({ scope: Type.Optional(roleScopeSchema), includeTombstones: Type.Optional(Type.Boolean()) }, { additionalProperties: false });
+export const RoleRegistryExportSchema = Type.Object({ schemaVersion: Type.Literal(1), exportedAt: Type.String({ minLength: 1 }), records: Type.Array(RoleRegistryRecordSchema), fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }) }, { additionalProperties: false });
+export const RoleResolutionOverrideSchema = Type.Object({ schemaVersion: Type.Literal(1), layer: Type.Union(ROLE_RESOLUTION_ORDER.map((layer) => Type.Literal(layer))), referenceId: Type.String({ minLength: 1 }), revision: Type.Integer({ minimum: 0 }), overrideReason: Type.String({ minLength: 1 }), roleRevision: Type.Optional(RoleRevisionSchema), modelProfile: Type.Optional(ModelProfileSchema), modelRoute: Type.Optional(ModelRouteSchema), capabilitySelector: Type.Optional(ResourceSelectorSchema), budget: Type.Optional(BudgetSchema), contextRevision: Type.Optional(RevisionReferenceSchema), externalAgentBindingRevision: Type.Optional(RevisionReferenceSchema), modelBrokerBindingRevision: Type.Optional(RevisionReferenceSchema), policyRevision: Type.Optional(RevisionReferenceSchema) }, { additionalProperties: false });
+export const RoleResolveInputSchema = Type.Object({ schemaVersion: Type.Literal(1), task: TaskEnvelopeSchema, roleId: Type.String({ minLength: 1 }), scope: roleScopeSchema, modelProfile: ModelProfileSchema, orderedLayers: Type.Array(RoleResolutionLayerSchema), contextRevision: Type.Optional(RevisionReferenceSchema), externalAgentBindingRevision: Type.Optional(RevisionReferenceSchema), capabilityRevision: Type.Optional(RevisionReferenceSchema), modelBrokerBindingRevision: Type.Optional(RevisionReferenceSchema), policyRevision: Type.Optional(RevisionReferenceSchema), mcpSelection: Type.Optional(McpSelectionSchema), overrides: Type.Optional(Type.Array(RoleResolutionOverrideSchema)), bindingId: Type.Optional(Type.String({ minLength: 1 })) }, { additionalProperties: false });
+export const RoleResolutionPreviewSchema = Type.Object({ schemaVersion: Type.Literal(1), taskId: Type.String({ minLength: 1 }), roleId: Type.String({ minLength: 1 }), roleRevision: RevisionReferenceSchema, modelProfileRevision: RevisionReferenceSchema, modelRoute: ModelRouteSchema, contextRevision: RevisionReferenceSchema, capabilityRevision: RevisionReferenceSchema, modelBrokerBindingRevision: RevisionReferenceSchema, policyRevision: RevisionReferenceSchema, capabilitySelector: ResourceSelectorSchema, budget: BudgetSchema, orderedLayers: Type.Array(RoleResolutionLayerSchema), fields: Type.Array(RoleResolvedFieldSchema), sourceTrace: Type.Array(roleTraceSchema), conflicts: Type.Array(Type.Object({ field: Type.String({ minLength: 1 }), source: roleTraceSchema, conflictsWith: roleTraceSchema }, { additionalProperties: false })), binding: AgentBindingSchema, fingerprint: Type.Object({ algorithm: Type.Literal("sha256"), value: Type.String({ minLength: 1 }) }, { additionalProperties: false }) }, { additionalProperties: false });
+export function validateRoleResolutionLayer(value: unknown): ResultValue<RoleResolutionLayer, FoundationError> { return validateExactShape<RoleResolutionLayer>(RoleResolutionLayerSchema, value, "role_resolution_layer"); }
+export function serializeRoleResolutionLayer(value: RoleResolutionLayer): string { return serializeExactShape(RoleResolutionLayerSchema, value, "role_resolution_layer"); }
+export function parseRoleResolutionLayer(text: string): ResultValue<RoleResolutionLayer, FoundationError> { return parseExactShape(RoleResolutionLayerSchema, text, "role_resolution_layer"); }
+export function validateRoleRegistryRecord(value: unknown): ResultValue<RoleRegistryRecord, FoundationError> { return validateExactShape<RoleRegistryRecord>(RoleRegistryRecordSchema, value, "role_registry_record"); }
+export function serializeRoleRegistryRecord(value: RoleRegistryRecord): string { return serializeExactShape(RoleRegistryRecordSchema, value, "role_registry_record"); }
+export function parseRoleRegistryRecord(text: string): ResultValue<RoleRegistryRecord, FoundationError> { return parseExactShape(RoleRegistryRecordSchema, text, "role_registry_record"); }
+export function validateRoleResolutionPreview(value: unknown): ResultValue<RoleResolutionPreview, FoundationError> { return validateExactShape<RoleResolutionPreview>(RoleResolutionPreviewSchema, value, "role_resolution_preview"); }
+export function serializeRoleResolutionPreview(value: RoleResolutionPreview): string { return serializeExactShape(RoleResolutionPreviewSchema, value, "role_resolution_preview"); }
+export function parseRoleResolutionPreview(text: string): ResultValue<RoleResolutionPreview, FoundationError> { return parseExactShape(RoleResolutionPreviewSchema, text, "role_resolution_preview"); }
+export function validateRoleResolveInput(value: unknown): ResultValue<RoleResolveInput, FoundationError> { return validateExactShape<RoleResolveInput>(RoleResolveInputSchema, value, "role_resolve_input"); }
+export function serializeRoleResolveInput(value: RoleResolveInput): string { return serializeExactShape(RoleResolveInputSchema, value, "role_resolve_input"); }
+export function parseRoleResolveInput(text: string): ResultValue<RoleResolveInput, FoundationError> { return parseExactShape<RoleResolveInput>(RoleResolveInputSchema, text, "role_resolve_input"); }
 
 /** Reject reordered or duplicate precedence layers before a Resolver consumes them. */
-export function validateRoleResolutionOrder(layers: readonly RoleResolutionLayerV1[]): ResultValue<readonly RoleResolutionLayerV1[], FoundationError> {
-	if (layers.length !== ROLE_RESOLUTION_ORDER_V1.length) return Result.err(new FoundationError("role_resolver_order_invalid", "Role resolution must include every frozen precedence layer exactly once", { details: { expected: [...ROLE_RESOLUTION_ORDER_V1], actual: layers.map((layer) => layer.layer) } }));
+export function validateRoleResolutionOrder(layers: readonly RoleResolutionLayer[]): ResultValue<readonly RoleResolutionLayer[], FoundationError> {
+	if (layers.length !== ROLE_RESOLUTION_ORDER.length) return Result.err(new FoundationError("role_resolver_order_invalid", "Role resolution must include every frozen precedence layer exactly once", { details: { expected: [...ROLE_RESOLUTION_ORDER], actual: layers.map((layer) => layer.layer) } }));
 	const seen = new Set<string>();
 	for (const [ordinal, layer] of layers.entries()) {
-		const index = ROLE_RESOLUTION_ORDER_V1.indexOf(layer.layer as RoleResolutionOrderV1);
+		const index = ROLE_RESOLUTION_ORDER.indexOf(layer.layer as RoleResolutionOrder);
 		if (index < 0 || seen.has(layer.layer) || index !== ordinal || layer.ordinal !== ordinal) return Result.err(new FoundationError("role_resolver_order_invalid", "Role resolution layers must follow the frozen precedence order without duplicates", { details: { layer: layer.layer, ordinal } }));
 		seen.add(layer.layer);
 	}
@@ -208,10 +208,10 @@ export function validateRoleResolutionOrder(layers: readonly RoleResolutionLayer
 }
 
 /** Lower-precedence scopes may narrow but never widen the managed-lock selector. */
-export function validateRoleSelectorTightening(parent: CapabilitySelectorV1, child: CapabilitySelectorV1, field = "capabilitySelector"): ResultValue<CapabilitySelectorV1, FoundationError> {
+export function validateRoleSelectorTightening(parent: ResourceSelector, child: ResourceSelector, field = "capabilitySelector"): ResultValue<ResourceSelector, FoundationError> {
 	return selectorsNarrow(parent, child) ? Result.ok(child) : Result.err(new FoundationError("role_resolver_scope_widened", "A lower-precedence selector cannot widen its parent scope", { details: { field } }));
 }
-export function validateRoleScopeTightening(parent: { capabilitySelector: CapabilitySelectorV1; policySelector: ResourceSelectorV1 }, child: { capabilitySelector: CapabilitySelectorV1; policySelector: ResourceSelectorV1 }): ResultValue<typeof child, FoundationError> {
+export function validateRoleScopeTightening(parent: { capabilitySelector: ResourceSelector; policySelector: ResourceSelector }, child: { capabilitySelector: ResourceSelector; policySelector: ResourceSelector }): ResultValue<typeof child, FoundationError> {
 	if (!selectorsNarrow(parent.capabilitySelector, child.capabilitySelector)) return Result.err(new FoundationError("role_resolver_scope_widened", "A lower-precedence capability selector cannot widen its parent scope", { details: { field: "capabilitySelector" } }));
 	if (!selectorsNarrow(parent.policySelector, child.policySelector)) return Result.err(new FoundationError("role_resolver_scope_widened", "A lower-precedence policy selector cannot widen its parent scope", { details: { field: "policySelector" } }));
 	return Result.ok(child);
@@ -223,16 +223,16 @@ export function redactRoleResolutionValue(value: JsonValue): JsonValue {
 }
 
 /** Shared precondition used by registry and resolver implementations. */
-export function requireRoleResolutionTask(task: TaskEnvelopeV1 | undefined): ResultValue<TaskEnvelopeV1, FoundationError> {
+export function requireRoleResolutionTask(task: TaskEnvelope | undefined): ResultValue<TaskEnvelope, FoundationError> {
 	return task?.taskId ? Result.ok(task) : Result.err(new FoundationError("role_resolver_task_required", "Role resolution requires a persisted TaskEnvelope", { details: { reason: "task_before_binding" } }));
 }
 
 /** Build a deterministic preview fingerprint from its public fields. */
-export function fingerprintRoleResolutionPreview(preview: Omit<RoleResolutionPreviewV1, "fingerprint">): FingerprintV1 {
+export function fingerprintRoleResolutionPreview(preview: Omit<RoleResolutionPreview, "fingerprint">): Fingerprint {
 	return fingerprintFoundationValue(preview);
 }
 
-function registryKey(roleId: string, scope: RoleScopeV1): string {
+function registryKey(roleId: string, scope: RoleScope): string {
 	return `${scope}\u001f${roleId}`;
 }
 
@@ -240,7 +240,7 @@ function registryFailure(code: FoundationError["code"], message: string, details
 	return Result.err(new FoundationError(code, message, details === undefined ? {} : { details: details as never }));
 }
 
-function copyRecord(record: RoleRegistryRecordV1): RoleRegistryRecordV1 {
+function copyRecord(record: RoleRegistryRecord): RoleRegistryRecord {
 	return cloneDeepFrozen(record);
 }
 
@@ -248,16 +248,16 @@ function copyRecord(record: RoleRegistryRecordV1): RoleRegistryRecordV1 {
  * A deterministic contract implementation for hosts that do not yet have a durable Role store.
  * Every edit replaces the record with a frozen snapshot; delete only adds a tombstone.
  */
-export class InMemoryRoleRegistryV1 implements RoleRegistryV1 {
-	private readonly records = new Map<string, RoleRegistryRecordV1>();
+export class InMemoryRoleRegistry implements RoleRegistry {
+	private readonly records = new Map<string, RoleRegistryRecord>();
 	private readonly now: () => string;
 
 	constructor(options: { now?: () => string } = {}) {
 		this.now = options.now ?? (() => new Date().toISOString());
 	}
 
-	create(input: RoleRegistryCreateInputV1): ResultValue<RoleRegistryRecordV1, FoundationError> {
-		const definition = validateRoleDefinitionV1(input.definition);
+	create(input: RoleRegistryCreateInput): ResultValue<RoleRegistryRecord, FoundationError> {
+		const definition = validateRoleDefinition(input.definition);
 		if (!definition.ok) return definition;
 		const key = registryKey(definition.value.roleId, definition.value.scope);
 		if (this.records.has(key)) return registryFailure("role_slug_conflict", "Role identity is already registered", { roleId: definition.value.roleId, scope: definition.value.scope });
@@ -267,7 +267,7 @@ export class InMemoryRoleRegistryV1 implements RoleRegistryV1 {
 		return Result.ok(copyRecord(record));
 	}
 
-	get(query: RoleRegistryGetQueryV1): ResultValue<RoleRegistryRecordV1, FoundationError> {
+	get(query: RoleRegistryGetQuery): ResultValue<RoleRegistryRecord, FoundationError> {
 		const candidates = query.scope === undefined ? ["project", "global"] as const : [query.scope];
 		for (const scope of candidates) {
 			const record = this.records.get(registryKey(query.roleId, scope));
@@ -281,7 +281,7 @@ export class InMemoryRoleRegistryV1 implements RoleRegistryV1 {
 		return registryFailure("role_not_found", "Role is not registered", { roleId: query.roleId });
 	}
 
-	list(query: RoleRegistryListQueryV1 = {}): ResultValue<readonly RoleRegistryRecordV1[], FoundationError> {
+	list(query: RoleRegistryListQuery = {}): ResultValue<readonly RoleRegistryRecord[], FoundationError> {
 		const records = [...this.records.values()]
 			.filter((record) => query.scope === undefined || record.scope === query.scope)
 			.filter((record) => query.includeTombstones === true || record.tombstone === undefined)
@@ -290,7 +290,7 @@ export class InMemoryRoleRegistryV1 implements RoleRegistryV1 {
 		return Result.ok(records);
 	}
 
-	search(query: RoleRegistrySearchQueryV1): ResultValue<readonly RoleRegistryRecordV1[], FoundationError> {
+	search(query: RoleRegistrySearchQuery): ResultValue<readonly RoleRegistryRecord[], FoundationError> {
 		const text = query.text.trim().toLocaleLowerCase();
 		const listed = this.list({ scope: query.scope, includeTombstones: query.includeTombstones });
 		if (!listed.ok || text.length === 0) return listed;
@@ -300,13 +300,13 @@ export class InMemoryRoleRegistryV1 implements RoleRegistryV1 {
 		}));
 	}
 
-	edit(input: RoleRegistryEditInputV1): ResultValue<RoleRegistryRecordV1, FoundationError> {
+	edit(input: RoleRegistryEditInput): ResultValue<RoleRegistryRecord, FoundationError> {
 		const current = this.get({ roleId: input.roleId, scope: input.scope, includeTombstone: true });
 		if (!current.ok) return current;
 		if (current.value.tombstone !== undefined) return registryFailure("role_not_found", "Cannot edit a tombstoned role", { roleId: input.roleId });
 		if (current.value.currentRevision.revision !== input.expectedRevision) return registryFailure("role_revision_immutable", "Role revision does not match the expected revision", { roleId: input.roleId, expectedRevision: input.expectedRevision });
 		const patch = input.patch;
-		const nextDefinition: RoleDefinitionV1 = {
+		const nextDefinition: RoleDefinition = {
 			...current.value.definition,
 			...patch,
 			revision: current.value.currentRevision.revision,
@@ -320,33 +320,33 @@ export class InMemoryRoleRegistryV1 implements RoleRegistryV1 {
 		return Result.ok(copyRecord(next));
 	}
 
-	copy(input: RoleRegistryCopyInputV1): ResultValue<RoleRegistryRecordV1, FoundationError> {
+	copy(input: RoleRegistryCopyInput): ResultValue<RoleRegistryRecord, FoundationError> {
 		const source = this.get({ roleId: input.sourceRoleId, scope: input.sourceScope });
 		if (!source.ok) return source;
 		if (source.value.currentRevision.revision !== input.expectedRevision) return registryFailure("role_revision_immutable", "Source role revision does not match the expected revision", { roleId: input.sourceRoleId });
 		const targetKey = registryKey(input.targetRoleId, input.targetScope);
 		if (this.records.has(targetKey)) return registryFailure("role_slug_conflict", "Target role identity is already registered", { roleId: input.targetRoleId });
-		const definition: RoleDefinitionV1 = { ...source.value.definition, roleId: input.targetRoleId, scope: input.targetScope, overridesRoleId: input.targetScope === "global" ? undefined : source.value.definition.overridesRoleId, revision: 0 };
+		const definition: RoleDefinition = { ...source.value.definition, roleId: input.targetRoleId, scope: input.targetScope, overridesRoleId: input.targetScope === "global" ? undefined : source.value.definition.overridesRoleId, revision: 0 };
 		return this.create({ definition });
 	}
 
-	delete(input: RoleRegistryDeleteInputV1): ResultValue<RoleTombstoneV1, FoundationError> {
+	delete(input: RoleRegistryDeleteInput): ResultValue<RoleTombstone, FoundationError> {
 		const current = this.get({ roleId: input.roleId, scope: input.scope, includeTombstone: true });
 		if (!current.ok) return current;
 		if (current.value.tombstone !== undefined) return Result.ok(current.value.tombstone);
 		if (current.value.currentRevision.revision !== input.expectedRevision) return registryFailure("role_revision_immutable", "Role revision does not match the expected revision", { roleId: input.roleId, expectedRevision: input.expectedRevision });
-		const tombstone: RoleTombstoneV1 = cloneDeepFrozen({ schemaVersion: 1, roleId: input.roleId, scope: input.scope, deletedRevision: current.value.currentRevision.revision, deletedAt: input.deletedAt, ...(input.deletedBy === undefined ? {} : { deletedBy: input.deletedBy }), ...(input.reason === undefined ? {} : { reason: input.reason }) });
+		const tombstone: RoleTombstone = cloneDeepFrozen({ schemaVersion: 1, roleId: input.roleId, scope: input.scope, deletedRevision: current.value.currentRevision.revision, deletedAt: input.deletedAt, ...(input.deletedBy === undefined ? {} : { deletedBy: input.deletedBy }), ...(input.reason === undefined ? {} : { reason: input.reason }) });
 		const next = cloneDeepFrozen({ ...current.value, tombstone });
 		this.records.set(registryKey(input.roleId, input.scope), next);
 		return Result.ok(tombstone);
 	}
 
-	import(input: RoleRegistryImportV1): ResultValue<readonly RoleRegistryRecordV1[], FoundationError> {
-		const checked = validateExactShape<RoleRegistryImportV1>(RoleRegistryImportV1Schema, input, "role_registry_import");
+	import(input: RoleRegistryImport): ResultValue<readonly RoleRegistryRecord[], FoundationError> {
+		const checked = validateExactShape<RoleRegistryImport>(RoleRegistryImportSchema, input, "role_registry_import");
 		if (!checked.ok) return checked;
-		const next = new Map<string, RoleRegistryRecordV1>();
+		const next = new Map<string, RoleRegistryRecord>();
 		for (const record of checked.value.records) {
-			const valid = validateRoleRegistryRecordV1(record);
+			const valid = validateRoleRegistryRecord(record);
 			if (!valid.ok) return valid;
 			const key = registryKey(record.roleId, record.scope);
 			if (next.has(key)) return registryFailure("role_slug_conflict", "Role import contains duplicate identities", { roleId: record.roleId });
@@ -357,7 +357,7 @@ export class InMemoryRoleRegistryV1 implements RoleRegistryV1 {
 		return this.list({ includeTombstones: true });
 	}
 
-	export(query: RoleRegistryExportQueryV1 = {}): ResultValue<RoleRegistryExportV1, FoundationError> {
+	export(query: RoleRegistryExportQuery = {}): ResultValue<RoleRegistryExport, FoundationError> {
 		const listed = this.list({ scope: query.scope, includeTombstones: query.includeTombstones });
 		if (!listed.ok) return listed;
 		const exportedAt = this.now();
@@ -365,25 +365,25 @@ export class InMemoryRoleRegistryV1 implements RoleRegistryV1 {
 		return Result.ok(cloneDeepFrozen({ ...base, fingerprint: fingerprintFoundationValue(base) }));
 	}
 
-	resolve(input: RoleResolveInputV1): ResultValue<RoleResolutionPreviewV1, FoundationError> {
+	resolve(input: RoleResolveInput): ResultValue<RoleResolutionPreview, FoundationError> {
 		const record = this.get({ roleId: input.roleId, scope: input.scope });
 		if (!record.ok) return record;
 		if (record.value.tombstone !== undefined) return registryFailure("role_not_found", "Cannot resolve a tombstoned role", { roleId: input.roleId });
-		return resolveRoleResolutionV1({ ...input, roleRevision: record.value.currentRevision, now: input.now ?? this.now });
+		return resolveRoleResolution({ ...input, roleRevision: record.value.currentRevision, now: input.now ?? this.now });
 	}
 }
 
-function compareRecords(left: RoleRegistryRecordV1, right: RoleRegistryRecordV1): number {
+function compareRecords(left: RoleRegistryRecord, right: RoleRegistryRecord): number {
 	const scopeOrder = left.scope === right.scope ? 0 : left.scope === "global" ? -1 : 1;
 	return scopeOrder || left.roleId.localeCompare(right.roleId);
 }
 
-export interface RoleResolutionInputV1 extends RoleResolveInputV1 {
-	roleRevision?: RoleRevisionV1;
+export interface RoleResolutionInput extends RoleResolveInput {
+	roleRevision?: RoleRevision;
 }
 
 /** Resolve all precedence layers into a redacted preview and immutable AgentBinding. */
-export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultValue<RoleResolutionPreviewV1, FoundationError> {
+export function resolveRoleResolution(input: RoleResolutionInput): ResultValue<RoleResolutionPreview, FoundationError> {
 	const task = requireRoleResolutionTask(input.task);
 	if (!task.ok) return task;
 	const order = validateRoleResolutionOrder(input.orderedLayers);
@@ -397,9 +397,9 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 	if (new Set(overrides.map((override) => override.layer)).size !== overrides.length) return registryFailure("role_resolver_conflict", "Role resolution cannot apply a layer twice", { roleId: input.roleId });
 	let effectiveRole = role;
 	let effectiveModel = model;
-	let effectiveSelector: CapabilitySelectorV1 = { policy: "all" };
+	let effectiveSelector: ResourceSelector = { policy: "all" };
 	let effectiveBudget = mergeBudget(model.budget, task.value.budget);
-	let effectiveRoute: ModelRouteV1 = routeFromModel(model);
+	let effectiveRoute: ModelRoute = routeFromModel(model);
 	if (input.externalAgentBindingRevision !== undefined && input.contextRevision !== undefined && canonicalFoundationJson(input.externalAgentBindingRevision) !== canonicalFoundationJson(input.contextRevision)) return registryFailure("binding_required_fact", "Role resolution received conflicting External-Agent Binding aliases", { roleId: input.roleId });
 	let effectiveContext = input.externalAgentBindingRevision ?? input.contextRevision;
 	const effectiveCapability = input.capabilityRevision;
@@ -408,16 +408,16 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 	if (effectiveContext === undefined || effectiveCapability === undefined || effectiveModelBroker === undefined || effectivePolicy === undefined) {
 		return registryFailure("binding_required_fact", "Role resolution requires all four existing immutable binding facts", { roleId: input.roleId, taskId: task.value.taskId });
 	}
-	const values = new Map<string, { value: unknown; source: BindingSourceTraceV1 }>();
-	const conflicts: BindingConflictV1[] = [];
-	const trace: BindingSourceTraceV1[] = [];
-	const addValue = (field: string, value: unknown, source: BindingSourceTraceV1): void => {
+	const values = new Map<string, { value: unknown; source: BindingSourceTrace }>();
+	const conflicts: BindingConflict[] = [];
+	const trace: BindingSourceTrace[] = [];
+	const addValue = (field: string, value: unknown, source: BindingSourceTrace): void => {
 		const previous = values.get(field);
 		if (previous !== undefined && fingerprintFoundationValue(previous.value).value !== fingerprintFoundationValue(value).value) conflicts.push({ field, source, conflictsWith: previous.source });
 		values.set(field, { value, source });
 	};
 	const baseLayer = role.scope === "global" ? "global" : "project";
-	const baseSource = (field: string): BindingSourceTraceV1 => ({ field, layer: baseLayer, referenceId: role.roleRevisionId, revision: role.revision });
+	const baseSource = (field: string): BindingSourceTrace => ({ field, layer: baseLayer, referenceId: role.roleRevisionId, revision: role.revision });
 	addValue("roleRevision", { id: role.roleRevisionId, revision: role.revision }, baseSource("roleRevision"));
 	addValue("modelProfileRevision", { id: model.modelProfileId, revision: model.revision }, { field: "modelProfileRevision", layer: baseLayer, referenceId: model.modelProfileId, revision: model.revision });
 	addValue("modelRoute", effectiveRoute, baseSource("modelRoute"));
@@ -437,7 +437,7 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 		}
 		const override = overrideByLayer.get(layer.layer);
 		if (override === undefined) continue;
-		const source = (field: string): BindingSourceTraceV1 => ({ field, layer: override.layer, referenceId: override.referenceId, revision: override.revision, overrideReason: override.overrideReason });
+		const source = (field: string): BindingSourceTrace => ({ field, layer: override.layer, referenceId: override.referenceId, revision: override.revision, overrideReason: override.overrideReason });
 		if (override.roleRevision !== undefined) {
 			const scopedRoleOverride = override.layer === "global" || override.layer === "project";
 			if (override.roleRevision.roleId !== input.roleId || scopedRoleOverride && override.roleRevision.scope !== override.layer || override.roleRevision.roleRevisionId !== override.referenceId || override.roleRevision.revision !== override.revision) return registryFailure("role_resolver_conflict", "Role override source must identify the immutable RoleRevision for its layer", { roleId: input.roleId });
@@ -485,19 +485,19 @@ export function resolveRoleResolutionV1(input: RoleResolutionInputV1): ResultVal
 	if (!roleSelectorApplied) return registryFailure("role_resolver_conflict", "Role resolution did not apply its immutable RoleRevision selector", { roleId: input.roleId });
 	if (effectiveContext === undefined || effectiveModelBroker === undefined || effectivePolicy === undefined) return registryFailure("binding_required_fact", "Role resolution lost a required immutable binding fact", { roleId: input.roleId });
 	for (const item of values.values()) trace.push(item.source);
-	const binding = resolveAgentBinding({ task: task.value, roleRevision: effectiveRole, modelProfile: effectiveModel, modelRoute: effectiveRoute, contextRevision: effectiveContext, capabilityRevision: effectiveCapability, modelBrokerBindingRevision: effectiveModelBroker, policyRevision: effectivePolicy, budget: effectiveBudget, sourceTrace: trace, conflicts, newBindingId: input.bindingId ?? newFoundationId("binding"), now: input.now });
+	const binding = resolveAgentBinding({ task: task.value, roleRevision: effectiveRole, modelProfile: effectiveModel, modelRoute: effectiveRoute, contextRevision: effectiveContext, capabilityRevision: effectiveCapability, modelBrokerBindingRevision: effectiveModelBroker, policyRevision: effectivePolicy, mcpSelection: input.mcpSelection, budget: effectiveBudget, sourceTrace: trace, conflicts, newBindingId: input.bindingId ?? newFoundationId("binding"), now: input.now });
 	if (!binding.ok) return binding;
 	const fields = [...values.entries()].map(([field, item]) => ({ schemaVersion: 1 as const, field, source: item.source, revision: item.source.revision ?? 1, overrideReason: item.source.overrideReason ?? "resolved", safeValue: redactRoleResolutionValue(item.value as JsonValue) }));
-	const previewBase: Omit<RoleResolutionPreviewV1, "fingerprint"> = { schemaVersion: 1, taskId: task.value.taskId, roleId: effectiveRole.roleId, roleRevision: binding.value.roleRevision, modelProfileRevision: binding.value.modelProfileRevision, modelRoute: binding.value.modelRoute, contextRevision: binding.value.contextRevision, capabilityRevision: binding.value.capabilityRevision, modelBrokerBindingRevision: binding.value.modelBrokerBindingRevision, policyRevision: binding.value.policyRevision, capabilitySelector: binding.value.capabilitySelector, budget: binding.value.budget, orderedLayers: order.value, fields, sourceTrace: binding.value.sourceTrace, conflicts: binding.value.conflicts, binding: binding.value };
+	const previewBase: Omit<RoleResolutionPreview, "fingerprint"> = { schemaVersion: 1, taskId: task.value.taskId, roleId: effectiveRole.roleId, roleRevision: binding.value.roleRevision, modelProfileRevision: binding.value.modelProfileRevision, modelRoute: binding.value.modelRoute, contextRevision: binding.value.contextRevision, capabilityRevision: binding.value.capabilityRevision, modelBrokerBindingRevision: binding.value.modelBrokerBindingRevision, policyRevision: binding.value.policyRevision, capabilitySelector: binding.value.capabilitySelector, budget: binding.value.budget, orderedLayers: order.value, fields, sourceTrace: binding.value.sourceTrace, conflicts: binding.value.conflicts, binding: binding.value };
 	return Result.ok(cloneDeepFrozen({ ...previewBase, fingerprint: fingerprintRoleResolutionPreview(previewBase) }));
 }
 
-function routeFromModel(model: ModelProfileV1): ModelRouteV1 {
+function routeFromModel(model: ModelProfile): ModelRoute {
 	return { provider: model.provider, model: model.model, ...(model.effort === undefined ? {} : { effort: model.effort }), ...(model.serviceTier === undefined ? {} : { serviceTier: model.serviceTier }), ...(model.fallback === undefined ? {} : { fallback: model.fallback.map((route) => ({ ...route })) }) };
 }
 
-function mergeBudget(left: TaskEnvelopeV1["budget"], right: TaskEnvelopeV1["budget"]): TaskEnvelopeV1["budget"] {
-	const result: TaskEnvelopeV1["budget"] = {};
+function mergeBudget(left: TaskEnvelope["budget"], right: TaskEnvelope["budget"]): TaskEnvelope["budget"] {
+	const result: TaskEnvelope["budget"] = {};
 	for (const key of ["tokens", "costUsd", "modelCalls", "toolCalls", "wallClockMs", "concurrency"] as const) {
 		const a = left[key];
 		const b = right[key];
@@ -506,13 +506,8 @@ function mergeBudget(left: TaskEnvelopeV1["budget"], right: TaskEnvelopeV1["budg
 	return result;
 }
 
-export class DeterministicRoleResolverV1 implements RoleResolverV1 {
-	private readonly registry: RoleRegistryV1;
-	constructor(registry: RoleRegistryV1) { this.registry = registry; }
-	resolve(input: RoleResolveInputV1): ResultValue<RoleResolutionPreviewV1, FoundationError> { return this.registry.resolve(input); }
+export class DeterministicRoleResolver implements RoleResolver {
+	private readonly registry: RoleRegistry;
+	constructor(registry: RoleRegistry) { this.registry = registry; }
+	resolve(input: RoleResolveInput): ResultValue<RoleResolutionPreview, FoundationError> { return this.registry.resolve(input); }
 }
-
-export const InMemoryRoleRegistry = InMemoryRoleRegistryV1;
-export const DeterministicRoleResolver = DeterministicRoleResolverV1;
-export const resolveRoleResolution = resolveRoleResolutionV1;
-export const resolveRoleBindingV1 = resolveRoleResolutionV1;

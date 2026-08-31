@@ -6,36 +6,34 @@
  * from its parent scope, but it may never add them back. The helpers in this
  * file are intentionally provider-neutral and do not connect to MCP servers.
  */
-import { Result, type Result as ResultValue } from "./result.ts";
-import type { ChildSpawnRequestV1, TaskExecutorProvider } from "./foundation/providers.ts";
+import { Result, type ResultValue } from "./result.ts";
+import type { ChildSpawnRequest, TaskExecutorProvider } from "./foundation/providers.ts";
 import { FoundationError } from "./foundation/errors.ts";
 import {
-	ResourceSelectorV1Schema,
+	ResourceSelectorSchema,
 	selectorsNarrow,
-	type ResourceSelectorV1,
+	type ResourceSelector,
 } from "./foundation/reference.ts";
 import { validateExactShape } from "./foundation/schema.ts";
-import type { FingerprintV1 } from "./foundation/identity.ts";
+import type { Fingerprint } from "./foundation/identity.ts";
 import type { FoundationJsonValue } from "./foundation/event-catalog.ts";
-import type { ProfileContractV1 } from "./foundation/profile.ts";
+import type { ProfileContract } from "./foundation/profile.ts";
 
-export type SelectorPolicyV1 = ResourceSelectorV1["policy"];
-export type McpSelectorV1 = ResourceSelectorV1;
-export type SkillMcpSelectorV1 = ResourceSelectorV1;
+export type SelectorPolicy = ResourceSelector["policy"];
 
-export const SELECTOR_POLICIES_V1: readonly SelectorPolicyV1[] = ["all", "none", "named", "except"];
+export const SELECTOR_POLICIES: readonly SelectorPolicy[] = ["all", "none", "named", "except"];
 
 /** Metadata carried by a skill extension without changing the base Skill shape. */
-export interface SkillMetadataV1 {
+export interface SkillMetadata {
 	/** Optional schema marker for persisted skill metadata. */
 	schemaVersion?: 1;
 	skillId?: string;
 	version?: string;
 	capabilityRefs?: readonly string[];
-	mcpSelector?: ResourceSelectorV1;
+	mcpSelector?: ResourceSelector;
 	tags?: readonly string[];
 	source?: string;
-	digest?: FingerprintV1;
+	digest?: Fingerprint;
 	parameters?: FoundationJsonValue;
 	model?: string;
 	effort?: string;
@@ -44,9 +42,7 @@ export interface SkillMetadataV1 {
 	externalProjection?: FoundationJsonValue;
 }
 
-export type SkillExtensionMetadataV1 = SkillMetadataV1;
-
-export interface ProfilePatchV1 {
+export interface ProfilePatch {
 	schemaVersion: 1;
 	patchId: string;
 	targetProfileId: string;
@@ -57,16 +53,16 @@ export interface ProfilePatchV1 {
 	unset?: readonly string[];
 }
 
-export interface ProfileBundleV1 {
+export interface ProfileBundle {
 	schemaVersion: 1;
 	bundleId: string;
 	revision: number;
 	source: string;
-	profiles: readonly ProfileContractV1[];
-	patches?: readonly ProfilePatchV1[];
+	profiles: readonly ProfileContract[];
+	patches?: readonly ProfilePatch[];
 }
 
-export interface ProfileSourceRecordV1 {
+export interface ProfileSourceRecord {
 	profileId: string;
 	field: string;
 	source: string;
@@ -74,7 +70,7 @@ export interface ProfileSourceRecordV1 {
 	revision: number;
 }
 
-export interface ProfileCompositionConflictV1 {
+export interface ProfileCompositionConflict {
 	profileId: string;
 	field: string;
 	firstSource: string;
@@ -82,17 +78,13 @@ export interface ProfileCompositionConflictV1 {
 	reason: "managed_lock" | "revision_mismatch" | "duplicate_patch";
 }
 
-export interface ProfileCompositionResultV1 {
-	profiles: readonly ProfileContractV1[];
-	sources: readonly ProfileSourceRecordV1[];
-	conflicts: readonly ProfileCompositionConflictV1[];
+export interface ProfileCompositionResult {
+	profiles: readonly ProfileContract[];
+	sources: readonly ProfileSourceRecord[];
+	conflicts: readonly ProfileCompositionConflict[];
 }
 
-export type ProfileBundle = ProfileBundleV1;
-export type ProfilePatch = ProfilePatchV1;
-export type ProfileSourceRecord = ProfileSourceRecordV1;
-
-export function applyProfilePatchV1(profile: ProfileContractV1, patch: ProfilePatchV1): ResultValue<ProfileContractV1, FoundationError> {
+export function applyProfilePatch(profile: ProfileContract, patch: ProfilePatch): ResultValue<ProfileContract, FoundationError> {
 	if (patch.targetProfileId !== profile.profileId) return Result.err(new FoundationError("profile_conflict", "profile patch targets a different profile"));
 	if (patch.baseRevision !== undefined && patch.baseRevision !== profile.revision) return Result.err(new FoundationError("profile_conflict", "profile patch base revision is stale"));
 	const managedKeysResult = authoritativeManagedKeys(profile);
@@ -112,17 +104,17 @@ export function applyProfilePatchV1(profile: ProfileContractV1, patch: ProfilePa
 	return Result.ok({ ...profile, managedKeys: Object.freeze([...managedKeys]), revision: Math.max(profile.revision, patch.revision), values });
 }
 
-function authoritativeManagedKeys(profile: ProfileContractV1): ResultValue<ReadonlySet<string>, FoundationError> {
+function authoritativeManagedKeys(profile: ProfileContract): ResultValue<ReadonlySet<string>, FoundationError> {
 	if (!Array.isArray(profile.managedKeys) || profile.managedKeys.length === 0 || profile.managedKeys.some((key) => typeof key !== "string" || key.length === 0) || new Set(profile.managedKeys).size !== profile.managedKeys.length) {
 		return Result.err(new FoundationError("profile_conflict", "profile managed lock set is invalid", { details: { profileId: profile.profileId } }));
 	}
 	return Result.ok(new Set(profile.managedKeys));
 }
 
-export function composeProfileBundleV1(bundle: ProfileBundleV1): ResultValue<ProfileCompositionResultV1, FoundationError> {
+export function composeProfileBundle(bundle: ProfileBundle): ResultValue<ProfileCompositionResult, FoundationError> {
 	const current = new Map(bundle.profiles.map((profile) => [profile.profileId, profile]));
-	const sources: ProfileSourceRecordV1[] = [];
-	const conflicts: ProfileCompositionConflictV1[] = [];
+	const sources: ProfileSourceRecord[] = [];
+	const conflicts: ProfileCompositionConflict[] = [];
 	const patchIds = new Set<string>();
 	for (const profile of bundle.profiles) {
 		for (const field of Object.keys(profile.values)) sources.push({ profileId: profile.profileId, field, source: bundle.source, revision: profile.revision });
@@ -135,7 +127,7 @@ export function composeProfileBundleV1(bundle: ProfileBundleV1): ResultValue<Pro
 		patchIds.add(patch.patchId);
 		const profile = current.get(patch.targetProfileId);
 		if (profile === undefined) return Result.err(new FoundationError("model_profile_not_found", "profile patch target is not in the bundle", { details: { profileId: patch.targetProfileId } }));
-		const applied = applyProfilePatchV1(profile, patch);
+		const applied = applyProfilePatch(profile, patch);
 		if (!applied.ok) {
 			conflicts.push({ profileId: patch.targetProfileId, field: Object.keys(patch.values ?? {})[0] ?? patch.unset?.[0] ?? "*", firstSource: bundle.source, secondSource: patch.source, reason: applied.error.message.includes("managed") ? "managed_lock" : "revision_mismatch" });
 			continue;
@@ -147,68 +139,57 @@ export function composeProfileBundleV1(bundle: ProfileBundleV1): ResultValue<Pro
 	return Result.ok({ profiles: [...current.values()].sort((left, right) => left.profileId.localeCompare(right.profileId)), sources, conflicts });
 }
 
-export const composeProfilesV1 = composeProfileBundleV1;
-export const resolveProfileBundleV1 = composeProfileBundleV1;
-export const applyProfilePatch = applyProfilePatchV1;
-
 /** Child and executor selector additions are extension records, not provider implementations. */
-export interface ChildMcpSelectorV1 {
-	mcpSelector: ResourceSelectorV1;
+export interface ChildMcpSelector {
+	mcpSelector: ResourceSelector;
 }
 
-export interface ExecutorMcpSelectorV1 {
-	mcpSelector: ResourceSelectorV1;
+export interface ExecutorMcpSelector {
+	mcpSelector: ResourceSelector;
 }
 
-export type ChildSpawnWithMcpSelectorV1 = ChildSpawnRequestV1 & ChildMcpSelectorV1;
-export type TaskExecutorWithMcpSelectorV1 = TaskExecutorProvider & ExecutorMcpSelectorV1;
+export type ChildSpawnWithMcpSelector = ChildSpawnRequest & ChildMcpSelector;
+export type TaskExecutorWithMcpSelector = TaskExecutorProvider & ExecutorMcpSelector;
 
-export interface ChildExecutorMcpSelectorInputV1 {
-	parentSelector: ResourceSelectorV1;
-	childSelector?: ResourceSelectorV1;
-	executorSelector?: ResourceSelectorV1;
+export interface ChildExecutorMcpSelectorInput {
+	parentSelector: ResourceSelector;
+	childSelector?: ResourceSelector;
+	executorSelector?: ResourceSelector;
 }
 
-export interface ChildExecutorMcpSelectorResultV1 {
-	parentSelector: ResourceSelectorV1;
-	childSelector: ResourceSelectorV1;
-	executorSelector: ResourceSelectorV1;
+export interface ChildExecutorMcpSelectorResult {
+	parentSelector: ResourceSelector;
+	childSelector: ResourceSelector;
+	executorSelector: ResourceSelector;
 }
 
 /** Validate the frozen selector shape at an extension boundary. */
-export function validateSelectorV1(value: unknown): ResultValue<ResourceSelectorV1, FoundationError> {
-	return validateExactShape<ResourceSelectorV1>(ResourceSelectorV1Schema, value, "resource_selector");
+export function validateSelector(value: unknown): ResultValue<ResourceSelector, FoundationError> {
+	return validateExactShape<ResourceSelector>(ResourceSelectorSchema, value, "resource_selector");
 }
 
-export const validateMcpSelectorV1 = validateSelectorV1;
-
 /** Normalize selector names so fingerprints and reports remain deterministic. */
-export function normalizeSelectorV1(selector: ResourceSelectorV1): ResourceSelectorV1 {
+export function normalizeSelector(selector: ResourceSelector): ResourceSelector {
 	if (selector.policy === "all" || selector.policy === "none") return { policy: selector.policy };
 	return { policy: selector.policy, named: [...new Set(selector.named ?? [])].sort() };
 }
 
-export const normalizeMcpSelectorV1 = normalizeSelectorV1;
-
 /** True when the child selection is a subset of the parent selection. */
-export function selectorTightensV1(parent: ResourceSelectorV1, child: ResourceSelectorV1): boolean {
+export function selectorTightens(parent: ResourceSelector, child: ResourceSelector): boolean {
 	return selectorsNarrow(parent, child);
 }
 
-export const selectorsTightenV1 = selectorTightensV1;
-export const validateSelectorTighteningV1 = selectorTightensV1;
-
 /** Return a failed result when a child attempts to widen its parent's scope. */
-export function validateMcpSelectorTighteningV1(
-	parent: ResourceSelectorV1,
-	child: ResourceSelectorV1,
-): ResultValue<ResourceSelectorV1, FoundationError> {
-	const parentResult = validateSelectorV1(parent);
+export function validateMcpSelectorTightening(
+	parent: ResourceSelector,
+	child: ResourceSelector,
+): ResultValue<ResourceSelector, FoundationError> {
+	const parentResult = validateSelector(parent);
 	if (!parentResult.ok) return parentResult;
-	const childResult = validateSelectorV1(child);
+	const childResult = validateSelector(child);
 	if (!childResult.ok) return childResult;
-	const normalizedParent = normalizeSelectorV1(parentResult.value);
-	const normalizedChild = normalizeSelectorV1(childResult.value);
+	const normalizedParent = normalizeSelector(parentResult.value);
+	const normalizedChild = normalizeSelector(childResult.value);
 	if (!selectorsNarrow(normalizedParent, normalizedChild)) {
 		return Result.err(
 			new FoundationError("role_resolver_scope_widened", "MCP selector widens its parent scope", {
@@ -219,53 +200,47 @@ export function validateMcpSelectorTighteningV1(
 	return Result.ok(normalizedChild);
 }
 
-export const validateChildMcpSelectorV1 = validateMcpSelectorTighteningV1;
-export const validateExecutorMcpSelectorV1 = validateMcpSelectorTighteningV1;
-
 /**
  * Resolve child and executor selectors in order. An omitted selector inherits
  * the preceding scope; an explicit selector may only tighten that scope.
  */
-export function resolveChildExecutorMcpSelectorsV1(
-	input: ChildExecutorMcpSelectorInputV1,
-): ResultValue<ChildExecutorMcpSelectorResultV1, FoundationError>;
-export function resolveChildExecutorMcpSelectorsV1(
-	parentSelector: ResourceSelectorV1,
-	childSelector?: ResourceSelectorV1,
-	executorSelector?: ResourceSelectorV1,
-): ResultValue<ChildExecutorMcpSelectorResultV1, FoundationError>;
-export function resolveChildExecutorMcpSelectorsV1(
-	inputOrParent: ChildExecutorMcpSelectorInputV1 | ResourceSelectorV1,
-	childSelector?: ResourceSelectorV1,
-	executorSelector?: ResourceSelectorV1,
-): ResultValue<ChildExecutorMcpSelectorResultV1, FoundationError> {
-	const input: ChildExecutorMcpSelectorInputV1 = "parentSelector" in inputOrParent
+export function resolveChildExecutorMcpSelectors(
+	input: ChildExecutorMcpSelectorInput,
+): ResultValue<ChildExecutorMcpSelectorResult, FoundationError>;
+export function resolveChildExecutorMcpSelectors(
+	parentSelector: ResourceSelector,
+	childSelector?: ResourceSelector,
+	executorSelector?: ResourceSelector,
+): ResultValue<ChildExecutorMcpSelectorResult, FoundationError>;
+export function resolveChildExecutorMcpSelectors(
+	inputOrParent: ChildExecutorMcpSelectorInput | ResourceSelector,
+	childSelector?: ResourceSelector,
+	executorSelector?: ResourceSelector,
+): ResultValue<ChildExecutorMcpSelectorResult, FoundationError> {
+	const input: ChildExecutorMcpSelectorInput = "parentSelector" in inputOrParent
 		? inputOrParent
 		: { parentSelector: inputOrParent, childSelector, executorSelector };
-	const parentResult = validateSelectorV1(input.parentSelector);
+	const parentResult = validateSelector(input.parentSelector);
 	if (!parentResult.ok) return parentResult;
-	const parent = normalizeSelectorV1(parentResult.value);
+	const parent = normalizeSelector(parentResult.value);
 	const child = input.childSelector === undefined ? parent : input.childSelector;
-	const childResult = validateMcpSelectorTighteningV1(parent, child);
+	const childResult = validateMcpSelectorTightening(parent, child);
 	if (!childResult.ok) return childResult;
 	const executor = input.executorSelector === undefined ? childResult.value : input.executorSelector;
-	const executorResult = validateMcpSelectorTighteningV1(childResult.value, executor);
+	const executorResult = validateMcpSelectorTightening(childResult.value, executor);
 	if (!executorResult.ok) return executorResult;
 	return Result.ok({ parentSelector: parent, childSelector: childResult.value, executorSelector: executorResult.value });
 }
 
-export const resolveChildMcpSelectorV1 = resolveChildExecutorMcpSelectorsV1;
-export const resolveExecutorMcpSelectorV1 = resolveChildExecutorMcpSelectorsV1;
-
-function selectorDetails(selector: ResourceSelectorV1): { policy: SelectorPolicyV1; named?: string[] } {
+function selectorDetails(selector: ResourceSelector): { policy: SelectorPolicy; named?: string[] } {
 	return selector.policy === "all" || selector.policy === "none"
 		? { policy: selector.policy }
 		: { policy: selector.policy, named: [...(selector.named ?? [])] };
 }
 
 /** Select named resources for tests and provider adapters without opening a connection. */
-export function selectResourcesV1(selector: ResourceSelectorV1, available: readonly string[]): readonly string[] {
-	const normalized = normalizeSelectorV1(selector);
+export function selectResources(selector: ResourceSelector, available: readonly string[]): readonly string[] {
+	const normalized = normalizeSelector(selector);
 	const names = new Set(normalized.policy === "named" || normalized.policy === "except" ? (normalized.named ?? []) : []);
 	return available.filter((name) => {
 		if (normalized.policy === "all") return true;
@@ -273,5 +248,3 @@ export function selectResourcesV1(selector: ResourceSelectorV1, available: reado
 		return normalized.policy === "named" ? names.has(name) : !names.has(name);
 	});
 }
-
-export const selectMcpServersV1 = selectResourcesV1;

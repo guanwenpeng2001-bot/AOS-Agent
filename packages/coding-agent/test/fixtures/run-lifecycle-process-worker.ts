@@ -1,6 +1,7 @@
 import { dirname } from "node:path";
-import { SessionManager } from "../../src/core/session-manager.ts";
-import { createRunLifecycleCoordinator, type RunModelReference } from "../../src/core/run-lifecycle.ts";
+import { SessionManager } from "../../src/core/session/manager.ts";
+import { createRunLifecycleCoordinator, type RunModelReference } from "../../src/core/session/run-lifecycle.ts";
+import { observeCanonicalTerminal } from "../support/canonical-run-terminal.ts";
 
 const [sessionFile, phase] = process.argv.slice(2);
 if (sessionFile === undefined || (phase !== "accepted" && phase !== "started" && phase !== "terminal")) {
@@ -22,7 +23,7 @@ const run = coordinator.reserve().accept({
 });
 
 if (phase === "started" || phase === "terminal") run.start();
-if (phase === "terminal") run.settle({ outcome: "completed" });
+if (phase === "terminal") await observeCanonicalTerminal(session, run, { outcome: "completed" });
 
 process.stdout.write("boundary-ready\n");
 setInterval(() => {}, 1_000);

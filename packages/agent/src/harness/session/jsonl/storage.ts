@@ -1,18 +1,18 @@
 import { uuidv7 } from "@aos-agent/ai";
 import { type SessionMutation, SessionState } from "../state.ts";
 import type {
-	AcquireWriterLeaseOptionsV1,
-	AppendFoundationRecordResultV1,
+	AcquireWriterLeaseOptions,
+	AppendFoundationRecordResult,
 	DurableLedgerApi,
-	FoundationRecordQueryV1,
-	FoundationRecordV1,
-	FoundationObjectResultV1,
-	FoundationRetentionPolicyV1,
-	LedgerWriterLeaseV1,
-	ProvisionedFoundationRecordV1,
-	ReleaseWriterLeaseOptionsV1,
-	RenewWriterLeaseOptionsV1,
-	SetRetentionPolicyOptionsV1,
+	FoundationRecordQuery,
+	FoundationRecord,
+	FoundationObjectResult,
+	FoundationRetentionPolicy,
+	LedgerWriterLease,
+	ProvisionedFoundationRecord,
+	ReleaseWriterLeaseOptions,
+	RenewWriterLeaseOptions,
+	SetRetentionPolicyOptions,
 } from "../durable/types.ts";
 import { DurableLedgerError } from "../durable/errors.ts";
 import { encodeFoundationMutation, isFoundationMutationLine, parseFoundationMutation } from "../durable/codec.ts";
@@ -382,7 +382,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		return structuredClone(this.state.getStats());
 	}
 
-	acquireWriterLease(options: AcquireWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+	acquireWriterLease(options: AcquireWriterLeaseOptions): Promise<LedgerWriterLease> {
 		return this.enqueueDurable(() => this.withWriterLock(async (lockToken) => {
 			await this.ensureDurableReady(lockToken);
 			await this.refreshDurableState();
@@ -402,7 +402,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		}));
 	}
 
-	renewWriterLease(options: RenewWriterLeaseOptionsV1): Promise<LedgerWriterLeaseV1> {
+	renewWriterLease(options: RenewWriterLeaseOptions): Promise<LedgerWriterLease> {
 		return this.enqueueDurable(() => this.withWriterLock(async (lockToken) => {
 			await this.ensureDurableReady(lockToken);
 			await this.refreshDurableState();
@@ -421,7 +421,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		}));
 	}
 
-	releaseWriterLease(options: ReleaseWriterLeaseOptionsV1): Promise<void> {
+	releaseWriterLease(options: ReleaseWriterLeaseOptions): Promise<void> {
 		return this.enqueueDurable(() => this.withWriterLock(async (lockToken) => {
 			await this.ensureDurableReady(lockToken);
 			await this.refreshDurableState();
@@ -439,7 +439,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		}));
 	}
 
-	getWriterLease(): Promise<LedgerWriterLeaseV1 | null> {
+	getWriterLease(): Promise<LedgerWriterLease | null> {
 		return this.enqueueDurable(async () => {
 			await this.ensureDurableReady();
 			await this.refreshDurableState();
@@ -457,7 +457,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		});
 	}
 
-	appendFoundationRecord(record: ProvisionedFoundationRecordV1): Promise<AppendFoundationRecordResultV1> {
+	appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult> {
 		return this.enqueueDurable(() => this.withWriterLock(async (lockToken) => {
 			await this.ensureDurableReady(lockToken);
 			await this.refreshSessionState();
@@ -478,7 +478,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		}));
 	}
 
-	setRetentionPolicy(policy: FoundationRetentionPolicyV1, options: SetRetentionPolicyOptionsV1): Promise<AppendFoundationRecordResultV1> {
+	setRetentionPolicy(policy: FoundationRetentionPolicy, options: SetRetentionPolicyOptions): Promise<AppendFoundationRecordResult> {
 		return this.enqueueDurable(() => this.withWriterLock(async (lockToken) => {
 			await this.ensureDurableReady(lockToken);
 			await this.refreshSessionState();
@@ -510,7 +510,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		}));
 	}
 
-	findFoundationRecords(query?: FoundationRecordQueryV1): Promise<FoundationRecordV1[]> {
+	findFoundationRecords(query?: FoundationRecordQuery): Promise<FoundationRecord[]> {
 		return this.enqueueDurable(async () => {
 			await this.ensureDurableReady();
 			await this.refreshDurableState();
@@ -518,7 +518,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		});
 	}
 
-	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResultV1 | undefined> {
+	getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResult | undefined> {
 		return this.enqueueDurable(async () => {
 			await this.ensureDurableReady();
 			await this.refreshDurableState();
@@ -542,7 +542,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		});
 	}
 
-	getRetentionPolicy(): Promise<FoundationRetentionPolicyV1 | undefined> {
+	getRetentionPolicy(): Promise<FoundationRetentionPolicy | undefined> {
 		return this.enqueueDurable(async () => {
 			await this.ensureDurableReady();
 			await this.refreshDurableState();
@@ -550,7 +550,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		});
 	}
 
-	prunableFoundationRecords(): Promise<readonly FoundationRecordV1[]> {
+	prunableFoundationRecords(): Promise<readonly FoundationRecord[]> {
 		return this.enqueueDurable(async () => {
 			await this.ensureDurableReady();
 			await this.refreshDurableState();
@@ -705,10 +705,10 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		if (typeof lease.ownerId !== "string" || typeof lease.fencingToken !== "string" || !Number.isSafeInteger(lease.leaseRevision) || !Number.isSafeInteger(lease.acquiredAt) || !Number.isSafeInteger(lease.expiresAt)) {
 			throw new DurableLedgerError("session_ledger_corrupt", `Writer lease ${path} has invalid fields`);
 		}
-		this.durableState.restoreLease(lease as unknown as LedgerWriterLeaseV1, lease.leaseRevision as number);
+		this.durableState.restoreLease(lease as unknown as LedgerWriterLease, lease.leaseRevision as number);
 	}
 
-	private async saveLeaseSidecar(lease: LedgerWriterLeaseV1 | null): Promise<void> {
+	private async saveLeaseSidecar(lease: LedgerWriterLease | null): Promise<void> {
 		const path = this.leasePath();
 		if (lease === null) {
 			fileResult(await this.fs.remove(path, { force: true }), `Failed to remove writer lease ${path}`);
@@ -727,7 +727,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		});
 	}
 
-	private async appendFoundationMutation(record: FoundationRecordV1, lockToken: string): Promise<void> {
+	private async appendFoundationMutation(record: FoundationRecord, lockToken: string): Promise<void> {
 		await this.assertWriterLockOwned(lockToken);
 		await this.assertDiskSequence(record.seq - 1);
 		await this.assertWriterLockOwned(lockToken);

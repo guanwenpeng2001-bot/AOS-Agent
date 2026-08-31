@@ -12,7 +12,7 @@ import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import type { BuiltinToolPolicy } from "../sandbox-host.ts";
+import type { BuiltinToolPolicy } from "../policy/sandbox-host.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.ts";
 import { sandboxContentBuffer } from "./sandbox-filesystem.ts";

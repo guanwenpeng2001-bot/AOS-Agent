@@ -9,12 +9,13 @@ import { createConnection, type Socket } from "node:net";
 import type { Writable } from "node:stream";
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
-import type { BashResult } from "../../core/bash-executor.ts";
+import type { BashResult } from "../../core/runtime/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/mcp-types.ts";
-import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/mcp-auth.ts";
-import type { ModelRoleSelection, ModelRouteSelection } from "../../core/model-broker.ts";
-import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/run-lifecycle.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
+import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/runtime/mcp-types.ts";
+import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/policy/mcp-auth.ts";
+import type { ModelRoleSelection, ModelRouteSelection } from "../../core/runtime/model-broker.ts";
+import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/session/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import {
 	attachJsonlLineReader,
@@ -40,10 +41,7 @@ import type {
 	AuditReplayResult,
 	AutomationError,
 	AutomationErrorCode,
-	ExternalAgentSelection,
-	ExternalExecutionRef,
-	ExternalMappingPersistenceResult,
-	ExternalMappingRequest,
+	ExternalConnectorSelection,
 	GetCapabilitiesData,
 	GetContextData,
 	GetExecutionPolicyData,
@@ -200,7 +198,7 @@ function isRpcTransportErrorRecord(value: unknown): value is RpcTransportErrorRe
 	return isRpcTransportErrorCode(error.code) && typeof error.message === "string";
 }
 
-/** Structured error thrown when an Automation Host v1 command fails. */
+/** Structured error thrown when an Automation Host command fails. */
 export class AutomationRpcError extends Error {
 	readonly code: AutomationErrorCode;
 	readonly retryable: boolean;
@@ -810,11 +808,11 @@ export class RpcClient {
 	 * session's configured default profile. The Automation Host fails the run when
 	 * the profile is unknown or would require an ask approval.
 	 * @param policyProfile - Optional named Execution Policy profile selector.
-	 * @param externalAgent - Optional explicit trusted External Agent Adapter
-	 * selection. When present the Run is executed by the trusted adapter instead
-	 * of the local model loop; the adapter is probed and its capabilities gated
-	 * before any start. Safe identifiers only; no URL/command/header/credential
+	 * @param externalConnector - Optional explicit trusted External Connector
+	 * selection. When present the Run is executed by the connector instead of
+	 * the local model loop. Safe immutable identity only; no URL/command/header/credential
 	 * data ever crosses the RPC boundary.
+	 * @param artifacts - Optional canonical artifact references for Connector input.
 	 */
 	async startRun(
 		message: string,
@@ -823,10 +821,10 @@ export class RpcClient {
 		modelRoute?: ModelRouteSelection,
 		modelRole?: ModelRoleSelection,
 		policyProfile?: string,
-		external?: ExternalExecutionRef,
 		clientRequestId?: string,
 		deadlineAt?: string,
-		externalAgent?: ExternalAgentSelection,
+		externalConnector?: ExternalConnectorSelection,
+		artifacts?: readonly CanonicalExternalAgentArtifactReference[],
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.start",
@@ -836,8 +834,8 @@ export class RpcClient {
 			...(policyProfile !== undefined ? { policyProfile } : {}),
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
-			...(external !== undefined ? { external } : {}),
-			...(externalAgent !== undefined ? { externalAgent } : {}),
+			...(externalConnector !== undefined ? { externalConnector } : {}),
+			...(artifacts !== undefined ? { artifacts } : {}),
 			...(clientRequestId !== undefined ? { clientRequestId } : {}),
 			...(deadlineAt !== undefined ? { deadlineAt } : {}),
 		});
@@ -868,11 +866,10 @@ export class RpcClient {
 	 * attempt's successor binding; defaults to the session's default profile.
 	 * @param policyProfile - Optional named Execution Policy profile selector for
 	 * the new attempt's successor binding.
-	 * @param externalAgent - Optional explicit trusted External Agent Adapter
-	 * selection. The v1 adapter contract has start() only, so run.resume with an
-	 * externalAgent selection is always rejected with
-	 * external_agent_resume_unsupported instead of silently starting a fresh
-	 * execution.
+	 * @param externalConnector - Optional explicit trusted External Connector
+	 * selection. Resume is executed only when the selected connector advertised
+	 * and implements the canonical resume capability.
+	 * @param artifacts - Optional canonical artifact references for Connector input.
 	 */
 	async resumeRun(
 		sessionPath: string,
@@ -883,10 +880,10 @@ export class RpcClient {
 		modelRoute?: ModelRouteSelection,
 		modelRole?: ModelRoleSelection,
 		policyProfile?: string,
-		external?: ExternalExecutionRef,
 		clientRequestId?: string,
 		deadlineAt?: string,
-		externalAgent?: ExternalAgentSelection,
+		externalConnector?: ExternalConnectorSelection,
+		artifacts?: readonly CanonicalExternalAgentArtifactReference[],
 	): Promise<RunAcceptedData> {
 		const response = await this.sendAutomation({
 			type: "run.resume",
@@ -898,8 +895,8 @@ export class RpcClient {
 			...(policyProfile !== undefined ? { policyProfile } : {}),
 			...(modelRoute !== undefined ? { modelRoute } : {}),
 			...(modelRole !== undefined ? { modelRole } : {}),
-			...(external !== undefined ? { external } : {}),
-			...(externalAgent !== undefined ? { externalAgent } : {}),
+			...(externalConnector !== undefined ? { externalConnector } : {}),
+			...(artifacts !== undefined ? { artifacts } : {}),
 			...(clientRequestId !== undefined ? { clientRequestId } : {}),
 			...(deadlineAt !== undefined ? { deadlineAt } : {}),
 		});
@@ -1333,17 +1330,6 @@ export class RpcClient {
 		options: Omit<RunReplayRecoveryOptions, "runId" | "source"> = {},
 	): Promise<RunReplayReconnectResult> {
 		return this.createRunReplayRecovery(runId, options).reconnect();
-	}
-
-	/** Persist a validated external-to-AOS mapping in the current Session. */
-	async externalMap(request: ExternalMappingRequest): Promise<ExternalMappingPersistenceResult> {
-		const response = await this.sendAutomation({ type: "external.map", ...request });
-		return this.getAutomationData<ExternalMappingPersistenceResult>(response);
-	}
-
-	/** Alias for externalMap for callers that prefer verb-first naming. */
-	async mapExternal(request: ExternalMappingRequest): Promise<ExternalMappingPersistenceResult> {
-		return this.externalMap(request);
 	}
 
 	// =========================================================================

@@ -1,9 +1,9 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@aos-agent/tui";
-import type { AgentSession } from "../../../core/agent-session.ts";
+import type { AgentSession } from "../../../core/session/agent-session.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
-import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
-import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
+import type { ReadonlyFooterDataProvider } from "../../../core/session/footer-data-provider.ts";
+import { addUsageToTotals, createUsageTotals } from "../../../core/session/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
 
 /**
@@ -88,7 +88,7 @@ export class FooterComponent implements Component {
 		const usageTotals = createUsageTotals();
 		let latestCacheHitRate: number | undefined;
 
-		for (const entry of this.session.sessionManager.getEntries()) {
+		for (const entry of this.session.sessionRead.getEntries()) {
 			if (entry.type === "message" && entry.message.role === "assistant") {
 				addUsageToTotals(usageTotals, entry.message.usage);
 
@@ -111,7 +111,7 @@ export class FooterComponent implements Component {
 		const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
 
 		// Replace home directory with ~
-		let pwd = formatCwdForFooter(this.session.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE);
+		let pwd = formatCwdForFooter(this.session.sessionRead.getCwd(), process.env.HOME || process.env.USERPROFILE);
 
 		// Add git branch if available
 		const branch = this.footerData.getGitBranch();
@@ -120,7 +120,7 @@ export class FooterComponent implements Component {
 		}
 
 		// Add session name if set
-		const sessionName = this.session.sessionManager.getSessionName();
+		const sessionName = this.session.sessionRead.getSessionName();
 		if (sessionName) {
 			pwd = `${pwd} • ${sessionName}`;
 		}

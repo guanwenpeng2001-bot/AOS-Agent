@@ -4,6 +4,8 @@ import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl
 import { AutomationRpcError, RpcClient } from "../src/modes/rpc/rpc-client.ts";
 
 const LOOPBACK_HOST = "127.0.0.1";
+const TRANSIENT_WINDOWS_CONNECT_CODES = new Set(["EADDRNOTAVAIL", "ECONNREFUSED", "ECONNRESET", "ENOBUFS", "ETIMEDOUT"]);
+const TCP_CONNECT_ATTEMPTS = 3;
 const clients: RpcClient[] = [];
 const servers: Server[] = [];
 
@@ -78,7 +80,7 @@ describe("RpcClient TCP transport", () => {
 		client.onRunEvent((event) => runEvents.push(event.type));
 		client.onEvent((event) => sessionEvents.push(event.type));
 
-		await client.start();
+		await startTcpClient(client);
 		await expect(client.initializeAutomationHost()).resolves.toMatchObject({ sessionId: "session-1" });
 		await expect(client.auditQuery({ scope: "current-session" })).resolves.toMatchObject({ schemaVersion: 1 });
 		await expect(client.auditReplay("run-1")).resolves.toMatchObject({ status: "complete" });
@@ -131,7 +133,7 @@ describe("RpcClient TCP transport", () => {
 
 		const client = new RpcClient({ transport: { type: "tcp", port } });
 		clients.push(client);
-		await client.start();
+		await startTcpClient(client);
 		const pending = client.getCommands();
 		await commandReady;
 		const socketClosed = waitForClose(acceptedSocket!);
@@ -156,7 +158,7 @@ describe("RpcClient TCP transport", () => {
 
 		const client = new RpcClient({ transport: { type: "tcp", port } });
 		clients.push(client);
-		await client.start();
+		await startTcpClient(client);
 		const first = client.getCommands();
 		const second = client.getCommands();
 		const firstRejected = expect(first).rejects.toMatchObject({ code: "rpc_transport_closed" });
@@ -187,12 +189,11 @@ describe("RpcClient TCP transport", () => {
 
 		const client = new RpcClient({ transport: { type: "tcp", port } });
 		clients.push(client);
-		await client.start();
+		await startTcpClient(client);
 
 		await expect(
 			client.startRun(
 				"do not duplicate",
-				undefined,
 				undefined,
 				undefined,
 				undefined,
@@ -228,7 +229,7 @@ describe("RpcClient TCP transport", () => {
 		client.onRunEvent((event) => runEvents.push(event.type));
 		client.onEvent((event) => sessionEvents.push(event.type));
 
-		await client.start();
+		await startTcpClient(client);
 		await expect(client.initializeAutomationHost()).rejects.toMatchObject({
 			name: "RpcTransportError",
 			code: "rpc_transport_connection_busy",
@@ -268,17 +269,16 @@ describe("RpcClient TCP transport", () => {
 
 		const client = new RpcClient({ transport: { type: "tcp", port } });
 		clients.push(client);
-		await client.start();
+		await startTcpClient(client);
 		await expect(
-			client.startRun("side effect", undefined, undefined, undefined, undefined, undefined, undefined, "request-1"),
+			client.startRun("side effect", undefined, undefined, undefined, undefined, undefined, "request-1"),
 		).rejects.toMatchObject({ code: "rpc_transport_closed" });
 		await client.close();
 		expect(attempt).toBe(1);
 
-		await client.start();
+		await startTcpClient(client);
 		const retry = await client.startRun(
 			"side effect",
-			undefined,
 			undefined,
 			undefined,
 			undefined,
@@ -314,6 +314,32 @@ async function listen(handler: RpcRequestHandler): Promise<{ server: Server; por
 	const address = server.address();
 	if (address === null || typeof address === "string") throw new Error("Test listener did not expose a TCP port");
 	return { server, port: address.port };
+}
+
+async function startTcpClient(client: RpcClient): Promise<void> {
+	for (let attempt = 1; attempt <= TCP_CONNECT_ATTEMPTS; attempt += 1) {
+		try {
+			await client.start();
+			return;
+		} catch (error: unknown) {
+			if (process.platform !== "win32" || attempt === TCP_CONNECT_ATTEMPTS || !isTransientConnectError(error)) {
+				throw error;
+			}
+			// Full-suite Windows runs can transiently exhaust loopback socket buffers or ephemeral ports.
+			await new Promise((resolve) => setTimeout(resolve, attempt * 50));
+		}
+	}
+}
+
+function isTransientConnectError(error: unknown): boolean {
+	let current = error;
+	while (current instanceof Error) {
+		if ("code" in current && typeof current.code === "string" && TRANSIENT_WINDOWS_CONNECT_CODES.has(current.code)) {
+			return true;
+		}
+		current = current.cause;
+	}
+	return false;
 }
 
 function isRpcRecord(value: unknown): value is RpcRecord {

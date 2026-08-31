@@ -3,7 +3,13 @@ import { tmpdir } from "os";
 import { delimiter, join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+	ENV_AGENT_DIR,
+	ENV_CODING_AGENT_DIR,
+	ENV_CODING_AGENT_SESSION_DIR,
+	ENV_SESSION_DIR,
 	detectInstallMethod,
+	getAgentDir,
+	getEnvSessionDirOverride,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	getUpdateInstruction,
@@ -51,8 +57,8 @@ afterEach(() => {
 function createNpmPrefixInstall(template = "aos-prefix-"): { prefix: string; packageDir: string } {
 	const prefix = mkdtempSync(join(tmpdir(), template));
 	const root = join(prefix, "lib", "node_modules");
-	const scopeDir = join(root, "@earendil-works");
-	const packageDir = join(scopeDir, "pi-coding-agent");
+	const scopeDir = join(root, "@aos-agent");
+	const packageDir = join(scopeDir, "aos-agent");
 	mkdirSync(packageDir, { recursive: true });
 	tempDir = prefix;
 	process.env.AOS_AGENT_PACKAGE_DIR = packageDir;
@@ -64,7 +70,7 @@ function createPnpmGlobalInstall(): { root: string; packageDir: string } {
 	const temp = mkdtempSync(join(tmpdir(), "aos-pnpm-"));
 	const binDir = join(temp, "bin");
 	const root = join(temp, "pnpm", "global", "5", "node_modules");
-	const packageDir = join(root, "@mariozechner", "pi-coding-agent");
+	const packageDir = join(root, "@aos-agent", "aos-agent");
 	mkdirSync(packageDir, { recursive: true });
 	mkdirSync(binDir, { recursive: true });
 	writeFileSync(join(binDir, process.platform === "win32" ? "pnpm.cmd" : "pnpm"), createFakePnpmScript(root));
@@ -76,10 +82,10 @@ function createPnpmGlobalInstall(): { root: string; packageDir: string } {
 		join(
 			root,
 			".pnpm",
-			"@mariozechner+pi-coding-agent@0.0.0",
+			"@aos-agent+aos-agent@0.0.0",
 			"node_modules",
-			"@mariozechner",
-			"pi-coding-agent",
+			"@aos-agent",
+			"aos-agent",
 			"dist",
 			"cli.js",
 		),
@@ -91,7 +97,7 @@ function createYarnGlobalInstall(): { globalDir: string; packageDir: string } {
 	const temp = mkdtempSync(join(tmpdir(), "aos-yarn-"));
 	const binDir = join(temp, "bin");
 	const globalDir = join(temp, "yarn", "global");
-	const packageDir = join(globalDir, "node_modules", "@mariozechner", "pi-coding-agent");
+	const packageDir = join(globalDir, "node_modules", "@aos-agent", "aos-agent");
 	mkdirSync(packageDir, { recursive: true });
 	mkdirSync(binDir, { recursive: true });
 	writeFileSync(join(binDir, process.platform === "win32" ? "yarn.cmd" : "yarn"), createFakeYarnScript(globalDir));
@@ -99,7 +105,7 @@ function createYarnGlobalInstall(): { globalDir: string; packageDir: string } {
 	tempDir = temp;
 	process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
 	process.env.AOS_AGENT_PACKAGE_DIR = packageDir;
-	setExecPath(join(globalDir, ".yarn", "@mariozechner", "pi-coding-agent", "dist", "cli.js"));
+	setExecPath(join(globalDir, ".yarn", "@aos-agent", "aos-agent", "dist", "cli.js"));
 	return { globalDir, packageDir };
 }
 
@@ -108,8 +114,8 @@ function createBunGlobalInstall(): { packageDir: string } {
 	const prefix = join(temp, ".bun");
 	const bunBin = join(prefix, "bin");
 	const root = join(prefix, "install", "global", "node_modules");
-	const scopeDir = join(root, "@earendil-works");
-	const packageDir = join(scopeDir, "pi-coding-agent");
+	const scopeDir = join(root, "@aos-agent");
+	const packageDir = join(scopeDir, "aos-agent");
 	mkdirSync(packageDir, { recursive: true });
 	mkdirSync(bunBin, { recursive: true });
 	writeFileSync(join(bunBin, process.platform === "win32" ? "bun.cmd" : "bun"), createFakeBunScript(bunBin));
@@ -148,7 +154,7 @@ function createFakeBunScript(bunBin: string): string {
 describe("detectInstallMethod", () => {
 	test("detects pnpm from Windows .pnpm install paths", () => {
 		setExecPath(
-			"C:\\Users\\Admin\\Documents\\pnpm-repository\\global\\5\\.pnpm\\@earendil-works+pi-coding-agent@0.67.68\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
+			"C:\\Users\\Admin\\Documents\\pnpm-repository\\global\\5\\.pnpm\\@aos-agent+aos-agent@0.67.68\\node_modules\\@aos-agent\\aos-agent\\dist\\cli.js",
 		);
 
 		expect(detectInstallMethod()).toBe("pnpm");
@@ -282,7 +288,7 @@ describe("detectInstallMethod", () => {
 	});
 
 	test("does not infer Windows npm custom prefixes from package paths", () => {
-		const packageDir = "C:\\Users\\Admin\\npm prefix\\node_modules\\@earendil-works\\pi-coding-agent";
+		const packageDir = "C:\\Users\\Admin\\npm prefix\\node_modules\\@aos-agent\\aos-agent";
 		process.env.AOS_AGENT_PACKAGE_DIR = packageDir;
 		setExecPath(`${packageDir}\\dist\\cli.js`);
 
@@ -336,7 +342,7 @@ describe("detectInstallMethod", () => {
 		const binDir = join(temp, "bin");
 		const root = join(temp, "Library", "pnpm", "global", "v11");
 		const packageName = "aos-agent";
-		const globalPackageDir = join(root, "11e9a", "node_modules", "@earendil-works", "pi-coding-agent");
+		const globalPackageDir = join(root, "11e9a", "node_modules", "@aos-agent", "aos-agent");
 		const storePackageDir = join(
 			temp,
 			"Library",
@@ -344,13 +350,13 @@ describe("detectInstallMethod", () => {
 			"store",
 			"v11",
 			"links",
-			"@earendil-works",
-			"pi-coding-agent",
+			"@aos-agent",
+			"aos-agent",
 			"0.75.0",
 			"hash",
 			"node_modules",
-			"@earendil-works",
-			"pi-coding-agent",
+			"@aos-agent",
+			"aos-agent",
 		);
 		mkdirSync(globalPackageDir, { recursive: true });
 		mkdirSync(storePackageDir, { recursive: true });
@@ -423,6 +429,44 @@ describe("detectInstallMethod", () => {
 				},
 			],
 		});
+	});
+
+	test("prefers AOS_AGENT_DIR over the deprecated AOS_AGENT_CODING_AGENT_DIR alias", () => {
+		const previousPrimary = process.env[ENV_AGENT_DIR];
+		const previousLegacy = process.env[ENV_CODING_AGENT_DIR];
+		const preferred = join(tmpdir(), "aos-agent-dir-preferred");
+		const legacy = join(tmpdir(), "aos-agent-dir-legacy");
+		try {
+			delete process.env[ENV_AGENT_DIR];
+			process.env[ENV_CODING_AGENT_DIR] = legacy;
+			expect(getAgentDir()).toBe(legacy);
+			process.env[ENV_AGENT_DIR] = preferred;
+			expect(getAgentDir()).toBe(preferred);
+		} finally {
+			if (previousPrimary === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = previousPrimary;
+			if (previousLegacy === undefined) delete process.env[ENV_CODING_AGENT_DIR];
+			else process.env[ENV_CODING_AGENT_DIR] = previousLegacy;
+		}
+	});
+
+	test("prefers AOS_AGENT_SESSION_DIR over the deprecated AOS_AGENT_CODING_AGENT_SESSION_DIR alias", () => {
+		const previousPrimary = process.env[ENV_SESSION_DIR];
+		const previousLegacy = process.env[ENV_CODING_AGENT_SESSION_DIR];
+		const preferred = join(tmpdir(), "aos-agent-session-dir-preferred");
+		const legacy = join(tmpdir(), "aos-agent-session-dir-legacy");
+		try {
+			delete process.env[ENV_SESSION_DIR];
+			process.env[ENV_CODING_AGENT_SESSION_DIR] = legacy;
+			expect(getEnvSessionDirOverride()).toBe(legacy);
+			process.env[ENV_SESSION_DIR] = preferred;
+			expect(getEnvSessionDirOverride()).toBe(preferred);
+		} finally {
+			if (previousPrimary === undefined) delete process.env[ENV_SESSION_DIR];
+			else process.env[ENV_SESSION_DIR] = previousPrimary;
+			if (previousLegacy === undefined) delete process.env[ENV_CODING_AGENT_SESSION_DIR];
+			else process.env[ENV_CODING_AGENT_SESSION_DIR] = previousLegacy;
+		}
 	});
 
 	test("does not self-update when npm install path is not writable", () => {

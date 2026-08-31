@@ -1,4 +1,4 @@
-import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry } from "./runtime/model-runtime-test-utils.ts";
 /**
  * Tests for ExtensionRunner - conflict detection, error handling, tool wrapping.
  */
@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { AuthStorage } from "../src/core/policy/auth-storage.ts";
 import { createExtensionRuntime, discoverAndLoadExtensions, loadExtensions } from "../src/core/extensions/loader.ts";
 import { ExtensionRunner, emitProjectTrustEvent } from "../src/core/extensions/runner.ts";
 import type {
@@ -16,10 +16,10 @@ import type {
 	ExtensionUIContext,
 	ProviderConfig,
 } from "../src/core/extensions/types.ts";
-import { KeybindingsManager, type KeyId } from "../src/core/keybindings.ts";
-import type { ModelRegistry } from "../src/core/model-registry.ts";
-import type { ScopedModel } from "../src/core/model-resolver.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { KeybindingsManager, type KeyId } from "../src/core/runtime/keybindings.ts";
+import type { ModelRegistry } from "../src/core/runtime/model-registry.ts";
+import type { ScopedModel } from "../src/core/runtime/model-resolver.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
 
 describe("ExtensionRunner", () => {
 	let tempDir: string;

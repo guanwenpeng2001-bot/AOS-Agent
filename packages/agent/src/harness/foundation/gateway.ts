@@ -1,38 +1,38 @@
-import { Result, type Result as ResultValue } from "../result.ts";
-import { InMemoryBudgetLedger, type BudgetLedgerV1, type BudgetScopeV1, type BudgetUsageV1, type BudgetV1 } from "./budget.ts";
+import { Result, type ResultValue } from "../result.ts";
+import { InMemoryBudgetLedger, type BudgetLedger, type BudgetScope, type BudgetUsage, type Budget } from "./budget.ts";
 import { FoundationError, toFoundationError } from "./errors.ts";
-import { validateScopedModelRequestV1, validateScopedModelResultV1, validateToolExecutionResultV1, validateToolGatewayRequestV1, type ScopedModelGateway, type ScopedModelRequestV1, type ScopedModelResultV1, type ToolExecutionResultV1, type ToolGateway, type ToolGatewayRequestV1 } from "./providers.ts";
-import type { AgentBindingV1, BindingEpochV1 } from "./role.ts";
+import { validateScopedModelRequest, validateScopedModelResult, validateToolExecutionResult, validateToolGatewayRequest, type ScopedModelGateway, type ScopedModelRequest, type ScopedModelResult, type ToolExecutionResult, type ToolGateway, type ToolGatewayRequest } from "./providers.ts";
+import type { AgentBinding, BindingEpoch } from "./role.ts";
 
-export type ScopedExecutorProviderClassV1 = "scheduler" | "task_executor" | "agent" | "external_connector";
-export interface ScopedGatewayScopeV1 extends BudgetScopeV1 {
+export type ScopedExecutorProviderClass = "scheduler" | "task_executor" | "agent" | "external_connector";
+export interface ScopedGatewayScope extends BudgetScope {
 	bindingId: string;
 	bindingEpochId: string;
-	providerClass: ScopedExecutorProviderClassV1;
+	providerClass: ScopedExecutorProviderClass;
 }
 
-export interface ScopedExecutionGatewayOptionsV1 {
+export interface ScopedExecutionGatewayOptions {
 	model: ScopedModelGateway;
 	tool?: ToolGateway;
-	binding: AgentBindingV1;
-	epoch: BindingEpochV1;
-	providerClass?: ScopedExecutorProviderClassV1;
-	budget?: BudgetV1;
-	ledger?: BudgetLedgerV1;
+	binding: AgentBinding;
+	epoch: BindingEpoch;
+	providerClass?: ScopedExecutorProviderClass;
+	budget?: Budget;
+	ledger?: BudgetLedger;
 }
 
 /** The only model/tool boundary exposed to an executor; every call is checked against one epoch. */
-export class ScopedExecutionGatewayV1 {
-	readonly scope: ScopedGatewayScopeV1;
+export class ScopedExecutionGateway {
+	readonly scope: ScopedGatewayScope;
 	private readonly model: ScopedModelGateway;
 	private readonly tool?: ToolGateway;
-	private readonly ledger: BudgetLedgerV1;
-	private readonly budget: BudgetV1;
+	private readonly ledger: BudgetLedger;
+	private readonly budget: Budget;
 	private readonly boundModelProfileId: string;
 	private readonly boundModelProfileRevision: number;
 	private readonly initializationError?: FoundationError;
 
-	constructor(options: ScopedExecutionGatewayOptionsV1) {
+	constructor(options: ScopedExecutionGatewayOptions) {
 		this.model = options.model;
 		this.tool = options.tool;
 		this.ledger = options.ledger ?? new InMemoryBudgetLedger();
@@ -57,7 +57,7 @@ export class ScopedExecutionGatewayV1 {
 		}
 	}
 
-	async stream(request: ScopedModelRequestV1, options?: { signal?: AbortSignal }): Promise<ResultValue<ScopedModelResultV1, FoundationError>> {
+	async stream(request: ScopedModelRequest, options?: { signal?: AbortSignal }): Promise<ResultValue<ScopedModelResult, FoundationError>> {
 		const checked = this.checkModelRequest(request);
 		if (!checked.ok) return checked;
 		const counted = this.ledger.record(this.scope, { modelCalls: 1 });
@@ -65,7 +65,7 @@ export class ScopedExecutionGatewayV1 {
 		try {
 			const response = await this.model.stream(checked.value, options);
 			if (!response.ok) return response;
-			const validResponse = validateScopedModelResultV1(response.value);
+			const validResponse = validateScopedModelResult(response.value);
 			if (!validResponse.ok) return validResponse;
 			if (validResponse.value.requestId !== checked.value.requestId) return Result.err(new FoundationError("invalid_correlation", "Model gateway response does not match its request", { details: { requestId: checked.value.requestId } }));
 			const usage = withoutCallCount(validResponse.value.usage, "modelCalls");
@@ -77,10 +77,10 @@ export class ScopedExecutionGatewayV1 {
 		}
 	}
 
-	async execute(request: ToolGatewayRequestV1, options?: { signal?: AbortSignal }): Promise<ResultValue<ToolExecutionResultV1, FoundationError>> {
+	async execute(request: ToolGatewayRequest, options?: { signal?: AbortSignal }): Promise<ResultValue<ToolExecutionResult, FoundationError>> {
 		if (this.initializationError !== undefined) return Result.err(this.initializationError);
 		if (this.tool === undefined) return Result.err(new FoundationError("tool_guard_denied", "This scoped gateway has no tool provider"));
-		const checked = validateToolGatewayRequestV1(request);
+		const checked = validateToolGatewayRequest(request);
 		if (!checked.ok) return checked;
 		const scopeCheck = checkScope(this.scope, checked.value.context.taskId, checked.value.context.bindingId, checked.value.context.bindingEpochId, checked.value.context.attemptId, checked.value.context.agentInstanceId);
 		if (!scopeCheck.ok) return scopeCheck;
@@ -89,7 +89,7 @@ export class ScopedExecutionGatewayV1 {
 		try {
 			const response = await this.tool.execute(checked.value, options);
 			if (!response.ok) return response;
-			const validResponse = validateToolExecutionResultV1(response.value);
+			const validResponse = validateToolExecutionResult(response.value);
 			if (!validResponse.ok) return validResponse;
 			if (validResponse.value.toolCallId !== checked.value.toolCallId || validResponse.value.toolName !== checked.value.toolName) return Result.err(new FoundationError("invalid_correlation", "Tool gateway response does not match its request", { details: { toolCallId: checked.value.toolCallId } }));
 			return validResponse;
@@ -98,12 +98,12 @@ export class ScopedExecutionGatewayV1 {
 		}
 	}
 
-	usage(): BudgetUsageV1 { return this.ledger.usage(this.scope); }
-	remaining(): BudgetV1 { return this.ledger.remaining(this.scope, this.budget); }
+	usage(): BudgetUsage { return this.ledger.usage(this.scope); }
+	remaining(): Budget { return this.ledger.remaining(this.scope, this.budget); }
 
-	private checkModelRequest(request: ScopedModelRequestV1): ResultValue<ScopedModelRequestV1, FoundationError> {
+	private checkModelRequest(request: ScopedModelRequest): ResultValue<ScopedModelRequest, FoundationError> {
 		if (this.initializationError !== undefined) return Result.err(this.initializationError);
-		const checked = validateScopedModelRequestV1(request);
+		const checked = validateScopedModelRequest(request);
 		if (!checked.ok) return checked;
 		const scopeCheck = checkScope(this.scope, checked.value.taskId, this.scope.bindingId, checked.value.bindingEpochId, checked.value.attemptId, checked.value.agentInstanceId);
 		if (!scopeCheck.ok) return scopeCheck;
@@ -113,20 +113,20 @@ export class ScopedExecutionGatewayV1 {
 
 }
 
-function checkScope(scope: ScopedGatewayScopeV1, taskId: string, bindingId: string, bindingEpochId: string, attemptId?: string, agentInstanceId?: string): ResultValue<true, FoundationError> {
+function checkScope(scope: ScopedGatewayScope, taskId: string, bindingId: string, bindingEpochId: string, attemptId?: string, agentInstanceId?: string): ResultValue<true, FoundationError> {
 	if (taskId !== scope.taskId || bindingId !== scope.bindingId || bindingEpochId !== scope.bindingEpochId || attemptId !== undefined && attemptId !== scope.attemptId) return Result.err(new FoundationError("binding_task_before_binding", "Gateway request is outside its binding epoch"));
 	if (scope.providerClass === "agent" && agentInstanceId !== scope.agentInstanceId) return Result.err(new FoundationError("agent_instance_required_for_agent_provider", "Agent gateway request must identify its bound AgentInstance"));
 	if (scope.providerClass !== "agent" && agentInstanceId !== undefined) return Result.err(new FoundationError("agent_instance_forbidden_for_provider", "Non-agent gateway requests cannot identify an AgentInstance"));
 	return Result.ok(true);
 }
 
-function withoutCallCount(usage: BudgetUsageV1, field: "modelCalls" | "toolCalls"): BudgetUsageV1 {
+function withoutCallCount(usage: BudgetUsage, field: "modelCalls" | "toolCalls"): BudgetUsage {
 	const { modelCalls: _modelCalls, toolCalls: _toolCalls, ...rest } = usage;
 	return field === "modelCalls" ? { ...rest, ...(usage.toolCalls === undefined ? {} : { toolCalls: usage.toolCalls }) } : { ...rest, ...(usage.modelCalls === undefined ? {} : { modelCalls: usage.modelCalls }) };
 }
 
-function mergeBudget(left: BudgetV1, right: BudgetV1): BudgetV1 {
-	const result: BudgetV1 = {};
+function mergeBudget(left: Budget, right: Budget): Budget {
+	const result: Budget = {};
 	for (const key of ["tokens", "costUsd", "modelCalls", "toolCalls", "wallClockMs", "concurrency"] as const) {
 		const a = left[key];
 		const b = right[key];
@@ -135,5 +135,4 @@ function mergeBudget(left: BudgetV1, right: BudgetV1): BudgetV1 {
 	return result;
 }
 
-export const ScopedGateway = ScopedExecutionGatewayV1;
-export const BudgetedScopedGatewayV1 = ScopedExecutionGatewayV1;
+export const ScopedGateway = ScopedExecutionGateway;

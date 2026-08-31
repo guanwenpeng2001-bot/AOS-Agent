@@ -23,7 +23,7 @@ npm run build
 npm install --global --ignore-scripts ./packages/coding-agent
 ```
 
-The build generates the local AOS-owned model registry described in [`../../ai/AOS-MODEL-REGISTRY.md`](../../ai/AOS-MODEL-REGISTRY.md). Do not redistribute generated output until each source's terms boundary has been reviewed.
+The build generates the local AOS-owned model registry described in [`../../ai/aos-model-registry.md`](../../ai/aos-model-registry.md). Do not redistribute generated output until each source's terms boundary has been reviewed.
 
 Then start the agent in the project directory it should work on:
 

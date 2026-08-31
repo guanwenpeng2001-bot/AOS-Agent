@@ -1,6 +1,6 @@
 import { setKeybindings } from "@aos-agent/tui";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { KeybindingsManager } from "../src/core/runtime/keybindings.ts";
 import { OAuthSelectorComponent } from "../src/modes/interactive/components/oauth-selector.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";

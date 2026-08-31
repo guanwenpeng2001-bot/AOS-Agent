@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@aos-agent/ai";
+import { fakeAssistantMessage } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "../harness.ts";
 
@@ -35,7 +35,7 @@ describe("regression #3982: message_end cost override", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("hello")]);
+		harness.setResponses([fakeAssistantMessage("hello")]);
 
 		await harness.session.prompt("hi");
 

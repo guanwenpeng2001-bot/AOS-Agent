@@ -2,17 +2,17 @@ import { stdin, stderr, stdout } from "node:process";
 import type { Readable, Writable } from "node:stream";
 import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
-	serializeWorkerFrameLineV1,
-	type WorkerEventFrameV1,
-} from "./core/worker-protocol.ts";
+	serializeWorkerFrameLine,
+	type OperationWorkerEventFrame,
+} from "./core/worker/protocol.ts";
 import {
-	WorkerRuntimeV1,
-	type WorkerRuntimeSandboxOperationProviderV1,
-} from "./core/worker-runtime.ts";
+	OperationWorkerRuntime,
+	type WorkerRuntimeSandboxOperationProvider,
+} from "./core/worker/runtime.ts";
 import { attachJsonlLineReader, createJsonlLineWriter } from "./modes/rpc/jsonl.ts";
 
-export interface WorkerEntryOptionsV1 {
-	readonly provider: WorkerRuntimeSandboxOperationProviderV1;
+export interface WorkerEntryOptions {
+	readonly provider: WorkerRuntimeSandboxOperationProvider;
 	readonly input?: Readable;
 	readonly output?: Writable;
 	readonly diagnostic?: Writable;
@@ -24,11 +24,11 @@ export interface WorkerEntryOptionsV1 {
  * Run the trusted worker transport with a provider supplied by the composition
  * root. This entry never loads provider code or configuration from RPC/env.
  */
-export function runWorkerEntryV1(options: WorkerEntryOptionsV1): Promise<void> {
+export function runOperationWorkerProcess(options: WorkerEntryOptions): Promise<void> {
 	const input = options.input ?? stdin;
 	const output = options.output ?? stdout;
 	const diagnostic = options.diagnostic ?? stderr;
-	const writer = createJsonlLineWriter<WorkerEventFrameV1>(output, {
+	const writer = createJsonlLineWriter<OperationWorkerEventFrame>(output, {
 		maxFrameBytes: WORKER_PROTOCOL_MAX_FRAME_BYTES,
 	});
 	let detachInput = (): void => undefined;
@@ -49,9 +49,9 @@ export function runWorkerEntryV1(options: WorkerEntryOptionsV1): Promise<void> {
 		});
 	};
 
-	const runtime = new WorkerRuntimeV1({
+	const runtime = new OperationWorkerRuntime({
 		provider: options.provider,
-		emit: (frame) => writer.writeLine(serializeWorkerFrameLineV1(frame)),
+		emit: (frame) => writer.writeLine(serializeWorkerFrameLine(frame)),
 		diagnostic: (line) => {
 			try {
 				diagnostic.write(line);
@@ -87,4 +87,4 @@ export function runWorkerEntryV1(options: WorkerEntryOptionsV1): Promise<void> {
 	return run;
 }
 
-export const runWorkerEntry = runWorkerEntryV1;
+export const runWorkerEntry = runOperationWorkerProcess;

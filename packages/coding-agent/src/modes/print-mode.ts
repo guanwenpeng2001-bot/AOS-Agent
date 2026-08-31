@@ -7,8 +7,11 @@
  */
 
 import type { AssistantMessage, ImageContent } from "@aos-agent/ai";
-import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
-import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
+import type { AgentSession, ExtensionBindings } from "../core/session/agent-session.ts";
+import type { AgentSessionRuntime } from "../core/session/runtime.ts";
+import type { PreparedSessionScopeRebind } from "../core/session/current-scope.ts";
+import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/runtime/output-guard.ts";
+import { ShutdownCoordinator } from "../core/runtime/shutdown-coordinator.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 
@@ -33,47 +36,42 @@ export interface PrintModeOptions {
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
 	const { mode, messages = [], initialMessage, initialImages } = options;
 	let exitCode = 0;
-	let session = runtimeHost.session;
-	let unsubscribe: (() => void) | undefined;
-	let unsubscribeBackpressure: (() => void) | undefined;
-	let disposed = false;
-	const signalCleanupHandlers: Array<() => void> = [];
+	interface PrintSessionBinding {
+		unsubscribe?: () => void;
+		unsubscribeBackpressure?: () => void;
+	}
+	const sessionBindings = new Map<AgentSession, PrintSessionBinding>();
+	let disposePromise: Promise<void> | undefined;
 
 	const disposeRuntime = async (): Promise<void> => {
-		if (disposed) return;
-		disposed = true;
-		unsubscribe?.();
-		unsubscribeBackpressure?.();
-		await runtimeHost.dispose();
+		if (disposePromise === undefined) {
+			for (const binding of sessionBindings.values()) {
+				binding.unsubscribe?.();
+				binding.unsubscribeBackpressure?.();
+			}
+			sessionBindings.clear();
+			disposePromise = runtimeHost.dispose();
+		}
+		await disposePromise;
 	};
 
-	const registerSignalHandlers = (): void => {
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
-		if (process.platform !== "win32") {
-			signals.push("SIGHUP");
-		}
-
-		for (const signal of signals) {
-			const handler = () => {
+	const shutdownCoordinator = new ShutdownCoordinator({
+		closeAdmission: (request) => {
+			runtimeHost.closeAdmissionForShutdown();
+			if (request.signal !== undefined) {
 				killTrackedDetachedChildren();
-				void disposeRuntime().finally(() => {
-					process.exit(signal === "SIGHUP" ? 129 : 143);
-				});
-			};
-			process.on(signal, handler);
-			signalCleanupHandlers.push(() => process.off(signal, handler));
-		}
-	};
-
-	registerSignalHandlers();
-
-	runtimeHost.setRebindSession(async () => {
-		await rebindSession();
+			}
+		},
+		handoffRecovery: () => runtimeHost.handoffShutdownRecovery(),
+		resourceGroups: [[{ name: "runtime", cleanup: disposeRuntime }]],
+		finalize: () => flushRawStdout(),
+		onFailure: (failure) => {
+			console.error(`[shutdown] ${failure.resource} ${failure.reason.replaceAll("_", " ")}`);
+		},
 	});
+	shutdownCoordinator.installSignalHandlers();
 
-	const rebindSession = async (): Promise<void> => {
-		session = runtimeHost.session;
-		await session.bindExtensions({
+	const extensionBindings = (session: AgentSession): ExtensionBindings => ({
 			mode: mode === "json" ? "json" : "print",
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
@@ -95,49 +93,85 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 					return runtimeHost.switchSession(sessionPath, switchOptions);
 				},
 				reload: async () => {
-					await session.reload();
+					await runtimeHost.reload();
 				},
 			},
 			onError: (err) => {
 				console.error(`Extension error (${err.extensionPath}): ${err.error}`);
 			},
-		});
+	});
 
-		unsubscribe?.();
-		unsubscribeBackpressure?.();
-		unsubscribe = session.subscribe((event) => {
+	const subscribeSession = (session: AgentSession): PrintSessionBinding => {
+		const binding: PrintSessionBinding = {};
+		binding.unsubscribe = session.subscribe((event) => {
+			if (runtimeHost.session !== session) return;
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			}
 		});
-		unsubscribeBackpressure =
+		binding.unsubscribeBackpressure =
 			mode === "json"
 				? session.agent.subscribe(async () => {
+						if (runtimeHost.session !== session) return;
 						await waitForRawStdoutBackpressure();
 					})
 				: undefined;
+		sessionBindings.set(session, binding);
+		return binding;
 	};
+
+	runtimeHost.setPrepareSessionRebind(async (nextSession, previousSession): Promise<PreparedSessionScopeRebind> => {
+		if (runtimeHost.session !== previousSession) {
+			throw new Error("Print host session binding does not match the current runtime scope");
+		}
+		const previousBinding = sessionBindings.get(previousSession);
+		let candidateBinding: PrintSessionBinding | undefined;
+		try {
+			await nextSession.prepareExtensionBindings(extensionBindings(nextSession));
+			candidateBinding = subscribeSession(nextSession);
+		} catch (error) {
+			candidateBinding?.unsubscribe?.();
+			candidateBinding?.unsubscribeBackpressure?.();
+			sessionBindings.delete(nextSession);
+			throw error;
+		}
+		return {
+			commit: () => undefined,
+			activate: () => nextSession.activateExtensionBindings(),
+			disposeCandidate: () => {
+				candidateBinding?.unsubscribe?.();
+				candidateBinding?.unsubscribeBackpressure?.();
+				sessionBindings.delete(nextSession);
+			},
+			disposePrevious: () => {
+				previousBinding?.unsubscribe?.();
+				previousBinding?.unsubscribeBackpressure?.();
+				sessionBindings.delete(previousSession);
+			},
+		};
+	});
 
 	try {
 		if (mode === "json") {
-			const header = session.sessionManager.getHeader();
+			const header = runtimeHost.session.sessionRead.getHeader();
 			if (header) {
 				writeRawStdout(`${JSON.stringify(header)}\n`);
 			}
 		}
 
-		await rebindSession();
+		await runtimeHost.session.bindExtensions(extensionBindings(runtimeHost.session));
+		subscribeSession(runtimeHost.session);
 
 		if (initialMessage) {
-			await session.prompt(initialMessage, { images: initialImages });
+			await runtimeHost.session.prompt(initialMessage, { images: initialImages });
 		}
 
 		for (const message of messages) {
-			await session.prompt(message);
+			await runtimeHost.session.prompt(message);
 		}
 
 		if (mode === "text") {
-			const state = session.state;
+			const state = runtimeHost.session.state;
 			const lastMessage = state.messages[state.messages.length - 1];
 
 			if (lastMessage?.role === "assistant") {
@@ -160,10 +194,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		console.error(error instanceof Error ? error.message : String(error));
 		return 1;
 	} finally {
-		for (const cleanup of signalCleanupHandlers) {
-			cleanup();
+		if (shutdownCoordinator.state === "accepting") {
+			shutdownCoordinator.removeSignalHandlers();
+			await disposeRuntime();
+			await flushRawStdout();
+		} else {
+			await shutdownCoordinator.completion;
 		}
-		await disposeRuntime();
-		await flushRawStdout();
 	}
 }

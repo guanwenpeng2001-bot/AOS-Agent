@@ -1,22 +1,26 @@
-import { mkdirSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ExecutionAuditQuery } from "../../src/core/execution-audit-query.ts";
+import { ExecutionAuditQuery } from "../../src/core/session/execution-audit-query.ts";
 import {
 	loadEntriesFromFile,
 	SessionManager,
 	type SessionEntry,
-} from "../../src/core/session-manager.ts";
+} from "../../src/core/session/manager.ts";
+import {
+	createSessionManagerStorage,
+	FOUNDATION_ENTRY_CUSTOM_TYPE,
+} from "../../src/core/session/manager-storage.ts";
 import {
 	SessionWriteCoordinationError,
 	SessionWriteCoordinator,
-} from "../../src/core/session-write-coordinator.ts";
+} from "../../src/core/session/write-coordinator.ts";
+import { repoRoot } from "../support/public-roots.ts";
 
-const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const workerPath = fileURLToPath(new URL("./session-write-worker.ts", import.meta.url));
 
 function assistantMessage(text: string, timestamp: number) {
@@ -51,7 +55,7 @@ function createPersistedSession(sessionDir: string): string {
 function runWorker(sessionFile: string, marker: string, count: number): Promise<{ code: number; stderr: string }> {
 	return new Promise((resolveWorker, reject) => {
 		const child = spawn(process.execPath, ["--import", "tsx", workerPath, sessionFile, marker, String(count)], {
-			cwd: repoRoot,
+			cwd: repoRoot(),
 			stdio: ["ignore", "ignore", "pipe"],
 		});
 		let stderr = "";
@@ -150,6 +154,261 @@ describe("SessionWriteCoordinator", () => {
 		}
 
 		expect(loadEntriesFromFile(sessionFile)).toHaveLength(3);
+	});
+
+	it("locks candidate artifact rollback and leaves it retryable after lock contention", () => {
+		const sessionFile = createPersistedSession(tempDir);
+		const originalContents = readFileSync(sessionFile);
+		const artifact = SessionManager.stageArtifactRollback(sessionFile);
+		if (artifact === undefined) throw new Error("Expected a staged Session artifact");
+		writeFileSync(sessionFile, "candidate mutation\n");
+
+		const release = lockfile.lockSync(sessionFile, { realpath: false, stale: 30_000 });
+		let failure: unknown;
+		try {
+			try {
+				artifact.rollback();
+			} catch (error) {
+				failure = error;
+			}
+			expect(failure).toBeInstanceOf(SessionWriteCoordinationError);
+			expect(failure).toMatchObject({ code: "session_write_lock_timeout" });
+			expect(readFileSync(sessionFile, "utf8")).toBe("candidate mutation\n");
+		} finally {
+			release();
+		}
+
+		artifact.rollback();
+		expect(readFileSync(sessionFile)).toEqual(originalContents);
+	});
+
+	it("commits a detached snapshot with no candidate delta after an accepted source write", () => {
+		const source = SessionManager.create(tempDir, tempDir);
+		const storage = createSessionManagerStorage(source);
+		storage.appendHarnessEntry({
+			type: "message",
+			id: "detached-base",
+			message: { role: "user", content: "base", timestamp: 1 },
+		}, "main");
+		source.flushPendingSession();
+		const candidate = source.createDetachedSnapshot();
+
+		storage.appendHarnessEntry({
+			type: "message",
+			id: "accepted-source",
+			message: { role: "user", content: "accepted source", timestamp: 2 },
+		}, "main");
+		source.flushPendingSession();
+		const sessionFile = source.getSessionFile();
+		if (sessionFile === undefined) throw new Error("Expected a persisted detached Session");
+		const contentsBeforeCommit = readFileSync(sessionFile);
+		candidate.commitDetachedSnapshot(source);
+
+		expect(candidate.getBranch().flatMap((entry) =>
+			entry.type === "message" && entry.message.role === "user" ? [entry.message.content] : []
+		)).toEqual(["base", "accepted source"]);
+		expect(candidate.buildSessionContext().messages.flatMap((message) =>
+			message.role === "user" ? [message.content] : []
+		)).toEqual(["base", "accepted source"]);
+		expect(readFileSync(sessionFile)).toEqual(contentsBeforeCommit);
+		expect(candidate.getPhysicalEntries()).toEqual(loadEntriesFromFile(sessionFile).slice(1));
+	});
+
+	it("rejects a detached canonical payload id collision before changing storage", () => {
+		const source = SessionManager.create(tempDir, tempDir);
+		const storage = createSessionManagerStorage(source);
+		const root = storage.appendHarnessEntry({
+			type: "custom",
+			id: "source-canonical-id",
+			customType: "fixture.source",
+		}, "main");
+		source.flushPendingSession();
+		const candidate = source.createDetachedSnapshot();
+		candidate.appendCustomEntry(FOUNDATION_ENTRY_CUSTOM_TYPE, {
+			schemaVersion: 1,
+			kind: "entry",
+			entry: {
+				type: "custom",
+				id: root.id,
+				seq: candidate.getPhysicalEntries().length + 1,
+				parentId: root.id,
+				timestamp: 2,
+				customType: "fixture.collision",
+			},
+		});
+		const sessionFile = source.getSessionFile();
+		if (sessionFile === undefined) throw new Error("Expected a persisted collision Session");
+		const originalContents = readFileSync(sessionFile);
+
+		expect(() => candidate.commitDetachedSnapshot(source)).toThrow(
+			"Detached Session snapshot durable id collides with source entry source-canonical-id",
+		);
+		expect(readFileSync(sessionFile)).toEqual(originalContents);
+	});
+
+	it("preserves a candidate thread branch while merging a concurrent source-main write", async () => {
+		const source = SessionManager.create(tempDir, tempDir);
+		const sourceStorage = createSessionManagerStorage(source);
+		const root = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "lane-base",
+			customType: "fixture.base",
+		}, "main");
+		await sourceStorage.createLane("thread", root.id);
+		source.flushPendingSession();
+		const candidate = source.createDetachedSnapshot();
+		const candidateStorage = createSessionManagerStorage(candidate);
+		const candidateThread = await candidateStorage.appendEntry({
+			type: "custom",
+			id: "candidate-thread",
+			customType: "fixture.thread",
+		}, "thread");
+		const candidateMain = await candidateStorage.appendEntry({
+			type: "custom",
+			id: "candidate-main",
+			customType: "fixture.candidate-main",
+		}, "main");
+		const sourceMain = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "source-main",
+			customType: "fixture.main",
+		}, "main");
+
+		candidate.commitDetachedSnapshot(source);
+
+		expect(await candidateStorage.getEntry(candidateThread.id)).toMatchObject({ parentId: root.id });
+		expect(await candidateStorage.getEntry(sourceMain.id)).toMatchObject({ parentId: root.id });
+		expect(await candidateStorage.getEntry(candidateMain.id)).toMatchObject({ parentId: sourceMain.id });
+		expect(await candidateStorage.getLanes()).toEqual(expect.arrayContaining([
+			{ lane: "main", leafId: candidateMain.id },
+			{ lane: "thread", leafId: candidateThread.id },
+		]));
+	});
+
+	it("rebases the first candidate thread append after a concurrent source-thread append", async () => {
+		const source = SessionManager.create(tempDir, tempDir);
+		const sourceStorage = createSessionManagerStorage(source);
+		const root = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "same-thread-root",
+			customType: "fixture.root",
+		}, "main");
+		await sourceStorage.createLane("thread", root.id);
+		const threadBase = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "same-thread-base",
+			customType: "fixture.thread-base",
+		}, "thread");
+		source.flushPendingSession();
+		const candidate = source.createDetachedSnapshot();
+		const candidateStorage = createSessionManagerStorage(candidate);
+		const candidateThread = await candidateStorage.appendEntry({
+			type: "custom",
+			id: "same-thread-candidate",
+			customType: "fixture.candidate",
+		}, "thread");
+		const sourceThread = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "same-thread-source",
+			customType: "fixture.source",
+		}, "thread");
+
+		candidate.commitDetachedSnapshot(source);
+
+		expect(await candidateStorage.getEntry(sourceThread.id)).toMatchObject({ parentId: threadBase.id });
+		expect(await candidateStorage.getEntry(candidateThread.id)).toMatchObject({ parentId: sourceThread.id });
+		expect(await candidateStorage.getLanes()).toEqual(expect.arrayContaining([
+			{ lane: "thread", leafId: candidateThread.id },
+		]));
+		expect((await candidateStorage.findEntriesOnBranch({
+			start: candidateThread.id,
+			order: "oldestFirst",
+		})).map((entry) => entry.id)).toEqual([
+			root.id,
+			threadBase.id,
+			sourceThread.id,
+			candidateThread.id,
+		]);
+	});
+
+	it("preserves an explicit candidate thread move before its first append", async () => {
+		const source = SessionManager.create(tempDir, tempDir);
+		const sourceStorage = createSessionManagerStorage(source);
+		const root = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "moved-thread-root",
+			customType: "fixture.root",
+		}, "main");
+		await sourceStorage.createLane("thread", root.id);
+		await sourceStorage.appendEntry({
+			type: "custom",
+			id: "moved-thread-base",
+			customType: "fixture.thread-base",
+		}, "thread");
+		const candidate = source.createDetachedSnapshot();
+		const candidateStorage = createSessionManagerStorage(candidate);
+		await candidateStorage.moveLane("thread", root.id);
+		const candidateThread = await candidateStorage.appendEntry({
+			type: "custom",
+			id: "moved-thread-candidate",
+			customType: "fixture.candidate",
+		}, "thread");
+		const sourceThread = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "moved-thread-source",
+			customType: "fixture.source",
+		}, "thread");
+
+		candidate.commitDetachedSnapshot(source);
+
+		expect(await candidateStorage.getEntry(candidateThread.id)).toMatchObject({ parentId: root.id });
+		expect(await candidateStorage.getEntry(sourceThread.id)).toBeDefined();
+		expect((await candidateStorage.findEntriesOnBranch({
+			start: candidateThread.id,
+			order: "oldestFirst",
+		})).map((entry) => entry.id)).toEqual([root.id, candidateThread.id]);
+	});
+
+	it("rebases a base-equal candidate thread move and its following append", async () => {
+		const source = SessionManager.create(tempDir, tempDir);
+		const sourceStorage = createSessionManagerStorage(source);
+		const root = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "noop-thread-root",
+			customType: "fixture.root",
+		}, "main");
+		await sourceStorage.createLane("thread", root.id);
+		const threadBase = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "noop-thread-base",
+			customType: "fixture.thread-base",
+		}, "thread");
+		const candidate = source.createDetachedSnapshot();
+		const candidateStorage = createSessionManagerStorage(candidate);
+		await candidateStorage.moveLane("thread", threadBase.id);
+		const candidateThread = await candidateStorage.appendEntry({
+			type: "custom",
+			id: "noop-thread-candidate",
+			customType: "fixture.candidate",
+		}, "thread");
+		const sourceThread = await sourceStorage.appendEntry({
+			type: "custom",
+			id: "noop-thread-source",
+			customType: "fixture.source",
+		}, "thread");
+
+		candidate.commitDetachedSnapshot(source);
+
+		expect(await candidateStorage.getEntry(candidateThread.id)).toMatchObject({ parentId: sourceThread.id });
+		expect((await candidateStorage.findEntriesOnBranch({
+			start: candidateThread.id,
+			order: "oldestFirst",
+		})).map((entry) => entry.id)).toEqual([
+			root.id,
+			threadBase.id,
+			sourceThread.id,
+			candidateThread.id,
+		]);
 	});
 
 	it("rejects a session path outside its configured root", () => {

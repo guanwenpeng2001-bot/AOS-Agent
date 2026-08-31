@@ -1,5 +1,5 @@
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "../harness.ts";
@@ -34,7 +34,7 @@ describe("issue #7253: manual compaction during an active response", () => {
 		});
 
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
+			models: [{ id: "fake-1", contextWindow: 1000, maxTokens: 100 }],
 			settings: {
 				// Keep the legacy compaction threshold at 999 while giving Context
 				// Engine the model's actual 100-token output reserve.
@@ -60,11 +60,11 @@ describe("issue #7253: manual compaction during an active response", () => {
 		harness.session.resourceLoader.getSystemPrompt = () => "test";
 		harness.session.setActiveToolsByName(harness.session.getActiveToolNames());
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("noop", {}), { stopReason: "toolUse" }),
+			fakeAssistantMessage(fakeToolCall("noop", {}), { stopReason: "toolUse" }),
 			async () => {
 				markSecondResponseStarted();
 				await secondResponseReleased;
-				return fauxAssistantMessage("second response");
+				return fakeAssistantMessage("second response");
 			},
 		]);
 

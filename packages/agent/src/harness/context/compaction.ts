@@ -3,22 +3,22 @@ import { estimateTokens } from "../compaction/compaction.ts";
 import type { Entry } from "../session/types.ts";
 import type { ArtifactReference } from "../artifacts.ts";
 
-export const T5_COMPACTION_SCHEMA_VERSION = 1 as const;
-export type T5CompactionReason = "manual" | "threshold" | "overflow" | "recovery";
+export const CONTEXT_COMPACTION_SCHEMA_VERSION = 1 as const;
+export type ContextCompactionReason = "manual" | "threshold" | "overflow" | "recovery";
 
-export interface CompactionRetentionV1 {
+export interface CompactionRetention {
 	readonly policy: "session" | "task" | "project" | "indefinite";
 	readonly expiresAt?: number;
 }
 
-export interface CompactionResumeBoundaryV1 {
+export interface CompactionResumeBoundary {
 	readonly snapshotId: string;
 	readonly entryId: string | null;
 	readonly transcriptDigest: string;
 	readonly retainedEntryIds: readonly string[];
 }
 
-export interface CompactionRecordV1 {
+export interface CompactionRecord {
 	readonly schemaVersion: 1;
 	readonly compactionId: string;
 	readonly snapshotId: string;
@@ -27,11 +27,11 @@ export interface CompactionRecordV1 {
 	readonly retainedEntryIds: readonly string[];
 	readonly summaryRef: ArtifactReference;
 	readonly summaryDigest: string;
-	readonly retention: CompactionRetentionV1;
-	readonly resumeBoundary: CompactionResumeBoundaryV1;
+	readonly retention: CompactionRetention;
+	readonly resumeBoundary: CompactionResumeBoundary;
 	readonly tokensBefore: number;
 	readonly tokensAfter: number;
-	readonly reason: T5CompactionReason;
+	readonly reason: ContextCompactionReason;
 	readonly createdAt: number;
 }
 
@@ -43,8 +43,8 @@ export interface DeterministicCompactionResult {
 	readonly tokensBefore: number;
 	readonly tokensAfter: number;
 	readonly summaryDigest: string;
-	readonly retention?: CompactionRetentionV1;
-	readonly resumeBoundary?: CompactionResumeBoundaryV1;
+	readonly retention?: CompactionRetention;
+	readonly resumeBoundary?: CompactionResumeBoundary;
 }
 
 function digest(value: unknown): string {
@@ -72,10 +72,10 @@ function messageText(entry: Entry): string | undefined {
 	return undefined;
 }
 
-/** Deterministic local compaction proposal; durable persistence is done by SessionT5Ledger. */
+/** Deterministic local compaction proposal; durable persistence is done by ContextLedger. */
 export function compactContext(
 	entries: readonly Entry[],
-	options: { readonly retainEntries?: number; readonly retention?: CompactionRetentionV1 } = {},
+	options: { readonly retainEntries?: number; readonly retention?: CompactionRetention } = {},
 ): DeterministicCompactionResult {
 	const retainCount = options.retainEntries ?? 8;
 	if (!Number.isInteger(retainCount) || retainCount < 0) throw new RangeError("retainEntries must be a non-negative integer");

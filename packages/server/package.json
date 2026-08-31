@@ -36,7 +36,7 @@
 		"aos-agent",
 		"server"
 	],
-	"author": "Earendil Works",
+	"author": "AOS Agent",
 	"license": "MIT",
 	"repository": {
 		"type": "git",

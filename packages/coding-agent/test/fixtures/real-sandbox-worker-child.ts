@@ -3,20 +3,20 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { ExecutionPolicyProfile } from "../../src/core/execution-policy.ts";
-import { resolveExecutionPolicyProfile } from "../../src/core/execution-policy.ts";
-import { createBuiltinToolPolicy, createSandboxHandleOperationProviderV1 } from "../../src/core/sandbox-host.ts";
-import type { SandboxHandle, SandboxOperationRequest, SandboxOperationResult } from "../../src/core/sandbox.ts";
-import { runWorkerEntryV1 } from "../../src/worker-entry.ts";
+import type { ExecutionPolicyProfile } from "../../src/core/policy/execution.ts";
+import { resolveExecutionPolicyProfile } from "../../src/core/policy/execution.ts";
+import { createBuiltinToolPolicy, createSandboxHandleOperationProvider } from "../../src/core/policy/sandbox-host.ts";
+import type { SandboxHandle, SandboxOperationRequest, SandboxOperationResult } from "../../src/core/policy/sandbox.ts";
+import { runOperationWorkerProcess } from "../../src/worker-entry.ts";
 
 const execFileAsync = promisify(execFile);
 const providerId = "sandbox-worker";
-const root = process.env.AOS_WORKER_SANDBOX_ROOT;
-const runId = process.env.AOS_WORKER_RUN_ID;
+const root = process.env.AOS_AGENT_WORKER_SANDBOX_ROOT;
+const runId = process.env.AOS_AGENT_WORKER_RUN_ID;
 if (root === undefined || runId === undefined || !isAbsolute(root)) {
 	throw new Error("Trusted real-sandbox Worker composition is incomplete");
 }
-const canonicalRoot = await realpath(root);
+const resolvedRoot = await realpath(root);
 
 const profile: ExecutionPolicyProfile = {
 	id: "real-worker-sandbox",
@@ -46,8 +46,8 @@ if (!resolved.ok) throw resolved.error;
 
 function sandboxPath(requestedPath: string | undefined): string {
 	if (requestedPath === undefined || requestedPath.length === 0) throw new Error("Sandbox path is required");
-	const target = resolve(canonicalRoot, requestedPath);
-	const relation = relative(canonicalRoot, target);
+	const target = resolve(resolvedRoot, requestedPath);
+	const relation = relative(resolvedRoot, target);
 	if (relation.startsWith("..") || isAbsolute(relation)) throw new Error("Sandbox path escaped the workspace");
 	return target;
 }
@@ -92,11 +92,11 @@ function resultBytes(result: SandboxOperationResult): Buffer {
 const policy = createBuiltinToolPolicy({
 	profile,
 	binding: resolved.binding,
-	roots: { workspace: canonicalRoot },
+	roots: { workspace: resolvedRoot },
 	sandbox: handle,
 	source: "builtin",
 });
-const operationProvider = createSandboxHandleOperationProviderV1({
+const operationProvider = createSandboxHandleOperationProvider({
 	providerId,
 	policy,
 	correlation: { sessionId: "real-worker-session", laneId: "main" },
@@ -119,4 +119,4 @@ const operationProvider = createSandboxHandleOperationProviderV1({
 	},
 });
 
-await runWorkerEntryV1({ provider: operationProvider });
+await runOperationWorkerProcess({ provider: operationProvider });

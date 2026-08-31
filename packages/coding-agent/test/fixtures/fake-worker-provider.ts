@@ -1,54 +1,54 @@
 import {
 	FoundationError,
 	Result,
-	type ExecutionCorrelationV1,
-	type FoundationProviderCapabilityV1,
-	type FoundationProviderExecutionOptionsV1,
-	type Result as ResultValue,
-	type SandboxOperationRequestV1,
-	type WorkerReceiptV1,
-} from "@aos-agent/agent-core";
+	type ExecutionCorrelation,
+	type FoundationProviderCapability,
+	type FoundationProviderExecutionOptions,
+	type ResultValue,
+	type SandboxOperationRequest,
+	type WorkerReceipt,
+} from "../../../agent/src/internal.ts";
 import type {
-	SafeLeaseProjectionV1,
-	SafeLeaseReferenceV1,
-} from "../../src/core/worker-protocol.ts";
-import type { WorkerRuntimeSandboxOperationProviderV1 } from "../../src/core/worker-runtime.ts";
+	SafeLeaseProjection,
+	SafeLeaseReference,
+} from "../../src/core/worker/protocol.ts";
+import type { WorkerRuntimeSandboxOperationProvider } from "../../src/core/worker/runtime.ts";
 
-export type FakeWorkerStartBehaviorV1 = "success" | "provider-error" | "throw" | "correlation-drift" | "oversized-frame" | "pending";
-export type FakeWorkerCredentialActionV1 = "project" | "renew" | "revoke";
+export type FakeWorkerStartBehavior = "success" | "provider-error" | "throw" | "correlation-drift" | "oversized-frame" | "pending";
+export type FakeWorkerCredentialAction = "project" | "renew" | "revoke";
 
-export interface FakeWorkerProviderOptionsV1 {
+export interface FakeWorkerProviderOptions {
 	readonly providerId?: string;
 	readonly capabilities?: readonly string[];
-	readonly startBehavior?: FakeWorkerStartBehaviorV1;
-	readonly failedCredentialActions?: readonly FakeWorkerCredentialActionV1[];
+	readonly startBehavior?: FakeWorkerStartBehavior;
+	readonly failedCredentialActions?: readonly FakeWorkerCredentialAction[];
 	readonly cancelFails?: boolean;
 	readonly disposeThrows?: boolean;
 }
 
-export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProviderV1 {
+export class FakeWorkerProvider implements WorkerRuntimeSandboxOperationProvider {
 	readonly schemaVersion = 1 as const;
 	readonly providerClass = "operation_worker" as const;
 	readonly providerId: string;
-	readonly starts: Array<{ readonly request: SandboxOperationRequestV1; readonly correlation: ExecutionCorrelationV1 }> = [];
+	readonly starts: Array<{ readonly request: SandboxOperationRequest; readonly correlation: ExecutionCorrelation }> = [];
 	readonly cancellations: string[] = [];
-	readonly projectedLeases: SafeLeaseProjectionV1[] = [];
-	readonly renewedLeases: SafeLeaseProjectionV1[] = [];
-	readonly revokedLeases: SafeLeaseReferenceV1[] = [];
-	readonly receipts: WorkerReceiptV1[] = [];
+	readonly projectedLeases: SafeLeaseProjection[] = [];
+	readonly renewedLeases: SafeLeaseProjection[] = [];
+	readonly revokedLeases: SafeLeaseReference[] = [];
+	readonly receipts: WorkerReceipt[] = [];
 	capabilityCalls = 0;
 	disposeCalls = 0;
 
 	private readonly capabilityIds: readonly string[];
-	private readonly startBehavior: FakeWorkerStartBehaviorV1;
-	private readonly failedCredentialActions: ReadonlySet<FakeWorkerCredentialActionV1>;
+	private readonly startBehavior: FakeWorkerStartBehavior;
+	private readonly failedCredentialActions: ReadonlySet<FakeWorkerCredentialAction>;
 	private readonly cancelFails: boolean;
 	private readonly disposeThrows: boolean;
-	private pendingResolve?: (receipt: WorkerReceiptV1) => void;
-	private pendingRequest?: SandboxOperationRequestV1;
-	private pendingCorrelation?: ExecutionCorrelationV1;
+	private pendingResolve?: (receipt: WorkerReceipt) => void;
+	private pendingRequest?: SandboxOperationRequest;
+	private pendingCorrelation?: ExecutionCorrelation;
 
-	constructor(options: FakeWorkerProviderOptionsV1 = {}) {
+	constructor(options: FakeWorkerProviderOptions = {}) {
 		this.providerId = options.providerId ?? "sandbox-worker";
 		this.capabilityIds = options.capabilities ?? ["filesystem.read", "process.spawn"];
 		this.startBehavior = options.startBehavior ?? "success";
@@ -57,12 +57,12 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 		this.disposeThrows = options.disposeThrows ?? false;
 	}
 
-	async capabilities(): Promise<readonly FoundationProviderCapabilityV1[]> {
+	async capabilities(): Promise<readonly FoundationProviderCapability[]> {
 		this.capabilityCalls += 1;
 		return this.capabilityIds.map((id) => ({ schemaVersion: 1, id, version: 1 }));
 	}
 
-	async start(request: SandboxOperationRequestV1, options?: FoundationProviderExecutionOptionsV1): Promise<ResultValue<WorkerReceiptV1, FoundationError>> {
+	async start(request: SandboxOperationRequest, options?: FoundationProviderExecutionOptions): Promise<ResultValue<WorkerReceipt, FoundationError>> {
 		const correlation = options?.correlation;
 		if (correlation === undefined) throw new Error("fake provider requires execution correlation");
 		this.starts.push({ request, correlation });
@@ -88,17 +88,17 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 			: Result.ok(undefined);
 	}
 
-	async projectCredential(lease: SafeLeaseProjectionV1): Promise<ResultValue<void, FoundationError>> {
+	async projectCredential(lease: SafeLeaseProjection): Promise<ResultValue<void, FoundationError>> {
 		this.projectedLeases.push(lease);
 		return this.credentialResult("project");
 	}
 
-	async renewCredential(lease: SafeLeaseProjectionV1): Promise<ResultValue<void, FoundationError>> {
+	async renewCredential(lease: SafeLeaseProjection): Promise<ResultValue<void, FoundationError>> {
 		this.renewedLeases.push(lease);
 		return this.credentialResult("renew");
 	}
 
-	async revokeCredential(lease: SafeLeaseReferenceV1): Promise<ResultValue<void, FoundationError>> {
+	async revokeCredential(lease: SafeLeaseReference): Promise<ResultValue<void, FoundationError>> {
 		this.revokedLeases.push(lease);
 		return this.credentialResult("revoke");
 	}
@@ -121,13 +121,13 @@ export class FakeWorkerProviderV1 implements WorkerRuntimeSandboxOperationProvid
 		resolve(receipt);
 	}
 
-	private credentialResult(action: FakeWorkerCredentialActionV1): ResultValue<void, FoundationError> {
+	private credentialResult(action: FakeWorkerCredentialAction): ResultValue<void, FoundationError> {
 		return this.failedCredentialActions.has(action)
 			? Result.err(new FoundationError("worker_unavailable", "fake credential target rejected operation"))
 			: Result.ok(undefined);
 	}
 
-	private receipt(request: SandboxOperationRequestV1, correlation: ExecutionCorrelationV1): WorkerReceiptV1 {
+	private receipt(request: SandboxOperationRequest, correlation: ExecutionCorrelation): WorkerReceipt {
 		const artifacts = this.startBehavior === "oversized-frame"
 			? Array.from({ length: 64 }, (_, index) => {
 					const marker = "oversized-provider-result";

@@ -11,7 +11,7 @@ import {
 	type AgentTool,
 	type HarnessTool,
 	type StreamFn,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import {
 	createAssistantMessageEventStream,
 	createModels,
@@ -23,12 +23,12 @@ import {
 import { getModel } from "@aos-agent/ai/compat";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import { AgentSession } from "../../src/core/agent-session.ts";
+import { AgentSession } from "../../src/core/session/agent-session.ts";
 import { createExtensionRuntime } from "../../src/core/extensions/loader.ts";
-import type { ModelRuntime } from "../../src/core/model-runtime.ts";
-import type { ResourceLoader } from "../../src/core/resource-loader.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
-import { SettingsManager } from "../../src/core/settings-manager.ts";
+import type { ModelRuntime } from "../../src/core/runtime/model-runtime.ts";
+import type { ResourceLoader } from "../../src/core/runtime/resource-loader.ts";
+import { SessionManager } from "../../src/core/session/manager.ts";
+import { SettingsManager } from "../../src/core/runtime/settings-manager.ts";
 
 const BASE_MODELS = createModels();
 const MODEL = getModel("openai", "gpt-4o-mini");
@@ -251,7 +251,7 @@ async function expectTranscriptParity(
 describe("AgentSession / public AgentHarness parity baseline", () => {
 	it("matches prompt streaming transcript and terminal semantics", async () => {
 		const legacyEvents: Array<AgentEvent["type"] | "agent_settled"> = [];
-		const canonicalTerminals: string[] = [];
+		const terminals: string[] = [];
 		const legacy = await createLegacySession({
 			streamFunction: streamFor((model) => assistant(model, "parity-prompt")),
 		});
@@ -269,7 +269,7 @@ describe("AgentSession / public AgentHarness parity baseline", () => {
 			}
 		});
 		const unsubscribeCanonical = canonical.harness.events.on("run_end", (event) => {
-			canonicalTerminals.push(event.outcome);
+			terminals.push(event.outcome);
 		});
 		try {
 			await legacy.session.prompt("prompt parity");
@@ -279,7 +279,7 @@ describe("AgentSession / public AgentHarness parity baseline", () => {
 			await canonical.harness.waitForIdle();
 			expect(legacyTranscript(legacy.session)).toEqual(await harnessTranscript(canonical.harness));
 			expect(legacyEvents).toEqual(expect.arrayContaining(["agent_start", "agent_end", "agent_settled"]));
-			expect(canonicalTerminals).toEqual(["completed"]);
+			expect(terminals).toEqual(["completed"]);
 		} finally {
 			unsubscribeLegacy();
 			unsubscribeCanonical();
@@ -365,10 +365,10 @@ describe("AgentSession / public AgentHarness parity baseline", () => {
 			tools: [legacyTool.tool],
 			initialActiveToolNames: ["wait"],
 		});
-		const canonicalTool = createBlockingTool();
+		const tool = createBlockingTool();
 		const canonical = await createHarness({
 			streamFunction: createStream(),
-			tools: [canonicalTool.tool as HarnessTool],
+			tools: [tool.tool as HarnessTool],
 			activeToolNames: ["wait"],
 		});
 		try {
@@ -381,20 +381,20 @@ describe("AgentSession / public AgentHarness parity baseline", () => {
 			await legacyPrompt;
 			await legacy.session.waitForIdle();
 
-			const canonicalPrompt = canonical.harness.prompt("queue parity");
-			await waitFor(canonicalTool.started);
+			const prompt = canonical.harness.prompt("queue parity");
+			await waitFor(tool.started);
 			await canonical.harness.steer("queue steering");
 			await canonical.harness.followUp("queue follow-up");
 			expect(await harnessPendingMessageCount(canonical.harness)).toBe(2);
-			canonicalTool.release();
-			await canonicalPrompt;
+			tool.release();
+			await prompt;
 			await canonical.harness.waitForIdle();
 
 			expect(legacyTranscript(legacy.session)).toEqual(await harnessTranscript(canonical.harness));
 			expect(await harnessPendingMessageCount(canonical.harness)).toBe(0);
 		} finally {
 			legacyTool.release();
-			canonicalTool.release();
+			tool.release();
 			await legacy.cleanup();
 			await canonical.harness.close();
 		}
@@ -416,8 +416,8 @@ describe("AgentSession / public AgentHarness parity baseline", () => {
 		};
 		const legacyStream = createAbortStream();
 		const legacy = await createLegacySession({ streamFunction: legacyStream.streamFunction });
-		const canonicalStream = createAbortStream();
-		const canonical = await createHarness({ streamFunction: canonicalStream.streamFunction });
+		const stream = createAbortStream();
+		const canonical = await createHarness({ streamFunction: stream.streamFunction });
 		const outcomes: string[] = [];
 		const unsubscribe = canonical.harness.events.on("run_end", (event) => {
 			outcomes.push(event.outcome);
@@ -428,10 +428,10 @@ describe("AgentSession / public AgentHarness parity baseline", () => {
 			await legacy.session.abort();
 			await legacyPrompt;
 
-			const canonicalPrompt = canonical.harness.prompt("cancel parity");
-			await waitFor(() => canonicalStream.signal() !== undefined);
+			const prompt = canonical.harness.prompt("cancel parity");
+			await waitFor(() => stream.signal() !== undefined);
 			await canonical.harness.abort();
-			await canonicalPrompt;
+			await prompt;
 
 			expect(legacyTranscript(legacy.session)).toEqual(await harnessTranscript(canonical.harness));
 			expect(outcomes).toEqual(["aborted"]);
@@ -463,9 +463,7 @@ describe("AgentSession / public AgentHarness parity baseline", () => {
 		};
 		try {
 			legacy.session.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
-			legacy.session.sessionManager.appendMessage(structuredClone(user));
-			legacy.session.sessionManager.appendMessage(structuredClone(response));
-			legacy.session.agent.state.messages = legacy.session.sessionManager.buildSessionContext().messages;
+			legacy.session.agent.state.messages = [structuredClone(user), structuredClone(response)];
 			await canonical.session.appendMessage(structuredClone(user));
 			await canonical.session.appendMessage(structuredClone(response));
 			await canonical.harness.setCompactionSettings({ enabled: true, reserveTokens: 10, keepRecentTokens: 1 });

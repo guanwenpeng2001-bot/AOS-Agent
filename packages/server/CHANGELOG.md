@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Package author metadata is AOS Agent.
+
 ### Fixed
 
 - Use deterministic Windows named pipes for the Unix transport and keep filesystem lifecycle checks portable.

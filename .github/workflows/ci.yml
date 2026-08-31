@@ -35,6 +35,7 @@ jobs:
 
       - name: Build workspaces
         run: npm run build
+        # packages/ai build hydrates from test/fixtures, not live catalog APIs.
 
       - name: Run static checks
         run: npm run check

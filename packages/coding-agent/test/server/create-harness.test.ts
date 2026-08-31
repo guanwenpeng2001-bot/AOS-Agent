@@ -7,7 +7,7 @@ import {
 	type Result,
 	Session,
 	type ShellExecOptions,
-} from "@aos-agent/agent-core";
+} from "../../../agent/src/internal.ts";
 import { NodeExecutionEnv } from "@aos-agent/agent-core/node";
 import { createModels } from "@aos-agent/ai";
 import { getModel } from "@aos-agent/ai/compat";
@@ -16,20 +16,10 @@ import { googleProvider } from "@aos-agent/ai/providers/google";
 import { Type } from "typebox";
 import { describe, expect, test, vi } from "vitest";
 
-const trustedSchedulerBridge = vi.hoisted(() => {
-	const session = { kind: "trusted-scheduler-session" };
-	return { create: vi.fn(() => session), session };
-});
-
-vi.mock("../../src/core/agent-session-facade.ts", () => ({
-	createAgentSessionWithTrustedScheduler: trustedSchedulerBridge.create,
-}));
-
 import {
 	buildCodingAgentHarnessSystemPrompt,
 	type CodingAgentHarnessTool,
 	createCodingAgentHarness,
-	createCodingAgentSessionWithTrustedScheduler,
 } from "../../src/server/create-harness.ts";
 
 class CapturingExecutionEnv extends NodeExecutionEnv {
@@ -72,7 +62,7 @@ function createHarnessModels() {
 const defaultPromptTools = [
 	createPromptTool("read", "Read file contents", ["Use read to examine files instead of cat or sed."]),
 	createPromptTool("bash", "Execute bash commands (ls, grep, find, etc.)", [
-		"You can inspect PI_* environment variables for current model and session details.",
+		"You can inspect AOS_AGENT_* environment variables for current model and session details.",
 	]),
 	createPromptTool("edit", "Edit files", ["Edit carefully."]),
 	createPromptTool("write", "Create or overwrite files", ["Use write only for new files or complete rewrites."]),
@@ -80,7 +70,6 @@ const defaultPromptTools = [
 
 describe("coding-agent Harness construction", () => {
 	test("adds coding-agent policy and keeps Scheduler off by omission", async () => {
-		trustedSchedulerBridge.create.mockClear();
 		const session = new Session(new InMemorySessionStorage({ id: "harness-session", createdAt: 1 }));
 		const env = new NodeExecutionEnv({ cwd: "/workspace" });
 		const created = await createCodingAgentHarness({
@@ -104,27 +93,10 @@ describe("coding-agent Harness construction", () => {
 			expect(await created.harness.getFollowUpMode()).toBe("all");
 			expect((await session.findFoundationRecords({ includePruned: true })).some((record) =>
 				"objectType" in record && record.objectType.startsWith("scheduler."))).toBe(false);
-			expect(trustedSchedulerBridge.create).not.toHaveBeenCalled();
 		} finally {
 			await created.harness.close();
 			await env.cleanup();
 		}
-	});
-
-	test("delegates explicit trusted Scheduler opt-in exactly once", () => {
-		trustedSchedulerBridge.create.mockClear();
-		const options = { kind: "legacy-agent-session-options" } as unknown as Parameters<
-			typeof createCodingAgentSessionWithTrustedScheduler
-		>[0];
-		const createScheduler = vi.fn() as unknown as Parameters<
-			typeof createCodingAgentSessionWithTrustedScheduler
-		>[1];
-
-		const session = createCodingAgentSessionWithTrustedScheduler(options, createScheduler);
-
-		expect(session).toBe(trustedSchedulerBridge.session);
-		expect(trustedSchedulerBridge.create).toHaveBeenCalledOnce();
-		expect(trustedSchedulerBridge.create).toHaveBeenCalledWith(options, createScheduler);
 	});
 
 	test("preserves coding-agent prompt snippets and guideline order", () => {
@@ -136,9 +108,9 @@ describe("coding-agent Harness construction", () => {
 		expect(prompt).toContain("- read: Read file contents");
 		expect(prompt).toContain("- bash: Execute bash commands (ls, grep, find, etc.)");
 		expect(prompt).toContain("Use read to examine files instead of cat or sed.");
-		expect(prompt).toContain("You can inspect PI_* environment variables for current model and session details.");
+		expect(prompt).toContain("You can inspect AOS_AGENT_* environment variables for current model and session details.");
 		expect(prompt.indexOf("Use read to examine files")).toBeLessThan(
-			prompt.indexOf("You can inspect PI_* environment variables"),
+			prompt.indexOf("You can inspect AOS_AGENT_* environment variables"),
 		);
 	});
 
@@ -174,7 +146,7 @@ describe("coding-agent Harness construction", () => {
 		const session = new Session(new InMemorySessionStorage({ id: "session-file-harness", createdAt: 1 }));
 		const env = new CapturingExecutionEnv({
 			cwd: process.cwd(),
-			shellEnv: { AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl", AOS_AGENT_CODING_AGENT: "true" },
+			shellEnv: { AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl", AOS_AGENT: "true" },
 		});
 		const created = await createCodingAgentHarness({
 			session,
@@ -189,7 +161,7 @@ describe("coding-agent Harness construction", () => {
 			if (!bash) throw new Error("Expected the default bash tool");
 
 			const result = await bash.execute("bash-call", {
-				command: `printf '%s' "$AOS_AGENT_SESSION_ID|$AOS_AGENT_SESSION_FILE|$AOS_AGENT_PROVIDER|$AOS_AGENT_MODEL|$AOS_AGENT_REASONING_LEVEL|$AOS_AGENT_CODING_AGENT"`,
+				command: `printf '%s' "$AOS_AGENT_SESSION_ID|$AOS_AGENT_SESSION_FILE|$AOS_AGENT_PROVIDER|$AOS_AGENT_MODEL|$AOS_AGENT_REASONING_LEVEL|$AOS_AGENT"`,
 			});
 
 			expect(env.executionOverrides).toEqual({
@@ -215,7 +187,7 @@ describe("coding-agent Harness construction", () => {
 		const session = new Session(new InMemorySessionStorage({ id: "dynamic-bash-session", createdAt: 1 }));
 		const env = new CapturingExecutionEnv({
 			cwd: process.cwd(),
-			shellEnv: { AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl", AOS_AGENT_CODING_AGENT: "true" },
+			shellEnv: { AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl", AOS_AGENT: "true" },
 		});
 		const created = await createCodingAgentHarness({
 			session,
@@ -231,7 +203,7 @@ describe("coding-agent Harness construction", () => {
 			if (!bash) throw new Error("Expected the default bash tool");
 
 			const result = await bash.execute("bash-call", {
-				command: `printf '%s:%s' "\${AOS_AGENT_SESSION_FILE+x}" "$AOS_AGENT_SESSION_ID|$AOS_AGENT_PROVIDER|$AOS_AGENT_MODEL|$AOS_AGENT_REASONING_LEVEL|$AOS_AGENT_CODING_AGENT"`,
+				command: `printf '%s:%s' "\${AOS_AGENT_SESSION_FILE+x}" "$AOS_AGENT_SESSION_ID|$AOS_AGENT_PROVIDER|$AOS_AGENT_MODEL|$AOS_AGENT_REASONING_LEVEL|$AOS_AGENT"`,
 			});
 
 			expect(env.executionOverrides).toEqual({
@@ -330,7 +302,7 @@ describe("coding-agent Harness construction", () => {
 		[
 			"bash",
 			"Execute bash commands (ls, grep, find, etc.)",
-			"You can inspect PI_* environment variables for current model and session details.",
+			"You can inspect AOS_AGENT_* environment variables for current model and session details.",
 		],
 		["read", "Read file contents", "Use read to examine files instead of cat or sed."],
 		[
@@ -390,7 +362,7 @@ describe("coding-agent Harness construction", () => {
 		expect(prompt).toContain("- write: Create or overwrite files");
 		expect(prompt).toContain("- read: Read file contents");
 		expect(prompt).not.toContain("- bash:");
-		expect(prompt).not.toContain("You can inspect PI_* environment variables");
+		expect(prompt).not.toContain("You can inspect AOS_AGENT_* environment variables");
 		expect(prompt).toContain('<project_instructions path="/workspace/AGENTS.md">');
 		expect(prompt).toContain("<name>review</name>");
 		expect(prompt.indexOf("Use write only for new files or complete rewrites.")).toBeLessThan(

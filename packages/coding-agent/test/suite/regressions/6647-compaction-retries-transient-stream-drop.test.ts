@@ -1,5 +1,5 @@
-import type { StreamFn } from "@aos-agent/agent-core";
-import { type AssistantMessage, createAssistantMessageEventStream, fauxAssistantMessage } from "@aos-agent/ai";
+import type { StreamFn } from "../../../../agent/src/internal.ts";
+import { type AssistantMessage, createAssistantMessageEventStream, fakeAssistantMessage } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "../harness.ts";
 
@@ -40,7 +40,7 @@ describe("#6647 compaction retries transient summarization failures", () => {
 		});
 		const model = harness.getModel();
 		const assistant: AssistantMessage = {
-			...fauxAssistantMessage("", { stopReason: "stop", timestamp: now - 500 }),
+			...fakeAssistantMessage("", { stopReason: "stop", timestamp: now - 500 }),
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
@@ -87,11 +87,11 @@ describe("#6647 compaction retries transient summarization failures", () => {
 
 		const model = harness.getModel();
 		const error = (errorMessage: string): AssistantMessage => ({
-			...fauxAssistantMessage("", { stopReason: "error", errorMessage }),
+			...fakeAssistantMessage("", { stopReason: "error", errorMessage }),
 			usage: createUsage(10),
 		});
 		const success: AssistantMessage = {
-			...fauxAssistantMessage("recovered summary"),
+			...fakeAssistantMessage("recovered summary"),
 			usage: createUsage(10),
 		};
 		const getCallCount = useScriptedStreamFn(harness, [error("terminated"), error("terminated"), success]);
@@ -118,7 +118,7 @@ describe("#6647 compaction retries transient summarization failures", () => {
 		harness.settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 0 } });
 
 		const error: AssistantMessage = {
-			...fauxAssistantMessage("", { stopReason: "error", errorMessage: "insufficient_quota" }),
+			...fakeAssistantMessage("", { stopReason: "error", errorMessage: "insufficient_quota" }),
 			usage: createUsage(10),
 		};
 		const getCallCount = useScriptedStreamFn(harness, [error]);
@@ -135,7 +135,7 @@ describe("#6647 compaction retries transient summarization failures", () => {
 		harness.settingsManager.applyOverrides({ retry: { enabled: false, maxRetries: 3, baseDelayMs: 0 } });
 
 		const error: AssistantMessage = {
-			...fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
+			...fakeAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
 			usage: createUsage(10),
 		};
 		const getCallCount = useScriptedStreamFn(harness, [error]);
@@ -152,7 +152,7 @@ describe("#6647 compaction retries transient summarization failures", () => {
 		harness.settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 } });
 
 		const error: AssistantMessage = {
-			...fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
+			...fakeAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
 			usage: createUsage(10),
 		};
 		const getCallCount = useScriptedStreamFn(harness, [error, error, error]);
@@ -173,7 +173,7 @@ describe("#6647 compaction retries transient summarization failures", () => {
 		harness.settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 5, baseDelayMs: 30_000 } });
 
 		const error: AssistantMessage = {
-			...fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
+			...fakeAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
 			usage: createUsage(10),
 		};
 		useScriptedStreamFn(harness, [error, error, error]);

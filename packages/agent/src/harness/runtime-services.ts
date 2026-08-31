@@ -2,44 +2,44 @@
 import { FoundationError, toFoundationError } from "./foundation/errors.ts";
 import { FOUNDATION_SCHEMA_VERSION } from "./foundation/identity.ts";
 import type { FoundationJsonValue } from "./foundation/event-catalog.ts";
-import type { ExtensionContractV1, LspExtensionContractV1, MonitorExtensionContractV1 } from "./foundation/profile.ts";
-import type { ToolDefinitionV1 } from "./tool-pipeline.ts";
-import { Result, type Result as ResultValue } from "./result.ts";
+import type { ExtensionContract, LspExtensionContract, MonitorExtensionContract } from "./foundation/profile.ts";
+import type { ToolDefinition } from "./tool-pipeline.ts";
+import { Result, type ResultValue } from "./result.ts";
 
-export type RuntimeServiceDependencyV1 = string | { serviceId: string; version?: string };
+export type RuntimeServiceDependency = string | { serviceId: string; version?: string };
 
 /** Stable service identity. Providers are represented by ids, never executed here. */
-export interface RuntimeServiceV1 {
+export interface RuntimeService {
 	schemaVersion: typeof FOUNDATION_SCHEMA_VERSION;
 	serviceId: string;
 	version: string;
 	providerId: string;
-	dependencies: readonly RuntimeServiceDependencyV1[];
+	dependencies: readonly RuntimeServiceDependency[];
 	capabilities: readonly string[];
 	lifecycle: "managed" | "ephemeral" | "external";
 	consumers?: readonly string[];
 	createdAt: string;
 }
 
-export interface RuntimeServiceRegistrationInputV1 {
+export interface RuntimeServiceRegistrationInput {
 	serviceId: string;
 	version: string;
 	providerId: string;
-	dependencies?: readonly RuntimeServiceDependencyV1[];
+	dependencies?: readonly RuntimeServiceDependency[];
 	capabilities?: readonly string[];
-	lifecycle?: RuntimeServiceV1["lifecycle"];
+	lifecycle?: RuntimeService["lifecycle"];
 	consumers?: readonly string[];
 	createdAt?: string;
 }
 
-export type ServiceConflictKindV1 =
+export type ServiceConflictKind =
 	| "duplicate"
 	| "version_mismatch"
 	| "provider_mismatch"
 	| "dependency_version_mismatch";
 
-export interface ServiceConflictReportV1 {
-	kind: ServiceConflictKindV1;
+export interface ServiceConflictReport {
+	kind: ServiceConflictKind;
 	serviceId: string;
 	registered: { version: string; providerId: string };
 	incoming: { version: string; providerId: string };
@@ -48,33 +48,33 @@ export interface ServiceConflictReportV1 {
 	actualVersion?: string;
 }
 
-export interface ServiceValidationReportV1 {
+export interface ServiceValidationReport {
 	serviceId: string;
 	missingDependencies: readonly string[];
-	conflicts: readonly ServiceConflictReportV1[];
+	conflicts: readonly ServiceConflictReport[];
 }
 
-export interface ServiceStartReportV1 {
+export interface ServiceStartReport {
 	/** Dependencies always precede dependents; ties are broken by service id. */
 	order: readonly string[];
-	conflicts: readonly ServiceConflictReportV1[];
+	conflicts: readonly ServiceConflictReport[];
 }
 
-export interface RuntimeServiceDAGV1 {
-	services: readonly RuntimeServiceV1[];
+export interface RuntimeServiceDAG {
+	services: readonly RuntimeService[];
 	version: string;
 	order: readonly string[];
 }
 
-function dependencyId(dependency: RuntimeServiceDependencyV1): string {
+function dependencyId(dependency: RuntimeServiceDependency): string {
 	return typeof dependency === "string" ? dependency : dependency.serviceId;
 }
 
-function dependencyVersion(dependency: RuntimeServiceDependencyV1): string | undefined {
+function dependencyVersion(dependency: RuntimeServiceDependency): string | undefined {
 	return typeof dependency === "string" ? undefined : dependency.version;
 }
 
-function validateServiceInput(input: RuntimeServiceRegistrationInputV1): void {
+function validateServiceInput(input: RuntimeServiceRegistrationInput): void {
 	if (input.serviceId.trim().length === 0) throw new TypeError("Runtime service id must not be empty");
 	if (input.version.trim().length === 0) throw new TypeError("Runtime service version must not be empty");
 	if (input.providerId.trim().length === 0) throw new TypeError("Runtime service provider id must not be empty");
@@ -85,7 +85,7 @@ function validateServiceInput(input: RuntimeServiceRegistrationInputV1): void {
 	}
 }
 
-export function createRuntimeService(input: RuntimeServiceRegistrationInputV1): RuntimeServiceV1 {
+export function createRuntimeService(input: RuntimeServiceRegistrationInput): RuntimeService {
 	validateServiceInput(input);
 	return {
 		schemaVersion: FOUNDATION_SCHEMA_VERSION,
@@ -100,7 +100,7 @@ export function createRuntimeService(input: RuntimeServiceRegistrationInputV1): 
 	};
 }
 
-function conflictForPair(registered: RuntimeServiceRegistrationInputV1, incoming: RuntimeServiceRegistrationInputV1): ServiceConflictReportV1 {
+function conflictForPair(registered: RuntimeServiceRegistrationInput, incoming: RuntimeServiceRegistrationInput): ServiceConflictReport {
 	return {
 		kind: registered.version !== incoming.version ? "version_mismatch" : registered.providerId !== incoming.providerId ? "provider_mismatch" : "duplicate",
 		serviceId: incoming.serviceId,
@@ -110,10 +110,10 @@ function conflictForPair(registered: RuntimeServiceRegistrationInputV1, incoming
 }
 
 /** Return deterministic missing-dependency and duplicate/version reports. */
-export function validateRuntimeServiceRegistrationsV1(
-	inputs: readonly RuntimeServiceRegistrationInputV1[],
-): readonly ServiceValidationReportV1[] {
-	const byId = new Map<string, RuntimeServiceRegistrationInputV1[]>();
+export function validateRuntimeServiceRegistrations(
+	inputs: readonly RuntimeServiceRegistrationInput[],
+): readonly ServiceValidationReport[] {
+	const byId = new Map<string, RuntimeServiceRegistrationInput[]>();
 	for (const input of inputs) {
 		const group = byId.get(input.serviceId) ?? [];
 		group.push(input);
@@ -122,14 +122,14 @@ export function validateRuntimeServiceRegistrationsV1(
 	return [...byId.keys()].sort().map((serviceId) => {
 		const group = byId.get(serviceId)!;
 		const first = group[0]!;
-		const conflicts: ServiceConflictReportV1[] = [];
+		const conflicts: ServiceConflictReport[] = [];
 		for (const incoming of group.slice(1)) conflicts.push(conflictForPair(first, incoming));
 		const missingDependencies = [...new Set((first.dependencies ?? []).map(dependencyId).filter((id) => !byId.has(id)))].sort();
 		return { serviceId, missingDependencies, conflicts };
 	});
 }
 
-function serviceConflictDetails(conflicts: readonly ServiceConflictReportV1[]): FoundationJsonValue {
+function serviceConflictDetails(conflicts: readonly ServiceConflictReport[]): FoundationJsonValue {
 	return conflicts.map((conflict) => ({
 		kind: conflict.kind,
 		serviceId: conflict.serviceId,
@@ -142,9 +142,9 @@ function serviceConflictDetails(conflicts: readonly ServiceConflictReportV1[]): 
 }
 
 function topoSortServices(
-	services: readonly RuntimeServiceRegistrationInputV1[],
+	services: readonly RuntimeServiceRegistrationInput[],
 ): ResultValue<readonly string[], FoundationError> {
-	const byId = new Map<string, RuntimeServiceRegistrationInputV1>();
+	const byId = new Map<string, RuntimeServiceRegistrationInput>();
 	for (const input of services) {
 		if (byId.has(input.serviceId)) {
 			return Result.err(new FoundationError("service_conflict", "runtime service id is registered more than once", { details: { serviceId: input.serviceId } }));
@@ -197,11 +197,11 @@ function topoSortServices(
 }
 
 /** Validate missing dependencies, duplicate/version conflicts, version requirements, and cycles. */
-export function validateRuntimeServiceDAGV1(
-	inputs: readonly RuntimeServiceRegistrationInputV1[],
-): ResultValue<RuntimeServiceDAGV1, FoundationError> {
+export function validateRuntimeServiceDAG(
+	inputs: readonly RuntimeServiceRegistrationInput[],
+): ResultValue<RuntimeServiceDAG, FoundationError> {
 	for (const input of inputs) validateServiceInput(input);
-	const reports = validateRuntimeServiceRegistrationsV1(inputs);
+	const reports = validateRuntimeServiceRegistrations(inputs);
 	const conflicts = reports.flatMap((report) => report.conflicts);
 	if (conflicts.length > 0) {
 		return Result.err(new FoundationError("service_conflict", "runtime service registrations conflict", { details: { conflicts: serviceConflictDetails(conflicts) } }));
@@ -222,14 +222,12 @@ export function validateRuntimeServiceDAGV1(
 	});
 }
 
-export const validateServiceDAGV1 = validateRuntimeServiceDAGV1;
-
 /** Registry that deduplicates exact registrations and rejects conflicting identities. */
 export class RuntimeServiceRegistry {
-	readonly #services = new Map<string, RuntimeServiceV1>();
-	readonly #conflicts: ServiceConflictReportV1[] = [];
+	readonly #services = new Map<string, RuntimeService>();
+	readonly #conflicts: ServiceConflictReport[] = [];
 
-	register(input: RuntimeServiceRegistrationInputV1): ResultValue<RuntimeServiceV1, FoundationError> {
+	register(input: RuntimeServiceRegistrationInput): ResultValue<RuntimeService, FoundationError> {
 		validateServiceInput(input);
 		const existing = this.#services.get(input.serviceId);
 		if (existing === undefined) {
@@ -249,7 +247,7 @@ export class RuntimeServiceRegistry {
 		return Result.ok(existing);
 	}
 
-	registerService(input: RuntimeServiceRegistrationInputV1): ResultValue<RuntimeServiceV1, FoundationError> {
+	registerService(input: RuntimeServiceRegistrationInput): ResultValue<RuntimeService, FoundationError> {
 		return this.register(input);
 	}
 
@@ -257,29 +255,29 @@ export class RuntimeServiceRegistry {
 		return this.#services.has(serviceId);
 	}
 
-	get(serviceId: string): RuntimeServiceV1 | undefined {
+	get(serviceId: string): RuntimeService | undefined {
 		return this.#services.get(serviceId);
 	}
 
-	get services(): readonly RuntimeServiceV1[] {
+	get services(): readonly RuntimeService[] {
 		return [...this.#services.values()].sort((left, right) => left.serviceId.localeCompare(right.serviceId));
 	}
 
-	getConflicts(): readonly ServiceConflictReportV1[] {
+	getConflicts(): readonly ServiceConflictReport[] {
 		return this.#conflicts.map((conflict) => ({ ...conflict, registered: { ...conflict.registered }, incoming: { ...conflict.incoming } }));
 	}
 
-	validate(): ResultValue<RuntimeServiceDAGV1, FoundationError> {
-		return validateRuntimeServiceDAGV1(this.services);
+	validate(): ResultValue<RuntimeServiceDAG, FoundationError> {
+		return validateRuntimeServiceDAG(this.services);
 	}
 
-	start(): ResultValue<ServiceStartReportV1, FoundationError> {
+	start(): ResultValue<ServiceStartReport, FoundationError> {
 		const validation = this.validate();
 		if (!validation.ok) return validation;
 		return Result.ok({ order: validation.value.order, conflicts: this.getConflicts() });
 	}
 
-	planStart(): ResultValue<ServiceStartReportV1, FoundationError> {
+	planStart(): ResultValue<ServiceStartReport, FoundationError> {
 		return this.start();
 	}
 }
@@ -288,21 +286,18 @@ export class RuntimeServiceRegistry {
 // Versioned dynamic tools
 // ---------------------------------------------------------------------------
 
-export interface RuntimeToolRegistrationV1 {
-	tool: ToolDefinitionV1;
+export interface RuntimeToolRegistration {
+	tool: ToolDefinition;
 	providerId: string;
 	version: string;
 	revision: number;
 	overrideOf?: { providerId: string; version: string; revision: number };
 }
 
-export type DynamicToolRegistrationV1 = RuntimeToolRegistrationV1;
-export type VersionedToolRegistrationV1 = RuntimeToolRegistrationV1;
+export class RuntimeToolRegistry {
+	readonly #tools = new Map<string, RuntimeToolRegistration>();
 
-export class RuntimeToolRegistryV1 {
-	readonly #tools = new Map<string, RuntimeToolRegistrationV1>();
-
-	register(registration: RuntimeToolRegistrationV1): ResultValue<RuntimeToolRegistrationV1, FoundationError> {
+	register(registration: RuntimeToolRegistration): ResultValue<RuntimeToolRegistration, FoundationError> {
 		if (registration.providerId.trim().length === 0 || registration.version.trim().length === 0 || !Number.isSafeInteger(registration.revision) || registration.revision < 0 || registration.tool.toolRevision.revision !== registration.revision) return Result.err(new FoundationError("invalid_identifier", "dynamic tool registration identity is invalid"));
 		const key = runtimeToolKey(registration.tool.name, registration.tool.namespace);
 		const current = this.#tools.get(key);
@@ -319,9 +314,9 @@ export class RuntimeToolRegistryV1 {
 		return Result.ok(registration);
 	}
 
-	registerTool(registration: RuntimeToolRegistrationV1): ResultValue<RuntimeToolRegistrationV1, FoundationError> { return this.register(registration); }
+	registerTool(registration: RuntimeToolRegistration): ResultValue<RuntimeToolRegistration, FoundationError> { return this.register(registration); }
 
-	reload(registration: RuntimeToolRegistrationV1): ResultValue<RuntimeToolRegistrationV1, FoundationError> { return this.register(registration); }
+	reload(registration: RuntimeToolRegistration): ResultValue<RuntimeToolRegistration, FoundationError> { return this.register(registration); }
 
 	unregister(toolName: string, namespace?: string, expectedRevision?: number): ResultValue<void, FoundationError> {
 		const key = runtimeToolKey(toolName, namespace);
@@ -332,13 +327,10 @@ export class RuntimeToolRegistryV1 {
 		return Result.ok(undefined);
 	}
 
-	resolve(toolName: string, namespace?: string): ToolDefinitionV1 | undefined { return this.#tools.get(runtimeToolKey(toolName, namespace))?.tool; }
+	resolve(toolName: string, namespace?: string): ToolDefinition | undefined { return this.#tools.get(runtimeToolKey(toolName, namespace))?.tool; }
 
-	snapshot(): readonly RuntimeToolRegistrationV1[] { return [...this.#tools.values()].sort((left, right) => runtimeToolKey(left.tool.name, left.tool.namespace).localeCompare(runtimeToolKey(right.tool.name, right.tool.namespace))); }
+	snapshot(): readonly RuntimeToolRegistration[] { return [...this.#tools.values()].sort((left, right) => runtimeToolKey(left.tool.name, left.tool.namespace).localeCompare(runtimeToolKey(right.tool.name, right.tool.namespace))); }
 }
-
-export const DynamicToolRegistryV1 = RuntimeToolRegistryV1;
-export const VersionedToolRegistryV1 = RuntimeToolRegistryV1;
 
 function runtimeToolKey(toolName: string, namespace?: string): string {
 	return `${namespace ?? ""}\u0000${toolName}`;
@@ -348,54 +340,54 @@ function runtimeToolKey(toolName: string, namespace?: string): string {
 // Deterministic hook ordering
 // ---------------------------------------------------------------------------
 
-export type RuntimeHookPhaseV1 = "before" | "after" | "observe";
-export type RuntimeHookConflictPolicyV1 = "error" | "first" | "last";
+export type RuntimeHookPhase = "before" | "after" | "observe";
+export type RuntimeHookConflictPolicy = "error" | "first" | "last";
 
-export interface RuntimeHookSpecV1 {
+export interface RuntimeHookSpec {
 	hookId: string;
-	phase: RuntimeHookPhaseV1;
+	phase: RuntimeHookPhase;
 	priority: number;
 	before?: readonly string[];
 	after?: readonly string[];
-	conflict?: RuntimeHookConflictPolicyV1;
+	conflict?: RuntimeHookConflictPolicy;
 	capabilities?: readonly string[];
 }
 
-export type HookConflictKindV1 = "cycle" | "unknown_reference" | "duplicate";
+export type HookConflictKind = "cycle" | "unknown_reference" | "duplicate";
 
-export interface HookConflictV1 {
+export interface HookConflict {
 	hookId: string;
 	relatedHookId: string;
-	kind: HookConflictKindV1;
+	kind: HookConflictKind;
 	reason?: string;
 }
 
-export interface HookOrderReportV1 {
+export interface HookOrderReport {
 	order: readonly string[];
-	conflicts: readonly HookConflictV1[];
+	conflicts: readonly HookConflict[];
 }
 
-interface HookEdgeV1 {
+interface HookEdge {
 	from: string;
 	to: string;
 }
 
-function hookComparator(byId: ReadonlyMap<string, RuntimeHookSpecV1>): (left: string, right: string) => number {
+function hookComparator(byId: ReadonlyMap<string, RuntimeHookSpec>): (left: string, right: string) => number {
 	return (left, right) => {
 		const leftSpec = byId.get(left)!;
 		const rightSpec = byId.get(right)!;
-		const phaseOrder: Record<RuntimeHookPhaseV1, number> = { before: 0, observe: 1, after: 2 };
+		const phaseOrder: Record<RuntimeHookPhase, number> = { before: 0, observe: 1, after: 2 };
 		return phaseOrder[leftSpec.phase] - phaseOrder[rightSpec.phase] || leftSpec.priority - rightSpec.priority || left.localeCompare(right);
 	};
 }
 
-function hookPolicy(spec: RuntimeHookSpecV1 | undefined): RuntimeHookConflictPolicyV1 {
+function hookPolicy(spec: RuntimeHookSpec | undefined): RuntimeHookConflictPolicy {
 	return spec?.conflict ?? "error";
 }
 
 function hookOrderFromEdges(
-	byId: ReadonlyMap<string, RuntimeHookSpecV1>,
-	edges: readonly HookEdgeV1[],
+	byId: ReadonlyMap<string, RuntimeHookSpec>,
+	edges: readonly HookEdge[],
 ): { order: string[]; remaining: Set<string> } {
 	const adjacency = new Map<string, Set<string>>();
 	const inDegree = new Map<string, number>();
@@ -433,9 +425,9 @@ function hookOrderFromEdges(
  * A hard edge wins over priority; cycles and unknown references are reported
  * and only non-error conflict policies may deterministically drop a cycle edge.
  */
-export function orderRuntimeHooksV1(specs: readonly RuntimeHookSpecV1[]): ResultValue<HookOrderReportV1, FoundationError> {
-	const byId = new Map<string, RuntimeHookSpecV1>();
-	const conflicts: HookConflictV1[] = [];
+export function orderRuntimeHooks(specs: readonly RuntimeHookSpec[]): ResultValue<HookOrderReport, FoundationError> {
+	const byId = new Map<string, RuntimeHookSpec>();
+	const conflicts: HookConflict[] = [];
 	for (const spec of specs) {
 		if (spec.hookId.trim().length === 0 || !Number.isFinite(spec.priority)) {
 			return Result.err(new FoundationError("profile_conflict", "hook id and priority are required"));
@@ -446,7 +438,7 @@ export function orderRuntimeHooksV1(specs: readonly RuntimeHookSpecV1[]): Result
 	if (conflicts.length > 0) {
 		return Result.err(new FoundationError("profile_conflict", "hook ids must be unique", { details: { conflicts: conflicts.map((item) => ({ ...item })) } }));
 	}
-	const edges: HookEdgeV1[] = [];
+	const edges: HookEdge[] = [];
 	for (const spec of specs) {
 		for (const target of [...(spec.before ?? [])].sort()) {
 			if (!byId.has(target)) {
@@ -491,45 +483,43 @@ export function orderRuntimeHooksV1(specs: readonly RuntimeHookSpecV1[]): Result
 	}
 }
 
-export const orderHooksV1 = orderRuntimeHooksV1;
-
 // ---------------------------------------------------------------------------
 // Effect scopes
 // ---------------------------------------------------------------------------
 
-export type EffectResourceKindV1 = "tool" | "hook" | "mcp" | "lsp" | "monitor" | "bin" | "settings" | "listener" | "timer" | "process";
-export const EFFECT_RESOURCE_KINDS_V1: readonly EffectResourceKindV1[] = ["tool", "hook", "mcp", "lsp", "monitor", "bin", "settings", "listener", "timer", "process"];
-export type EffectDisposerV1 = () => void | Promise<void>;
+export type EffectResourceKind = "tool" | "hook" | "mcp" | "lsp" | "monitor" | "bin" | "settings" | "listener" | "timer" | "process";
+export const EFFECT_RESOURCE_KINDS: readonly EffectResourceKind[] = ["tool", "hook", "mcp", "lsp", "monitor", "bin", "settings", "listener", "timer", "process"];
+export type EffectDisposer = () => void | Promise<void>;
 
-export interface EffectRegistrationV1 {
-	kind: EffectResourceKindV1;
+export interface EffectRegistration {
+	kind: EffectResourceKind;
 	resourceId: string;
-	dispose: EffectDisposerV1;
+	dispose: EffectDisposer;
 }
 
-export interface EffectDisposeFailureV1 {
-	kind: EffectResourceKindV1;
+export interface EffectDisposeFailure {
+	kind: EffectResourceKind;
 	resourceId: string;
 	error: unknown;
 }
 
-export interface EffectScopeReportV1 {
+export interface EffectScopeReport {
 	schemaVersion: typeof FOUNDATION_SCHEMA_VERSION;
 	disposed: readonly string[];
-	failures: readonly EffectDisposeFailureV1[];
+	failures: readonly EffectDisposeFailure[];
 	rolledBack: boolean;
 }
 
 /** Registration scope with idempotent LIFO disposal and individual release. */
 export class EffectScope {
-	readonly #registrations = new Map<string, EffectRegistrationV1>();
+	readonly #registrations = new Map<string, EffectRegistration>();
 	readonly #order: string[] = [];
 	#closed = false;
 
-	register(registration: EffectRegistrationV1): ResultValue<string, FoundationError>;
-	register(kind: EffectResourceKindV1, resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError>;
-	register(registrationOrKind: EffectRegistrationV1 | EffectResourceKindV1, resourceId?: string, dispose?: EffectDisposerV1): ResultValue<string, FoundationError> {
-		const registration: EffectRegistrationV1 = typeof registrationOrKind === "string"
+	register(registration: EffectRegistration): ResultValue<string, FoundationError>;
+	register(kind: EffectResourceKind, resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError>;
+	register(registrationOrKind: EffectRegistration | EffectResourceKind, resourceId?: string, dispose?: EffectDisposer): ResultValue<string, FoundationError> {
+		const registration: EffectRegistration = typeof registrationOrKind === "string"
 			? { kind: registrationOrKind, resourceId: resourceId ?? "", dispose: dispose ?? (() => undefined) }
 			: registrationOrKind;
 		if (this.#closed) return Result.err(new FoundationError("profile_conflict", "effect scope is already closed"));
@@ -540,7 +530,7 @@ export class EffectScope {
 		return Result.ok(registration.resourceId);
 	}
 
-	registerResource(registration: EffectRegistrationV1): ResultValue<string, FoundationError> {
+	registerResource(registration: EffectRegistration): ResultValue<string, FoundationError> {
 		return this.register(registration);
 	}
 
@@ -564,7 +554,7 @@ export class EffectScope {
 		return true;
 	}
 
-	async release(resourceId: string): Promise<EffectScopeReportV1> {
+	async release(resourceId: string): Promise<EffectScopeReport> {
 		const registration = this.#registrations.get(resourceId);
 		if (registration === undefined) return this.emptyReport(false);
 		this.remove(resourceId);
@@ -576,11 +566,11 @@ export class EffectScope {
 		}
 	}
 
-	async dispose(): Promise<EffectScopeReportV1> {
+	async dispose(): Promise<EffectScopeReport> {
 		if (this.#closed) return this.emptyReport(false);
 		this.#closed = true;
 		const disposed: string[] = [];
-		const failures: EffectDisposeFailureV1[] = [];
+		const failures: EffectDisposeFailure[] = [];
 		for (const resourceId of [...this.#order].reverse()) {
 			const registration = this.#registrations.get(resourceId);
 			if (registration === undefined) continue;
@@ -596,27 +586,27 @@ export class EffectScope {
 		return { schemaVersion: FOUNDATION_SCHEMA_VERSION, disposed, failures, rolledBack: false };
 	}
 
-	async rollback(): Promise<EffectScopeReportV1> {
+	async rollback(): Promise<EffectScopeReport> {
 		const report = await this.dispose();
 		return { ...report, rolledBack: true };
 	}
 
-	private emptyReport(rolledBack: boolean): EffectScopeReportV1 {
+	private emptyReport(rolledBack: boolean): EffectScopeReport {
 		return { schemaVersion: FOUNDATION_SCHEMA_VERSION, disposed: [], failures: [], rolledBack };
 	}
 
-	registerTool(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("tool", resourceId, dispose); }
-	registerHook(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("hook", resourceId, dispose); }
-	registerMCP(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("mcp", resourceId, dispose); }
-	registerMcp(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.registerMCP(resourceId, dispose); }
-	registerLSP(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("lsp", resourceId, dispose); }
-	registerLsp(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.registerLSP(resourceId, dispose); }
-	registerMonitor(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("monitor", resourceId, dispose); }
-	registerBin(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("bin", resourceId, dispose); }
-	registerSettings(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("settings", resourceId, dispose); }
-	registerListener(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("listener", resourceId, dispose); }
-	registerTimer(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("timer", resourceId, dispose); }
-	registerProcess(resourceId: string, dispose: EffectDisposerV1): ResultValue<string, FoundationError> { return this.register("process", resourceId, dispose); }
+	registerTool(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("tool", resourceId, dispose); }
+	registerHook(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("hook", resourceId, dispose); }
+	registerMCP(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("mcp", resourceId, dispose); }
+	registerMcp(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.registerMCP(resourceId, dispose); }
+	registerLSP(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("lsp", resourceId, dispose); }
+	registerLsp(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.registerLSP(resourceId, dispose); }
+	registerMonitor(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("monitor", resourceId, dispose); }
+	registerBin(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("bin", resourceId, dispose); }
+	registerSettings(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("settings", resourceId, dispose); }
+	registerListener(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("listener", resourceId, dispose); }
+	registerTimer(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("timer", resourceId, dispose); }
+	registerProcess(resourceId: string, dispose: EffectDisposer): ResultValue<string, FoundationError> { return this.register("process", resourceId, dispose); }
 }
 
 export function createEffectScope(): EffectScope {
@@ -627,29 +617,29 @@ export function createEffectScope(): EffectScope {
 // LSP / Monitor extension lifecycle points
 // ---------------------------------------------------------------------------
 
-export type LspLifecycleStateV1 = "inactive" | "active" | "failed";
-export type MonitorLifecycleStateV1 = "inactive" | "running" | "failed";
+export type LspLifecycleState = "inactive" | "active" | "failed";
+export type MonitorLifecycleState = "inactive" | "running" | "failed";
 
-export interface LspLifecycleRecordV1 {
+export interface LspLifecycleRecord {
 	schemaVersion: typeof FOUNDATION_SCHEMA_VERSION;
 	extensionId: string;
-	state: LspLifecycleStateV1;
+	state: LspLifecycleState;
 	languageIds: readonly string[];
 	startedAt: string;
 	failureReason?: string;
 }
 
-export interface MonitorLifecycleRecordV1 {
+export interface MonitorLifecycleRecord {
 	schemaVersion: typeof FOUNDATION_SCHEMA_VERSION;
 	extensionId: string;
-	state: MonitorLifecycleStateV1;
+	state: MonitorLifecycleState;
 	eventKinds: readonly string[];
 	intervalMs: number;
 	startedAt: string;
 	failureReason?: string;
 }
 
-export interface DiagnosticRecordV1 {
+export interface DiagnosticRecord {
 	schemaVersion: typeof FOUNDATION_SCHEMA_VERSION;
 	extensionId: string;
 	kind: "lsp" | "monitor";
@@ -660,14 +650,14 @@ export interface DiagnosticRecordV1 {
 }
 
 export interface LifecycleExtensionHost {
-	startLsp(contract: LspExtensionContractV1, options?: { signal?: AbortSignal }): Promise<ResultValue<LspLifecycleRecordV1, FoundationError>>;
-	stopLsp(extensionId: string): Promise<ResultValue<LspLifecycleRecordV1, FoundationError>>;
-	startMonitor(contract: MonitorExtensionContractV1, options?: { signal?: AbortSignal }): Promise<ResultValue<MonitorLifecycleRecordV1, FoundationError>>;
-	stopMonitor(extensionId: string): Promise<ResultValue<MonitorLifecycleRecordV1, FoundationError>>;
-	recordDiagnostic(record: DiagnosticRecordV1): void;
+	startLsp(contract: LspExtensionContract, options?: { signal?: AbortSignal }): Promise<ResultValue<LspLifecycleRecord, FoundationError>>;
+	stopLsp(extensionId: string): Promise<ResultValue<LspLifecycleRecord, FoundationError>>;
+	startMonitor(contract: MonitorExtensionContract, options?: { signal?: AbortSignal }): Promise<ResultValue<MonitorLifecycleRecord, FoundationError>>;
+	stopMonitor(extensionId: string): Promise<ResultValue<MonitorLifecycleRecord, FoundationError>>;
+	recordDiagnostic(record: DiagnosticRecord): void;
 }
 
-export interface LifecycleExtensionCallbacksV1 {
+export interface LifecycleExtensionCallbacks {
 	startLsp?: LifecycleExtensionHost["startLsp"];
 	stopLsp?: LifecycleExtensionHost["stopLsp"];
 	startMonitor?: LifecycleExtensionHost["startMonitor"];
@@ -680,15 +670,15 @@ export interface LifecycleExtensionCallbacksV1 {
  */
 export class LifecycleExtensionRegistrar implements LifecycleExtensionHost {
 	readonly #scope: EffectScope;
-	readonly #diagnostics: DiagnosticRecordV1[] = [];
-	readonly #lsp = new Map<string, LspLifecycleRecordV1>();
-	readonly #monitors = new Map<string, MonitorLifecycleRecordV1>();
+	readonly #diagnostics: DiagnosticRecord[] = [];
+	readonly #lsp = new Map<string, LspLifecycleRecord>();
+	readonly #monitors = new Map<string, MonitorLifecycleRecord>();
 	readonly #start: LifecycleExtensionHost["startLsp"];
 	readonly #stop: LifecycleExtensionHost["stopLsp"];
 	readonly #startMonitor: LifecycleExtensionHost["startMonitor"];
 	readonly #stopMonitor: LifecycleExtensionHost["stopMonitor"];
 
-	constructor(scope: EffectScope = new EffectScope(), callbacks: LifecycleExtensionCallbacksV1 = {}) {
+	constructor(scope: EffectScope = new EffectScope(), callbacks: LifecycleExtensionCallbacks = {}) {
 		this.#scope = scope;
 		this.#start = callbacks.startLsp ?? defaultLifecycleStart;
 		this.#stop = callbacks.stopLsp ?? defaultLifecycleStop;
@@ -696,13 +686,13 @@ export class LifecycleExtensionRegistrar implements LifecycleExtensionHost {
 		this.#stopMonitor = callbacks.stopMonitor ?? defaultMonitorStop;
 	}
 
-	get diagnostics(): readonly DiagnosticRecordV1[] { return [...this.#diagnostics]; }
-	get lspRecords(): readonly LspLifecycleRecordV1[] { return [...this.#lsp.values()]; }
-	get monitorRecords(): readonly MonitorLifecycleRecordV1[] { return [...this.#monitors.values()]; }
+	get diagnostics(): readonly DiagnosticRecord[] { return [...this.#diagnostics]; }
+	get lspRecords(): readonly LspLifecycleRecord[] { return [...this.#lsp.values()]; }
+	get monitorRecords(): readonly MonitorLifecycleRecord[] { return [...this.#monitors.values()]; }
 
-	async startLsp(contract: LspExtensionContractV1, options?: { signal?: AbortSignal }): Promise<ResultValue<LspLifecycleRecordV1, FoundationError>> {
+	async startLsp(contract: LspExtensionContract, options?: { signal?: AbortSignal }): Promise<ResultValue<LspLifecycleRecord, FoundationError>> {
 		if (this.#lsp.has(contract.extensionId)) return Result.err(new FoundationError("profile_conflict", "LSP extension is already active", { details: { extensionId: contract.extensionId } }));
-		let result: ResultValue<LspLifecycleRecordV1, FoundationError>;
+		let result: ResultValue<LspLifecycleRecord, FoundationError>;
 		try { result = await this.#start(contract, options); } catch (error) { result = Result.err(toFoundationError(error, "unsupported_feature")); }
 		if (!result.ok) return result;
 		this.#lsp.set(contract.extensionId, result.value);
@@ -717,25 +707,25 @@ export class LifecycleExtensionRegistrar implements LifecycleExtensionHost {
 		return result;
 	}
 
-	async stopLsp(extensionId: string): Promise<ResultValue<LspLifecycleRecordV1, FoundationError>> {
+	async stopLsp(extensionId: string): Promise<ResultValue<LspLifecycleRecord, FoundationError>> {
 		const result = await this.stopLspInternal(extensionId);
 		if (result.ok) this.#scope.remove(`lsp:${extensionId}`);
 		return result;
 	}
 
-	private async stopLspInternal(extensionId: string): Promise<ResultValue<LspLifecycleRecordV1, FoundationError>> {
+	private async stopLspInternal(extensionId: string): Promise<ResultValue<LspLifecycleRecord, FoundationError>> {
 		const current = this.#lsp.get(extensionId);
 		if (current === undefined) return Result.err(new FoundationError("profile_conflict", "LSP extension is not active", { details: { extensionId } }));
 		this.#lsp.delete(extensionId);
-		let result: ResultValue<LspLifecycleRecordV1, FoundationError>;
+		let result: ResultValue<LspLifecycleRecord, FoundationError>;
 		try { result = await this.#stop(extensionId); } catch (error) { result = Result.err(toFoundationError(error, "unsupported_feature")); }
 		if (!result.ok) this.#lsp.set(extensionId, { ...current, state: "failed", failureReason: result.error.message });
 		return result;
 	}
 
-	async startMonitor(contract: MonitorExtensionContractV1, options?: { signal?: AbortSignal }): Promise<ResultValue<MonitorLifecycleRecordV1, FoundationError>> {
+	async startMonitor(contract: MonitorExtensionContract, options?: { signal?: AbortSignal }): Promise<ResultValue<MonitorLifecycleRecord, FoundationError>> {
 		if (this.#monitors.has(contract.extensionId)) return Result.err(new FoundationError("profile_conflict", "monitor extension is already active", { details: { extensionId: contract.extensionId } }));
-		let result: ResultValue<MonitorLifecycleRecordV1, FoundationError>;
+		let result: ResultValue<MonitorLifecycleRecord, FoundationError>;
 		try { result = await this.#startMonitor(contract, options); } catch (error) { result = Result.err(toFoundationError(error, "unsupported_feature")); }
 		if (!result.ok) return result;
 		this.#monitors.set(contract.extensionId, result.value);
@@ -750,40 +740,40 @@ export class LifecycleExtensionRegistrar implements LifecycleExtensionHost {
 		return result;
 	}
 
-	async stopMonitor(extensionId: string): Promise<ResultValue<MonitorLifecycleRecordV1, FoundationError>> {
+	async stopMonitor(extensionId: string): Promise<ResultValue<MonitorLifecycleRecord, FoundationError>> {
 		const result = await this.stopMonitorInternal(extensionId);
 		if (result.ok) this.#scope.remove(`monitor:${extensionId}`);
 		return result;
 	}
 
-	private async stopMonitorInternal(extensionId: string): Promise<ResultValue<MonitorLifecycleRecordV1, FoundationError>> {
+	private async stopMonitorInternal(extensionId: string): Promise<ResultValue<MonitorLifecycleRecord, FoundationError>> {
 		const current = this.#monitors.get(extensionId);
 		if (current === undefined) return Result.err(new FoundationError("profile_conflict", "monitor extension is not active", { details: { extensionId } }));
 		this.#monitors.delete(extensionId);
-		let result: ResultValue<MonitorLifecycleRecordV1, FoundationError>;
+		let result: ResultValue<MonitorLifecycleRecord, FoundationError>;
 		try { result = await this.#stopMonitor(extensionId); } catch (error) { result = Result.err(toFoundationError(error, "unsupported_feature")); }
 		if (!result.ok) this.#monitors.set(extensionId, { ...current, state: "failed", failureReason: result.error.message });
 		return result;
 	}
 
-	recordDiagnostic(record: DiagnosticRecordV1): void { this.#diagnostics.push({ ...record }); }
+	recordDiagnostic(record: DiagnosticRecord): void { this.#diagnostics.push({ ...record }); }
 }
 
-async function defaultLifecycleStart(_contract: LspExtensionContractV1, _options?: { signal?: AbortSignal }): Promise<ResultValue<LspLifecycleRecordV1, FoundationError>> {
+async function defaultLifecycleStart(_contract: LspExtensionContract, _options?: { signal?: AbortSignal }): Promise<ResultValue<LspLifecycleRecord, FoundationError>> {
 	return Result.err(new FoundationError("unsupported_feature", "LSP is a lifecycle extension point and no provider is configured"));
 }
 
-async function defaultLifecycleStop(extensionId: string): Promise<ResultValue<LspLifecycleRecordV1, FoundationError>> {
+async function defaultLifecycleStop(extensionId: string): Promise<ResultValue<LspLifecycleRecord, FoundationError>> {
 	return Result.err(new FoundationError("unsupported_feature", "no LSP provider is configured", { details: { extensionId } }));
 }
 
-async function defaultMonitorStart(_contract: MonitorExtensionContractV1, _options?: { signal?: AbortSignal }): Promise<ResultValue<MonitorLifecycleRecordV1, FoundationError>> {
+async function defaultMonitorStart(_contract: MonitorExtensionContract, _options?: { signal?: AbortSignal }): Promise<ResultValue<MonitorLifecycleRecord, FoundationError>> {
 	return Result.err(new FoundationError("unsupported_feature", "Monitor is a lifecycle extension point and no provider is configured"));
 }
 
-async function defaultMonitorStop(extensionId: string): Promise<ResultValue<MonitorLifecycleRecordV1, FoundationError>> {
+async function defaultMonitorStop(extensionId: string): Promise<ResultValue<MonitorLifecycleRecord, FoundationError>> {
 	return Result.err(new FoundationError("unsupported_feature", "no monitor provider is configured", { details: { extensionId } }));
 }
 
-export function isLspExtensionContract(value: ExtensionContractV1): value is LspExtensionContractV1 { return value.kind === "lsp"; }
-export function isMonitorExtensionContract(value: ExtensionContractV1): value is MonitorExtensionContractV1 { return value.kind === "monitor"; }
+export function isLspExtensionContract(value: ExtensionContract): value is LspExtensionContract { return value.kind === "lsp"; }
+export function isMonitorExtensionContract(value: ExtensionContract): value is MonitorExtensionContract { return value.kind === "monitor"; }

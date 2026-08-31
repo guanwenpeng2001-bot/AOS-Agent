@@ -9,7 +9,7 @@ import { amazonBedrockProvider } from "../src/providers/amazon-bedrock.ts";
 import { anthropicProvider } from "../src/providers/anthropic.ts";
 import { cloudflareAIGatewayProvider } from "../src/providers/cloudflare-ai-gateway.ts";
 import { cloudflareWorkersAIProvider } from "../src/providers/cloudflare-workers-ai.ts";
-import { fauxAssistantMessage, fauxProvider } from "../src/providers/faux.ts";
+import { fakeAssistantMessage, fakeProvider } from "../src/providers/fake.ts";
 import { googleVertexProvider } from "../src/providers/google-vertex.ts";
 import type {
 	Api,
@@ -317,7 +317,7 @@ describe("createProvider", () => {
 		const respond = (model: Model<Api>) => {
 			calls.push(`${label}:${model.id}`);
 			const stream = new AssistantMessageEventStream();
-			const message = fauxAssistantMessage("ok");
+			const message = fakeAssistantMessage("ok");
 			stream.push({ type: "start", partial: message });
 			stream.push({ type: "done", reason: "stop", message });
 			stream.end(message);
@@ -557,26 +557,26 @@ describe("createProvider", () => {
 	});
 });
 
-describe("fauxProvider", () => {
+describe("fakeProvider", () => {
 	it("streams queued responses through a Models collection", async () => {
-		const faux = fauxProvider();
+		const fake = fakeProvider();
 		const models = createModels();
-		models.setProvider(faux.provider);
-		faux.setResponses([fauxAssistantMessage("hello from faux")]);
+		models.setProvider(fake.provider);
+		fake.setResponses([fakeAssistantMessage("hello from fake")]);
 
-		const model = models.getModels(faux.provider.id)[0];
+		const model = models.getModels(fake.provider.id)[0];
 		const result = await models.completeSimple(model, context);
 		expect(result.stopReason).toBe("stop");
-		expect(result.content).toEqual([{ type: "text", text: "hello from faux" }]);
-		expect(faux.state.callCount).toBe(1);
+		expect(result.content).toEqual([{ type: "text", text: "hello from fake" }]);
+		expect(fake.state.callCount).toBe(1);
 	});
 
 	it("submits, polls, and redeems deferred responses", async () => {
-		const faux = fauxProvider({ deferred: { pendingFetches: 1, pollAfterMs: 25 } });
+		const fake = fakeProvider({ deferred: { pendingFetches: 1, pollAfterMs: 25 } });
 		const models = createModels();
-		models.setProvider(faux.provider);
-		faux.setResponses([fauxAssistantMessage("ready")]);
-		const model = faux.getModel();
+		models.setProvider(fake.provider);
+		fake.setResponses([fakeAssistantMessage("ready")]);
+		const model = fake.getModel();
 
 		const submission = models.streamSimple(model, context, { deferred: { window: "1h" } });
 		const eventTypes: string[] = [];
@@ -591,7 +591,7 @@ describe("fauxProvider", () => {
 			id: expect.any(String),
 			pollAfterMs: 25,
 		});
-		if (!deferred.deferred) throw new Error("Faux response did not include a deferred handle");
+		if (!deferred.deferred) throw new Error("Fake response did not include a deferred handle");
 
 		const pending = await models.fetchDeferred(model, deferred.deferred);
 		expect(pending.stopReason).toBe("deferred");
@@ -601,25 +601,25 @@ describe("fauxProvider", () => {
 		expect(ready.stopReason).toBe("stop");
 		expect(ready.content).toEqual([{ type: "text", text: "ready" }]);
 		expect(ready.usage.totalTokens).toBeGreaterThan(0);
-		expect(faux.state).toMatchObject({ callCount: 1, deferredFetchCount: 2 });
+		expect(fake.state).toMatchObject({ callCount: 1, deferredFetchCount: 2 });
 	});
 
 	it("records cancellation and returns deferred fetch failures in-band", async () => {
-		const faux = fauxProvider();
+		const fake = fakeProvider();
 		const models = createModels();
-		models.setProvider(faux.provider);
-		faux.setResponses([() => Promise.reject(new Error("deferred failed")), fauxAssistantMessage("cancelled")]);
-		const model = faux.getModel();
+		models.setProvider(fake.provider);
+		fake.setResponses([() => Promise.reject(new Error("deferred failed")), fakeAssistantMessage("cancelled")]);
+		const model = fake.getModel();
 
 		const failedSubmission = await models.completeSimple(model, context, { deferred: true });
-		if (!failedSubmission.deferred) throw new Error("Faux response did not include a deferred handle");
+		if (!failedSubmission.deferred) throw new Error("Fake response did not include a deferred handle");
 		const failed = await models.fetchDeferred(model, failedSubmission.deferred);
 		expect(failed).toMatchObject({ stopReason: "error", errorMessage: "deferred failed" });
 
 		const cancelledSubmission = await models.completeSimple(model, context, { deferred: true });
-		if (!cancelledSubmission.deferred) throw new Error("Faux response did not include a deferred handle");
+		if (!cancelledSubmission.deferred) throw new Error("Fake response did not include a deferred handle");
 		await models.cancelDeferred(model, cancelledSubmission.deferred);
-		expect(faux.state.cancelledDeferred).toEqual([cancelledSubmission.deferred]);
+		expect(fake.state.cancelledDeferred).toEqual([cancelledSubmission.deferred]);
 		const cancelled = await models.fetchDeferred(model, cancelledSubmission.deferred);
 		expect(cancelled).toMatchObject({
 			stopReason: "error",

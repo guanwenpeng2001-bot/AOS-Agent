@@ -7,11 +7,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-} from "../../../src/core/agent-session-services.ts";
-import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
-import { createAgentSession } from "../../../src/core/sdk.ts";
-import { SessionManager } from "../../../src/core/session-manager.ts";
-import { SettingsManager } from "../../../src/core/settings-manager.ts";
+} from "../../../src/core/session/services.ts";
+import { DefaultResourceLoader } from "../../../src/core/runtime/resource-loader.ts";
+import { createAgentSession } from "../../../src/core/runtime/sdk.ts";
+import { SessionManager } from "../../../src/core/session/manager.ts";
+import { SettingsManager } from "../../../src/core/runtime/settings-manager.ts";
 
 describe("regression #3592: no-builtin-tools keeps extension tools enabled", () => {
 	let tempDir: string;

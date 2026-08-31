@@ -45,7 +45,7 @@ export type CheckpointRewindReason =
 	| "workspace_modified"
 	| "workspace_pending";
 
-export interface CheckpointImpactPlanV1 {
+export interface CheckpointImpactPlan {
 	readonly schemaVersion: 1;
 	readonly digest: string;
 	readonly checkpointId: string;
@@ -74,7 +74,7 @@ export interface CheckpointPlanOptions {
 	readonly expectedLaneLeafId?: string | null;
 }
 
-export interface CheckpointV1 {
+export interface Checkpoint {
 	readonly schemaVersion: 1;
 	readonly checkpointId: string;
 	readonly snapshotId: string;
@@ -88,14 +88,14 @@ export interface CheckpointV1 {
 }
 
 export interface CheckpointRewindAuthority {
-	readonly checkpoint: CheckpointV1;
+	readonly checkpoint: Checkpoint;
 	readonly targetEntryId: string | null;
 	readonly workspace: WorkspaceCheckpointState;
 	readonly planId?: string;
 	readonly lane?: string;
 }
 
-type CheckpointImpactPlanWithSessionFields = CheckpointImpactPlanV1 & {
+type CheckpointImpactPlanWithSessionFields = CheckpointImpactPlan & {
 	readonly planId?: string;
 	readonly lane?: string;
 };
@@ -143,7 +143,7 @@ function workspaceUnknown(state: WorkspaceCheckpointState | undefined): boolean 
  * Produce the durable decision before any lane movement. Unknown workspace
  * state and uncommitted effects are rejected instead of guessed away.
  */
-export function planCheckpointRewind(snapshot: ContextSnapshot, options: CheckpointPlanOptions): CheckpointImpactPlanV1 {
+export function planCheckpointRewind(snapshot: ContextSnapshot, options: CheckpointPlanOptions): CheckpointImpactPlan {
 	const targetEntryId = options.targetEntryId ?? null;
 	const entries = [...snapshot.entries()];
 	const targetIndex = targetEntryId === null ? -1 : entries.findIndex((entry) => entry.id === targetEntryId);
@@ -199,7 +199,7 @@ export function planCheckpointRewind(snapshot: ContextSnapshot, options: Checkpo
 
 export const createCheckpointImpactPlan = planCheckpointRewind;
 
-export function createCheckpoint(snapshot: ContextSnapshot, lane: string, checkpointId: string, workspace?: WorkspaceCheckpointState, now = Date.now): CheckpointV1 {
+export function createCheckpoint(snapshot: ContextSnapshot, lane: string, checkpointId: string, workspace?: WorkspaceCheckpointState, now = Date.now): Checkpoint {
 	return {
 		schemaVersion: 1,
 		checkpointId,
@@ -214,7 +214,7 @@ export function createCheckpoint(snapshot: ContextSnapshot, lane: string, checkp
 	};
 }
 
-function checkpointMatchesSnapshot(checkpoint: CheckpointV1, snapshot: ContextSnapshot): boolean {
+function checkpointMatchesSnapshot(checkpoint: Checkpoint, snapshot: ContextSnapshot): boolean {
 	return (
 		checkpoint.schemaVersion === CHECKPOINT_SCHEMA_VERSION &&
 		checkpoint.failClosed === true &&
@@ -252,13 +252,13 @@ function exactCheckpointImpactPlanMatch(plan: CheckpointImpactPlanWithSessionFie
 	}
 }
 
-export function applyCheckpointRewind(snapshot: ContextSnapshot, plan: CheckpointImpactPlanV1, authority: CheckpointRewindAuthority): ContextSnapshot | undefined {
+export function applyCheckpointRewind(snapshot: ContextSnapshot, plan: CheckpointImpactPlan, authority: CheckpointRewindAuthority): ContextSnapshot | undefined {
 	if (!validateCheckpointImpactPlan(plan, snapshot, authority)) return undefined;
 	if (plan.targetEntryId === null) return snapshot.fork({ mode: "none", checkpointId: plan.checkpointId });
 	return snapshot.rewindTo(plan.targetEntryId);
 }
 
-export function validateCheckpointImpactPlan(plan: CheckpointImpactPlanV1, snapshot: ContextSnapshot, authority: CheckpointRewindAuthority): boolean {
+export function validateCheckpointImpactPlan(plan: CheckpointImpactPlan, snapshot: ContextSnapshot, authority: CheckpointRewindAuthority): boolean {
 	const expected = expectedCheckpointImpactPlan(snapshot, authority);
 	return expected !== undefined && expected.status === "approved" && exactCheckpointImpactPlanMatch(plan, expected);
 }

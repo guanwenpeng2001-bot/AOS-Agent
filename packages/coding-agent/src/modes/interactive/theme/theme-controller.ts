@@ -1,5 +1,5 @@
 import type { TUI } from "@aos-agent/tui";
-import type { SettingsManager } from "../../../core/settings-manager.ts";
+import type { SettingsManager } from "../../../core/runtime/settings-manager.ts";
 import {
 	detectTerminalBackgroundFromEnv,
 	detectTerminalBackgroundTheme,

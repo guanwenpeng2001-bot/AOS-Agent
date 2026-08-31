@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ImageContent } from "@aos-agent/ai";
 import { AutomationRpcError, RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import type { RpcRunStreamEvent } from "../src/modes/rpc/rpc-client.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../src/external-connector.ts";
 
 type RpcClientPrivate = {
 	send: (command: { type: string }) => Promise<unknown>;
@@ -16,7 +17,17 @@ function createClient(): { client: RpcClient; privateClient: RpcClientPrivate } 
 }
 
 const IMAGE: ImageContent = { type: "image", data: "aGVsbG8=", mimeType: "image/png" };
-
+const ARTIFACT_ID = "4".repeat(64);
+const ARTIFACT: CanonicalExternalAgentArtifactReference = {
+	schemaVersion: 1,
+	artifactId: ARTIFACT_ID,
+	kind: "image",
+	digest: `sha256:${ARTIFACT_ID}`,
+	mediaType: "image/png",
+	sizeBytes: 4,
+	provenance: { source: "artifact_store", producer: "rpc-client", trust: "trusted" },
+	readHandle: { kind: "artifact_store", ref: ARTIFACT_ID },
+};
 const acceptedResponse = {
 	type: "response",
 	command: "run.start",
@@ -72,7 +83,13 @@ describe("RpcClient Automation Host request shapes", () => {
 			command: "run.get",
 			success: true,
 			data: {
-				run: { id: "r1", sessionId: "s1", attempt: 1, status: "completed", model: { provider: "anthropic", id: "claude-sonnet-5", thinkingLevel: "high" } },
+				run: {
+					id: "r1",
+					sessionId: "s1",
+					attempt: 1,
+					status: "completed",
+					model: { provider: "anthropic", id: "claude-sonnet-5", thinkingLevel: "high" },
+				},
 			},
 		}));
 		privateClient.send = send;
@@ -121,6 +138,61 @@ describe("RpcClient Automation Host request shapes", () => {
 			images: [IMAGE],
 		});
 		expect(result).toEqual({ runId: "r2", sessionId: "s2", attempt: 2, status: "accepted" });
+	});
+
+	it("startRun and resumeRun serialize canonical artifact fields", async () => {
+		const { client, privateClient } = createClient();
+		const send = vi.fn(async () => acceptedResponse);
+		privateClient.send = send;
+		const externalConnector = {
+			providerId: "trusted-connector",
+			revision: 1,
+			capabilitySnapshotDigest: { algorithm: "sha256" as const, value: "a".repeat(64) },
+		};
+
+		await client.startRun(
+			"external start",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			externalConnector,
+			[ARTIFACT],
+		);
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.start",
+			message: "external start",
+			images: undefined,
+			externalConnector,
+			artifacts: [ARTIFACT],
+		});
+
+		await client.resumeRun(
+			"/tmp/s.jsonl",
+			"r1",
+			"external resume",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			externalConnector,
+			[ARTIFACT],
+		);
+		expect(send).toHaveBeenLastCalledWith({
+			type: "run.resume",
+			sessionPath: "/tmp/s.jsonl",
+			sourceRunId: "r1",
+			message: "external resume",
+			images: undefined,
+			externalConnector,
+			artifacts: [ARTIFACT],
+		});
 	});
 
 	it("startRun forwards an optional capabilityProfile and omits it when absent", async () => {
@@ -212,68 +284,37 @@ describe("RpcClient Automation Host request shapes", () => {
 		});
 	});
 
-	it("startRun and resumeRun forward optional external references", async () => {
+	it("sends audit query and replay commands with explicit payloads", async () => {
 		const { client, privateClient } = createClient();
-		const send = vi.fn(async () => acceptedResponse);
-		privateClient.send = send;
-		const external = { namespace: "ci", externalSessionId: "job-1", externalRunId: "attempt-1" };
-
-		await client.startRun("external", undefined, undefined, undefined, undefined, undefined, external);
-		expect(send).toHaveBeenLastCalledWith({
-			type: "run.start",
-			message: "external",
-			images: undefined,
-			external,
+		const send = vi.fn(async (command: { type: string }) => {
+			if (command.type === "audit.query") {
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: { schemaVersion: 1, scope: "current-session", events: [], warnings: [] },
+				};
+			}
+			if (command.type === "audit.replay") {
+				return {
+					type: "response",
+					command: command.type,
+					success: true,
+					data: {
+						schemaVersion: 1,
+						run: {
+							status: "interrupted",
+							attempt: 1,
+							model: { provider: "p", id: "m", thinkingLevel: "low" },
+						},
+						events: [],
+						status: "interrupted",
+						warnings: [],
+					},
+				};
+			}
+			throw new Error(`Unexpected audit command: ${command.type}`);
 		});
-
-		await client.resumeRun(
-			"/tmp/s.jsonl",
-			"r1",
-			"external resume",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			external,
-		);
-		expect(send).toHaveBeenLastCalledWith({
-			type: "run.resume",
-			sessionPath: "/tmp/s.jsonl",
-			sourceRunId: "r1",
-			message: "external resume",
-			images: undefined,
-			external,
-		});
-	});
-
-	it("sends audit query, replay, and external mapping commands with explicit payloads", async () => {
-		const { client, privateClient } = createClient();
-		const send = vi.fn(async (command: { type: string }) => ({
-			type: "response",
-			command: command.type,
-			success: true,
-			data:
-				command.type === "audit.query"
-					? { schemaVersion: 1, scope: "current-session", events: [], warnings: [] }
-					: command.type === "audit.replay"
-						? {
-								schemaVersion: 1,
-								run: {
-									status: "interrupted",
-									attempt: 1,
-									model: { provider: "p", id: "m", thinkingLevel: "low" },
-								},
-								events: [],
-								status: "interrupted",
-								warnings: [],
-							}
-						: {
-								mapping: { namespace: "ci", externalSessionId: "job-1", aosSessionId: "s1", createdAt: "t" },
-								appended: true,
-								idempotent: false,
-							},
-		}));
 		privateClient.send = send;
 
 		await expect(
@@ -290,14 +331,6 @@ describe("RpcClient Automation Host request shapes", () => {
 
 		await client.auditReplay("r1", { scope: "current-session", limit: 5 });
 		expect(send).toHaveBeenLastCalledWith({ type: "audit.replay", runId: "r1", scope: "current-session", limit: 5 });
-
-		const request = {
-			external: { namespace: "ci", externalSessionId: "job-1" },
-			aosSessionId: "s1",
-			aosRunId: "r1",
-		};
-		await client.externalMap(request);
-		expect(send).toHaveBeenLastCalledWith({ type: "external.map", ...request });
 	});
 });
 
@@ -532,7 +565,10 @@ describe("RpcClient Automation Host event routing", () => {
 		expect(completed?.receipt.status).toBe("completed");
 
 		// onEvent sees only legacy session events, never run.* records.
-		expect(sessionEvents.map((event) => (event as { type: string }).type)).toEqual(["agent_settled", "message_update"]);
+		expect(sessionEvents.map((event) => (event as { type: string }).type)).toEqual([
+			"agent_settled",
+			"message_update",
+		]);
 	});
 
 	it("routes run.failed and run.cancelled terminal records to onRunEvent", () => {

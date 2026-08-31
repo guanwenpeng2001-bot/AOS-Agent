@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@aos-agent/ai";
+import { fakeAssistantMessage } from "@aos-agent/ai";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionFactory } from "../../../src/index.ts";
 import { createHarness, type Harness } from "../harness.ts";
@@ -37,7 +37,7 @@ async function createCompactionHarness(recorded: RecordedCompactionEvent[]): Pro
 		settings: { compaction: { keepRecentTokens: 1 } },
 		extensionFactories: [recordingExtension(recorded)],
 	});
-	harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+	harness.setResponses([fakeAssistantMessage("one"), fakeAssistantMessage("two")]);
 	await harness.session.prompt("first");
 	await harness.session.prompt("second");
 	return harness;

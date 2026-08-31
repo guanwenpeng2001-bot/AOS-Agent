@@ -11,7 +11,7 @@ import {
 	type RemoteOperationRequest,
 	type RemoteOperationResult,
 	type RemoteOperationTransport,
-} from "../../src/core/remote-operation.ts";
+} from "../../src/core/runtime/remote-operation.ts";
 
 export const FAKE_REMOTE_PROVIDER_ID = "fake-remote-provider";
 

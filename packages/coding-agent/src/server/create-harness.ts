@@ -1,66 +1,59 @@
 import {
 	AgentHarness,
 	canonicalFoundationJson,
-	createFoundationToolGatewayV1,
-	createSandboxOperationToolGatewayProviderV1,
-	executeOperationV1,
+	createFoundationToolGateway,
+	createSandboxOperationToolGatewayProvider,
+	executeOperation,
 	FoundationError,
 	Result,
-	SessionLedgerV1,
+	SessionLedger,
 	type AgentHarnessOptions,
 	type AgentHarnessTool,
 	createBashTool,
 	createEditTool,
 	createReadTool,
 	createWriteTool,
-	validateFoundationProviderCapabilityV1,
-	validateToolExecutionResultV1,
-	validateAttemptV1,
+	validateFoundationProviderCapability,
+	validateToolExecutionResult,
+	validateAttempt,
 	validateWorkerReceipt,
-	validateWorkerReceiptForProviderV1,
+	validateWorkerReceiptForProvider,
 	type ExecutionEnv,
 	type ExecutionToolContext,
 	type HarnessTool,
 	type FoundationJsonValue,
-	type ExecutionCorrelationV1,
+	type ExecutionCorrelation,
 	type SandboxOperationProvider,
-	type SandboxOperationRequestV1,
+	type SandboxOperationRequest,
 	type SessionLedgerWriter,
-	type ToolGatewayRouteV1,
-	type ToolExecutionResultV1,
-	type WorkerReceiptV1,
+	type ToolGatewayRoute,
+	type ToolExecutionResult,
+	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import type { Static, TSchema } from "typebox";
-import type { AgentSessionConfig } from "../core/agent-session.ts";
-import { createAgentSessionWithTrustedScheduler } from "../core/agent-session-facade.ts";
-import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/system-prompt.ts";
+import {
+	createAgentRuntimeCompositionFactoryFromTrustedProviders,
+	materializeAgentRuntimeComposition,
+	type AgentRuntimeCompositionFactory,
+} from "../core/runtime/composition-factory.ts";
+import { type BuildSystemPromptOptions, buildSystemPrompt } from "../core/runtime/system-prompt.ts";
 import { bashToolSystemPromptContribution } from "../core/tools/bash.ts";
 import { editToolSystemPromptContribution } from "../core/tools/edit.ts";
 import { readToolSystemPromptContribution } from "../core/tools/read.ts";
 import { writeToolSystemPromptContribution } from "../core/tools/write.ts";
 import {
-	createTrustedSubagentCompositionV1,
-	type TrustedSubagentCompositionOptionsV1,
-} from "../core/subagent-composition.ts";
+	createSubagentComposition,
+	type SubagentCompositionOptions,
+} from "../core/subagent/composition.ts";
 
 export interface CodingAgentHarnessTool extends HarnessTool {
 	promptSnippet?: string;
 	promptGuidelines?: readonly string[];
 }
 
-export type CreateCodingAgentTrustedScheduler = Parameters<typeof createAgentSessionWithTrustedScheduler>[1];
-
-/** Trusted Host-only Scheduler bridge. The ordinary Harness path remains Scheduler-off. */
-export function createCodingAgentSessionWithTrustedScheduler(
-	options: AgentSessionConfig,
-	createScheduler: CreateCodingAgentTrustedScheduler,
-): ReturnType<typeof createAgentSessionWithTrustedScheduler> {
-	return createAgentSessionWithTrustedScheduler(options, createScheduler);
-}
-
 const WORKER_TOOL_EXECUTION_OBJECT_TYPE = "coding_agent.worker_tool_execution";
 
-interface WorkerToolExecutionFactV1 {
+interface WorkerToolExecutionFact {
 	readonly schemaVersion: 1;
 	readonly type: typeof WORKER_TOOL_EXECUTION_OBJECT_TYPE;
 	readonly id: string;
@@ -76,15 +69,15 @@ interface WorkerToolExecutionFactV1 {
 	readonly bindingId: string;
 	readonly bindingEpochId: string;
 	readonly agentInstanceId?: string;
-	readonly result: ToolExecutionResultV1;
+	readonly result: ToolExecutionResult;
 }
 
 async function appendImmutableWorkerFact<TPayload>(
-	ledger: SessionLedgerV1,
+	ledger: SessionLedger,
 	objectType: string,
 	objectId: string,
 	payload: TPayload,
-	options: Parameters<SessionLedgerV1["appendFact"]>[3],
+	options: Parameters<SessionLedger["appendFact"]>[3],
 	sessionId: string,
 ): Promise<TPayload> {
 	const stableCorrelation = (correlation: object) => Object.fromEntries(Object.entries(correlation).filter(([key, value]) => key !== "revision" && key !== "fencingToken" && value !== undefined));
@@ -94,7 +87,7 @@ async function appendImmutableWorkerFact<TPayload>(
 		...Object.fromEntries(Object.entries(options.correlation).filter(([, value]) => value !== undefined)),
 		revision: 1,
 	};
-	const matchesExpectedFact = (record: Awaited<ReturnType<SessionLedgerV1["get"]>>): record is Extract<NonNullable<typeof record>, { readonly kind: "fact" }> =>
+	const matchesExpectedFact = (record: Awaited<ReturnType<SessionLedger["get"]>>): record is Extract<NonNullable<typeof record>, { readonly kind: "fact" }> =>
 		record !== undefined && record.kind === "fact" && record.revision === 1 && record.objectId === objectId && record.clientRequestId === options.clientRequestId &&
 		record.correlation.revision === record.revision && typeof record.fencingToken === "string" && record.fencingToken.length > 0 && record.correlation.fencingToken === record.fencingToken &&
 		canonicalFoundationJson(stableCorrelation(record.correlation)) === canonicalFoundationJson(stableCorrelation(expectedCorrelation)) && canonicalFoundationJson(record.payload) === canonicalFoundationJson(payload);
@@ -117,19 +110,19 @@ async function appendImmutableWorkerFact<TPayload>(
 async function persistWorkerToolExecution(
 	session: AgentHarnessOptions["session"],
 	providerId: string,
-	request: SandboxOperationRequestV1,
+	request: SandboxOperationRequest,
 	runId: string | undefined,
 	writer: SessionLedgerWriter,
-	receipt: WorkerReceiptV1,
-	result: ToolExecutionResultV1,
+	receipt: WorkerReceipt,
+	result: ToolExecutionResult,
 ): Promise<void> {
-	const checkedReceipt = validateWorkerReceipt(receipt);
-	if (!checkedReceipt.ok) throw checkedReceipt.error;
-	const conformedReceipt = validateWorkerReceiptForProviderV1(checkedReceipt.value, { providerId, providerClass: "operation_worker" });
+	const receiptResult = validateWorkerReceipt(receipt);
+	if (!receiptResult.ok) throw receiptResult.error;
+	const conformedReceipt = validateWorkerReceiptForProvider(receiptResult.value, { providerId, providerClass: "operation_worker" });
 	if (!conformedReceipt.ok) throw conformedReceipt.error;
 	if (conformedReceipt.value.taskId !== request.taskId || conformedReceipt.value.dispatchId !== request.dispatchId || conformedReceipt.value.attemptId !== request.attemptId) throw new FoundationError("invalid_correlation", "WorkerReceipt does not match the exact Host execution identity");
-	const checkedResult = validateToolExecutionResultV1(result);
-	if (!checkedResult.ok) throw checkedResult.error;
+	const toolResult = validateToolExecutionResult(result);
+	if (!toolResult.ok) throw toolResult.error;
 	const metadata = await session.getMetadata();
 	const receiptCorrelation = conformedReceipt.value.provenance.correlation;
 	if (
@@ -143,7 +136,7 @@ async function persistWorkerToolExecution(
 		(receiptCorrelation.bindingId !== undefined && receiptCorrelation.bindingId !== request.bindingId) ||
 		(receiptCorrelation.bindingEpochId !== undefined && receiptCorrelation.bindingEpochId !== request.bindingEpochId) || receiptCorrelation.agentInstanceId !== undefined
 	) throw new FoundationError("invalid_correlation", "WorkerReceipt does not match the exact Host execution correlation");
-	const fact: WorkerToolExecutionFactV1 = {
+	const fact: WorkerToolExecutionFact = {
 		schemaVersion: 1,
 		type: WORKER_TOOL_EXECUTION_OBJECT_TYPE,
 		id: request.operationId,
@@ -159,9 +152,9 @@ async function persistWorkerToolExecution(
 		bindingId: request.bindingId as string,
 		bindingEpochId: request.bindingEpochId as string,
 		...(request.agentInstanceId === undefined ? {} : { agentInstanceId: request.agentInstanceId }),
-		result: checkedResult.value,
+		result: toolResult.value,
 	};
-	const ledger = new SessionLedgerV1(session, { ownerId: `coding-agent-worker-receipt:${providerId}`, writer });
+	const ledger = new SessionLedger(session, { ownerId: `coding-agent-worker-receipt:${providerId}`, writer });
 	await appendImmutableWorkerFact(ledger, "worker_receipt", conformedReceipt.value.workerReceiptId, conformedReceipt.value, {
 		clientRequestId: `worker-receipt:${conformedReceipt.value.workerReceiptId}`,
 		expectedRevision: 0,
@@ -216,14 +209,19 @@ export interface CreateCodingAgentHarnessOptions extends Omit<AgentHarnessOption
 	sessionFile?: string;
 	tools?: CodingAgentHarnessTool[];
 	systemPromptOptions?: Omit<BuildSystemPromptOptions, "cwd" | "promptGuidelines" | "selectedTools" | "toolSnippets">;
+	/** The only supported optional-authority input for the server Harness. */
+	runtimeComposition?: AgentRuntimeCompositionFactory;
+}
+
+interface InternalCreateCodingAgentHarnessOptions extends CreateCodingAgentHarnessOptions {
 	/** Explicit opt-in for the Foundation sandbox ToolGateway route. */
 	workerSandbox?: {
 		readonly provider: SandboxOperationProvider;
-		readonly routes: readonly ToolGatewayRouteV1[];
+		readonly routes: readonly ToolGatewayRoute[];
 		readonly onOperationPayload?: (operationId: string, payload: FoundationJsonValue) => void;
 	};
-	/** Trusted Host-only opt-in; omitted by every default product path. */
-	subagents?: TrustedSubagentCompositionOptionsV1;
+	/** Package-private test bridge; product paths use runtimeComposition. */
+	subagents?: SubagentCompositionOptions;
 }
 
 export interface BuildCodingAgentHarnessSystemPromptOptions {
@@ -258,6 +256,17 @@ export function buildCodingAgentHarnessSystemPrompt(options: BuildCodingAgentHar
 }
 
 export async function createCodingAgentHarness(options: CreateCodingAgentHarnessOptions) {
+	return createCodingAgentHarnessInternal(options);
+}
+
+/** @internal Test-only bridge for the pre-composition sandbox fixture. */
+export async function createCodingAgentHarnessFromTrustedProvidersForTest(
+	options: InternalCreateCodingAgentHarnessOptions,
+) {
+	return createCodingAgentHarnessInternal(options);
+}
+
+async function createCodingAgentHarnessInternal(options: InternalCreateCodingAgentHarnessOptions) {
 	const {
 		env,
 		bashCommandPrefix,
@@ -265,11 +274,15 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		systemPromptOptions,
 		workerSandbox,
 		subagents,
+		runtimeComposition: runtimeCompositionFactory,
 		tools: providedTools,
 		activeToolNames: providedActiveToolNames,
 		systemPrompt: providedSystemPrompt,
 		...harnessOptions
 	} = options;
+	if (runtimeCompositionFactory !== undefined && (workerSandbox !== undefined || subagents !== undefined)) {
+		throw new TypeError("Coding-agent Harness accepts optional providers through one runtime composition");
+	}
 	let harness: AgentHarness | undefined;
 	const getHarness = (): AgentHarness => {
 		if (!harness) throw new Error("Coding-agent Harness callback ran before Harness initialization");
@@ -339,16 +352,51 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		systemPrompt,
 	});
 	harness = created.harness;
+	const runtimeSessionId = (await options.session.getMetadata()).id;
+	const materializeRuntimeComposition = (
+		factory: AgentRuntimeCompositionFactory,
+	) => materializeAgentRuntimeComposition(factory, {
+		session: options.session,
+		harness: created.harness,
+		sessionId: runtimeSessionId,
+		models: options.models,
+	});
+	if (runtimeCompositionFactory !== undefined) {
+		const runtimeComposition = materializeRuntimeComposition(runtimeCompositionFactory);
+		const subagentComposition = createSubagentComposition(runtimeComposition.subagents);
+		if (runtimeComposition.toolGateway === undefined) {
+			return {
+				...created,
+				runtimeComposition,
+				...(subagentComposition === undefined ? {} : { subagentComposition }),
+			};
+		}
+		return {
+			...created,
+			runtimeComposition,
+			...(subagentComposition === undefined ? {} : { subagentComposition }),
+			operationToolGateway: runtimeComposition.toolGateway,
+		};
+	}
 	if (subagents !== undefined && subagents.session !== options.session) {
 		await created.harness.close();
 		throw new FoundationError("subagent_spawn_invalid", "Trusted subagent composition must use the Harness Session");
 	}
-	const subagentComposition = createTrustedSubagentCompositionV1(subagents);
+	const subagentComposition = createSubagentComposition(subagents);
 	if (workerSandbox === undefined) {
-		return subagentComposition === undefined ? created : { ...created, subagentComposition };
+		const runtimeComposition = materializeRuntimeComposition(
+			createAgentRuntimeCompositionFactoryFromTrustedProviders({
+				...(subagents === undefined ? {} : { subagentOptions: subagents }),
+			}),
+		);
+		return {
+			...created,
+			runtimeComposition,
+			...(subagentComposition === undefined ? {} : { subagentComposition }),
+		};
 	}
 	const workerCapabilities = Object.freeze((await workerSandbox.provider.capabilities()).map((capability) => {
-		const validated = validateFoundationProviderCapabilityV1(capability);
+		const validated = validateFoundationProviderCapability(capability);
 		if (!validated.ok) throw validated.error;
 		return Object.freeze({ ...validated.value });
 	}));
@@ -360,7 +408,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		async capabilities() {
 			return workerCapabilities;
 		},
-		async start(request: SandboxOperationRequestV1, executionOptions = {}) {
+		async start(request: SandboxOperationRequest, executionOptions = {}) {
 			const { bindingId, bindingEpochId, taskId, dispatchId, attemptId } = request;
 			if (
 				taskId === undefined || dispatchId === undefined || attemptId === undefined ||
@@ -376,28 +424,28 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 			}
 			if (attemptRecord?.kind === "fact") {
 				const attemptFact = attemptRecord;
-				const checkedAttempt = validateAttemptV1(attemptFact.payload);
+				const attemptResult = validateAttempt(attemptFact.payload);
 				const attemptCorrelation = attemptFact.correlation;
 				if (
-					attemptFact.revision !== 1 || !checkedAttempt.ok || attemptCorrelation.revision !== attemptFact.revision || attemptCorrelation.sessionId !== sessionMetadata.id || attemptCorrelation.laneId !== "main" ||
+					attemptFact.revision !== 1 || !attemptResult.ok || attemptCorrelation.revision !== attemptFact.revision || attemptCorrelation.sessionId !== sessionMetadata.id || attemptCorrelation.laneId !== "main" ||
 					attemptCorrelation.taskId !== taskId || attemptCorrelation.dispatchId !== dispatchId || attemptCorrelation.attemptId !== attemptId || attemptCorrelation.bindingId !== bindingId ||
 					attemptCorrelation.bindingEpochId !== bindingEpochId || attemptCorrelation.agentInstanceId !== request.agentInstanceId || attemptCorrelation.runId !== undefined ||
 					attemptCorrelation.operationId !== undefined || attemptCorrelation.providerId !== undefined || attemptCorrelation.toolCallId !== undefined ||
-					checkedAttempt.value.attemptId !== attemptId || checkedAttempt.value.taskId !== taskId || checkedAttempt.value.dispatchId !== dispatchId || checkedAttempt.value.bindingId !== bindingId ||
-					checkedAttempt.value.bindingEpochIds[0] !== bindingEpochId || checkedAttempt.value.agentInstanceId !== request.agentInstanceId
+					attemptResult.value.attemptId !== attemptId || attemptResult.value.taskId !== taskId || attemptResult.value.dispatchId !== dispatchId || attemptResult.value.bindingId !== bindingId ||
+					attemptResult.value.bindingEpochIds[0] !== bindingEpochId || attemptResult.value.agentInstanceId !== request.agentInstanceId
 				) return Result.err(new FoundationError("invalid_correlation", "Sandbox Worker Attempt fact does not match the request"));
 				const intents = await options.session.findFoundationRecords({ kind: "intent", objectType: "attempt", includePruned: true, order: "oldestFirst" });
 				const matchingIntents = intents.filter((record) => {
 					if (record.kind !== "intent" || record.payload === undefined || record.payload === null || typeof record.payload !== "object" || Array.isArray(record.payload)) return false;
 					const payload = record.payload as { readonly attemptId?: unknown; readonly taskId?: unknown; readonly dispatchId?: unknown; readonly bindingId?: unknown; readonly bindingEpochIds?: unknown; readonly agentInstanceId?: unknown; readonly runId?: unknown };
 					const candidateRunId = payload.runId;
-					return record.revision === 1 && typeof candidateRunId === "string" && record.objectId === `attempt_${candidateRunId}` && record.clientRequestId === `harness:intent:${candidateRunId}` && record.correlation.sessionId === sessionMetadata.id && record.correlation.laneId === "main" && record.correlation.revision === record.revision && record.correlation.runId === candidateRunId && record.correlation.operationId === candidateRunId && record.correlation.taskId === checkedAttempt.value.taskId && record.correlation.dispatchId === checkedAttempt.value.dispatchId && record.correlation.attemptId === record.objectId && record.correlation.bindingId === checkedAttempt.value.bindingId && record.correlation.bindingEpochId === checkedAttempt.value.bindingEpochIds[0] && record.correlation.agentInstanceId === checkedAttempt.value.agentInstanceId && record.correlation.providerId === checkedAttempt.value.providerId && record.correlation.toolCallId === undefined && payload.attemptId === record.objectId && payload.taskId === checkedAttempt.value.taskId && payload.dispatchId === checkedAttempt.value.dispatchId && payload.bindingId === checkedAttempt.value.bindingId && Array.isArray(payload.bindingEpochIds) && payload.bindingEpochIds[0] === checkedAttempt.value.bindingEpochIds[0] && payload.agentInstanceId === checkedAttempt.value.agentInstanceId;
+					return record.revision === 1 && typeof candidateRunId === "string" && record.objectId === `attempt_${candidateRunId}` && record.clientRequestId === `harness:intent:${candidateRunId}` && record.correlation.sessionId === sessionMetadata.id && record.correlation.laneId === "main" && record.correlation.revision === record.revision && record.correlation.runId === candidateRunId && record.correlation.operationId === candidateRunId && record.correlation.taskId === attemptResult.value.taskId && record.correlation.dispatchId === attemptResult.value.dispatchId && record.correlation.attemptId === record.objectId && record.correlation.bindingId === attemptResult.value.bindingId && record.correlation.bindingEpochId === attemptResult.value.bindingEpochIds[0] && record.correlation.agentInstanceId === attemptResult.value.agentInstanceId && record.correlation.providerId === attemptResult.value.providerId && record.correlation.toolCallId === undefined && payload.attemptId === record.objectId && payload.taskId === attemptResult.value.taskId && payload.dispatchId === attemptResult.value.dispatchId && payload.bindingId === attemptResult.value.bindingId && Array.isArray(payload.bindingEpochIds) && payload.bindingEpochIds[0] === attemptResult.value.bindingEpochIds[0] && payload.agentInstanceId === attemptResult.value.agentInstanceId;
 				});
 				const matchingIntent = matchingIntents[0];
 				if (matchingIntents.length !== 1 || matchingIntent?.kind !== "intent" || matchingIntent.payload === undefined || matchingIntent.payload === null || typeof matchingIntent.payload !== "object" || Array.isArray(matchingIntent.payload)) return Result.err(new FoundationError("invalid_correlation", "Sandbox Worker Attempt requires exactly one matching Harness intent"));
 				runId = (matchingIntent.payload as { readonly runId: string }).runId;
 			}
-			const correlation: ExecutionCorrelationV1 = {
+			const correlation: ExecutionCorrelation = {
 				sessionId: sessionMetadata.id,
 				laneId: "main",
 				operationId: request.operationId,
@@ -411,7 +459,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 				attemptId,
 				revision: 0,
 			};
-			const executed = await executeOperationV1({
+			const executed = await executeOperation({
 				provider: workerSandbox.provider,
 				request,
 				correlation,
@@ -419,7 +467,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 			});
 			if (!executed.ok) return executed;
 			const receipt = executed.value;
-			const result: ToolExecutionResultV1 = {
+			const result: ToolExecutionResult = {
 				schemaVersion: 1,
 				toolCallId: request.toolCallId,
 				toolName: request.toolName,
@@ -430,7 +478,7 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 				...(receipt.error === undefined ? {} : { error: receipt.error }),
 			};
 			try {
-				await persistWorkerToolExecution(options.session, workerSandbox.provider.providerId, request, runId, getHarness().t5.writer, receipt, result);
+				await persistWorkerToolExecution(options.session, workerSandbox.provider.providerId, request, runId, getHarness().ledger.writer, receipt, result);
 			} catch (error) {
 				if (error instanceof FoundationError) return Result.err(error);
 				return Result.err(new FoundationError("worker_persistence_failed", "Sandbox WorkerReceipt persistence failed"));
@@ -440,8 +488,9 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 		cancel: (operationId) => workerSandbox.provider.cancel(operationId),
 		dispose: () => workerSandbox.provider.dispose(),
 	};
-	const sandboxProvider = createSandboxOperationToolGatewayProviderV1({
+	const sandboxProvider = createSandboxOperationToolGatewayProvider({
 		providerId: operationWorker.providerId,
+		revision: 1,
 		routes: workerSandbox.routes,
 		sandbox: operationWorker,
 		capabilities: workerCapabilities,
@@ -449,12 +498,20 @@ export async function createCodingAgentHarness(options: CreateCodingAgentHarness
 			? {}
 			: { onOperationPayload: workerSandbox.onOperationPayload }),
 	});
+	const operationToolGateway = createFoundationToolGateway({
+		gatewayId: `${workerSandbox.provider.providerId}:tool-gateway`,
+		providers: [sandboxProvider],
+	});
+	const runtimeComposition = materializeRuntimeComposition(
+		createAgentRuntimeCompositionFactoryFromTrustedProviders({
+			toolGateway: () => operationToolGateway,
+			...(subagents === undefined ? {} : { subagentOptions: subagents }),
+		}),
+	);
 	return {
 		...created,
+		runtimeComposition,
 		...(subagentComposition === undefined ? {} : { subagentComposition }),
-		operationToolGateway: createFoundationToolGatewayV1({
-			gatewayId: `${workerSandbox.provider.providerId}:tool-gateway`,
-			providers: [sandboxProvider],
-		}),
+		operationToolGateway,
 	};
 }

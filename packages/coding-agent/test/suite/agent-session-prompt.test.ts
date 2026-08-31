@@ -2,11 +2,11 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall, type Model } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall, type Model } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { InputEvent } from "../../src/core/extensions/index.ts";
-import type { PromptTemplate } from "../../src/core/prompt-templates.ts";
+import type { PromptTemplate } from "../../src/core/runtime/prompt-templates.ts";
 import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
 import { createTestResourceLoader } from "../utilities.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
@@ -31,7 +31,7 @@ describe("AgentSession prompt characterization", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
-		harness.setResponses([fauxAssistantMessage("hello")]);
+		harness.setResponses([fakeAssistantMessage("hello")]);
 
 		await harness.session.prompt("hi");
 
@@ -60,8 +60,8 @@ describe("AgentSession prompt characterization", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("echo", { text: "hello" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage(fakeToolCall("echo", { text: "hello" }), { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		await harness.session.prompt("start");
@@ -99,12 +99,12 @@ describe("AgentSession prompt characterization", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("slow", { value: "a" }), fauxToolCall("fast", { value: "b" })], {
+			fakeAssistantMessage([fakeToolCall("slow", { value: "a" }), fakeToolCall("fast", { value: "b" })], {
 				stopReason: "toolUse",
 			}),
 			(context) => {
 				const toolResults = context.messages.filter((message) => message.role === "toolResult");
-				return fauxAssistantMessage(`tool results: ${toolResults.length}`);
+				return fakeAssistantMessage(`tool results: ${toolResults.length}`);
 			},
 		]);
 
@@ -127,7 +127,7 @@ describe("AgentSession prompt characterization", () => {
 					user?.role === "user" &&
 					typeof user.content !== "string" &&
 					user.content.some((part) => part.type === "image");
-				return fauxAssistantMessage("ok");
+				return fakeAssistantMessage("ok");
 			},
 		]);
 
@@ -180,7 +180,7 @@ describe("AgentSession prompt characterization", () => {
 			(context) => {
 				const user = context.messages.find((message) => message.role === "user");
 				expandedPrompt = user ? getMessageText(user) : "";
-				return fauxAssistantMessage("ok");
+				return fakeAssistantMessage("ok");
 			},
 		]);
 
@@ -215,7 +215,7 @@ describe("AgentSession prompt characterization", () => {
 			(context) => {
 				const user = context.messages.find((message) => message.role === "user");
 				expandedPrompt = user ? getMessageText(user) : "";
-				return fauxAssistantMessage("ok");
+				return fakeAssistantMessage("ok");
 			},
 		]);
 
@@ -239,7 +239,7 @@ describe("AgentSession prompt characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("should stay queued")]);
+		harness.setResponses([fakeAssistantMessage("should stay queued")]);
 
 		await harness.session.prompt("/testcmd hello world");
 
@@ -252,7 +252,7 @@ describe("AgentSession prompt characterization", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 
-		harness.setResponses([fauxAssistantMessage("response")]);
+		harness.setResponses([fakeAssistantMessage("response")]);
 
 		await harness.session.sendUserMessage("from extension");
 
@@ -272,7 +272,7 @@ describe("AgentSession prompt characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("ok")]);
+		harness.setResponses([fakeAssistantMessage("ok")]);
 
 		await harness.session.prompt("idle", { streamingBehavior: "followUp" });
 
@@ -311,8 +311,8 @@ describe("AgentSession prompt characterization", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage(fakeToolCall("wait", {}), { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		const sawToolStart = new Promise<void>((resolve) => {
@@ -355,8 +355,8 @@ describe("AgentSession prompt characterization", () => {
 		const harness = await createHarness({ tools: [waitTool] });
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage(fakeToolCall("wait", {}), { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		const sawToolStart = new Promise<void>((resolve) => {
@@ -408,7 +408,7 @@ describe("AgentSession prompt characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+		harness.setResponses([fakeAssistantMessage("one"), fakeAssistantMessage("two")]);
 		await harness.session.prompt("first");
 		await harness.session.prompt("second");
 

@@ -1,4 +1,4 @@
-import type { AgentSessionEvent } from "../core/agent-session.ts";
+import type { AgentSessionEvent } from "../core/session/agent-session.ts";
 
 type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T;
 

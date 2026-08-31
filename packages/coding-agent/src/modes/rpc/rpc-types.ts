@@ -7,49 +7,34 @@
 
 import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
-import type { SessionStats } from "../../core/agent-session.ts";
-import type { SafeSubagentLifecycleProjectionV1 } from "../../core/subagent-composition.ts";
-import type { ChildLifecycleStatusV1 } from "../../core/subagent.ts";
-import type { SchedulerSafeStatusV1 } from "../../core/foundation-control-plane.ts";
-import type { BashResult } from "../../core/bash-executor.ts";
-import type { CapabilityCatalogView } from "../../core/capability-registry.ts";
-import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { SessionStats } from "../../core/session/agent-session.ts";
+import type { BashResult } from "../../core/runtime/bash-executor.ts";
 import type { RunBindingAssociation } from "../../core/binding-handles.ts";
+import type { CapabilityCatalogView } from "../../core/policy/capability-registry.ts";
+import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ConnectorRuntimeStatus } from "../../core/connector/runtime-status.ts";
 import type {
 	AuditQuery,
 	AuditQueryResult,
 	AuditReplayQuery,
 	AuditReplayResult,
-} from "../../core/execution-audit-query.ts";
-import type { ExternalAgentAdapterDescriptor } from "../../core/external-agent-registry.ts";
-import type { ExternalAgentSelection } from "../../core/external-agent-adapter.ts";
+} from "../../core/session/execution-audit-query.ts";
+import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/policy/execution.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
 import type {
-	ExternalExecutionRef,
-	ExternalMappingPersistenceResult,
-	ExternalMappingRequest,
-} from "../../core/external-session-mapping.ts";
-import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/model-broker.ts";
-import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/execution-policy.ts";
-import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/mcp-content.ts";
-import type { MCPContentPublicErrorCode } from "../../core/mcp-error-codes.ts";
+	ExternalConnectorDescriptor,
+	ExternalConnectorReadinessStatus,
+	ExternalConnectorSelection,
+} from "../../core/connector/registry.ts";
+import type { SchedulerSafeStatus } from "../../core/runtime/foundation-control-plane.ts";
+import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/runtime/mcp-content.ts";
+import type { MCPContentPublicErrorCode } from "../../core/runtime/mcp-error-codes.ts";
 import type {
 	MCPPromptListResult,
 	MCPResourceListResult,
 	MCPResourceTemplateListResult,
-} from "../../core/mcp-types.ts";
-import type { TaskGateRecord, TaskGateStatus } from "../../core/task-gate.ts";
-import type {
-	TaskGraphNodeDefinition,
-	TaskGraphNodeView,
-	TaskGraphRecord,
-	TaskGraphStatus,
-} from "../../core/task-graph.ts";
-import type {
-	TaskCredentialDeliveryReceipt,
-	TaskCredentialGrant,
-	TaskCredentialScope,
-	TaskCredentialStatus,
-} from "../../core/task-credential-lease.ts";
+} from "../../core/runtime/mcp-types.ts";
+import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/runtime/model-broker.ts";
 import type {
 	AutomationError,
 	PublicCapabilityBindingLedgerRecord,
@@ -64,9 +49,24 @@ import type {
 	RunModelBudgetSummary,
 	RunRecoveryState,
 	RunStatus,
-} from "../../core/run-lifecycle.ts";
+} from "../../core/session/run-lifecycle.ts";
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
-import type { WorkerLifecycleStatusV1 } from "../../core/worker.ts";
+import type { ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
+import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
+import type {
+	TaskCredentialDeliveryReceipt,
+	TaskCredentialGrant,
+	TaskCredentialScope,
+	TaskCredentialStatus,
+} from "../../core/policy/task-credential-lease.ts";
+import type { TaskGateRecord, TaskGateStatus } from "../../core/policy/task-gate.ts";
+import type {
+	TaskGraphNodeDefinition,
+	TaskGraphNodeView,
+	TaskGraphRecord,
+	TaskGraphStatus,
+} from "../../core/scheduler/task-graph.ts";
+import type { WorkerLifecycleStatus } from "../../core/worker/lifecycle.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -77,9 +77,6 @@ export type RpcAuditQueryCommand = { id?: string; type: "audit.query" } & AuditQ
 
 /** Flattened Automation Host request for a single-run audit replay. */
 export type RpcAuditReplayCommand = { id?: string; type: "audit.replay" } & AuditReplayQuery;
-
-/** Flattened Automation Host request for an append-only external mapping. */
-export type RpcExternalMapCommand = { id?: string; type: "external.map" } & ExternalMappingRequest;
 
 export type RpcCommand =
 	// Prompting
@@ -198,9 +195,10 @@ export type RpcCommand =
 			/** Optional inclusive canonical UTC deadline for the Run. */
 			deadlineAt?: string;
 			images?: ImageContent[];
-			external?: ExternalExecutionRef;
-			/** Explicit trusted External Agent Adapter selection for this Run. */
-			externalAgent?: ExternalAgentSelection;
+			/** Explicit trusted External Connector selection for this Run. */
+			externalConnector?: ExternalConnectorSelection;
+			/** Canonical references resolved only by the Host's trusted Artifact authority. */
+			artifacts?: readonly CanonicalExternalAgentArtifactReference[];
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
@@ -219,9 +217,9 @@ export type RpcCommand =
 			/** Optional inclusive canonical UTC deadline for the resumed Run. */
 			deadlineAt?: string;
 			images?: ImageContent[];
-			external?: ExternalExecutionRef;
-			/** Explicit trusted External Agent Adapter selection for the resumed Run. */
-			externalAgent?: ExternalAgentSelection;
+			/** Explicit trusted External Connector selection for the resumed Run. */
+			externalConnector?: ExternalConnectorSelection;
+			artifacts?: readonly CanonicalExternalAgentArtifactReference[];
 			capabilityProfile?: string;
 			policyProfile?: string;
 			modelRoute?: ModelRouteSelection;
@@ -229,7 +227,6 @@ export type RpcCommand =
 	  }
 	| RpcAuditQueryCommand
 	| RpcAuditReplayCommand
-	| RpcExternalMapCommand
 	// Task Gate control-plane commands (write commands require clientRequestId)
 	| {
 			id?: string;
@@ -373,7 +370,7 @@ export type RpcCommand =
 			id?: string;
 			type: "worker.list";
 			runId?: string;
-			status?: WorkerLifecycleStatusV1;
+			status?: WorkerLifecycleStatus;
 			limit?: number;
 			cursor?: string;
 	  }
@@ -384,7 +381,7 @@ export type RpcCommand =
 			type: "subagent.list";
 			runId: string;
 			parentAgentInstanceId?: string;
-			status?: ChildLifecycleStatusV1;
+			status?: ChildLifecycleStatus;
 			limit?: number;
 	  }
 	| { id?: string; type: "subagent.cancel"; runId: string; childAgentInstanceId: string }
@@ -942,13 +939,13 @@ export type RpcCommandType = RpcCommand["type"];
 // Automation Host (protocolVersion 1)
 // ============================================================================
 
-/** Commands introduced by the Automation Host v1 protocol. */
+/** Commands introduced by the Automation Host RPC protocol. */
 export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.resume";
 
-/** Automation Host v1 audit and external mapping commands. */
-export type RpcAuditCommandType = "audit.query" | "audit.replay" | "external.map";
+/** Automation Host audit commands. */
+export type RpcAuditCommandType = "audit.query" | "audit.replay";
 
-/** Task Gate v1 control-plane commands. Write commands require `clientRequestId`. */
+/** Task Gate control-plane commands. Write commands require `clientRequestId`. */
 export type RpcTaskGateCommandType =
 	| "task.gate.request"
 	| "task.gate.get"
@@ -957,7 +954,7 @@ export type RpcTaskGateCommandType =
 	| "task.gate.reject"
 	| "task.gate.cancel";
 
-/** Task Graph v1 control-plane commands. Write commands require `clientRequestId`. */
+/** Task Graph control-plane commands. Write commands require `clientRequestId`. */
 export type RpcTaskGraphCommandType =
 	| "task.graph.create"
 	| "task.graph.get"
@@ -965,7 +962,7 @@ export type RpcTaskGraphCommandType =
 	| "task.graph.node.attach"
 	| "task.graph.node.settle";
 
-/** Task Credential v1 control-plane commands. Write commands require `clientRequestId`. */
+/** Task Credential control-plane commands. Write commands require `clientRequestId`. */
 export type RpcTaskCredentialCommandType =
 	| "task.credential.issue"
 	| "task.credential.get"
@@ -980,7 +977,7 @@ export type RpcWorkerCommandType = "worker.get" | "worker.list" | "worker.reclai
 export type RpcSubagentCommandType = "subagent.get" | "subagent.list" | "subagent.cancel";
 export type RpcSchedulerCommandType = "scheduler.status";
 
-/** The full Automation Host v1 command set (initialize + run commands). */
+/** The full Automation Host command set (initialize + run commands). */
 export type RpcAutomationCommandType =
 	| "initialize"
 	| RpcRunCommandType
@@ -998,7 +995,7 @@ export interface InitializeData {
 	protocolVersion: 1;
 	sessionId: string;
 	runCommands: RpcRunCommandType[];
-	/** Additive audit and external mapping command list. */
+	/** Additive audit command list. */
 	auditCommands?: RpcAuditCommandType[];
 	/** Additive Task Gate control-plane command list. */
 	taskGateCommands?: RpcTaskGateCommandType[];
@@ -1012,8 +1009,12 @@ export interface InitializeData {
 	subagentCommands?: RpcSubagentCommandType[];
 	/** Advertised only when trusted Scheduler composition is active. */
 	schedulerCommands?: RpcSchedulerCommandType[];
-	/** Safe External Agent Adapter descriptors registered by the trusted Host. */
-	externalAgentAdapters?: ReadonlyArray<ExternalAgentAdapterDescriptor>;
+	/** Safe External Connector descriptors registered by the trusted Host. */
+	externalConnectors?: ReadonlyArray<ExternalConnectorDescriptor>;
+	/** Passive, redacted readiness projected by the trusted Host. */
+	externalConnectorReadiness?: ReadonlyArray<ExternalConnectorReadinessStatus>;
+	/** Passive, secret-free runtime status projected from captured in-memory facts. */
+	externalConnectorRuntimeStatus?: ReadonlyArray<ConnectorRuntimeStatus>;
 }
 
 /** Data returned by a successful `run.start` / `run.resume`. */
@@ -1030,7 +1031,6 @@ export interface RunAcceptedData {
 	idempotent?: boolean;
 	receipt?: PublicRunReceipt;
 	recovery?: RunRecoveryState;
-	external?: ExternalExecutionRef;
 	modelBindingId?: string;
 	previousModelBindingId?: string;
 	policyBindingId?: string;
@@ -1060,9 +1060,6 @@ export type AuditQueryData = AuditQueryResult;
 
 /** Data returned by a successful `audit.replay`. */
 export type AuditReplayData = AuditReplayResult;
-
-/** Data returned by a successful `external.map`. */
-export type ExternalMapData = ExternalMappingPersistenceResult;
 
 /** Data returned by a successful `task.gate.request` / approve / reject / cancel. */
 export interface TaskGateMutationData {
@@ -1162,7 +1159,7 @@ export interface RpcWorkerRecord {
 	bindingEpochId?: string;
 	attemptId?: string;
 	profileId: string;
-	status: WorkerLifecycleStatusV1;
+	status: WorkerLifecycleStatus;
 	revision: number;
 	createdAt: string;
 	readyAt?: string;
@@ -1217,20 +1214,25 @@ export type RpcWorkerResponse =
 	  };
 
 export interface SubagentGetData {
-	subagent: SafeSubagentLifecycleProjectionV1;
+	subagent: SafeSubagentLifecycleProjection;
 }
 
 export interface SubagentListData {
-	subagents: SafeSubagentLifecycleProjectionV1[];
+	subagents: SafeSubagentLifecycleProjection[];
 	truncated: boolean;
 }
 
 export interface SubagentCancelData {
-	subagent: SafeSubagentLifecycleProjectionV1;
+	subagent: SafeSubagentLifecycleProjection;
 	idempotent: boolean;
 }
 
-export type RpcSubagentErrorCode = "host_not_initialized" | "subagent_invalid" | "subagent_not_found" | "subagent_unavailable" | "subagent_cancel_failed";
+export type RpcSubagentErrorCode =
+	| "host_not_initialized"
+	| "subagent_invalid"
+	| "subagent_not_found"
+	| "subagent_unavailable"
+	| "subagent_cancel_failed";
 
 export interface RpcSubagentError {
 	code: RpcSubagentErrorCode;
@@ -1245,7 +1247,7 @@ export type RpcSubagentResponse =
 	| { id?: string; type: "response"; command: RpcSubagentCommandType; success: false; error: RpcSubagentError };
 
 export interface SchedulerStatusData {
-	readonly scheduler: SchedulerSafeStatusV1;
+	readonly scheduler: SchedulerSafeStatus;
 }
 
 export type RpcSchedulerResponse =
@@ -1259,7 +1261,7 @@ export type RpcSchedulerResponse =
 	  };
 
 /**
- * Automation Host v1 responses.
+ * Automation Host responses.
  *
  * Success responses mirror the corresponding commands. Every failure carries a
  * structured {@link AutomationError} instead of the legacy string `error`, so
@@ -1273,7 +1275,6 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "run.cancel"; success: true; data: RunCancelData }
 	| { id?: string; type: "response"; command: "audit.query"; success: true; data: AuditQueryData }
 	| { id?: string; type: "response"; command: "audit.replay"; success: true; data: AuditReplayData }
-	| { id?: string; type: "response"; command: "external.map"; success: true; data: ExternalMapData }
 	| { id?: string; type: "response"; command: "task.gate.request"; success: true; data: TaskGateMutationData }
 	| { id?: string; type: "response"; command: "task.gate.get"; success: true; data: TaskGateGetData }
 	| { id?: string; type: "response"; command: "task.gate.list"; success: true; data: TaskGateListData }
@@ -1288,7 +1289,13 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "task.credential.issue"; success: true; data: TaskCredentialIssueData }
 	| { id?: string; type: "response"; command: "task.credential.get"; success: true; data: TaskCredentialGetData }
 	| { id?: string; type: "response"; command: "task.credential.list"; success: true; data: TaskCredentialListData }
-	| { id?: string; type: "response"; command: "task.credential.heartbeat"; success: true; data: TaskCredentialHeartbeatData }
+	| {
+			id?: string;
+			type: "response";
+			command: "task.credential.heartbeat";
+			success: true;
+			data: TaskCredentialHeartbeatData;
+	  }
 	| { id?: string; type: "response"; command: "task.credential.revoke"; success: true; data: TaskCredentialRevokeData }
 	| { id?: string; type: "response"; command: "task.credential.settle"; success: true; data: TaskCredentialSettleData }
 	| {
@@ -1300,20 +1307,7 @@ export type RpcAutomationResponse =
 	  };
 
 // Re-export the redacted capability binding view consumed by get_capabilities.
-export type { CapabilityBindingView } from "../../core/capability-registry.ts";
-// Re-export the safe MCP content catalog/result types consumed by the wire.
-export type {
-	MCPContentProvenance,
-	MCPNormalizedContentBlock,
-	MCPNormalizedPromptMessage,
-} from "../../core/mcp-content.ts";
-export type {
-	MCPPromptArgumentSummary,
-	MCPPromptListResult,
-	MCPPromptSummary,
-	MCPResourceListResult,
-	MCPResourceSummary,
-} from "../../core/mcp-types.ts";
+export type { CapabilityBindingView } from "../../core/policy/capability-registry.ts";
 // Re-export public audit query/replay types.
 export type {
 	AuditEvent,
@@ -1323,44 +1317,26 @@ export type {
 	AuditReplayQuery,
 	AuditReplayResult,
 	AuditWarning,
-} from "../../core/execution-audit-query.ts";
-// Re-export public external mapping types.
+} from "../../core/session/execution-audit-query.ts";
+// Re-export the only current External Connector selection surface.
 export type {
-	ExternalExecutionMapping,
-	ExternalExecutionRef,
-	ExternalMappingSummary,
-	ExternalMappingPersistenceResult,
-	ExternalMappingRequest,
-} from "../../core/external-session-mapping.ts";
-// Re-export the public External Agent Adapter selection surface (safe identifiers only).
-export type { ExternalAgentSelection } from "../../core/external-agent-adapter.ts";
-export type { ExternalAgentAdapterDescriptor } from "../../core/external-agent-registry.ts";
-// Re-export public Task Gate types.
+	ExternalConnectorDescriptor,
+	ExternalConnectorReadinessStatus,
+	ExternalConnectorSelection,
+} from "../../core/connector/registry.ts";
+// Re-export the safe MCP content catalog/result types consumed by the wire.
 export type {
-	TaskGateErrorCode,
-	TaskGateRecord,
-	TaskGateStatus,
-} from "../../core/task-gate.ts";
-// Re-export public Task Graph types.
+	MCPContentProvenance,
+	MCPNormalizedContentBlock,
+	MCPNormalizedPromptMessage,
+} from "../../core/runtime/mcp-content.ts";
 export type {
-	TaskGraphErrorCode,
-	TaskGraphGateRef,
-	TaskGraphNodeAvailability,
-	TaskGraphNodeDefinition,
-	TaskGraphNodeStatus,
-	TaskGraphNodeView,
-	TaskGraphRecord,
-	TaskGraphRunRef,
-	TaskGraphStatus,
-	TaskGraphSummary,
-} from "../../core/task-graph.ts";
-// Re-export public Task Credential types.
-export type {
-	TaskCredentialDeliveryReceipt,
-	TaskCredentialGrant,
-	TaskCredentialScope,
-	TaskCredentialStatus,
-} from "../../core/task-credential-lease.ts";
+	MCPPromptArgumentSummary,
+	MCPPromptListResult,
+	MCPPromptSummary,
+	MCPResourceListResult,
+	MCPResourceSummary,
+} from "../../core/runtime/mcp-types.ts";
 // Re-export the core Automation Host types for consumers.
 export type {
 	AutomationError,
@@ -1374,4 +1350,30 @@ export type {
 	RunRecoveryState,
 	RunStatus,
 	RunTerminalStatus,
-} from "../../core/run-lifecycle.ts";
+} from "../../core/session/run-lifecycle.ts";
+// Re-export public Task Credential types.
+export type {
+	TaskCredentialDeliveryReceipt,
+	TaskCredentialGrant,
+	TaskCredentialScope,
+	TaskCredentialStatus,
+} from "../../core/policy/task-credential-lease.ts";
+// Re-export public Task Gate types.
+export type {
+	TaskGateErrorCode,
+	TaskGateRecord,
+	TaskGateStatus,
+} from "../../core/policy/task-gate.ts";
+// Re-export public Task Graph types.
+export type {
+	TaskGraphErrorCode,
+	TaskGraphGateRef,
+	TaskGraphNodeAvailability,
+	TaskGraphNodeDefinition,
+	TaskGraphNodeStatus,
+	TaskGraphNodeView,
+	TaskGraphRecord,
+	TaskGraphRunRef,
+	TaskGraphStatus,
+	TaskGraphSummary,
+} from "../../core/scheduler/task-graph.ts";

@@ -1,13 +1,11 @@
-# Execution Audit / Replay / External Mapping Contract (v1)
+# Execution Audit / Replay Contract
 
-This document freezes the v1 boundary for the Execution Audit, read-only
-Replay, and external Session/Run mapping work. It is based on the existing
-Run, Context, Capability, ModelBroker, Policy, Sandbox, Session, and RPC
-contracts reviewed for the supplied audit/replay PR and implementation plan.
-The contract and independent fixture `test/fixtures/execution-audit-contract.ts`
-were introduced during T0. The current implementation folds existing ledgers
-into this contract and adds only the explicitly listed RPC and mapping
-behavior; it does not introduce a second audit ledger.
+This document defines the current boundary for the Execution Audit, read-only
+Replay work. It is based on the existing Run, Context, Capability, ModelBroker,
+Policy, Sandbox, Session, and RPC contracts. The contract and fixture
+`test/fixtures/execution-audit-contract.ts` describe the current implementation,
+which folds existing ledgers into this contract and adds only the explicitly
+listed RPC behavior; it does not introduce a second audit ledger.
 
 The fixture is the machine-checked list of scalar values and public field
 shapes. This document defines their meaning, source mapping, and security
@@ -15,21 +13,17 @@ boundary.
 
 ## 1. Version, commands, and source mapping
 
-The v1 schema version is `1`. The additive Automation Host commands are:
+The schema version is `1`. The additive Automation Host commands are:
 
 ```text
 audit.query
 audit.replay
-external.map
 ```
 
 The existing `get_entries`, `get_execution_policy`, `policy.approve`,
 `policy.reject`, and Run commands retain their current semantics. Audit query
-and replay are read-only. Within the audit commands, `external.map` is the
-only operation that may append a Session custom entry; a later additive
-`run.start`/`run.resume` integration may append its validated mapping as part
-of Run acceptance. Task Gate transitions append their own `task.gate` custom
-entries through the Automation Host control plane
+and replay are read-only. Task Gate transitions append their own `task.gate`
+custom entries through the Automation Host control plane
 (`task.gate.request`/`approve`/`reject`/`cancel`); Task Graph transitions
 append their own `task.graph` custom entries through the Automation Host
 control plane (`task.graph.create`/`task.graph.node.attach`/`task.graph.node.settle`).
@@ -51,7 +45,6 @@ not create a second event ledger.
 | `policy.approval` | `policy.approval` | `bindingId` through policy binding |
 | `sandbox.lifecycle` | `sandbox.lifecycle` | `bindingId` through policy binding |
 | `policy.violation` | `policy.violation` | `bindingId` through policy binding |
-| `external.mapping` | `external.mapping` | mapping `aosSessionId` and optional `aosRunId` |
 | `remote.operation` | `remote.operation` | receipt `sessionId` and optional `runId` |
 | `task.gate` | `task.gate` | `gateId`; optional `runId` for direct Run correlation |
 | `task.graph` | `task.graph` | node `runRef` `runId` when present; never guessed from `taskId`, `nodeId`, or dependencies |
@@ -70,26 +63,26 @@ custom types and malformed known entries never expose their raw `data`.
 
 The source files that establish these facts are:
 
-- `src/core/run-lifecycle.ts` for Run and capability ledgers and public Run
+- `src/core/session/run-lifecycle.ts` for Run and capability ledgers and public Run
   serializers;
-- `src/core/context-engine.ts` for metadata-only snapshots;
-- `src/core/capability-registry.ts` for opaque capability identifiers;
-- `src/core/model-broker-ledger.ts` and `src/core/model-broker.ts` for model
+- `src/core/session/context-engine.ts` for metadata-only snapshots;
+- `src/core/policy/capability-registry.ts` for opaque capability identifiers;
+- `src/core/runtime/model-broker-ledger.ts` and `src/core/runtime/model-broker.ts` for model
   binding, attempt, and fallback facts;
-- `src/core/execution-policy.ts` and `src/core/execution-policy-ledger.ts`
+- `src/core/policy/execution.ts` and `src/core/policy/execution-ledger.ts`
   for policy and Sandbox facts;
-- `src/core/sandbox.ts` for the side-effecting provider boundary;
-- `src/core/session-manager.ts` for Session entry identity and file scope;
-- `src/core/task-gate.ts` for Task Gate record, transition, and fold facts;
-- `src/core/task-graph.ts` for Task Graph record, node transition, DAG, and fold facts;
-- `src/core/task-credential-lease.ts` and `src/core/task-credential-store.ts`
+- `src/core/policy/sandbox.ts` for the side-effecting provider boundary;
+- `src/core/session/manager.ts` for Session entry identity and file scope;
+- `src/core/policy/task-gate.ts` for Task Gate record, transition, and fold facts;
+- `src/core/scheduler/task-graph.ts` for Task Graph record, node transition, DAG, and fold facts;
+- `src/core/policy/task-credential-lease.ts` and `src/core/policy/task-credential-store.ts`
   for Task Credential grant, transition, and fold facts;
-- `src/core/subagent-composition.ts` and `src/core/execution-audit.ts` for the
+- `src/core/subagent/composition.ts` and `src/core/session/execution-audit.ts` for the
   digest-bound child lifecycle projection and its read-only replay guard;
 - `src/modes/rpc/rpc-types.ts` and `src/modes/rpc/rpc-mode.ts` for existing
   public RPC behavior.
 
-## 2. AuditEvent v1
+## 2. AuditEvent schema
 
 The exact event-type union is:
 
@@ -110,7 +103,6 @@ type AuditEventType =
   | "policy.approval"
   | "sandbox.lifecycle"
   | "policy.violation"
-  | "external.mapping"
   | "remote.operation"
   | "task.gate"
   | "task.graph"
@@ -126,7 +118,6 @@ interface AuditEventBase {
   recordedAt: string;
   sessionId: string;
   sourceEntryId: string;
-  external?: ExternalExecutionRef;
 }
 ```
 
@@ -149,7 +140,6 @@ type AuditEvent =
   | (AuditEventBase & { type: "policy.approval"; runId?: string; summary: AuditPolicyApprovalSummary })
   | (AuditEventBase & { type: "sandbox.lifecycle"; runId?: string; summary: AuditSandboxLifecycleSummary })
   | (AuditEventBase & { type: "policy.violation"; runId?: string; summary: AuditPolicyViolationSummary })
-  | (AuditEventBase & { type: "external.mapping"; runId?: string; summary: ExternalExecutionMapping })
   | (AuditEventBase & { type: "remote.operation"; runId?: string; summary: RemoteOperationReceipt })
   | (AuditEventBase & { type: "task.gate"; runId?: string; summary: AuditTaskGateSummary })
   | (AuditEventBase & { type: "task.graph"; runId?: string; summary: AuditTaskGraphSummary })
@@ -313,12 +303,6 @@ Internal policy `workspaceIdentity`, `constraints`, and `bindingHash` are not
 public audit fields. A policy event is correlated to a Run through the policy
 binding's `runId`; raw operation requests are never included.
 
-### External mapping summary
-
-`external.mapping` contains only the mapping keys in section 4. It never
-contains an external payload, prompt, callback data, URL, token, request
-headers, or provider diagnostic.
-
 ### Remote operation summary
 
 `remote.operation` contains the validated terminal `RemoteOperationReceipt`
@@ -329,36 +313,13 @@ Policy, and Sandbox facts. The optional Session ledger sink writes this fact
 through the existing append-only Session custom-entry API; it does not create
 a second execution ledger.
 
-### External Agent Adapter summary
+### External Agent Connector summary
 
-The External Agent Adapter introduces no new audit event type and no new
-Session custom entry. Adapter activity is exposed only through the existing
-safe sources: the Run facts (`run.accepted` / `run.started` / the terminal),
-the `external.mapping` entry, and the `remote.operation` receipt. A probe is a
-short-term preflight fact; v1 never persists a probe snapshot as a long-term
-Session capability fact, so replay never fabricates a probe result. An
-external terminal receipt is evidence for the existing Run terminal gate and
-never writes or overrides a Run terminal.
-
-Adapter facts pass exact-shape, allowlisted validation before they reach a
-Session custom entry, an audit summary, or a Run observation. The guards are
-the existing fact layers, not a separate bridge: `src/core/external-agent-adapter.ts`
-(exact-shape snapshot / prepared-binding / event / receipt validators,
-serializers, and the `runExternalAgentAdapter` driver that bounds events to a
-consistent external identity with one `started` and strictly increasing
-positive sequences), `src/core/external-session-mapping.ts` (safe external
-refs and the append-only `external.mapping` store), and
-`src/core/remote-operation.ts` (`remote.operation` receipt guards and the
-Session ledger sink), with the ordering enforced by the host wiring in
-`src/modes/rpc/rpc-host.ts` and `src/core/run-lifecycle.ts`. Unknown keys,
-raw protocol data, prompt text, credentials, paths, URLs, and unbounded free
-text are rejected; an operation receipt is recorded only after the external
-execution has a persisted mapping; and persistence is acknowledged only after
-the append is durably visible. When a public summary needs adapter identity,
-only the allowlisted adapter fields apply (`adapterId`, `targetId`, protocol
-name/version, `bindingFingerprint`); prompt, transcript, raw protocol data,
-target self-report, credentials, and paths remain forbidden everywhere. See
-[External Agent Adapter](external-agent-adapter.md).
+External Connector execution uses the shared Foundation executor and receipt
+chain. It introduces no peer audit receipt or terminal authority and never
+creates an `AgentInstance`. Vendor driver, process, probe, and handle details
+remain private and are not audit source types. See
+[External Agent Connector](external-agent-connector.md).
 
 ### Task Gate summary
 
@@ -518,9 +479,10 @@ or Run. See [Sandbox Operation Worker contract](worker-contract.md).
 
 ### Native child-agent lifecycle projection
 
-Line 12A exposes a separate digest-bound `subagent.lifecycle` projection for
-Audit and RPC consumers. It is not a new Audit event family and does not alter
-the v1 `AuditEventType` or Session custom-source unions. Its exact allowlist is:
+The native child-agent runtime exposes a separate digest-bound
+`subagent.lifecycle` projection for Audit and RPC consumers. It is not a new
+Audit event family and does not alter
+the current `AuditEventType` or Session custom-source unions. Its exact allowlist is:
 
 ```text
 schemaVersion, source, sessionId, runId, childAgentInstanceId,
@@ -560,80 +522,12 @@ responses, and OAuth codes can never become credential facts.
 An unknown key is not preserved merely because it appears in a current source
 entry. Unknown source data produces a warning, not a generic summary field.
 
-## 4. ExternalExecutionRef and mapping
+## 4. Historical ledger isolation
 
-The exact reference shape is:
-
-```ts
-interface ExternalExecutionRef {
-  namespace: string;
-  externalSessionId: string;
-  externalRunId?: string;
-}
-```
-
-The exact mapping shape is:
-
-```ts
-interface ExternalExecutionMapping {
-  namespace: string;
-  externalSessionId: string;
-  externalRunId?: string;
-  aosSessionId: string;
-  aosRunId?: string;
-  createdAt: string;
-  source?: string;
-  correlationId?: string;
-}
-```
-
-The persisted custom entry is `customType: "external.mapping"` with a
-schema-versioned payload containing exactly the mapping object above:
-
-```ts
-{
-  schemaVersion: 1,
-  mapping: ExternalExecutionMapping,
-}
-```
-
-`createdAt` is server-generated. `source` and `correlationId` are optional,
-bounded, safe identifiers only; they are not a place for an external payload.
-All IDs must be non-empty when required, have no control characters, and be
-validated as identifiers rather than URLs, paths, commands, or serialized
-objects. The absence of `externalRunId` or `aosRunId` is distinct from an
-empty value; empty optional values are invalid.
-
-The external uniqueness key is:
-
-```text
-(namespace, externalSessionId, externalRunId or ABSENT)
-```
-
-The AOS uniqueness key is:
-
-```text
-(namespace, aosSessionId, aosRunId or ABSENT)
-```
-
-The same key mapping to the same target is idempotent success. A key mapping
-to a different target returns `external_mapping_conflict`. The same AOS Run
-cannot map to two different external Run IDs in one namespace. Append-only
-replay that finds contradictory mappings emits `mapping_conflict` and does
-not choose a winner or overwrite an existing mapping.
-
-`run.start` and `run.resume` may accept an optional `external` reference. The
-reference is scoped to the current AOS Session, and the conflict check happens
-before Run acceptance, using the proposed AOS Run ID when an AOS Run ID is
-required. `external.map` may bind an existing Run after creation; a successful
-post-creation mapping is immediately visible from the live Run and survives
-coordinator restart. If the mapping entry cannot be durably persisted, the
-operation returns `audit_persistence_failed` and must not acknowledge an
-unpersisted mapping. It must not delete or rewrite an earlier append-only
-entry.
-
-Mappings do not enter LLM context and do not affect ModelBroker fallback,
-Capability selection, Policy approval, or Sandbox execution.
+Historical Adapter-era associations are accepted only by a private migration
+parser. They are ignored when current Run and audit facts are projected: no
+historical association is emitted, queryable, replayable, or converted into a
+current external execution or `AgentInstance` fact.
 
 ## 5. Query scope, filtering, and pagination
 
@@ -644,7 +538,6 @@ interface AuditQuery {
   scope: "current-session" | "session-directory";
   sessionId?: string;
   runId?: string;
-  external?: ExternalExecutionRef;
   types?: AuditEventType[];
   from?: string;
   to?: string;
@@ -681,9 +574,8 @@ Scope rules are fixed:
 Filters are exact matches. Wildcards and arbitrary custom types are invalid.
 `types` is canonicalized as a deduplicated list in the query fingerprint.
 `from` is inclusive and `to` is exclusive; both must be canonical ISO
-timestamps and `from` must not be later than `to`. `external` matches the
-complete namespace/session/run reference, with absence of `externalRunId`
-matching only a mapping whose external Run ID is absent.
+timestamps and `from` must not be later than `to`. `external` matches a
+complete historical namespace/session/run reference when one was decoded.
 
 The default `limit` is `50`. A supplied limit must be an integer in the range
 `1..200`; `200` is the server maximum. Filtering happens before safe summary
@@ -744,8 +636,7 @@ type AuditWarningCode =
   | "orphan_source"
   | "duplicate_source"
   | "source_unavailable"
-  | "ambiguous_run_association"
-  | "mapping_conflict";
+  | "ambiguous_run_association";
 ```
 
 Warning semantics are:
@@ -759,8 +650,7 @@ Warning semantics are:
   or binding;
 - `duplicate_source`: the same source identity occurs more than once;
 - `source_unavailable`: a permitted Session source could not be read;
-- `ambiguous_run_association`: a binding or source could map to multiple Runs;
-- `mapping_conflict`: append-only mapping facts contradict each other.
+- `ambiguous_run_association`: a binding or source could map to multiple Runs.
 
 Task Gate replay association is by direct `runId` only:
 
@@ -816,13 +706,10 @@ type AuditErrorCode =
   | "audit_cursor_invalid"
   | "audit_scope_unavailable"
   | "audit_run_not_found"
-  | "audit_replay_incomplete"
-  | "external_mapping_invalid"
-  | "external_mapping_conflict"
-  | "audit_persistence_failed";
+  | "audit_replay_incomplete";
 ```
 
-All eight errors are stable, non-retryable control-plane errors. Their public
+All five errors are stable, non-retryable control-plane errors. Their public
 messages, if an RPC envelope requires one, are generic and contain no source
 error, path, stack, prompt, command, or raw payload.
 
@@ -870,14 +757,7 @@ starts a Run. Replay of a historical `task.credential` transition is an
 observation only; it never issues, renews, revokes, or settles a lease, never
 calls the credential provider, and never rewrites a Run terminal.
 
-`external.map` is limited to validation, conflict checking, and appending the
-exact schema-versioned mapping entry. It does not execute a Run, model,
-tool, MCP server, Extension, Policy operation, or Sandbox. If the existing
-Session append path cannot prove durable persistence for the mapping, the
-operation must fail with `audit_persistence_failed` rather than acknowledge a
-possibly deferred write.
-
-## 8. T0 acceptance cases and ownership
+## 8. Acceptance cases
 
 The reusable fixture freezes these cases:
 
@@ -889,8 +769,6 @@ The reusable fixture freezes these cases:
 | Unknown source during query | warning-only; raw data absent |
 | Missing Run | `audit_run_not_found` |
 | Invalid or mismatched cursor | `audit_cursor_invalid` |
-| Conflicting external mapping request | `external_mapping_conflict` |
-| Contradictory append-only mappings | `mapping_conflict` warning; no winner selected |
 | `task.gate` entries | safe `task.gate` events with allowlisted summaries |
 | Gate with matching `runId` in Run replay | included as non-terminal correlation event |
 | Gate without `runId` | never guessed into any Run |
@@ -903,13 +781,11 @@ The reusable fixture freezes these cases:
 | Credential event with matching `runId` in Run replay | included as non-terminal correlation event |
 | Credential event without `runId` | never guessed into any Run |
 | Malformed or forbidden-key `task.credential` entry | warning only; never in public state or audit events |
-| Mapping persistence failure | `audit_persistence_failed`; no success acknowledgement |
 | Query or replay | no model, tool, MCP, Extension, Policy, Sandbox, credential provider, Session, or Run side effect |
 
 The contract fixture and test remain the machine-checked boundary. The current
-integration also covers the adapter, controlled directory query/replay,
-append-only mapping persistence, Run lifecycle, RPC/client additions, and
-cross-layer regression cases. Existing Run lifecycle, Context snapshot,
+integration also covers controlled directory query/replay, Run lifecycle,
+RPC/client additions, and cross-layer regression cases. Existing Run lifecycle, Context snapshot,
 Capability binding, ModelBroker fallback, Policy/Sandbox, Session
-custom-entry, and RPC behavior remain unchanged outside the additive v1
+custom-entry, and RPC behavior remain unchanged outside the current additions
 surface.

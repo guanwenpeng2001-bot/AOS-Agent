@@ -14,7 +14,7 @@ npm run build
 npm install --global --ignore-scripts ./packages/coding-agent
 ```
 
-The build also generates the local AOS-owned model registry under `.artifacts/aos-model-registry/`; its source policy and reproducibility contract are documented in [`../ai/AOS-MODEL-REGISTRY.md`](../ai/AOS-MODEL-REGISTRY.md).
+The build hydrates ignored model wrappers from the tracked AI test fixtures, then generates the local AOS-owned model registry under `.artifacts/aos-model-registry/`; its source policy and reproducibility contract are documented in [`../ai/aos-model-registry.md`](../ai/aos-model-registry.md).
 
 Start the agent with:
 
@@ -63,7 +63,7 @@ In interactive mode, `/capabilities` lists the redacted capability catalog, `/ca
 
 Approvals are session-local: they are never written to settings and never override a deny from the active profile. Project-scoped sources default to untrusted and are force-denied. MCP servers connect over stdio or Streamable HTTP; a server that cannot connect is reported as unavailable rather than exposing connection internals.
 
-Capability v1 covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, external Agent orchestration, or legacy SSE transports.
+Capability layer covers built-in tools, extension tools, SDK tools, skills, extensions, and MCP server tools over stdio or Streamable HTTP. It does not include OAuth for MCP servers, MCP resources or prompts, the Sandbox, external Agent orchestration, or legacy SSE transports.
 
 ### ModelBroker
 
@@ -79,6 +79,29 @@ catalog with `get_model_routes` and pass `modelRoute` or `modelRole` to
 an over-limit response is retained, while later calls in that operation or Run
 are rejected.
 
+### External Agent Connector
+
+The supported package surface is `aos-agent/external-connector`. It exposes the
+connector registry, target configuration, input admission, model projection,
+and packaged driver loader contracts.
+
+`aos-agent/external-connector/testing` is test-support only. It exports
+`runPackagedExternalAgentDriverFixture` and `PackagedExternalAgentDriverTrace`
+for the package smoke test; application code should not depend on that fixture
+surface. The smoke test packs a staged package, installs it outside the
+repository, resolves the testing subpath, and checks the shipped asset and safe
+missing-asset error.
+
+Local regressions also exercise the standard product composition across
+run/switch/fork/import/reload/cancel/restart, immutable RuntimeLimits with
+no-widen rules, passive connector runtime-status projection, and terminal
+`side_effect_unknown` retry handling. They do not prove Bun compiled artifacts
+or exact-head remote artifacts. Packaged smoke (Windows local plus Linux/macOS
+CI), previous-release upgrade/restart, deterministic soak, and pinned vendor
+handshake are recorded for this Line 13 checkout. Codex subscription print,
+SDK, and TUI returned real replies. Vendors are pinned-and-handshake certified,
+not fully certified. Lines 14 and 15 remain later work.
+
 ## Package contents
 
 - `dist/` — generated build output; it is created by `npm run build` and is not source-controlled in this baseline.
@@ -88,4 +111,4 @@ are rejected.
 
 ## License
 
-This package is MIT-licensed as part of the imported upstream baseline. Preserve the repository-level license, package attribution, and all third-party notices when copying or redistributing it.
+This package is MIT-licensed as part of the independent AOS Agent product. Preserve the repository-level license, package attribution, and all third-party notices when copying or redistributing it.

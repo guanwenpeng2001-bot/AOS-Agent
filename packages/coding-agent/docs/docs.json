@@ -20,6 +20,10 @@
           "path": "providers.md"
         },
         {
+          "title": "llama.cpp / Local Models",
+          "path": "llama-cpp.md"
+        },
+        {
           "title": "Security",
           "path": "security.md"
         },
@@ -30,6 +34,10 @@
         {
           "title": "Settings",
           "path": "settings.md"
+        },
+        {
+          "title": "Environment Variables",
+          "path": "environment-variables.md"
         },
         {
           "title": "Keybindings",
@@ -90,12 +98,8 @@
       "title": "Reference",
       "items": [
         {
-          "title": "Architecture Atlas: Foundation v1",
-          "path": "architecture-atlas-foundation-v1.md"
-        },
-        {
-          "title": "Foundation v1 Final Audit",
-          "path": "foundation-v1-final-audit.md"
+          "title": "Public API",
+          "path": "public-api.md"
         },
         {
           "title": "Native Subagent Contract",
@@ -106,12 +110,40 @@
           "path": "scheduler-contract.md"
         },
         {
+          "title": "Sandbox Operation Worker Contract",
+          "path": "worker-contract.md"
+        },
+        {
+          "title": "Execution Audit / Replay Contract",
+          "path": "execution-audit-contract.md"
+        },
+        {
+          "title": "Execution Policy / Sandbox Contract",
+          "path": "execution-policy-contract.md"
+        },
+        {
+          "title": "Remote-Neutral Operation Contract",
+          "path": "remote-operation-contract.md"
+        },
+        {
           "title": "Session Format",
           "path": "session-format.md"
         },
         {
-          "title": "External Agent Adapter",
-          "path": "external-agent-adapter.md"
+          "title": "External Agent Connector",
+          "path": "external-agent-connector.md"
+        },
+        {
+          "title": "Claude Connector",
+          "path": "connector-claude.md"
+        },
+        {
+          "title": "Codex Connector",
+          "path": "connector-codex.md"
+        },
+        {
+          "title": "ACP Connector",
+          "path": "connector-acp.md"
         }
       ]
     },
@@ -158,15 +190,6 @@
         {
           "title": "Shell Aliases",
           "path": "shell-aliases.md"
-        }
-      ]
-    },
-    {
-      "title": "Development",
-      "items": [
-        {
-          "title": "Development",
-          "path": "development.md"
         }
       ]
     }

@@ -7,7 +7,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
+import { Session, type AgentMessage, type ThinkingLevel } from "@aos-agent/agent-core";
 import type { AuthEvent, AuthPrompt } from "@aos-agent/ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@aos-agent/ai/compat";
 import type {
@@ -54,15 +54,22 @@ import {
 	getShareViewerUrl,
 	VERSION,
 } from "../../config.ts";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
-import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type AgentSessionReadProjection,
+	type ExtensionBindings,
+	parseSkillBlock,
+} from "../../core/session/agent-session.ts";
+import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/session/runtime.ts";
+import type { PreparedSessionScopeRebind } from "../../core/session/current-scope.ts";
 import {
 	CACHE_TTL_MS,
 	type CacheMiss,
 	collectCacheMisses,
 	computeCacheWaste,
 	detectCacheMiss,
-} from "../../core/cache-stats.ts";
+} from "../../core/session/cache-stats.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -76,28 +83,29 @@ import type {
 	ProjectTrustContext,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
-import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
-import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
-import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
+import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/session/footer-data-provider.ts";
+import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/runtime/http-dispatcher.ts";
+import { type AppKeybinding, KeybindingsManager } from "../../core/runtime/keybindings.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
 	resolveModelScopeFromModels,
-} from "../../core/model-resolver.ts";
-import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
-import { DefaultPackageManager } from "../../core/package-manager.ts";
-import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
-import { serializePublicContextDrift, serializePublicContextSnapshot } from "../../core/run-lifecycle.ts";
-import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
-import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
-import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
-import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
+} from "../../core/runtime/model-resolver.ts";
+import { CredentialSynchronizationError } from "../../core/runtime/model-runtime.ts";
+import { DefaultPackageManager } from "../../core/runtime/package-manager.ts";
+import type { ResourceDiagnostic } from "../../core/runtime/resource-loader.ts";
+import { serializePublicContextDrift, serializePublicContextSnapshot } from "../../core/session/run-lifecycle.ts";
+import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session/cwd.ts";
+import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session/manager.ts";
+import { createSessionManagerStorage } from "../../core/session/manager-storage.ts";
+import type { FullscreenExitOutput, TuiMode } from "../../core/runtime/settings-manager.ts";
+import { BUILTIN_SLASH_COMMANDS } from "../../core/runtime/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
-import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+import { isInstallTelemetryEnabled } from "../../core/runtime/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
-import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
-import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/policy/trust-manager.ts";
+import { getUsageCostBreakdown } from "../../core/session/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -127,7 +135,6 @@ import {
 	type McpServerOverviewEntry,
 	parseMcpCommandArgs,
 } from "./mcp.ts";
-import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BorderedLoader } from "./components/bordered-loader.ts";
@@ -138,7 +145,6 @@ import { CustomEntryComponent } from "./components/custom-entry.ts";
 import { CustomMessageComponent } from "./components/custom-message.ts";
 import { DaxnutsComponent } from "./components/daxnuts.ts";
 import { DynamicBorder } from "./components/dynamic-border.ts";
-import { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
@@ -273,7 +279,7 @@ function quoteIfNeeded(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
+export function formatResumeCommand(sessionManager: AgentSessionReadProjection): string | undefined {
 	if (!process.stdout.isTTY) return undefined;
 	if (!sessionManager.isPersisted()) return undefined;
 
@@ -488,8 +494,7 @@ export class InteractiveMode {
 	// Skill commands: command name -> skill file path
 	private skillCommands = new Map<string, string>();
 
-	// Agent subscription unsubscribe function
-	private unsubscribe?: () => void;
+	private readonly sessionSubscriptions = new Map<AgentSession, () => void>();
 	private signalCleanupHandlers: Array<() => void> = [];
 
 	// Track if editor is in bash mode (text starts with !)
@@ -555,7 +560,7 @@ export class InteractiveMode {
 		return this.session.agent;
 	}
 	private get sessionManager() {
-		return this.session.sessionManager;
+		return this.session.sessionRead;
 	}
 	private get settingsManager() {
 		return this.session.settingsManager;
@@ -566,12 +571,8 @@ export class InteractiveMode {
 		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
 		this.options = { ...options, tuiMode };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
-		this.runtimeHost.setBeforeSessionInvalidate(() => {
-			this.resetExtensionUI();
-		});
-		this.runtimeHost.setRebindSession(async () => {
-			await this.rebindCurrentSession({ renderBeforeBind: true });
-		});
+		this.runtimeHost.setPrepareSessionRebind((nextSession, previousSession) =>
+			this.prepareSessionRebind(nextSession, previousSession));
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
 			tuiMode,
@@ -1991,16 +1992,16 @@ export class InteractiveMode {
 	/**
 	 * Initialize the extension system with TUI-based UI context.
 	 */
-	private async bindCurrentSessionExtensions(): Promise<void> {
+	private createCurrentSessionExtensionBindings(session: AgentSession): ExtensionBindings {
 		const uiContext = this.createExtensionUIContext();
-		await this.session.bindExtensions({
+		return {
 			uiContext,
 			mode: "tui",
 			abortHandler: () => {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			},
 			commandContextActions: {
-				waitForIdle: () => this.session.waitForIdle(),
+				waitForIdle: () => session.waitForIdle(),
 				newSession: async (options) => {
 					this.clearStatusIndicator();
 					try {
@@ -2022,7 +2023,7 @@ export class InteractiveMode {
 					}
 				},
 				navigateTree: async (targetId, options) => {
-					const result = await this.session.navigateTree(targetId, {
+					const result = await session.navigateTree(targetId, {
 						summarize: options?.summarize,
 						customInstructions: options?.customInstructions,
 						replaceInstructions: options?.replaceInstructions,
@@ -2050,22 +2051,31 @@ export class InteractiveMode {
 			},
 			shutdownHandler: () => {
 				this.shutdownRequested = true;
-				if (this.session.isIdle) {
+				if (session.isIdle) {
 					void this.shutdown();
 				}
 			},
 			onError: (error) => {
 				this.showExtensionError(error.extensionPath, error.error, error.stack);
 			},
-		});
+		};
+	}
 
-		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
+	private finishCurrentSessionExtensionBinding(session: AgentSession): void {
+
+		setRegisteredThemes(session.resourceLoader.getThemes().themes);
 		this.setupAutocompleteProvider();
 
-		const extensionRunner = this.session.extensionRunner;
+		const extensionRunner = session.extensionRunner;
 		this.setupExtensionShortcuts(extensionRunner);
 		this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
 		this.showStartupNoticesIfNeeded();
+	}
+
+	private async bindCurrentSessionExtensions(): Promise<void> {
+		const session = this.session;
+		await session.bindExtensions(this.createCurrentSessionExtensionBindings(session));
+		this.finishCurrentSessionExtensionBinding(session);
 	}
 
 	private applyFullscreenScrollbarSetting(): void {
@@ -2098,29 +2108,56 @@ export class InteractiveMode {
 
 	private async rebindCurrentSession(options: { renderBeforeBind?: boolean } = {}): Promise<void> {
 		const session = this.session;
-
-		this.unsubscribe?.();
-		this.unsubscribe = undefined;
+		for (const unsubscribe of this.sessionSubscriptions.values()) unsubscribe();
+		this.sessionSubscriptions.clear();
 		this.applyRuntimeSettings();
-
 		if (options.renderBeforeBind) {
 			this.renderCurrentSessionState();
-			this.subscribeToAgent();
+			this.subscribeToAgent(session);
 		}
-
 		await this.bindCurrentSessionExtensions();
-
-		if (this.session !== session) {
-			return;
-		}
-
-		if (!options.renderBeforeBind) {
-			this.subscribeToAgent();
-		}
+		if (this.session !== session) return;
+		if (!options.renderBeforeBind) this.subscribeToAgent(session);
 
 		await this.updateAvailableProviderCount();
 		this.updateEditorBorderColor();
 		this.updateTerminalTitle();
+	}
+
+	private async prepareSessionRebind(
+		nextSession: AgentSession,
+		previousSession: AgentSession,
+	): Promise<PreparedSessionScopeRebind> {
+		if (this.session !== previousSession) {
+			throw new Error("Interactive host session binding does not match the current runtime scope");
+		}
+		try {
+			await nextSession.prepareExtensionBindings(this.createCurrentSessionExtensionBindings(nextSession));
+			this.subscribeToAgent(nextSession);
+		} catch (error) {
+			this.unsubscribeFromAgent(nextSession);
+			throw error;
+		}
+		return {
+			commit: () => undefined,
+			prepareActivation: () => {
+				this.applyRuntimeSettings();
+				this.renderCurrentSessionState();
+			},
+			activate: async () => {
+				await nextSession.activateExtensionBindings();
+				if (this.session !== nextSession) return;
+				this.finishCurrentSessionExtensionBinding(nextSession);
+				await this.updateAvailableProviderCount();
+				this.updateEditorBorderColor();
+				this.updateTerminalTitle();
+			},
+			disposeCandidate: () => this.unsubscribeFromAgent(nextSession),
+			disposePrevious: () => {
+				this.unsubscribeFromAgent(previousSession);
+				this.resetExtensionUI();
+			},
+		};
 	}
 
 	private async handleFatalRuntimeError(prefix: string, error: unknown): Promise<never> {
@@ -2166,7 +2203,7 @@ export class InteractiveMode {
 			mode: "tui",
 			hasUI: true,
 			cwd: this.sessionManager.getCwd(),
-			sessionManager: this.sessionManager,
+			session: this.sessionManager,
 			modelRegistry: extensionRunner.getModelRegistry(),
 			model: this.session.model,
 			scopedModels: this.session.scopedModels,
@@ -3200,16 +3237,6 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/arminsayshi") {
-				this.handleArminSaysHi();
-				this.editor.setText("");
-				return;
-			}
-			if (text === "/dementedelves") {
-				this.handleDementedDelves();
-				this.editor.setText("");
-				return;
-			}
 			if (text === "/resume") {
 				this.showSessionSelector();
 				this.editor.setText("");
@@ -3275,10 +3302,18 @@ export class InteractiveMode {
 		};
 	}
 
-	private subscribeToAgent(): void {
-		this.unsubscribe = this.session.subscribe(async (event) => {
+	private subscribeToAgent(session: AgentSession): void {
+		this.unsubscribeFromAgent(session);
+		const unsubscribe = session.subscribe(async (event) => {
+			if (this.session !== session) return;
 			await this.handleEvent(event);
 		});
+		this.sessionSubscriptions.set(session, unsubscribe);
+	}
+
+	private unsubscribeFromAgent(session: AgentSession): void {
+		this.sessionSubscriptions.get(session)?.();
+		this.sessionSubscriptions.delete(session);
 	}
 
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
@@ -5401,7 +5436,7 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				},
 				(entryId, label) => {
-					this.sessionManager.appendLabelChange(entryId, label);
+					this.session.setSessionLabel(entryId, label);
 					this.ui.requestRender();
 				},
 				initialSelectedId,
@@ -5449,7 +5484,7 @@ export class InteractiveMode {
 						const next = (nextName ?? "").trim();
 						if (!next) return;
 						const mgr = SessionManager.open(sessionFilePath);
-						mgr.appendSessionInfo(next);
+						await new Session(createSessionManagerStorage(mgr)).setName(next);
 					},
 					showRenameHint: true,
 					keybindings: this.keybindings,
@@ -6066,7 +6101,7 @@ export class InteractiveMode {
 		};
 
 		try {
-			await this.session.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
+			await this.runtimeHost.reload({ beforeSessionStart: restoreChatBeforeSessionStart });
 			restoreChatBeforeSessionStart();
 			this.keybindings.reload();
 			const activeHeader = this.customHeader ?? this.builtInHeader;
@@ -6108,7 +6143,7 @@ export class InteractiveMode {
 
 		try {
 			if (outputPath?.endsWith(".jsonl")) {
-				const filePath = this.session.exportToJsonl(outputPath);
+				const filePath = await this.session.exportToJsonl(outputPath);
 				this.showStatus(`Session exported to: ${filePath}`);
 			} else {
 				const filePath = await this.session.exportToHtml(outputPath);
@@ -7019,18 +7054,6 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private handleArminSaysHi(): void {
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new ArminComponent(this.ui));
-		this.ui.requestRender();
-	}
-
-	private handleDementedDelves(): void {
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new EarendilAnnouncementComponent());
-		this.ui.requestRender();
-	}
-
 	private handleDaxnuts(): void {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new DaxnutsComponent(this.ui));
@@ -7152,9 +7175,8 @@ export class InteractiveMode {
 		this.clearExtensionTerminalInputListeners();
 		this.footer.dispose();
 		this.footerDataProvider.dispose();
-		if (this.unsubscribe) {
-			this.unsubscribe();
-		}
+		for (const unsubscribe of this.sessionSubscriptions.values()) unsubscribe();
+		this.sessionSubscriptions.clear();
 		if (this.isInitialized) {
 			this.stopInteractiveTui(fullscreenExitOutput);
 			this.isInitialized = false;

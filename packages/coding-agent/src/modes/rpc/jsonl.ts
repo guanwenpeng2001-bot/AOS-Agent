@@ -1,11 +1,20 @@
 import type { Readable, Writable } from "node:stream";
+import {
+	BoundedProtocolError,
+	BoundedProtocolWriter,
+	DEFAULT_BOUNDED_PROTOCOL_LIMITS,
+} from "../../core/bounded-protocol.ts";
+import { runtimeClockFor } from "../../core/runtime/clock.ts";
 
 const MAX_UINT32 = 0xffff_ffff;
 
-/** Default bound used by network JSONL transports. Stdio remains unbounded. */
+/** Default bound used by every JSONL transport, including stdio. */
 export const DEFAULT_MAX_JSONL_FRAME_BYTES = 1024 * 1024;
 /** Alias using line terminology for callers that do not count the LF delimiter. */
 export const DEFAULT_MAX_JSONL_LINE_BYTES = DEFAULT_MAX_JSONL_FRAME_BYTES - 1;
+export const DEFAULT_MAX_JSONL_PENDING_WRITE_BYTES = DEFAULT_BOUNDED_PROTOCOL_LIMITS.maxPendingBytes;
+export const DEFAULT_MAX_JSONL_PENDING_WRITE_ENTRIES = DEFAULT_BOUNDED_PROTOCOL_LIMITS.maxPendingEntries;
+export const DEFAULT_JSONL_DRAIN_TIMEOUT_MS = DEFAULT_BOUNDED_PROTOCOL_LIMITS.drainTimeoutMs;
 
 export interface JsonlLineReaderOptions {
 	/** Maximum UTF-8 bytes in one record, including its LF delimiter. */
@@ -25,6 +34,12 @@ export interface JsonlLineWriterOptions {
 	readonly maxFrameLength?: number;
 	/** Maximum UTF-8 bytes in one record, excluding its LF delimiter. */
 	readonly maxLineBytes?: number;
+	/** Maximum UTF-8 bytes admitted across writes that have not settled. */
+	readonly maxPendingWriteBytes?: number;
+	/** Maximum entries admitted across writes that have not settled. */
+	readonly maxPendingWriteEntries?: number;
+	/** Total bound for ordered pending-write drain and stream finalization. */
+	readonly drainTimeoutMs?: number;
 	readonly onError?: (error: Error) => void;
 }
 
@@ -70,6 +85,12 @@ export function attachJsonlLineReader(
 	let ended = false;
 	let reportedError = false;
 
+	const detachListeners = (): void => {
+		stream.off("data", onData);
+		stream.off("end", onEnd);
+		if (options.onError) stream.off("error", onStreamError);
+	};
+
 	const reportError = (error: unknown): void => {
 		if (reportedError) return;
 		reportedError = true;
@@ -83,9 +104,8 @@ export function attachJsonlLineReader(
 	const fail = (error: unknown): void => {
 		if (detached || ended) return;
 		detached = true;
-		stream.off("data", onData);
-		stream.off("end", onEnd);
-		if (options.onError) stream.off("error", onStreamError);
+		buffer = Buffer.alloc(0);
+		detachListeners();
 		reportError(error);
 	};
 
@@ -111,19 +131,21 @@ export function attachJsonlLineReader(
 		if (detached || ended) return;
 		try {
 			const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-			buffer = buffer.length === 0 ? Buffer.from(bytes) : Buffer.concat([buffer, bytes]);
-
-			while (true) {
-				const newlineIndex = buffer.indexOf(0x0a);
-				if (newlineIndex === -1) {
-					checkFrame(buffer.length, false);
-					return;
+			let offset = 0;
+			while (offset < bytes.length) {
+				const newlineIndex = bytes.indexOf(0x0a, offset);
+				const segmentEnd = newlineIndex === -1 ? bytes.length : newlineIndex;
+				const segment = bytes.subarray(offset, segmentEnd);
+				const payloadBytes = buffer.length + segment.length;
+				if (!checkFrame(payloadBytes, newlineIndex !== -1)) return;
+				if (segment.length > 0) {
+					buffer = buffer.length === 0 ? Buffer.from(segment) : Buffer.concat([buffer, segment]);
 				}
-
-				if (!checkFrame(newlineIndex, true)) return;
-				emitLine(buffer.subarray(0, newlineIndex));
+				if (newlineIndex === -1) return;
+				emitLine(buffer);
 				if (detached) return;
-				buffer = buffer.subarray(newlineIndex + 1);
+				buffer = Buffer.alloc(0);
+				offset = newlineIndex + 1;
 			}
 		} catch (error) {
 			fail(error);
@@ -135,6 +157,7 @@ export function attachJsonlLineReader(
 		try {
 			if (buffer.length > 0 && !checkFrame(buffer.length, false)) return;
 			ended = true;
+			detachListeners();
 			if (buffer.length > 0) {
 				emitLine(buffer);
 				buffer = Buffer.alloc(0);
@@ -156,9 +179,8 @@ export function attachJsonlLineReader(
 	return () => {
 		if (detached) return;
 		detached = true;
-		stream.off("data", onData);
-		stream.off("end", onEnd);
-		if (options.onError) stream.off("error", onStreamError);
+		buffer = Buffer.alloc(0);
+		detachListeners();
 	};
 }
 
@@ -171,27 +193,34 @@ export class JsonlLineWriter<TOutput = unknown> {
 	private readonly stream: Writable;
 	private readonly options: JsonlLineWriterOptions;
 	private readonly limits: JsonlLimits;
-	private writeTail: Promise<void> = Promise.resolve();
-	private closePromise?: Promise<void>;
+	private readonly protocol: BoundedProtocolWriter<string>;
 	private closedValue = false;
-	private ending = false;
-	private failure?: Error;
 	private reportedError = false;
 
 	constructor(stream: Writable, options: JsonlLineWriterOptions = {}) {
 		this.stream = stream;
 		this.options = options;
 		this.limits = resolveLimits(options);
+		this.protocol = new BoundedProtocolWriter<string>({
+			maxPendingBytes: options.maxPendingWriteBytes ?? DEFAULT_MAX_JSONL_PENDING_WRITE_BYTES,
+			maxPendingEntries: options.maxPendingWriteEntries ?? DEFAULT_MAX_JSONL_PENDING_WRITE_ENTRIES,
+			drainTimeoutMs: options.drainTimeoutMs ?? DEFAULT_JSONL_DRAIN_TIMEOUT_MS,
+			byteLength: (line) => Buffer.byteLength(line, "utf8"),
+			write: (line, signal) => this.writeChunk(line, signal),
+			finalize: (signal) => this.endStream(signal),
+			clock: runtimeClockFor(options),
+			onError: (error) => this.reportError(error),
+		});
 		stream.on("error", this.onStreamError);
 		stream.on("close", this.onStreamClose);
 	}
 
 	get closed(): boolean {
-		return this.closedValue || this.failure !== undefined || this.stream.destroyed;
+		return this.closedValue || this.protocol.closed || this.stream.destroyed;
 	}
 
 	get error(): Error | undefined {
-		return this.failure;
+		return this.protocol.error;
 	}
 
 	write(value: TOutput): Promise<void> {
@@ -199,61 +228,29 @@ export class JsonlLineWriter<TOutput = unknown> {
 	}
 
 	writeLine(line: string): Promise<void> {
-		if (!line.endsWith("\n")) return Promise.reject(new TypeError("JSONL writer records must end with LF"));
-		if (this.closed || this.ending) return Promise.reject(this.failure ?? new Error("JSONL writer is closed"));
+		if (!line.endsWith("\n")) return rejectedWrite(new TypeError("JSONL writer records must end with LF"));
+		if (this.closed) {
+			return rejectedWrite(
+				this.protocol.error ?? new BoundedProtocolError("protocol_closed", "JSONL writer is closed"),
+			);
+		}
 		try {
 			this.assertWithinLimit(line);
 		} catch (error) {
-			return Promise.reject(error);
+			const normalized = toError(error);
+			void this.protocol.close(normalized).catch(() => {});
+			return rejectedWrite(normalized);
 		}
-
-		const operation = this.writeTail.then(() => {
-			if (this.failure !== undefined) throw this.failure;
-			return this.writeChunk(line);
-		});
-		// Keep the internal tail resolved so a caller that intentionally ignores a
-		// rejected write cannot create an unhandled rejection for later queue users.
-		this.writeTail = operation.catch((error: unknown) => {
-			this.recordFailure(error);
-		});
-		return operation;
+		return this.protocol.write(line);
 	}
 
 	/** Wait until all records queued before this call have drained. */
 	waitForDrain(): Promise<void> {
-		return this.writeTail.then(() => {
-			if (this.failure !== undefined) throw this.failure;
-		});
+		return this.protocol.waitForDrain();
 	}
 
 	close(): Promise<void> {
-		if (this.closePromise) return this.closePromise;
-		if (this.closed) return this.failure === undefined ? Promise.resolve() : Promise.reject(this.failure);
-		this.ending = true;
-		this.closePromise = this.waitForDrain().then(
-			() =>
-				new Promise<void>((resolve, reject) => {
-					if (this.closed || !this.stream.writable) {
-						resolve();
-						return;
-					}
-					const onError = (error: Error): void => {
-						this.stream.off("error", onError);
-						reject(error);
-					};
-					this.stream.once("error", onError);
-					try {
-						this.stream.end(() => {
-							this.stream.off("error", onError);
-							resolve();
-						});
-					} catch (error) {
-						this.stream.off("error", onError);
-						reject(toError(error));
-					}
-				}),
-		);
-		return this.closePromise;
+		return this.protocol.close();
 	}
 
 	detach(): void {
@@ -272,30 +269,29 @@ export class JsonlLineWriter<TOutput = unknown> {
 	}
 
 	private readonly onStreamError = (error: Error): void => {
-		this.recordFailure(error);
+		this.protocol.fail(error);
 	};
 
 	private readonly onStreamClose = (): void => {
 		this.closedValue = true;
 	};
 
-	private recordFailure(error: unknown): Error {
-		const normalized = toError(error);
-		if (this.failure === undefined) this.failure = normalized;
-		this.closedValue = true;
+	private reportError(error: Error): void {
 		if (!this.reportedError) {
 			this.reportedError = true;
 			try {
-				this.options.onError?.(this.failure);
+				this.options.onError?.(error);
 			} catch {
 				// Error observers cannot affect writer state.
 			}
 		}
-		return this.failure;
 	}
 
-	private writeChunk(line: string): Promise<void> {
-		if (this.closed || !this.stream.writable) return Promise.reject(this.failure ?? new Error("JSONL writer is closed"));
+	private writeChunk(line: string, signal: AbortSignal): Promise<void> {
+		if (signal.aborted) return rejectedWrite(abortReason(signal));
+		if (this.closedValue || this.stream.destroyed || !this.stream.writable) {
+			return rejectedWrite(this.protocol.error ?? new Error("JSONL writer is closed"));
+		}
 		return new Promise<void>((resolve, reject) => {
 			let callbackDone = false;
 			let callbackError: Error | undefined;
@@ -307,6 +303,7 @@ export class JsonlLineWriter<TOutput = unknown> {
 				this.stream.off("error", onError);
 				this.stream.off("close", onClose);
 				this.stream.off("drain", onDrain);
+				signal.removeEventListener("abort", onAbort);
 			};
 			const finish = (error?: Error): void => {
 				if (settled) return;
@@ -323,6 +320,7 @@ export class JsonlLineWriter<TOutput = unknown> {
 			};
 			const onError = (error: Error): void => finish(error);
 			const onClose = (): void => finish(new Error("JSONL writer stream closed during write"));
+			const onAbort = (): void => finish(abortReason(signal));
 			const onDrain = (): void => {
 				needsDrain = false;
 				finish();
@@ -330,6 +328,7 @@ export class JsonlLineWriter<TOutput = unknown> {
 
 			this.stream.once("error", onError);
 			this.stream.once("close", onClose);
+			signal.addEventListener("abort", onAbort, { once: true });
 			try {
 				const accepted = this.stream.write(line, "utf8", (error?: Error | null) => {
 					if (error) {
@@ -346,6 +345,39 @@ export class JsonlLineWriter<TOutput = unknown> {
 				if (needsDrain) this.stream.once("drain", onDrain);
 				if (callbackError !== undefined) finish(callbackError);
 				else finish();
+			} catch (error) {
+				finish(toError(error));
+			}
+		});
+	}
+
+	private endStream(signal: AbortSignal): Promise<void> {
+		if (signal.aborted) return rejectedWrite(abortReason(signal));
+		if (this.closedValue || this.stream.destroyed || this.stream.writableFinished || !this.stream.writable) {
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve, reject) => {
+			let settled = false;
+			const cleanup = (): void => {
+				this.stream.off("error", onError);
+				this.stream.off("close", onClose);
+				signal.removeEventListener("abort", onAbort);
+			};
+			const finish = (error?: Error): void => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				if (error === undefined) resolve();
+				else reject(error);
+			};
+			const onError = (error: Error): void => finish(error);
+			const onClose = (): void => finish(new Error("JSONL writer stream closed during finalization"));
+			const onAbort = (): void => finish(abortReason(signal));
+			this.stream.once("error", onError);
+			this.stream.once("close", onClose);
+			signal.addEventListener("abort", onAbort, { once: true });
+			try {
+				this.stream.end(() => finish());
 			} catch (error) {
 				finish(toError(error));
 			}
@@ -369,7 +401,12 @@ function resolveLimits(options: JsonlLineReaderOptions | JsonlLineWriterOptions)
 	const frameValue = options.maxFrameBytes ?? options.maxFrameLength;
 	const lineValue = options.maxLineBytes;
 	return {
-		maxFrameBytes: frameValue === undefined ? undefined : resolvePositiveByteLimit(frameValue, "maxFrameBytes"),
+		maxFrameBytes:
+			frameValue === undefined && lineValue === undefined
+				? DEFAULT_MAX_JSONL_FRAME_BYTES
+				: frameValue === undefined
+					? undefined
+					: resolvePositiveByteLimit(frameValue, "maxFrameBytes"),
 		maxLineBytes: lineValue === undefined ? undefined : resolvePositiveByteLimit(lineValue, "maxLineBytes"),
 	};
 }
@@ -383,4 +420,14 @@ function resolvePositiveByteLimit(value: number, name: string): number {
 
 function toError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
+}
+
+function abortReason(signal: AbortSignal): Error {
+	return signal.reason instanceof Error ? signal.reason : new Error("JSONL writer operation aborted");
+}
+
+function rejectedWrite(error: Error): Promise<void> {
+	const promise = Promise.reject<void>(error);
+	void promise.catch(() => {});
+	return promise;
 }

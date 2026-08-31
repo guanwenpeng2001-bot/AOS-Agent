@@ -5,9 +5,6 @@ dist/
 .DS_Store
 *.tsbuildinfo
 .aos-agent/
-.github/
-.husky/
-REBRAND-EXECUTABLE-CHECKLIST.md
 # packages/*/node_modules/
 packages/*/dist/
 packages/*/dist-chrome/

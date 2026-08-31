@@ -1,33 +1,33 @@
-import { Result, type FoundationError, type Result as ResultValue } from "@aos-agent/agent-core";
+import { Result, type FoundationError, type ResultValue } from "../../../agent/src/internal.ts";
 import {
 	WORKER_PROTOCOL_MAX_DATA_CHUNK_BYTES,
-	formatWorkerStderrDiagnosticV1,
-	serializeWorkerFrameLineV1,
-	WorkerProtocolSessionV1,
-	type WorkerEventFrameV1,
-	type WorkerRequestFrameV1,
-} from "../../src/core/worker-protocol.ts";
-import type { WorkerBindingV1 } from "../../src/core/worker.ts";
+	formatWorkerStderrDiagnostic,
+	serializeWorkerFrameLine,
+	OperationWorkerProtocolSession,
+	type OperationWorkerEventFrame,
+	type OperationWorkerRequestFrame,
+} from "../../src/core/worker/protocol.ts";
+import type { WorkerBinding } from "../../src/core/worker/lifecycle.ts";
 
-export type FakeWorkerTransportModeV1 = "ready" | "slow" | "cancel_ack" | "receipt" | "disconnect" | "malformed" | "oversized_data";
+export type FakeWorkerTransportMode = "ready" | "slow" | "cancel_ack" | "receipt" | "disconnect" | "malformed" | "oversized_data";
 
-export class FakeWorkerProtocolTransportV1 {
-	private readonly session: WorkerProtocolSessionV1;
-	private readonly binding: WorkerBindingV1;
-	private readonly mode: FakeWorkerTransportModeV1;
+export class FakeWorkerProtocolTransport {
+	private readonly session: OperationWorkerProtocolSession;
+	private readonly binding: WorkerBinding;
+	private readonly mode: FakeWorkerTransportMode;
 	private readonly stdoutLines: string[] = [];
 
-	constructor(binding: WorkerBindingV1, mode: FakeWorkerTransportModeV1 = "ready") {
+	constructor(binding: WorkerBinding, mode: FakeWorkerTransportMode = "ready") {
 		this.binding = binding;
 		this.mode = mode;
-		this.session = new WorkerProtocolSessionV1();
+		this.session = new OperationWorkerProtocolSession();
 	}
 
 	get state() {
 		return this.session.state;
 	}
 
-	send(frame: WorkerRequestFrameV1): ResultValue<readonly string[], FoundationError> {
+	send(frame: OperationWorkerRequestFrame): ResultValue<readonly string[], FoundationError> {
 		const accepted = this.session.receiveHostFrame(frame);
 		if (!accepted.ok) return accepted;
 		if (frame.type === "initialize") {
@@ -78,10 +78,10 @@ export class FakeWorkerProtocolTransportV1 {
 	}
 
 	heartbeat(sequence: number, at: string): ResultValue<readonly string[], FoundationError> {
-		const frame: WorkerEventFrameV1 = { type: "heartbeat", workerId: this.binding.workerId, sequence, at };
+		const frame: OperationWorkerEventFrame = { type: "heartbeat", workerId: this.binding.workerId, sequence, at };
 		const accepted = this.session.receiveWorkerFrame(frame);
 		if (!accepted.ok) return accepted;
-		this.stdoutLines.push(serializeWorkerFrameLineV1(frame));
+		this.stdoutLines.push(serializeWorkerFrameLine(frame));
 		return Result.ok(this.takeStdout());
 	}
 
@@ -90,20 +90,20 @@ export class FakeWorkerProtocolTransportV1 {
 	}
 
 	stderr(diagnostic: string): string {
-		return formatWorkerStderrDiagnosticV1(diagnostic);
+		return formatWorkerStderrDiagnostic(diagnostic);
 	}
 
 	disconnect(): FoundationError {
 		return this.session.disconnect();
 	}
 
-	private emit(frame: WorkerEventFrameV1): void {
+	private emit(frame: OperationWorkerEventFrame): void {
 		const accepted = this.session.receiveWorkerFrame(frame);
 		if (!accepted.ok) throw accepted.error;
-		this.stdoutLines.push(serializeWorkerFrameLineV1(frame));
+		this.stdoutLines.push(serializeWorkerFrameLine(frame));
 	}
 
-	private emitReceiptForExecute(frame: Extract<WorkerRequestFrameV1, { type: "execute" }>): void {
+	private emitReceiptForExecute(frame: Extract<OperationWorkerRequestFrame, { type: "execute" }>): void {
 		this.emitReceipt({ requestId: frame.requestId, operationId: frame.operationId, taskId: frame.request.taskId, dispatchId: frame.request.dispatchId, attemptId: frame.request.attemptId });
 	}
 
@@ -140,4 +140,4 @@ export class FakeWorkerProtocolTransportV1 {
 	}
 }
 
-export const FakeWorkerTransportV1 = FakeWorkerProtocolTransportV1;
+export const FakeWorkerTransport = FakeWorkerProtocolTransport;

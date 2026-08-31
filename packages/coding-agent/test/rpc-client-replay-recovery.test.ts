@@ -11,20 +11,30 @@ const SESSION_ID = "s1";
 const RECEIPT = {
 	runId: RUN_ID,
 	sessionId: SESSION_ID,
+	runReceiptId: "run-receipt-r1",
+	attemptReceiptIds: ["attempt-receipt-r1"],
+	sideEffectState: "none",
 	status: "completed",
 	usage: { input: 1, output: 2, total: 3 },
 } as const;
 
 function streamEvent(type: "run.started" | "run.completed" | "run.failed" | "run.cancelled", sequence: number): RpcRunStreamEvent {
-	if (type === "run.started") {
-		return { type, runId: RUN_ID, sessionId: SESSION_ID, sequence, timestamp: `t${sequence}` };
-	}
-	return {
-		type,
+	const envelope = {
 		runId: RUN_ID,
 		sessionId: SESSION_ID,
 		sequence,
-		timestamp: `t${sequence}`,
+		timestamp: new Date(Date.UTC(2026, 7, 14, 0, 0, sequence)).toISOString(),
+		eventId: `run-event-${sequence}`,
+		streamId: SESSION_ID,
+		correlation: { sessionId: SESSION_ID, laneId: "main", runId: RUN_ID },
+	};
+	if (type === "run.started") {
+		return { type, ...envelope };
+	}
+	return {
+		type,
+		...envelope,
+		correlation: { ...envelope.correlation, runReceiptId: RECEIPT.runReceiptId },
 		receipt: { ...RECEIPT, status: type === "run.failed" ? "failed" : type === "run.cancelled" ? "cancelled" : "completed" },
 	};
 }
@@ -32,6 +42,7 @@ function streamEvent(type: "run.started" | "run.completed" | "run.failed" | "run
 function auditEvent(
 	type: "run.accepted" | "run.started" | "run.completed" | "run.failed" | "run.cancelled",
 	key: string,
+	terminalError?: { readonly code: string; readonly retryable: boolean },
 ): AuditEvent {
 	const status =
 		type === "run.accepted"
@@ -55,6 +66,10 @@ function auditEvent(
 			status,
 			attempt: 1,
 			model: { provider: "provider", id: "model", thinkingLevel: "low" },
+			...(type === "run.completed" || type === "run.failed" || type === "run.cancelled"
+				? { usage: RECEIPT.usage }
+				: {}),
+			...(terminalError === undefined ? {} : { terminalError }),
 		},
 	} as AuditEvent;
 }
@@ -125,6 +140,68 @@ describe("RunReplayRecovery live stream alignment", () => {
 		expect(recovery.consumeRunEvent(streamEvent("run.started", 3)).disposition).toBe("after_terminal");
 		expect(recovery.eventSequence).toBe(2);
 	});
+
+	it("rejects stream, correlation, and receipt identities that disagree with the envelope", () => {
+		const recovery = new RunReplayRecovery({ runId: RUN_ID });
+		const started = streamEvent("run.started", 1);
+		expect(recovery.consumeRunEvent({ ...started, eventId: "" })).toMatchObject({
+			disposition: "ignored",
+			ignoredReason: "invalid_envelope",
+		});
+		expect(recovery.consumeRunEvent({ ...started, streamId: "other-session" })).toMatchObject({
+			disposition: "ignored",
+			ignoredReason: "correlation_mismatch",
+		});
+		expect(recovery.consumeRunEvent({
+			...started,
+			correlation: { ...started.correlation, runId: "other-run" },
+		})).toMatchObject({ disposition: "ignored", ignoredReason: "correlation_mismatch" });
+		const completed = streamEvent("run.completed", 1);
+		if (completed.type !== "run.completed") throw new Error("expected completed event");
+		expect(recovery.consumeRunEvent({
+			...completed,
+			correlation: { sessionId: SESSION_ID, laneId: "main", runId: RUN_ID },
+		})).toMatchObject({ disposition: "ignored", ignoredReason: "correlation_mismatch" });
+		expect(recovery.consumeRunEvent({
+			...completed,
+			correlation: { ...completed.correlation, runReceiptId: "other-run-receipt" },
+		})).toMatchObject({ disposition: "ignored", ignoredReason: "correlation_mismatch" });
+		const missingRunReceiptId = streamEvent("run.completed", 1);
+		if (missingRunReceiptId.type !== "run.completed") throw new Error("expected completed event");
+		delete (missingRunReceiptId.receipt as unknown as Record<string, unknown>).runReceiptId;
+		expect(recovery.consumeRunEvent(missingRunReceiptId)).toMatchObject({
+			disposition: "ignored",
+			ignoredReason: "correlation_mismatch",
+		});
+		const conflictingRunReceiptId = streamEvent("run.completed", 1);
+		if (conflictingRunReceiptId.type !== "run.completed") throw new Error("expected completed event");
+		(conflictingRunReceiptId.receipt as unknown as Record<string, unknown>).runReceiptId = "other-run-receipt";
+		expect(recovery.consumeRunEvent(conflictingRunReceiptId)).toMatchObject({
+			disposition: "ignored",
+			ignoredReason: "correlation_mismatch",
+		});
+		expect(recovery.consumeRunEvent({
+			...completed,
+			receipt: { ...completed.receipt, sessionId: "other-session" },
+		})).toMatchObject({ disposition: "ignored", ignoredReason: "correlation_mismatch" });
+		expect(recovery.eventSequence).toBe(0);
+		expect(recovery.terminalConfirmed).toBe(false);
+
+		const runEventRecovery = new RunReplayRecovery({ runId: RUN_ID });
+		const runEvent: RpcRunStreamEvent = {
+			...started,
+			type: "run.event",
+			event: { type: "agent_settled" },
+		};
+		expect(runEventRecovery.consumeRunEvent(runEvent).accepted).toBe(true);
+		expect(runEventRecovery.consumeRunEvent({
+			...runEvent,
+			sequence: 2,
+			eventId: "run-event-2",
+			correlation: { ...runEvent.correlation, sessionId: "other-session" },
+		})).toMatchObject({ disposition: "ignored", ignoredReason: "correlation_mismatch" });
+		expect(runEventRecovery.eventSequence).toBe(1);
+	});
 });
 
 describe("RunReplayRecovery audit cursor alignment", () => {
@@ -159,9 +236,69 @@ describe("RunReplayRecovery audit cursor alignment", () => {
 		expect(live.terminalConfirmation).toBeUndefined();
 		expect(live.state.lastEventSequence).toBe(2);
 	});
+
+	it("requires terminal usage and error parity across audit replay and the live timeline", () => {
+		const usageRecovery = new RunReplayRecovery({ runId: RUN_ID, initialEventSequence: 1 });
+		usageRecovery.consumeReplayPage(replayResult([auditEvent("run.completed", "completed")], "complete"));
+		const liveUsageConflict = streamEvent("run.completed", 2);
+		if (liveUsageConflict.type !== "run.completed") throw new Error("expected completed event");
+		expect(() => usageRecovery.consumeRunEvent({
+			...liveUsageConflict,
+			receipt: { ...liveUsageConflict.receipt, usage: { input: 9, output: 2, total: 11 } },
+		})).toThrowError(expect.objectContaining({ code: "run_replay_terminal_conflict" }));
+		expect(usageRecovery.getState().terminalConflict).toEqual({
+			confirmed: "completed",
+			received: "completed",
+			source: "run.event",
+			reason: "usage",
+		});
+		expect(usageRecovery.getState()).not.toHaveProperty("terminal");
+		expect(usageRecovery.terminalConfirmed).toBe(false);
+		expect(() => usageRecovery.consumeRunEvent(streamEvent("run.completed", 2))).toThrowError(
+			expect.objectContaining({ code: "run_replay_terminal_conflict" }),
+		);
+
+		const errorRecovery = new RunReplayRecovery({ runId: RUN_ID, initialEventSequence: 1 });
+		errorRecovery.consumeReplayPage(replayResult([
+			auditEvent("run.failed", "failed", { code: "canonical_failure", retryable: false }),
+		], "complete"));
+		const liveErrorConflict = streamEvent("run.failed", 2);
+		if (liveErrorConflict.type !== "run.failed") throw new Error("expected failed event");
+		expect(() => errorRecovery.consumeRunEvent({
+			...liveErrorConflict,
+			receipt: {
+				...liveErrorConflict.receipt,
+				terminalError: { code: "model_error", message: "different", retryable: false },
+			},
+		})).toThrowError(expect.objectContaining({ code: "run_replay_terminal_conflict" }));
+		expect(errorRecovery.getState()).toMatchObject({ terminalConflict: { reason: "terminal_error" } });
+		expect(errorRecovery.getState()).not.toHaveProperty("terminal");
+
+		const statusRecovery = new RunReplayRecovery({ runId: RUN_ID, initialEventSequence: 1 });
+		statusRecovery.consumeReplayPage(replayResult([auditEvent("run.completed", "completed")], "complete"));
+		expect(() => statusRecovery.consumeRunEvent(streamEvent("run.failed", 2))).toThrowError(
+			expect.objectContaining({ code: "run_replay_terminal_conflict" }),
+		);
+		expect(statusRecovery.getState()).toMatchObject({ terminalConflict: { reason: "status" } });
+		expect(statusRecovery.getState()).not.toHaveProperty("terminal");
+	});
 });
 
 describe("RpcClient reconnect/replay helper", () => {
+	it("fails reconnect closed when run.get and Audit terminal evidence conflict", async () => {
+		const recovery = new RunReplayRecovery({
+			runId: RUN_ID,
+			source: {
+				getRun: async () => runSnapshot("completed"),
+				auditReplay: async () => replayResult([auditEvent("run.failed", "failed")], "complete"),
+			},
+		});
+
+		await expect(recovery.reconnect()).rejects.toMatchObject({ code: "run_replay_terminal_conflict" });
+		expect(recovery.getState()).toMatchObject({ terminalConflict: { reason: "status" } });
+		expect(recovery.getState()).not.toHaveProperty("terminal");
+	});
+
 	it("uses only run.get and audit.replay, resumes from the opaque cursor, and aggregates pages", async () => {
 		const client = new RpcClient();
 		const privateClient = client as unknown as {

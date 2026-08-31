@@ -12,7 +12,7 @@ import {
 	agentLoop,
 	classifyAgentLoopError,
 	decideAgentLoopRetry,
-} from "../src/index.ts";
+} from "../src/internal.ts";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentTool } from "../src/types.ts";
 import { Type } from "typebox";
 

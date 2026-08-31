@@ -10,7 +10,7 @@ import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { getShellEnv } from "../../utils/shell.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import type { BuiltinToolPolicy } from "../sandbox-host.ts";
+import type { BuiltinToolPolicy } from "../policy/sandbox-host.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { sandboxContentText, sandboxProcessOutputText } from "./sandbox-filesystem.ts";

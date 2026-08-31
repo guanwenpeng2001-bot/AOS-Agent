@@ -46,27 +46,27 @@ import type {
 } from "@aos-agent/tui";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
-import type { BashResult } from "../bash-executor.ts";
+import type { BashResult } from "../runtime/bash-executor.ts";
+import type { AgentSession } from "../session/agent-session.ts";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
-import type { ContextExtensionContribution } from "../context-engine.ts";
+import type { ContextExtensionContribution } from "../session/context-engine.ts";
 import type { EventBus } from "../event-bus.ts";
-import type { ExecOptions, ExecResult } from "../exec.ts";
-import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
-import type { KeybindingsManager } from "../keybindings.ts";
+import type { ExecOptions, ExecResult } from "../runtime/exec.ts";
+import type { ReadonlyFooterDataProvider } from "../session/footer-data-provider.ts";
+import type { KeybindingsManager } from "../runtime/keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
-import type { ModelRegistry } from "../model-registry.ts";
-import type { ScopedModel } from "../model-resolver.ts";
+import type { ModelRegistry } from "../runtime/model-registry.ts";
+import type { ScopedModel } from "../runtime/model-resolver.ts";
+import type { AgentSessionReadProjection } from "../session/read-projection.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
 	CustomEntry,
-	ReadonlySessionManager,
 	SessionEntry,
-	SessionManager,
-} from "../session-manager.ts";
-import type { SlashCommandInfo } from "../slash-commands.ts";
+} from "../session/manager.ts";
+import type { SlashCommandInfo } from "../runtime/slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
-import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import type { BuildSystemPromptOptions } from "../runtime/system-prompt.ts";
 import type { BashOperations } from "../tools/bash.ts";
 import type { EditToolDetails } from "../tools/edit.ts";
 import type {
@@ -84,15 +84,15 @@ import type {
 	WriteToolInput,
 } from "../tools/index.ts";
 
-export type { ExecOptions, ExecResult } from "../exec.ts";
-export type { BuildSystemPromptOptions } from "../system-prompt.ts";
+export type { ExecOptions, ExecResult } from "../runtime/exec.ts";
+export type { BuildSystemPromptOptions } from "../runtime/system-prompt.ts";
 export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
-export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
+export type { AppKeybinding, KeybindingsManager } from "../runtime/keybindings.ts";
 export type {
 	ContextExtensionContribution,
 	ContextExtensionContributionReceipt,
 	ContextExtensionVisibility,
-} from "../context-engine.ts";
+} from "../session/context-engine.ts";
 
 // ============================================================================
 // UI Context
@@ -184,7 +184,7 @@ export interface ExtensionUIContext {
 	 *
 	 * The factory receives a FooterDataProvider for data not otherwise accessible:
 	 * git branch and extension statuses from setStatus(). Token stats, model info,
-	 * etc. are available via ctx.sessionManager and ctx.model.
+	 * etc. are available via ctx.session and ctx.model.
 	 */
 	setFooter(
 		factory:
@@ -319,8 +319,8 @@ export interface ExtensionContext {
 	hasUI: boolean;
 	/** Current working directory */
 	cwd: string;
-	/** Session manager (read-only) */
-	sessionManager: ReadonlySessionManager;
+	/** Canonical Session compatibility projection (read-only). */
+	session: AgentSessionReadProjection;
 	/** Model registry for API key resolution */
 	modelRegistry: ModelRegistry;
 	/** Current model (may be undefined) */
@@ -368,7 +368,7 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	/** Start a new session, optionally with initialization. */
 	newSession(options?: {
 		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
+		setup?: (session: AgentSession) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 	}): Promise<{ cancelled: boolean }>;
 
@@ -1697,7 +1697,7 @@ export interface ExtensionCommandContextActions {
 	waitForIdle: () => Promise<void>;
 	newSession: (options?: {
 		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
+		setup?: (session: AgentSession) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 	}) => Promise<{ cancelled: boolean }>;
 	fork: (

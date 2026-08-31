@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_NAME, ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import type { ResolvedPaths } from "../src/core/package-manager.ts";
-import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
-import { ProjectTrustStore } from "../src/core/trust-manager.ts";
+import { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
+import type { ResolvedPaths } from "../src/core/runtime/package-manager.ts";
+import { InMemorySettingsStorage, SettingsManager } from "../src/core/runtime/settings-manager.ts";
+import { ProjectTrustStore } from "../src/core/policy/trust-manager.ts";
 import { main } from "../src/main.ts";
 import { ConfigSelectorComponent } from "../src/modes/interactive/components/config-selector.ts";
 import { handlePackageCommand } from "../src/package-manager-cli.ts";
@@ -534,7 +534,7 @@ describe("package commands", () => {
 	it("uses the update check version for forced self updates even when current", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const projectPrefix = join(tempDir, "project-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@aos-agent", "aos-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
 		mkdirSync(selfPackageDir, { recursive: true });
@@ -586,7 +586,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 
 	it("uses the current package name when the update check omits packageName", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@aos-agent", "aos-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
 		mkdirSync(selfPackageDir, { recursive: true });
@@ -632,7 +632,7 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 
 	it("installs the active package name from the update check during self-update", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@aos-agent", "aos-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
 		mkdirSync(selfPackageDir, { recursive: true });
@@ -683,7 +683,7 @@ else {
 
 	it("prints a pnpm metadata hint when self-update fails", async () => {
 		const globalRoot = join(tempDir, "pnpm", "global", "v11");
-		const selfPackageDir = join(globalRoot, "node_modules", "@earendil-works", "pi-coding-agent");
+		const selfPackageDir = join(globalRoot, "node_modules", "@aos-agent", "aos-agent");
 		const fakeBinDir = join(tempDir, "bin");
 		const fakePnpmPath = join(fakeBinDir, process.platform === "win32" ? "pnpm.cmd" : "pnpm");
 		mkdirSync(selfPackageDir, { recursive: true });
@@ -727,7 +727,7 @@ else {
 
 	it("fails self-update when renamed npm package installation fails", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@aos-agent", "aos-agent");
 		const fakeNpmPath = join(tempDir, "fake-npm-fail.cjs");
 		const recordPath = join(tempDir, "self-update-fail.json");
 		mkdirSync(selfPackageDir, { recursive: true });

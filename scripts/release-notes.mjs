@@ -9,7 +9,7 @@ const DEFAULT_REPO = "aos-agent/aos-agent";
 const DEFAULT_BASE_PATH = "packages/coding-agent";
 const DEFAULT_CHANGELOG = "packages/coding-agent/CHANGELOG.md";
 const DEFAULT_FIX_SINCE_TAG = "v0.74.0";
-const LEGACY_REPO_RE = /^https:\/\/github\.com\/(?:badlogic|earendil-works)\/pi-mono(?=\/|$)/;
+const LEGACY_REPO_RE = /(?!)/; // no legacy repo rewrite
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 const INLINE_MARKDOWN_LINK_RE = /(!?\[[^\]\n]+\]\()([^\s)]+)((?:\s+[^)]*)?\))/g;
 
@@ -194,31 +194,31 @@ function isDirectoryTarget(originalPath, repositoryPath) {
 	return !basename.includes(".");
 }
 
-function normalizeLinkTarget(target, options) {
-	let canonicalTarget = target.replace(LEGACY_REPO_RE, `https://github.com/${options.repo}`);
+function normalizeLinkTarget(sourceTarget, options) {
+	let target = sourceTarget.replace(LEGACY_REPO_RE, `https://github.com/${options.repo}`);
 	const repoUrl = `https://github.com/${options.repo}`;
 
 	for (const route of ["blob", "tree"]) {
 		for (const branch of ["main", "master"]) {
 			const floatingRefPrefix = `${repoUrl}/${route}/${branch}/`;
-			if (canonicalTarget.startsWith(floatingRefPrefix)) {
-				canonicalTarget = `${repoUrl}/${route}/${options.tag}/${canonicalTarget.slice(floatingRefPrefix.length)}`;
+			if (target.startsWith(floatingRefPrefix)) {
+				target = `${repoUrl}/${route}/${options.tag}/${target.slice(floatingRefPrefix.length)}`;
 			}
 		}
 	}
 
-	if (canonicalTarget.startsWith("#") || canonicalTarget.startsWith("//") || URL_SCHEME_RE.test(canonicalTarget)) {
-		return canonicalTarget;
+	if (target.startsWith("#") || target.startsWith("//") || URL_SCHEME_RE.test(target)) {
+		return target;
 	}
 
-	const { fragment, pathPart, query } = splitLocalTarget(canonicalTarget);
+	const { fragment, pathPart, query } = splitLocalTarget(target);
 	if (!pathPart) {
-		return canonicalTarget;
+		return target;
 	}
 
 	const repositoryPath = resolveRepositoryPath(pathPart, options.basePath);
 	if (!repositoryPath) {
-		return canonicalTarget;
+		return target;
 	}
 
 	const route = isDirectoryTarget(pathPart, repositoryPath) ? "tree" : "blob";

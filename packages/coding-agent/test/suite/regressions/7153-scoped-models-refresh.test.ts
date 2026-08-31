@@ -1,7 +1,7 @@
 import type { Api, Model, ModelsRefreshResult } from "@aos-agent/ai";
 import { setKeybindings, type TUI } from "@aos-agent/tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { KeybindingsManager } from "../../../src/core/keybindings.ts";
+import { KeybindingsManager } from "../../../src/core/runtime/keybindings.ts";
 import type { ScopedModelsSelectorComponent } from "../../../src/modes/interactive/components/scoped-models-selector.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";

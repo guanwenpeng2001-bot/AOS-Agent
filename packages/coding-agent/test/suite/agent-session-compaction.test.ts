@@ -1,7 +1,7 @@
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	fauxAssistantMessage,
+	fakeAssistantMessage,
 	type Model,
 } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -35,7 +35,7 @@ function createAssistant(
 ): AssistantMessage {
 	const model = harness.getModel();
 	return {
-		...fauxAssistantMessage("", {
+		...fakeAssistantMessage("", {
 			stopReason: options.stopReason,
 			errorMessage: options.errorMessage,
 			timestamp: options.timestamp,
@@ -54,7 +54,7 @@ function useSummaryStreamFn(harness: Harness, summary: string): () => number {
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {
 			const message: AssistantMessage = {
-				...fauxAssistantMessage(summary),
+				...fakeAssistantMessage(summary),
 				api: model.api,
 				provider: model.provider,
 				model: model.id,
@@ -171,7 +171,7 @@ describe("AgentSession compaction characterization", () => {
 		});
 		harnesses.push(harness);
 		seedCompactableSession(harness);
-		harness.setResponses([fauxAssistantMessage("queued response")]);
+		harness.setResponses([fakeAssistantMessage("queued response")]);
 
 		let queuedPrompt: Promise<void> | undefined;
 		harness.session.subscribe((event) => {
@@ -222,10 +222,10 @@ describe("AgentSession compaction characterization", () => {
 		const model = harness.getModel();
 		harness.session.modelRuntime.registerNativeProvider({
 			id: model.provider,
-			name: "Faux bearer provider",
+			name: "Fake bearer provider",
 			auth: {
 				apiKey: {
-					name: "Faux bearer token",
+					name: "Fake bearer token",
 					resolve: async () => ({
 						auth: { headers: { Authorization: "Bearer ambient-token" } },
 						source: "ambient bearer token",
@@ -241,14 +241,14 @@ describe("AgentSession compaction characterization", () => {
 			(_context, options) => {
 				expect(options?.apiKey).toBeUndefined();
 				expect(options?.headers).toEqual({ Authorization: "Bearer ambient-token" });
-				return fauxAssistantMessage("summary with bearer auth");
+				return fakeAssistantMessage("summary with bearer auth");
 			},
 		]);
 
 		const result = await harness.session.compact();
 
 		expect(result.summary).toContain("summary with bearer auth");
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.fake.state.callCount).toBe(1);
 	});
 
 	it("persists usage from AOS-generated manual compaction", async () => {
@@ -285,7 +285,7 @@ describe("AgentSession compaction characterization", () => {
 
 	it("compacts and resumes after a length stop below the desired output limit when Context Engine is disabled", async () => {
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
+			models: [{ id: "fake-1", contextWindow: 1000, maxTokens: 100 }],
 			settings: {
 				context: { enabled: false },
 				compaction: { keepRecentTokens: 1, reserveTokens: 0 },
@@ -305,13 +305,13 @@ describe("AgentSession compaction characterization", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage("partial response", { stopReason: "length" }),
-			fauxAssistantMessage("completed response"),
+			fakeAssistantMessage("partial response", { stopReason: "length" }),
+			fakeAssistantMessage("completed response"),
 		]);
 
 		await harness.session.prompt("x".repeat(5000));
 
-		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.fake.state.callCount).toBe(2);
 		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({
 			reason: "overflow",
 			aborted: false,
@@ -322,20 +322,20 @@ describe("AgentSession compaction characterization", () => {
 
 	it("does not compact when a length stop reaches the desired output limit", async () => {
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 1_000_000, maxTokens: 100 }],
+			models: [{ id: "fake-1", contextWindow: 1_000_000, maxTokens: 100 }],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("x".repeat(400), { stopReason: "length" })]);
+		harness.setResponses([fakeAssistantMessage("x".repeat(400), { stopReason: "length" })]);
 
 		await harness.session.prompt("hello");
 
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.fake.state.callCount).toBe(1);
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
 	});
 
 	it("stops after one compact-and-retry when a second response is also truncated", async () => {
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 1_000_000, maxTokens: 100 }],
+			models: [{ id: "fake-1", contextWindow: 1_000_000, maxTokens: 100 }],
 			settings: { compaction: { keepRecentTokens: 1, reserveTokens: 0 } },
 			extensionFactories: [
 				(agent) => {
@@ -352,13 +352,13 @@ describe("AgentSession compaction characterization", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			() => fauxAssistantMessage("x".repeat(64), { stopReason: "length", timestamp: Date.now() + 10_000 }),
-			() => fauxAssistantMessage("y".repeat(64), { stopReason: "length", timestamp: Date.now() + 10_000 }),
+			() => fakeAssistantMessage("x".repeat(64), { stopReason: "length", timestamp: Date.now() + 10_000 }),
+			() => fakeAssistantMessage("y".repeat(64), { stopReason: "length", timestamp: Date.now() + 10_000 }),
 		]);
 
 		await harness.session.prompt("x".repeat(5000));
 
-		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.fake.state.callCount).toBe(2);
 		expect(harness.eventsOfType("compaction_start").filter((event) => event.reason === "overflow")).toHaveLength(1);
 		expect(harness.eventsOfType("compaction_end").at(-1)?.errorMessage).toBe(
 			"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
@@ -408,7 +408,7 @@ describe("AgentSession compaction characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+		harness.setResponses([fakeAssistantMessage("one"), fakeAssistantMessage("two")]);
 		await harness.session.prompt("first");
 		await harness.session.prompt("second");
 
@@ -457,7 +457,7 @@ describe("AgentSession compaction characterization", () => {
 				context: { enabled: false },
 				compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 },
 			},
-			models: [{ id: "faux-1", contextWindow: 1, maxTokens: 100 }],
+			models: [{ id: "fake-1", contextWindow: 1, maxTokens: 100 }],
 			extensionFactories: [
 				(agent) => {
 					agent.on("session_before_compact", async (event) => ({
@@ -472,7 +472,7 @@ describe("AgentSession compaction characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("completed answer")]);
+		harness.setResponses([fakeAssistantMessage("completed answer")]);
 
 		await expect(harness.session.prompt("hello")).resolves.toBeUndefined();
 
@@ -482,7 +482,7 @@ describe("AgentSession compaction characterization", () => {
 			aborted: false,
 			willRetry: false,
 		});
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.fake.state.callCount).toBe(1);
 	});
 
 	it("ignores stale pre-compaction assistant usage on pre-prompt checks", async () => {
@@ -620,7 +620,7 @@ describe("AgentSession compaction characterization", () => {
 	it("does not trigger threshold compaction below the threshold or when disabled", async () => {
 		const belowThresholdHarness = await createHarness({
 			settings: { compaction: { enabled: true, reserveTokens: 1000 } },
-			models: [{ id: "faux-1", contextWindow: 200_000 }],
+			models: [{ id: "fake-1", contextWindow: 200_000 }],
 		});
 		harnesses.push(belowThresholdHarness);
 		const disabledHarness = await createHarness({ settings: { compaction: { enabled: false } } });

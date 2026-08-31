@@ -2,15 +2,15 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, registerFauxProvider, streamSimple } from "@aos-agent/ai/compat";
+import { fakeAssistantMessage, registerFakeProvider, streamSimple } from "@aos-agent/ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentSession } from "../../../src/core/agent-session.ts";
-import { AuthStorage } from "../../../src/core/auth-storage.ts";
+import { AgentSession } from "../../../src/core/session/agent-session.ts";
+import { AuthStorage } from "../../../src/core/policy/auth-storage.ts";
 import { convertToLlm } from "../../../src/core/messages.ts";
-import { SessionManager } from "../../../src/core/session-manager.ts";
-import { SettingsManager } from "../../../src/core/settings-manager.ts";
+import { SessionManager } from "../../../src/core/session/manager.ts";
+import { SettingsManager } from "../../../src/core/runtime/settings-manager.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
-import { createInMemoryModelRegistry, getModelRuntime } from "../../model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry, getModelRuntime } from "../../runtime/model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "../../utilities.ts";
 
 describe("regression #5596: missing configured theme export", () => {
@@ -25,20 +25,20 @@ describe("regression #5596: missing configured theme export", () => {
 
 	it("exports with the active fallback theme when the configured theme is missing", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "aos-5596-"));
-		const faux = registerFauxProvider({
-			models: [{ id: "faux-1", reasoning: false }],
+		const fake = registerFakeProvider({
+			models: [{ id: "fake-1", reasoning: false }],
 		});
-		faux.setResponses([fauxAssistantMessage("hello")]);
+		fake.setResponses([fakeAssistantMessage("hello")]);
 
-		const model = faux.getModel();
+		const model = fake.getModel();
 		const authStorage = AuthStorage.inMemory();
-		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
+		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "fake-key" }));
 		const modelRegistry = await createInMemoryModelRegistry(authStorage);
 		modelRegistry.registerProvider(model.provider, {
 			baseUrl: model.baseUrl,
-			apiKey: "faux-key",
-			api: faux.api,
-			models: faux.models.map((registeredModel) => ({
+			apiKey: "fake-key",
+			api: fake.api,
+			models: fake.models.map((registeredModel) => ({
 				id: registeredModel.id,
 				name: registeredModel.name,
 				api: registeredModel.api,
@@ -54,7 +54,7 @@ describe("regression #5596: missing configured theme export", () => {
 		const settingsManager = SettingsManager.inMemory({ theme: "missing-theme" });
 		const sessionManager = SessionManager.create(tempDir, join(tempDir, "sessions"));
 		const agent = new Agent({
-			getApiKey: () => "faux-key",
+			getApiKey: () => "fake-key",
 			initialState: {
 				model,
 				systemPrompt: "You are a test assistant.",
@@ -73,7 +73,7 @@ describe("regression #5596: missing configured theme export", () => {
 		});
 		cleanups.push(async () => {
 			await session.dispose();
-			faux.unregister();
+			fake.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
 			}

@@ -6,7 +6,7 @@ import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import type { BuiltinToolPolicy } from "../sandbox-host.ts";
+import type { BuiltinToolPolicy } from "../policy/sandbox-host.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, renderToolPath, str } from "./render-utils.ts";
 import { sandboxEntries, sandboxEntryIsDirectory, sandboxEntryName } from "./sandbox-filesystem.ts";

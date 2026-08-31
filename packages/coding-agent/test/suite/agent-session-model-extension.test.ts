@@ -1,5 +1,5 @@
 import type { AgentTool, ThinkingLevel } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall, type Model, type Usage } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall, type Model, type Usage } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BuildSystemPromptOptions, ExtensionAPI } from "../../src/index.ts";
@@ -18,8 +18,8 @@ describe("AgentSession model and extension characterization", () => {
 		const modelEvents: string[] = [];
 		const harness = await createHarness({
 			models: [
-				{ id: "faux-1", name: "One", reasoning: true },
-				{ id: "faux-2", name: "Two", reasoning: true },
+				{ id: "fake-1", name: "One", reasoning: true },
+				{ id: "fake-2", name: "Two", reasoning: true },
 			],
 			extensionFactories: [
 				(agent) => {
@@ -30,12 +30,12 @@ describe("AgentSession model and extension characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-		const nextModel = harness.getModel("faux-2")!;
+		const nextModel = harness.getModel("fake-2")!;
 
 		await harness.session.setModel(nextModel);
 
-		expect(harness.session.model?.id).toBe("faux-2");
-		expect(modelEvents).toEqual(["faux-1->faux-2:set"]);
+		expect(harness.session.model?.id).toBe("fake-2");
+		expect(modelEvents).toEqual(["fake-1->fake-2:set"]);
 		expect(
 			harness.sessionManager
 				.getEntries()
@@ -47,13 +47,13 @@ describe("AgentSession model and extension characterization", () => {
 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {
 		const harness = await createHarness({
 			models: [
-				{ id: "faux-1", name: "One", reasoning: true },
-				{ id: "faux-2", name: "Two", reasoning: false },
+				{ id: "fake-1", name: "One", reasoning: true },
+				{ id: "fake-2", name: "Two", reasoning: false },
 			],
 		});
 		harnesses.push(harness);
-		const modelOne = harness.getModel("faux-1")!;
-		const modelTwo = harness.getModel("faux-2")!;
+		const modelOne = harness.getModel("fake-1")!;
+		const modelTwo = harness.getModel("fake-2")!;
 		harness.session.setScopedModels([{ model: modelOne, thinkingLevel: "high" }, { model: modelTwo }] as Array<{
 			model: Model<string>;
 			thinkingLevel?: ThinkingLevel;
@@ -61,16 +61,16 @@ describe("AgentSession model and extension characterization", () => {
 		harness.session.setThinkingLevel("high");
 
 		await harness.session.cycleModel();
-		expect(harness.session.model?.id).toBe("faux-2");
+		expect(harness.session.model?.id).toBe("fake-2");
 		expect(harness.session.thinkingLevel).toBe("off");
 
 		await harness.session.cycleModel();
-		expect(harness.session.model?.id).toBe("faux-1");
+		expect(harness.session.model?.id).toBe("fake-1");
 		expect(harness.session.thinkingLevel).toBe("high");
 	});
 
 	it("clamps thinking levels to model capabilities and cycles available levels", async () => {
-		const harness = await createHarness({ models: [{ id: "faux-1", reasoning: false }] });
+		const harness = await createHarness({ models: [{ id: "fake-1", reasoning: false }] });
 		harnesses.push(harness);
 
 		harness.session.setThinkingLevel("high");
@@ -79,7 +79,7 @@ describe("AgentSession model and extension characterization", () => {
 	});
 
 	it("cycles xhigh before max when both are supported", async () => {
-		const harness = await createHarness({ models: [{ id: "faux-1", reasoning: true }] });
+		const harness = await createHarness({ models: [{ id: "fake-1", reasoning: true }] });
 		harnesses.push(harness);
 		harness.getModel().thinkingLevelMap = { xhigh: "xhigh", max: "max" };
 
@@ -101,15 +101,15 @@ describe("AgentSession model and extension characterization", () => {
 	it("throws when setModel is called without configured auth", async () => {
 		const harness = await createHarness({
 			models: [
-				{ id: "faux-1", name: "One", reasoning: true },
-				{ id: "faux-2", name: "Two", reasoning: true },
+				{ id: "fake-1", name: "One", reasoning: true },
+				{ id: "fake-2", name: "Two", reasoning: true },
 			],
 			withConfiguredAuth: false,
 		});
 		harnesses.push(harness);
 
-		await expect(harness.session.setModel(harness.getModel("faux-2")!)).rejects.toThrow(
-			`No API key for ${harness.getModel().provider}/faux-2`,
+		await expect(harness.session.setModel(harness.getModel("fake-2")!)).rejects.toThrow(
+			`No API key for ${harness.getModel().provider}/fake-2`,
 		);
 	});
 
@@ -133,7 +133,7 @@ describe("AgentSession model and extension characterization", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
+			fakeAssistantMessage([fakeToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
 			(context) => {
 				const toolResult = context.messages.find((message) => message.role === "toolResult");
 				const errorText =
@@ -143,7 +143,7 @@ describe("AgentSession model and extension characterization", () => {
 								.map((part) => part.text)
 								.join("\n")
 						: "";
-				return fauxAssistantMessage(errorText);
+				return fakeAssistantMessage(errorText);
 			},
 		]);
 
@@ -200,7 +200,7 @@ describe("AgentSession model and extension characterization", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
+			fakeAssistantMessage([fakeToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
 			(context) => {
 				const toolResult = context.messages.find((message) => message.role === "toolResult");
 				const text =
@@ -210,7 +210,7 @@ describe("AgentSession model and extension characterization", () => {
 								.map((part) => part.text)
 								.join("\n")
 						: "";
-				return fauxAssistantMessage(text);
+				return fakeAssistantMessage(text);
 			},
 		]);
 
@@ -252,7 +252,7 @@ describe("AgentSession model and extension characterization", () => {
 								.map((part) => part.text)
 								.join("\n")
 						: "";
-				return fauxAssistantMessage("done");
+				return fakeAssistantMessage("done");
 			},
 		]);
 
@@ -293,7 +293,7 @@ describe("AgentSession model and extension characterization", () => {
 								.map((part) => part.text)
 								.join("\n")
 						: "";
-				return fauxAssistantMessage("done");
+				return fakeAssistantMessage("done");
 			},
 		]);
 
@@ -367,7 +367,7 @@ describe("AgentSession model and extension characterization", () => {
 						typeof message.content !== "string" &&
 						message.content.some((part) => part.type === "text" && part.text === "injected"),
 				);
-				return fauxAssistantMessage("done");
+				return fakeAssistantMessage("done");
 			},
 		]);
 

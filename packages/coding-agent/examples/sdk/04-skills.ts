@@ -10,7 +10,6 @@ import {
 	createSyntheticSourceInfo,
 	DefaultResourceLoader,
 	getAgentDir,
-	SessionManager,
 	type Skill,
 } from "aos-agent";
 
@@ -49,7 +48,7 @@ if (diagnostics.length > 0) {
 
 const { session } = await createAgentSession({
 	resourceLoader: loader,
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 });
 console.log("Session created with filtered skills");
 session.dispose();

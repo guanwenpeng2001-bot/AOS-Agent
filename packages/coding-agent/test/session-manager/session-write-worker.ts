@@ -1,5 +1,5 @@
 import { dirname } from "node:path";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { SessionManager } from "../../src/core/session/manager.ts";
 
 const [sessionFile, marker, countValue] = process.argv.slice(2);
 const count = Number(countValue);

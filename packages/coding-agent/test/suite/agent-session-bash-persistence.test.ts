@@ -1,13 +1,13 @@
 import { Buffer } from "node:buffer";
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/context-engine.ts";
-import { EXECUTION_ASSOCIATION_CUSTOM_TYPE } from "../../src/core/execution-association.ts";
-import { POLICY_BINDING_CUSTOM_TYPE } from "../../src/core/execution-policy.ts";
-import { MODEL_ATTEMPT_CUSTOM_TYPE, MODEL_BINDING_CUSTOM_TYPE } from "../../src/core/model-broker-ledger.ts";
-import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../../src/core/session-manager-storage.ts";
+import { CONTEXT_SNAPSHOT_CUSTOM_TYPE } from "../../src/core/session/context-engine.ts";
+import { EXECUTION_ASSOCIATION_CUSTOM_TYPE } from "../../src/core/session/execution-association.ts";
+import { POLICY_BINDING_CUSTOM_TYPE } from "../../src/core/policy/execution.ts";
+import { MODEL_ATTEMPT_CUSTOM_TYPE, MODEL_BINDING_CUSTOM_TYPE } from "../../src/core/runtime/model-broker-ledger.ts";
+import { FOUNDATION_DURABLE_CUSTOM_TYPE } from "../../src/core/session/manager-storage.ts";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
@@ -100,9 +100,9 @@ describe("AgentSession bash and persistence characterization", () => {
 		const harness = await createHarness({ tools: [waitTool] });
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("wait", {})], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
-			fauxAssistantMessage("after flush"),
+			fakeAssistantMessage([fakeToolCall("wait", {})], { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
+			fakeAssistantMessage("after flush"),
 		]);
 
 		const sawToolStart = new Promise<void>((resolve) => {
@@ -249,8 +249,8 @@ describe("AgentSession bash and persistence characterization", () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage([fakeToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		await harness.session.sendCustomMessage({
@@ -273,7 +273,7 @@ describe("AgentSession bash and persistence characterization", () => {
 					!entry.customType.startsWith("harness.config.")),
 		);
 		expect(userFacingEntries.map((entry) => entry.type)).toEqual([
-			"custom_message",
+			"message",
 			"message",
 			"custom",
 			"message",
@@ -283,7 +283,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		]);
 		const semanticEntries = userFacingEntries.filter((entry) => entry.type !== "custom");
 		expect(semanticEntries.map((entry) => entry.type)).toEqual([
-			"custom_message",
+			"message",
 			"message",
 			"message",
 			"message",
@@ -291,7 +291,7 @@ describe("AgentSession bash and persistence characterization", () => {
 		]);
 		expect(
 			semanticEntries.flatMap((entry) => (entry.type === "message" ? [entry.message.role] : [])),
-		).toEqual(["user", "assistant", "toolResult", "assistant"]);
+		).toEqual(["custom", "user", "assistant", "toolResult", "assistant"]);
 		const contextSnapshots = userFacingEntries.filter((entry) => entry.type === "custom");
 		expect(contextSnapshots).toHaveLength(2);
 		for (const entry of contextSnapshots) {
@@ -334,7 +334,7 @@ describe("AgentSession bash and persistence characterization", () => {
 	it("persists aborted assistant messages", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("x".repeat(20_000))]);
+		harness.setResponses([fakeAssistantMessage("x".repeat(20_000))]);
 
 		const sawMessageUpdate = new Promise<void>((resolve) => {
 			const unsubscribe = harness.session.subscribe((event) => {

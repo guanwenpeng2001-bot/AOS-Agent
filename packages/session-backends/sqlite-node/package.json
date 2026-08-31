@@ -23,7 +23,7 @@
 		"coverage": "vitest --run --coverage",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
-	"author": "Earendil Works",
+	"author": "AOS Agent",
 	"license": "MIT",
 	"repository": {
 		"type": "git",

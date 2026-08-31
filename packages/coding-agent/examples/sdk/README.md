@@ -37,7 +37,6 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   ModelRuntime,
-  SessionManager,
   SettingsManager,
 } from "aos-agent";
 
@@ -62,7 +61,7 @@ const { session } = await createAgentSession({ tools: ["read", "grep", "find", "
 
 // In-memory
 const { session } = await createAgentSession({
-  sessionManager: SessionManager.inMemory(),
+  session: { mode: "memory" },
   modelRuntime,
 });
 
@@ -88,7 +87,7 @@ const { session } = await createAgentSession({
   resourceLoader,
   tools: ["read", "bash", "my_tool"],
   customTools: [myTool],
-  sessionManager: SessionManager.inMemory(),
+  session: { mode: "memory" },
   settingsManager: SettingsManager.inMemory(),
 });
 
@@ -113,7 +112,7 @@ await session.prompt("Hello");
 | `tools` | `["read", "bash", "edit", "write"]` built-ins | Allowlist tool names across built-in, extension, and custom tools |
 | `customTools` | `[]` | Additional tool definitions |
 | `resourceLoader` | DefaultResourceLoader | Resource loader for extensions, skills, prompts, themes, and context files |
-| `sessionManager` | `SessionManager.create(cwd)` | Persistence |
+| `session` | `{ mode: "new" }` | Persistence and session selection |
 | `settingsManager` | `SettingsManager.create(cwd, agentDir)` | Settings overrides |
 
 ## Events

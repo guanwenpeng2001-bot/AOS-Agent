@@ -22,7 +22,7 @@ import type {
 	Model,
 	StopReason,
 	TextContent,
-	TextSignatureV1,
+	TextSignature,
 	ThinkingContent,
 	Tool,
 	ToolCall,
@@ -45,19 +45,19 @@ import { transformMessages } from "./transform-messages.ts";
 // Utilities
 // =============================================================================
 
-function encodeTextSignatureV1(id: string, phase?: TextSignatureV1["phase"]): string {
-	const payload: TextSignatureV1 = { v: 1, id };
+function encodeTextSignature(id: string, phase?: TextSignature["phase"]): string {
+	const payload: TextSignature = { v: 1, id };
 	if (phase) payload.phase = phase;
 	return JSON.stringify(payload);
 }
 
 function parseTextSignature(
 	signature: string | undefined,
-): { id: string; phase?: TextSignatureV1["phase"] } | undefined {
+): { id: string; phase?: TextSignature["phase"] } | undefined {
 	if (!signature) return undefined;
 	if (signature.startsWith("{")) {
 		try {
-			const parsed = JSON.parse(signature) as Partial<TextSignatureV1>;
+			const parsed = JSON.parse(signature) as Partial<TextSignature>;
 			if (parsed.v === 1 && typeof parsed.id === "string") {
 				if (parsed.phase === "commentary" || parsed.phase === "final_answer") {
 					return { id: parsed.id, phase: parsed.phase };
@@ -695,7 +695,7 @@ export async function processResponsesStream<TApi extends Api>(
 				outputSlots.delete(event.output_index);
 			} else if (item.type === "message" && slot?.type === "text") {
 				slot.block.text = item.content?.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("") || "";
-				slot.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
+				slot.block.textSignature = encodeTextSignature(item.id, item.phase ?? undefined);
 				stream.push({
 					type: "text_end",
 					contentIndex: slot.contentIndex,

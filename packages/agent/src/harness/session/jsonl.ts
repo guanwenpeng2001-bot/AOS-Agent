@@ -7,6 +7,4 @@ export type {
 	JsonlSessionRepoFileSystem,
 	JsonlSessionRepoOptions,
 	JsonlSessionHeader,
-	JsonlV4Header,
-	JsonlV5Header,
 } from "./jsonl/types.ts";

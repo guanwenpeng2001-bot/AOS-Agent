@@ -1,4 +1,5 @@
 /**
+ * package-internal barrel, not part of the published API.
  * Core modules shared between all run modes.
  */
 
@@ -10,20 +11,60 @@ export {
 	type ModelCycleResult,
 	type PromptOptions,
 	type SessionStats,
-} from "./agent-session.ts";
+} from "./session/agent-session.ts";
+export {
+	createAgentRuntimeCompositionFactory,
+	createWorkerSandboxComposition,
+	type AgentRuntimeComposition,
+	type AgentRuntimeCompositionContext,
+	type AgentRuntimeCompositionFactory,
+	type AgentRuntimeCompositionOptions,
+	type ExternalConnectorProductAuthority,
+	type ExternalConnectorRegistryFactory,
+	type SchedulerCompositionFactory,
+	type SchedulerRuntimeOptions,
+	type SubagentCompositionFactory,
+	type TaskCredentialProviderFactory,
+	type ToolGatewayCatalog,
+	type ToolGatewayCatalogFactory,
+	type ToolGatewayFactory,
+	type WorkerSandboxComposition,
+	type WorkerSandboxFactory,
+	type WorkerSandboxCompositionOptions,
+} from "./runtime/composition-factory.ts";
+export {
+	EXTERNAL_CONNECTOR_TARGET_CONFIG_SCHEMA_VERSION,
+	ExternalConnectorTargetConfigError,
+	buildExternalConnectorTargetConfig,
+	resolveExternalConnectorTargetConfig,
+	type ExternalConnectorAccountReference,
+	type ExternalConnectorCapabilityCeiling,
+	type ExternalConnectorCapabilityNarrowing,
+	type ExternalConnectorModelAccess,
+	type ExternalConnectorResolvedTarget,
+	type ExternalConnectorTargetAuthority,
+	type ExternalConnectorTargetCatalogConfig,
+	type ExternalConnectorTargetConfig,
+	type ExternalConnectorTargetConfigBuildOptions,
+	type ExternalConnectorTargetConfigErrorReason,
+	type ExternalConnectorTargetDefinition,
+	type ExternalConnectorTargetSelectionConfig,
+	type ExternalConnectorTargetSelectionSource,
+	type ExternalConnectorTrustedTarget,
+} from "./connector/target-config.ts";
 export {
 	AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 	type CreateAgentSessionRuntimeResult,
 	createAgentSessionRuntime,
-} from "./agent-session-runtime.ts";
+} from "./session/runtime.ts";
 export {
 	RUNTIME_SESSION_SURFACES,
 	createRuntimeSessionSurfaceAdapter,
-	isRuntimeSessionSurfaceV1,
-	type RuntimeSessionSurfaceAdapterV1,
-	type RuntimeSessionSurfaceV1,
-} from "./runtime-session-surface.ts";
+	isRuntimeSessionSurface,
+	type RuntimeSessionSurfaceAdapter,
+	type RuntimeSessionSurface,
+} from "./runtime/session-surface.ts";
 export {
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
@@ -31,8 +72,12 @@ export {
 	type CreateAgentSessionServicesOptions,
 	createAgentSessionFromServices,
 	createAgentSessionServices,
-} from "./agent-session-services.ts";
-export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
+} from "./session/services.ts";
+export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./runtime/bash-executor.ts";
+export {
+	classifyExternalToolPolicyOperation,
+	type ExternalToolPolicyOperationInput,
+} from "./connector/tool-policy.ts";
 export type { CompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
 export {
@@ -43,8 +88,7 @@ export {
 	getExecutionAssociations,
 	isExecutionAssociationRecord,
 	parseExecutionAssociation,
-	persistExecutionAssociation,
-} from "./execution-association.ts";
+} from "./session/execution-association.ts";
 export {
 	classifyAssistantFailure,
 	classifyProviderFailure,
@@ -54,16 +98,38 @@ export {
 } from "./execution-error.ts";
 export {
 	type ExecutionPolicyProfile,
+	calculatePolicyReviewScopeDigest,
+	classifyProtectedPathOperation,
+	createPolicyReviewEvidence,
+	isCanonicalReviewScopeDigest,
+	isCanonicalWorkspaceRelativePath,
+	isPolicyEffect,
+	isPolicyReviewEvidence,
+	isPolicyReviewRequirement,
 	type PolicyApprovalOutcome,
 	type PolicyApprovalRequest,
 	type PolicyApprovalSource,
 	type PolicyBinding,
 	type PolicyDecision,
 	PolicyError,
+	POLICY_EFFECTS,
+	POLICY_REVIEWER_KINDS,
+	POLICY_REVIEW_REQUIREMENTS,
 	type PolicyErrorCode,
+	type PolicyEffect,
+	type PolicyReviewDecision,
+	type PolicyReviewEvidence,
+	type PolicyReviewEvidenceResolution,
+	type PolicyReviewerIdentity,
+	type PolicyReviewerKind,
+	type PolicyReviewRequirement,
+	type ProtectedPathClassification,
+	type ProtectedPathPolicy,
+	type ProtectedPathRule,
 	type PublicPolicySummary,
 	resolveExecutionPolicy,
 	resolveExecutionPolicyProfile,
+	resolvePolicyReviewEvidence,
 	resolveTaskCredentialPreflight,
 	TASK_CREDENTIAL_POLICY_RESOURCES,
 	TASK_CREDENTIAL_PREFLIGHT_OPERATIONS,
@@ -76,8 +142,8 @@ export {
 	type TaskCredentialSandboxPreflight,
 	taskCredentialPolicyResource,
 	isTaskCredentialPolicyResource,
-} from "./execution-policy.ts";
-export type { PolicyApprovalLedgerRecord, PolicyApprovalLedgerResolution } from "./execution-policy-ledger.ts";
+} from "./policy/execution.ts";
+export type { PolicyApprovalLedgerRecord, PolicyApprovalLedgerResolution } from "./policy/execution-ledger.ts";
 export {
 	REMOTE_ARTIFACT_KINDS,
 	REMOTE_OPERATION_ERROR_CATEGORIES,
@@ -124,8 +190,8 @@ export {
 	type RemoteOperationTaskLeaseVerifier,
 	type TaskLeaseReference,
 	type TaskLeaseVerificationResult,
-} from "./remote-operation.ts";
-// Task Credential / Lease v1 core contract (safe public records only; no
+} from "./runtime/remote-operation.ts";
+// Task Credential / Lease core contract (safe public records only; no
 // material-bearing types or handles are exported).
 export {
 	TASK_CREDENTIAL_ACTION,
@@ -146,7 +212,7 @@ export {
 	type TaskCredentialTransitionOptions,
 	type TaskCredentialTtlBounds,
 	type TaskExecutionBinding,
-} from "./task-credential-lease.ts";
+} from "./policy/task-credential-lease.ts";
 export {
 	createTaskCredentialNullTarget,
 	type TaskCredentialIssuer,
@@ -163,7 +229,7 @@ export {
 	type TaskCredentialTargetCapabilitiesRequest,
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
-} from "./task-credential-provider.ts";
+} from "./policy/task-credential-provider.ts";
 export {
 	TASK_CREDENTIAL_CUSTOM_TYPE,
 	createTaskCredentialStore,
@@ -181,7 +247,7 @@ export {
 	type TaskCredentialTransition,
 	type TaskCredentialWarning,
 	type TaskCredentialWarningCode,
-} from "./task-credential-store.ts";
+} from "./policy/task-credential-store.ts";
 export { areExperimentalFeaturesEnabled } from "./experimental.ts";
 // Extensions system
 export {
@@ -248,23 +314,23 @@ export {
 	type SessionBoundaryKind,
 	type SessionBoundaryRecord,
 	type SessionBoundaryStatus,
-} from "./session-boundary.ts";
+} from "./session/boundary.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";
 export {
 	PROMPT_TASK_DEPENDENCY_NAMES,
 	PromptTaskCompositionError,
 	createPromptTaskAdapter,
-	type PromptTaskAdapterV1,
-	type PromptTaskCompositionDependenciesV1,
-	type PromptTaskCompositionErrorCodeV1,
-	type PromptTaskCompositionRootOptionsV1,
-	type PromptTaskDependencyContextV1,
-	type PromptTaskDependencyNameV1,
-	type PromptTaskDependencyResolutionV1,
-	type PromptTaskDependencyV1,
-	type PromptTaskEnvelopeInputV1,
-	type PromptTaskExecutionV1,
-	type PromptTaskIdentityV1,
-	type PromptTaskInputV1,
-	type PromptTaskSettlementV1,
-} from "./prompt-task-adapter.ts";
+	type PromptTaskAdapter,
+	type PromptTaskCompositionDependencies,
+	type PromptTaskCompositionErrorCode,
+	type PromptTaskCompositionRootOptions,
+	type PromptTaskDependencyContext,
+	type PromptTaskDependencyName,
+	type PromptTaskDependencyResolution,
+	type PromptTaskDependency,
+	type PromptTaskEnvelopeInput,
+	type PromptTaskExecution,
+	type PromptTaskIdentity,
+	type PromptTaskInput,
+	type PromptTaskSettlement,
+} from "./runtime/prompt-task-adapter.ts";

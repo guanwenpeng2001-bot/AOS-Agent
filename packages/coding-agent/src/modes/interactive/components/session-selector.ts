@@ -13,8 +13,8 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@aos-agent/tui";
-import { KeybindingsManager } from "../../../core/keybindings.ts";
-import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
+import { KeybindingsManager } from "../../../core/runtime/keybindings.ts";
+import type { SessionInfo, SessionListProgress } from "../../../core/session/manager.ts";
 import { canonicalizePath as _canonicalizePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";

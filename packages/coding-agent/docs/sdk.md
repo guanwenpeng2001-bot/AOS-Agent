@@ -16,13 +16,9 @@ See [examples/sdk/](../examples/sdk/) for working examples from minimal to full 
 ## Quick Start
 
 ```typescript
-import { createAgentSession, ModelRuntime, SessionManager } from "aos-agent";
+import { createAgentSession } from "aos-agent";
 
-const modelRuntime = await ModelRuntime.create();
-const { session } = await createAgentSession({
-  sessionManager: SessionManager.inMemory(),
-  modelRuntime,
-});
+const { session } = await createAgentSession();
 
 session.subscribe((event) => {
   if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
@@ -32,6 +28,8 @@ session.subscribe((event) => {
 
 await session.prompt("What files are in the current directory?");
 ```
+
+For a specific model, create a `ModelRuntime` and pass it in. See [examples/sdk/02-custom-model.ts](../examples/sdk/02-custom-model.ts).
 
 ## Installation
 
@@ -52,7 +50,7 @@ The main factory function for a single `AgentSession`.
 Context Engine is enabled by default. Before a provider dispatch, it resolves typed loader sources, session messages, explicit memory, actual tool schemas, and labeled extension contributions into a budgeted plan. It then persists a metadata-only snapshot for the actual model request.
 
 ```typescript
-import { createAgentSession, SessionManager } from "aos-agent";
+import { createAgentSession } from "aos-agent";
 
 // Minimal: defaults with DefaultResourceLoader
 const { session } = await createAgentSession();
@@ -61,7 +59,7 @@ const { session } = await createAgentSession();
 const { session } = await createAgentSession({
   model: myModel,
   tools: ["read", "bash"],
-  sessionManager: SessionManager.inMemory(),
+  session: { mode: "memory" },
 });
 ```
 
@@ -87,48 +85,42 @@ The `workspace-safe` profile must already name `sandboxProvider: "gondolin-local
 Installing or loading the example does not change the default `legacy` profile
 or register a provider. See [containerization.md](containerization.md).
 
-### External Agent Adapters
+### External Agent Connectors
 
-External Agent Adapters follow the same trusted-composition rule: a Host
-application constructs adapter instances and registers them explicitly. The
-registry never loads an adapter from a project file, URL, command, module
-path, package, or prompt, and a model provider or model ID never selects one
-implicitly. A Run that never selects an adapter keeps the existing AOS Loop /
-Provider path.
+External Agent Connectors follow the same trusted-composition rule: a Host
+application constructs connector instances and registers them explicitly. The
+registry never loads a connector from a project file, URL, command, module
+path, package, prompt, vendor name, or model selection.
 
 ```typescript
-import { createExternalAgentAdapterRegistry } from "aos-agent";
+import {
+  createAgentRuntimeCompositionFactory,
+  createExternalConnectorRegistry,
+} from "aos-agent";
 
-const registry = createExternalAgentAdapterRegistry();
-registry.register(myTrustedAdapterInstance); // implements the ExternalAgentAdapter contract
+const registry = createExternalConnectorRegistry();
+await registry.register({ descriptor, connector });
 
 const { session } = await createAgentSession({
-  externalAgentRegistry: registry,
+  runtimeComposition: createAgentRuntimeCompositionFactory({
+    externalConnectorRegistry: () => registry,
+  }),
 });
 ```
 
-Each adapter exposes `probe(target, context)`, `prepare(request, snapshot)`,
-and `start(request, context)`; a started handle carries bounded events, a
-terminal receipt, `cancel()`, and `heartbeat()`. Selection is explicit
-(`adapterId` + `targetId`), probing proves protocol / start / cancel / receipt
-capability before a Run is accepted, and the frozen AOS Binding is translated
-into an immutable prepared binding.
+Trust comes from the Host-owned composition boundary: the Host creates the
+registry, constructs the connector instance, and supplies the registry to the
+runtime. There is no caller-provided trust flag and a connector cannot
+self-attest as trusted.
 
-The credential boundary is fixed: adapters receive only public-safe binding
-references and a bounded capability summary. API keys, OAuth tokens,
-cookies, authorization headers, full environment values, raw Policy or
-Sandbox data, session file paths, and prompts never cross the adapter
-boundary. Target-owned tools, models, network, and credentials are never
-labeled as AOS capabilities, and there is no fallback to Host tool execution
-when an adapter or target is unavailable. See
-[external-agent-adapter.md](external-agent-adapter.md) for the full contract,
-including the stable `external_agent_*` error codes.
+`ExternalAgentConnector` is the only public external execution contract. It
+implements the shared executor-provider boundary, so external work enters the
+same pool and persists the same Task, Dispatch, Binding, Attempt, and receipt
+facts. Selection pins `providerId`, descriptor revision, and capability digest.
 
-Adapter selection is a public SDK type surface (`ExternalAgentAdapter`,
-`ExternalAgentAdapterRegistry`, `ExternalAgentSelection`,
-`ExternalAgentCapabilitySnapshot`, `ExternalAgentPreparedBinding`, and
-`ExternalAgentReceipt`). Automation Host `initialize` advertises registered
-adapters as an additive `externalAgentAdapters` summary (identifiers only).
+Vendor drivers and their start/probe/handle authority remain package-private.
+The connector path has no Native Subagent provider overlap and creates no
+`AgentInstance`. See [external-agent-connector.md](external-agent-connector.md).
 
 ### AgentSession
 
@@ -253,17 +245,23 @@ import {
   createAgentSessionRuntime,
   createAgentSessionServices,
   getAgentDir,
-  SessionManager,
 } from "aos-agent";
 
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+  cwd,
+  sessionManager,
+  sessionStartEvent,
+  registerCandidateSession,
+}) => {
   const services = await createAgentSessionServices({ cwd });
+  const created = await createAgentSessionFromServices({
+    services,
+    sessionManager,
+    sessionStartEvent,
+  });
+  registerCandidateSession(created.session);
   return {
-    ...(await createAgentSessionFromServices({
-      services,
-      sessionManager,
-      sessionStartEvent,
-    })),
+    ...created,
     services,
     diagnostics: services.diagnostics,
   };
@@ -272,7 +270,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  session: { mode: "new" },
 });
 ```
 
@@ -676,21 +674,21 @@ const { session } = await createAgentSession({
 When you pass a custom `cwd`, `createAgentSession()` builds selected built-in tools for that cwd.
 
 ```typescript
-import { createAgentSession, SessionManager } from "aos-agent";
+import { createAgentSession } from "aos-agent";
 
 const cwd = "/path/to/project";
 
 // Use default tools for custom cwd
 const { session } = await createAgentSession({
   cwd,
-  sessionManager: SessionManager.inMemory(cwd),
+  session: { mode: "memory" },
 });
 
 // Or pick specific tools for custom cwd
 const { session } = await createAgentSession({
   cwd,
   tools: ["read", "bash", "grep"],
-  sessionManager: SessionManager.inMemory(cwd),
+  session: { mode: "memory" },
 });
 ```
 
@@ -904,45 +902,49 @@ import {
   createAgentSessionRuntime,
   createAgentSessionServices,
   getAgentDir,
-  SessionManager,
+  listSessions,
 } from "aos-agent";
 
 // In-memory (no persistence)
 const { session } = await createAgentSession({
-  sessionManager: SessionManager.inMemory(),
+  session: { mode: "memory" },
 });
 
 // New persistent session
 const { session: persisted } = await createAgentSession({
-  sessionManager: SessionManager.create(process.cwd()),
+  session: { mode: "new" },
 });
 
 // Continue most recent
 const { session: continued, modelFallbackMessage } = await createAgentSession({
-  sessionManager: SessionManager.continueRecent(process.cwd()),
+  session: { mode: "continue" },
 });
 if (modelFallbackMessage) {
   console.log("Note:", modelFallbackMessage);
 }
 
-// Open specific file
+// List and open a specific session
+const currentProjectSessions = await listSessions(process.cwd());
 const { session: opened } = await createAgentSession({
-  sessionManager: SessionManager.open("/path/to/session.jsonl"),
+  session: { mode: "open", path: currentProjectSessions[0].path },
 });
 
-// List sessions
-const currentProjectSessions = await SessionManager.list(process.cwd());
-const allSessions = await SessionManager.listAll(process.cwd());
-
 // Session replacement API for /new, /resume, /fork, /clone, and import flows.
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+  cwd,
+  sessionManager,
+  sessionStartEvent,
+  registerCandidateSession,
+}) => {
   const services = await createAgentSessionServices({ cwd });
+  const created = await createAgentSessionFromServices({
+    services,
+    sessionManager,
+    sessionStartEvent,
+  });
+  registerCandidateSession(created.session);
   return {
-    ...(await createAgentSessionFromServices({
-      services,
-      sessionManager,
-      sessionStartEvent,
-    })),
+    ...created,
     services,
     diagnostics: services.diagnostics,
   };
@@ -951,7 +953,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  session: { mode: "new" },
 });
 
 // Replace the active session with a fresh one
@@ -967,39 +969,14 @@ await runtime.fork("entry-id");
 await runtime.fork("entry-id", { position: "at" });
 ```
 
-**SessionManager tree API:**
+`sessionManager` on the runtime factory is an internal store handle passed by the runtime. Hosts do not import `SessionManager` from `aos-agent`. Use `session.mode` / `listSessions()` for persistence, and `AgentSession` / `AgentSessionRuntime` for branching and replacement.
 
-```typescript
-const sm = SessionManager.open("/path/to/session.jsonl");
-
-// Session listing
-const currentProjectSessions = await SessionManager.list(process.cwd());
-const allSessions = await SessionManager.listAll(process.cwd());
-
-// Tree traversal
-const entries = sm.getEntries();        // All entries (excludes header)
-const tree = sm.getTree();              // Full tree structure
-const path = sm.getPath();              // Path from root to current leaf
-const leaf = sm.getLeafEntry();         // Current leaf entry
-const entry = sm.getEntry(id);          // Get entry by ID
-const children = sm.getChildren(id);    // Direct children of entry
-
-// Labels
-const label = sm.getLabel(id);          // Get label for entry
-sm.appendLabelChange(id, "checkpoint"); // Set label
-
-// Branching
-sm.branch(entryId);                     // Move leaf to earlier entry
-sm.branchWithSummary(id, "Summary...");  // Branch with context summary
-sm.createBranchedSession(leafId);       // Extract path to new file
-```
-
-> See [examples/sdk/11-sessions.ts](../examples/sdk/11-sessions.ts) and [Session Format](session-format.md)
+> See [examples/sdk/11-sessions.ts](../examples/sdk/11-sessions.ts), [examples/sdk/13-session-runtime.ts](../examples/sdk/13-session-runtime.ts), and [Session Format](session-format.md)
 
 ### Settings Management
 
 ```typescript
-import { createAgentSession, SettingsManager, SessionManager } from "aos-agent";
+import { createAgentSession, SettingsManager } from "aos-agent";
 
 // Default: loads from files (global + project merged)
 const { session } = await createAgentSession({
@@ -1017,7 +994,7 @@ const { session } = await createAgentSession({ settingsManager });
 // In-memory (no file I/O, for testing)
 const { session } = await createAgentSession({
   settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
-  sessionManager: SessionManager.inMemory(),
+  session: { mode: "memory" },
 });
 
 // Custom directories
@@ -1105,7 +1082,6 @@ import {
   DefaultResourceLoader,
   defineTool,
   ModelRuntime,
-  SessionManager,
   SettingsManager,
 } from "aos-agent";
 
@@ -1158,7 +1134,7 @@ const { session } = await createAgentSession({
   customTools: [statusTool],
   resourceLoader: loader,
 
-  sessionManager: SessionManager.inMemory(),
+  session: { mode: "memory" },
   settingsManager,
 });
 
@@ -1187,13 +1163,19 @@ import {
   createAgentSessionServices,
   getAgentDir,
   InteractiveMode,
-  SessionManager,
 } from "aos-agent";
 
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+  cwd,
+  sessionManager,
+  sessionStartEvent,
+  registerCandidateSession,
+}) => {
   const services = await createAgentSessionServices({ cwd });
+  const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent });
+  registerCandidateSession(created.session);
   return {
-    ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
+    ...created,
     services,
     diagnostics: services.diagnostics,
   };
@@ -1201,7 +1183,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  session: { mode: "new" },
 });
 
 const mode = new InteractiveMode(runtime, {
@@ -1227,13 +1209,19 @@ import {
   createAgentSessionServices,
   getAgentDir,
   runPrintMode,
-  SessionManager,
 } from "aos-agent";
 
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+  cwd,
+  sessionManager,
+  sessionStartEvent,
+  registerCandidateSession,
+}) => {
   const services = await createAgentSessionServices({ cwd });
+  const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent });
+  registerCandidateSession(created.session);
   return {
-    ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
+    ...created,
     services,
     diagnostics: services.diagnostics,
   };
@@ -1241,7 +1229,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  session: { mode: "new" },
 });
 
 await runPrintMode(runtime, {
@@ -1264,13 +1252,19 @@ import {
   createAgentSessionServices,
   getAgentDir,
   runRpcMode,
-  SessionManager,
 } from "aos-agent";
 
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({
+  cwd,
+  sessionManager,
+  sessionStartEvent,
+  registerCandidateSession,
+}) => {
   const services = await createAgentSessionServices({ cwd });
+  const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent });
+  registerCandidateSession(created.session);
   return {
-    ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
+    ...created,
     services,
     diagnostics: services.diagnostics,
   };
@@ -1278,7 +1272,7 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: SessionManager.create(process.cwd()),
+  session: { mode: "new" },
 });
 
 await runRpcMode(runtime);
@@ -1341,7 +1335,7 @@ getDocsPath
 getExamplesPath
 
 // Session management
-SessionManager
+listSessions
 SettingsManager
 
 // Tool factories

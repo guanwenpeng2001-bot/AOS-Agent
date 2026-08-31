@@ -5,7 +5,7 @@
  * - getGitBranch(): current git branch
  * - getExtensionStatuses(): texts from ctx.ui.setStatus()
  *
- * Token stats come from ctx.sessionManager/ctx.model (already accessible).
+ * Token stats come from ctx.session/ctx.model (already accessible).
  */
 
 import type { AssistantMessage } from "@aos-agent/ai";
@@ -32,7 +32,7 @@ export default function (agent: ExtensionAPI) {
 							let input = 0,
 								output = 0,
 								cost = 0;
-							for (const e of ctx.sessionManager.getBranch()) {
+							for (const e of ctx.session.getBranch()) {
 								if (e.type === "message" && e.message.role === "assistant") {
 									const m = e.message as AssistantMessage;
 									input += m.usage.input;

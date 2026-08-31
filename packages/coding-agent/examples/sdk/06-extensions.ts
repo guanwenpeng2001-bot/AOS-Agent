@@ -17,7 +17,6 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	getAgentDir,
-	SessionManager,
 } from "aos-agent";
 
 // Extensions are discovered automatically from standard locations.
@@ -39,7 +38,7 @@ await resourceLoader.reload();
 
 const { session } = await createAgentSession({
 	resourceLoader,
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 });
 
 try {

@@ -1,5 +1,5 @@
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeThinking, fakeToolCall } from "@aos-agent/ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, type Harness } from "./harness.ts";
@@ -40,15 +40,15 @@ describe("AgentSession retry and event characterization", () => {
 		});
 
 		harness.setResponses([
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
-			fauxAssistantMessage("recovered"),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fakeAssistantMessage("recovered"),
 		]);
 
 		await harness.session.prompt("test");
 
 		expect(retryEvents).toEqual(["start:1", "end:true"]);
 		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, false]);
-		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.fake.state.callCount).toBe(2);
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
@@ -62,15 +62,15 @@ describe("AgentSession retry and event characterization", () => {
 		});
 
 		harness.setResponses([
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
-			fauxAssistantMessage("success"),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fakeAssistantMessage("success"),
 		]);
 
 		await harness.session.prompt("test");
 
 		expect(retryEvents).toEqual(["start:1", "start:2", "end:true"]);
-		expect(harness.faux.state.callCount).toBe(3);
+		expect(harness.fake.state.callCount).toBe(3);
 	});
 
 	it("exhausts max retries and emits a failure event", async () => {
@@ -83,16 +83,16 @@ describe("AgentSession retry and event characterization", () => {
 		});
 
 		harness.setResponses([
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
 		]);
 
 		await harness.session.prompt("test");
 
 		expect(retryEvents).toEqual(["start:1", "start:2", "end:false"]);
 		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, true, false]);
-		expect(harness.faux.state.callCount).toBe(3);
+		expect(harness.fake.state.callCount).toBe(3);
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
@@ -111,42 +111,42 @@ describe("AgentSession retry and event characterization", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
-			fauxAssistantMessage("recovered"),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fakeAssistantMessage("recovered"),
 		]);
 
 		await harness.session.prompt("test");
 
-		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.fake.state.callCount).toBe(2);
 		expect(harness.session.isRetrying).toBe(false);
 	});
 
 	it("does not retry when retry is disabled", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: false } } });
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" })]);
+		harness.setResponses([fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" })]);
 
 		await harness.session.prompt("test");
 
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.fake.state.callCount).toBe(1);
 		expect(harness.eventsOfType("auto_retry_start")).toEqual([]);
 	});
 
 	it("does not retry non-retryable errors", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "invalid_api_key" })]);
+		harness.setResponses([fakeAssistantMessage("", { stopReason: "error", errorMessage: "invalid_api_key" })]);
 
 		await harness.session.prompt("test");
 
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.fake.state.callCount).toBe(1);
 		expect(harness.eventsOfType("auto_retry_start")).toEqual([]);
 	});
 
 	it("cancels retry sleep when abortRetry is called", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 100 } } });
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" })]);
+		harness.setResponses([fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" })]);
 
 		const sawRetryStart = new Promise<void>((resolve) => {
 			const unsubscribe = harness.session.subscribe((event) => {
@@ -164,7 +164,7 @@ describe("AgentSession retry and event characterization", () => {
 
 		expect(harness.session.isRetrying).toBe(false);
 		expect(harness.eventsOfType("auto_retry_end").map((event) => event.finalError)).toContain("Retry cancelled");
-		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.fake.state.callCount).toBe(1);
 	});
 
 	it("waits for the full loop when retry recovery produces tool calls", async () => {
@@ -186,18 +186,18 @@ describe("AgentSession retry and event characterization", () => {
 		});
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
-			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("final answer"),
+			fakeAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fakeAssistantMessage([fakeToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
+			fakeAssistantMessage("final answer"),
 		]);
 
 		await harness.session.prompt("test");
 
-		expect(harness.faux.state.callCount).toBe(3);
+		expect(harness.fake.state.callCount).toBe(3);
 		expect(toolRuns).toEqual(["hello"]);
 		expect(harness.session.isStreaming).toBe(false);
 		await harness.session.prompt("follow-up");
-		expect(harness.faux.state.callCount).toBe(4);
+		expect(harness.fake.state.callCount).toBe(4);
 	});
 
 	it("emits extension events before public event subscribers", async () => {
@@ -220,7 +220,7 @@ describe("AgentSession retry and event characterization", () => {
 				order.push(`public:${event.type}:${event.message.role}`);
 			}
 		});
-		harness.setResponses([fauxAssistantMessage("done")]);
+		harness.setResponses([fakeAssistantMessage("done")]);
 
 		await harness.session.prompt("hi");
 
@@ -239,7 +239,7 @@ describe("AgentSession retry and event characterization", () => {
 	it("emits the expected event order for a single prompt", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("hello")]);
+		harness.setResponses([fakeAssistantMessage("hello")]);
 
 		await harness.session.prompt("hi");
 
@@ -273,8 +273,8 @@ describe("AgentSession retry and event characterization", () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage([fauxToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
+			fakeAssistantMessage([fakeToolCall("echo", { text: "hello" })], { stopReason: "toolUse" }),
+			fakeAssistantMessage("done"),
 		]);
 
 		await harness.session.prompt("hi");
@@ -307,8 +307,8 @@ describe("AgentSession retry and event characterization", () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		harness.setResponses([
-			fauxAssistantMessage(
-				[fauxThinking("plan"), { type: "text", text: "answer" }, fauxToolCall("echo", { text: "hello" })],
+			fakeAssistantMessage(
+				[fakeThinking("plan"), { type: "text", text: "answer" }, fakeToolCall("echo", { text: "hello" })],
 				{
 					stopReason: "toolUse",
 				},
@@ -326,7 +326,7 @@ describe("AgentSession retry and event characterization", () => {
 	it("emits agent_end for error responses", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "broken" })]);
+		harness.setResponses([fakeAssistantMessage("", { stopReason: "error", errorMessage: "broken" })]);
 
 		await harness.session.prompt("hi");
 
@@ -337,7 +337,7 @@ describe("AgentSession retry and event characterization", () => {
 	it("emits agent_end for aborted runs and persists the aborted assistant message", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
-		harness.setResponses([fauxAssistantMessage("x".repeat(20_000))]);
+		harness.setResponses([fakeAssistantMessage("x".repeat(20_000))]);
 
 		const sawMessageUpdate = new Promise<void>((resolve) => {
 			const unsubscribe = harness.session.subscribe((event) => {

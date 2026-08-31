@@ -4,7 +4,7 @@
  * Override settings using SettingsManager.
  */
 
-import { createAgentSession, SessionManager, SettingsManager } from "aos-agent";
+import { createAgentSession, SettingsManager } from "aos-agent";
 
 const cwd = process.cwd();
 
@@ -21,7 +21,7 @@ settingsManager.applyOverrides({
 
 const { session: customSettingsSession } = await createAgentSession({
 	settingsManager,
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 });
 console.log("Session created with custom settings");
 customSettingsSession.dispose();
@@ -47,7 +47,7 @@ const inMemorySettings = SettingsManager.inMemory({
 
 const { session: testSession } = await createAgentSession({
 	settingsManager: inMemorySettings,
-	sessionManager: SessionManager.inMemory(),
+	session: { mode: "memory" },
 });
 console.log("Test session created with in-memory settings");
 testSession.dispose();

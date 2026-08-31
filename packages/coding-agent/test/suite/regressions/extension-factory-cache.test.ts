@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { clearExtensionCache, loadExtensions, loadExtensionsCached } from "../../../src/core/extensions/loader.ts";
-import { DefaultResourceLoader } from "../../../src/core/resource-loader.ts";
+import { DefaultResourceLoader } from "../../../src/core/runtime/resource-loader.ts";
 
 interface TestState {
 	moduleLoads?: number;

@@ -33,7 +33,7 @@ export type {
 export * from "./images-models.ts";
 export * from "./models.ts";
 export * from "./models-store.ts";
-export * from "./providers/faux.ts";
+export * from "./providers/fake.ts";
 export * from "./session-resources.ts";
 export * from "./types.ts";
 export * from "./utils/diagnostics.ts";

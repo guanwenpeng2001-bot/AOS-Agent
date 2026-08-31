@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { isValidThinkingLevel } from "../src/cli/args.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { loadThemeFromPath } from "../src/modes/interactive/theme/theme.ts";
 
 const tempDirs: string[] = [];

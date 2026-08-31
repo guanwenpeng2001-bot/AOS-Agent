@@ -499,8 +499,27 @@ export const APP_TITLE = "AOS Agent";
 export const CONFIG_DIR_NAME: string = pkg.aosAgentConfig?.configDir || ".aos-agent";
 export const VERSION: string = pkg.version || "0.0.0";
 
-export const ENV_AGENT_DIR = "AOS_AGENT_CODING_AGENT_DIR";
-export const ENV_SESSION_DIR = "AOS_AGENT_CODING_AGENT_SESSION_DIR";
+export const ENV_AGENT = "AOS_AGENT";
+export const ENV_AGENT_DIR = "AOS_AGENT_DIR";
+export const ENV_SESSION_DIR = "AOS_AGENT_SESSION_DIR";
+/** @deprecated Read-only alias for one release. Prefer ENV_AGENT. */
+export const ENV_CODING_AGENT = "AOS_AGENT_CODING_AGENT";
+/** @deprecated Read-only alias for one release. Prefer ENV_AGENT_DIR. */
+export const ENV_CODING_AGENT_DIR = "AOS_AGENT_CODING_AGENT_DIR";
+/** @deprecated Read-only alias for one release. Prefer ENV_SESSION_DIR. */
+export const ENV_CODING_AGENT_SESSION_DIR = "AOS_AGENT_CODING_AGENT_SESSION_DIR";
+
+function readEnvWithDeprecatedAlias(primary: string, deprecated: string): string | undefined {
+	const current = process.env[primary];
+	if (current !== undefined && current.length > 0) return current;
+	const legacy = process.env[deprecated];
+	if (legacy !== undefined && legacy.length > 0) return legacy;
+	return undefined;
+}
+
+export function getEnvSessionDirOverride(): string | undefined {
+	return readEnvWithDeprecatedAlias(ENV_SESSION_DIR, ENV_CODING_AGENT_SESSION_DIR);
+}
 
 export function expandTildePath(path: string): string {
 	return normalizePath(path);
@@ -521,7 +540,7 @@ export function getShareViewerUrl(gistId: string): string {
 
 /** Get the agent config directory (e.g., ~/.aos-agent/agent/) */
 export function getAgentDir(): string {
-	const envDir = process.env[ENV_AGENT_DIR];
+	const envDir = readEnvWithDeprecatedAlias(ENV_AGENT_DIR, ENV_CODING_AGENT_DIR);
 	if (envDir) {
 		return expandTildePath(envDir);
 	}

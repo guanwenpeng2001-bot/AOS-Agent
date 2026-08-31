@@ -1,5 +1,5 @@
 import type { AgentTool } from "@aos-agent/agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@aos-agent/ai";
+import { fakeAssistantMessage, fakeToolCall } from "@aos-agent/ai";
 import type { ExtensionAPI } from "aos-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,9 +51,9 @@ describe("issue #2023 queued slash-command follow-up", () => {
 		harnesses.push(harness);
 
 		harness.setResponses([
-			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("first turn complete"),
-			fauxAssistantMessage("queued follow-up handled by model"),
+			fakeAssistantMessage(fakeToolCall("wait", {}), { stopReason: "toolUse" }),
+			fakeAssistantMessage("first turn complete"),
+			fakeAssistantMessage("queued follow-up handled by model"),
 		]);
 
 		const sawToolStart = new Promise<void>((resolve) => {

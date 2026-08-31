@@ -2,7 +2,7 @@
 
 RPC mode enables headless operation of the coding agent via a JSON protocol over stdin/stdout by default or a local TCP socket when `--rpc-listen` is used. This is useful for embedding the agent in other applications, IDEs, or custom UIs.
 
-**Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `aos-agent` instead of spawning a subprocess. See [`src/core/agent-session.ts`](../src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](../src/modes/rpc/rpc-client.ts).
+**Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `aos-agent` instead of spawning a subprocess. See [`src/core/session/agent-session.ts`](../src/core/session/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](../src/modes/rpc/rpc-client.ts).
 
 ## Starting RPC Mode
 
@@ -1593,12 +1593,12 @@ Parse errors:
 
 ## Automation Host (protocolVersion 1)
 
-Automation Host v1 is an opt-in protocol layer on top of RPC mode for automation callers (IDEs, CI, custom UIs) that need a stable contract for launching and observing agent runs. It adds a durable Run identity, a unique terminal event per run, a terminal receipt, and a persistent run ledger stored inside the session itself.
+Automation Host is an opt-in protocol layer on top of RPC mode for automation callers (IDEs, CI, custom UIs) that need a stable contract for launching and observing agent runs. It adds a durable Run identity, a unique terminal event per run, a terminal receipt, and a persistent run ledger stored inside the session itself.
 
 The Automation Host reuses the existing agent loop, `AgentSession`, session
 persistence, and the strict JSONL transport. It is available over either the
 default stdio transport or the local TCP listener described above; it is not a
-second agent loop and v1 introduces no HTTP, WebSocket, database, or
+second agent loop and this layer introduces no HTTP, WebSocket, database, or
 remote-agent layer. The TCP listener remains deliberately unauthenticated and
 loopback-only, so it is not a remotely exposed service.
 
@@ -1628,26 +1628,45 @@ Response:
     "sessionId": "abc123",
     "sessionFile": "/path/to/session.jsonl",
     "runCommands": ["run.start", "run.get", "run.cancel", "run.resume"],
-    "auditCommands": ["audit.query", "audit.replay", "external.map"],
+    "auditCommands": ["audit.query", "audit.replay"],
     "taskGateCommands": ["task.gate.request", "task.gate.get", "task.gate.list", "task.gate.approve", "task.gate.reject", "task.gate.cancel"],
     "taskGraphCommands": ["task.graph.create", "task.graph.get", "task.graph.list", "task.graph.node.attach", "task.graph.node.settle"],
     "taskCredentialCommands": ["task.credential.issue", "task.credential.get", "task.credential.list", "task.credential.heartbeat", "task.credential.revoke", "task.credential.settle"],
     "subagentCommands": ["subagent.get", "subagent.list", "subagent.cancel"],
-    "externalAgentAdapters": [
-      {"adapterId": "trusted-adapter", "displayName": "Trusted Adapter", "version": "1"}
+    "externalConnectors": [
+      {
+        "schemaVersion": 1,
+        "providerId": "trusted-connector",
+        "providerClass": "external_connector",
+        "revision": 1,
+        "capabilitySnapshotDigest": {"algorithm": "sha256", "value": "..."}
+      }
+    ],
+    "externalConnectorRuntimeStatus": [
+      {
+        "schemaVersion": 1,
+        "providerId": "trusted-connector",
+        "availability": "unavailable",
+        "reasonCode": "status_source_missing",
+        "readiness": {"state": "ready", "reasonCode": "ready", "observedAgeMs": 12, "expiresInMs": 299988}
+      }
     ]
   }
 }
 ```
 
-The response advertises the host version, the current `sessionId`, and the run, audit, task gate, task graph, and task credential commands available on this host. `taskGateCommands`, `taskGraphCommands`, `taskCredentialCommands`, `workerCommands`, `subagentCommands`, and `externalAgentAdapters` are optional and additive: legacy clients that ignore them keep working unchanged. `subagentCommands` is present only when trusted Host composition supplies the current Session's Run-owned child registry. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
+The response advertises the host version, the current `sessionId`, and the run, audit, task gate, task graph, and task credential commands available on this host. `taskGateCommands`, `taskGraphCommands`, `taskCredentialCommands`, `workerCommands`, `subagentCommands`, `externalConnectors`, `externalConnectorReadiness`, and `externalConnectorRuntimeStatus` are optional and additive. `subagentCommands` is present only when trusted Host composition supplies the current Session's Run-owned child registry. `sessionFile` is present only when the current session is persistent (see [Persistence and recovery](#persistence-and-recovery)).
 
-`externalAgentAdapters` is an optional additive summary of adapters registered
-by the trusted Host composition; each entry contains only `adapterId`,
-`displayName`, and `version`. It advertises that the registry holds an
-adapter, never that a target is ready, and it never contains endpoints,
-commands, paths, or credentials. Target readiness is established by probing
-after an explicit `externalAgent` selection (see [External Agent Adapter selection](#external-agent-adapter-selection-externalagent)).
+`externalConnectors` is the safe descriptor list from the single trusted
+connector registry. Each entry pins the provider, revision, provider class,
+and capability snapshot digest; it contains no endpoint, command, path,
+credential, or vendor-driver detail.
+
+`externalConnectorRuntimeStatus` is an optional passive, read-only projection
+from already captured readiness and aggregate facts. Producing it does not probe
+a connector, start a process, read credentials, execute a task, or perform
+network or filesystem I/O. The projection contains no command, path, endpoint,
+environment, credential, account, vendor payload, or private supervisor value.
 
 Unsupported version:
 ```json
@@ -1687,14 +1706,18 @@ With images and an optional declared route or role:
 {"type": "run.start", "message": "What's wrong in this screenshot?", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}], "modelRoute": "balanced"}
 ```
 
-The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `external` is an optional validated `{namespace, externalSessionId, externalRunId?}` reference. `deadlineAt` is an optional canonical UTC timestamp; it is included in the request fingerprint and propagates to model, tool, MCP, and Sandbox execution. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
+The `images` field is optional and uses the same `ImageContent` format as `prompt`. `modelRoute` and `modelRole` are optional and mutually exclusive; they select only routes declared in trusted settings. `deadlineAt` is an optional canonical UTC timestamp; it is included in the request fingerprint and propagates to model, tool, MCP, and Sandbox execution. `run.start` does not accept a working directory, a shell command, or permission overrides. Direct/manual model selection remains explicit and does not automatically fall back.
 
-`externalAgent` is an optional explicit Adapter selection:
-`{"adapterId": "...", "targetId": "..."}`. When present, the host looks up
-the trusted registry, probes the target, runs normal Binding preflight,
-prepares an immutable binding, and only then accepts the Run (see
-[External Agent Adapter selection](#external-agent-adapter-selection-externalagent)).
-When absent, the existing AOS Loop / Provider path runs unchanged.
+`externalConnector` is an optional explicit connector selection. It pins
+`providerId`, `revision`, and `capabilitySnapshotDigest` to an advertised
+descriptor. The Host resolves the constructed connector from the trusted
+registry and sends it through the same executor pool as every other provider.
+
+`artifacts` optionally carries canonical metadata-only Artifact references for
+the selected Connector. RPC callers cannot supply Tool Gateway requests. Only
+a request emitted by the running Connector may enter the Host's private Tool
+Gateway bridge, after the canonical Attempt and its execution intent are
+durable.
 
 If `deadlineAt` is already expired during command preflight, the command fails
 with `run_deadline_exceeded`; no Run ID, accepted ledger entry, `run.started`,
@@ -1724,15 +1747,13 @@ Accepted response (emitted before any run event):
     "attempt": 1,
     "status": "accepted",
     "deadlineAt": "2026-08-15T12:00:10.000Z",
-    "external": {"namespace": "ci", "externalSessionId": "job-123", "externalRunId": "attempt-1"},
     "modelBindingId": "model-binding:...",
     "finalModel": {"provider": "anthropic", "modelId": "claude-sonnet-4-5"}
   }
 }
 ```
 
-When `external` was supplied, the accepted response includes the validated
-external reference. Accepted and terminal run records may also include `previousModelBindingId`,
+Accepted and terminal run records may also include `previousModelBindingId`,
 `modelAttempts`, and `modelBudget`. These are metadata-only summaries. The
 same fields are available from `run.get` and terminal receipts; attempt
 records contain candidate identity, status, timestamps, and safe usage only.
@@ -1742,11 +1763,10 @@ Capability, Policy, and Sandbox bindings used by the Run.
 
 Failures:
 - `session_busy` when another run is already active in this session (see [One active run per session](#one-active-run-per-session))
-- `start_rejected` when the host preflight rejects the input. In v1, inputs beginning with `/` are rejected because they could short-circuit the agent loop with a registered extension command and produce an undefined run terminal state.
+- `start_rejected` when the host preflight rejects the input. Inputs beginning with `/` are rejected because they could short-circuit the agent loop with a registered extension command and produce an undefined run terminal state.
 - `run_deadline_invalid` when `deadlineAt` is not a canonical UTC timestamp
 - `run_deadline_exceeded` when the deadline has expired before the run is accepted, including while asynchronous preflight is still running
 - `ledger_persistence_failed` when the accepted or started run fact cannot be appended. The host does not publish a successful accepted response or enter the Agent loop in that case.
-- `audit_persistence_failed` when an optional external mapping cannot be durably appended. The host does not publish a successful accepted response or acknowledge the mapping.
 
 ```json
 {
@@ -1876,17 +1896,11 @@ Success response mirrors `run.start` — a new accepted run whose `attempt` is t
 }
 ```
 
-`run.resume` accepts the same optional `external` reference, `externalAgent`
-selection, and `deadlineAt`. The deadline participates in idempotency and is
-persisted on the successor attempt. Its preflight and accepted-run expiry
-rules are the same as `run.start`. The external reference is persisted as the
-successor attempt's mapping; omitting it does not create a new mapping.
-
-An `externalAgent` on `run.resume` requires a verified external `resume`
-capability (from the snapshot or a fresh probe) plus a unique, complete
-`external.mapping` and a compatible prepared Binding. When the target cannot
-resume safely, the host returns `external_agent_resume_unsupported`; it never
-silently converts the resume into a new external `start`.
+`run.resume` accepts the same optional `externalConnector` selection,
+`artifacts`, and `deadlineAt`. These fields participate in idempotency and are
+persisted on the successor attempt. Connector resume requires matching current
+capability evidence; drift or unsupported resume fails closed and never
+becomes a new external start.
 
 Failures:
 - `session_busy` when the current session already has an active run
@@ -1894,9 +1908,8 @@ Failures:
 - `source_run_not_found` when `sourceRunId` is not in the restored session's ledger
 - `source_run_not_resumable` when the source run cannot be the basis for a new attempt
 - `session_switch_cancelled` when a session-switch extension cancelled the switch
-- `start_rejected` when the new run input is rejected (including the v1 slash-command rule)
+- `start_rejected` when the new run input is rejected (including the slash-command rule)
 - `ledger_persistence_failed` when the new attempt's accepted or started fact cannot be appended
-- `audit_persistence_failed` when the successor's optional external mapping cannot be durably appended
 - `run_deadline_invalid` or `run_deadline_exceeded` when the requested deadline is malformed or already expired
 
 ### Deadline semantics
@@ -1941,7 +1954,7 @@ Callers should branch on `terminalError.code`, not on the human-readable
 message. TCP and stdio consume the same Host dispatch, so the public records
 are identical.
 
-### Audit query, replay, and external mapping
+### Audit query and replay
 
 These commands require a successful `initialize`. `audit.query` and
 `audit.replay` are read-only: they only fold safe audit summaries from the
@@ -1991,7 +2004,7 @@ Missing runs return `audit_run_not_found`. A safe partial replay returns
 `status: "incomplete"` rather than exposing source errors or failing closed
 with a raw exception. Warning codes are stable (`unknown_source`,
 `malformed_source`, `unsupported_schema`, `orphan_source`, `duplicate_source`,
-`source_unavailable`, `ambiguous_run_association`, and `mapping_conflict`);
+`source_unavailable`, and `ambiguous_run_association`);
 warnings contain only safe identifiers and never raw custom-entry data.
 
 An accepted Run that reaches its deadline is a normal terminal replay: the
@@ -2004,34 +2017,7 @@ An accepted Run whose process ended before that terminal fact was persisted is
 instead `"interrupted"` (see [Persistence and recovery](#persistence-and-recovery));
 replay never fabricates a deadline failure from the requested timestamp.
 
-#### external.map
-
-`external.map` appends a validated mapping for the current Session:
-
-```json
-{
-  "type": "external.map",
-  "external": {
-    "namespace": "ci",
-    "externalSessionId": "job-123",
-    "externalRunId": "attempt-1"
-  },
-  "aosSessionId": "abc123",
-  "aosRunId": "run_abc123",
-  "source": "ci",
-  "correlationId": "trace-1"
-}
-```
-
-Identifiers are bounded safe identifiers, not URLs, paths, commands, or
-payload containers. Repeating the same mapping is idempotent. Mapping either
-the same external execution or the same AOS execution to a different target
-returns `external_mapping_conflict`; the append-only history is never rewritten
-and contradictory historical entries produce a `mapping_conflict` warning.
-If persistence cannot be confirmed, the command returns
-`audit_persistence_failed` and no success acknowledgement.
-
-All audit and mapping responses are redacted public types. They omit prompts,
+All audit responses are redacted public types. They omit prompts,
 messages, final text, custom-entry `data`, raw source bodies, paths, URLs,
 commands, environment/header values, credentials, provider errors, stacks, and
 other free-form diagnostics. Public error messages are generic; clients should
@@ -2039,7 +2025,7 @@ branch on stable `error.code`, not message text.
 
 ### Task Gate commands (task.gate.*)
 
-Task Gate is the v1 control-plane contract for human decisions about task stages. A Gate records whether a task stage may proceed; it is not an execution permission, a Policy approval, or a Run. The commands are additive Automation Host capabilities advertised as `taskGateCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch.
+Task Gate is the current control-plane contract for human decisions about task stages. A Gate records whether a task stage may proceed; it is not an execution permission, a Policy approval, or a Run. The commands are additive Automation Host capabilities advertised as `taskGateCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch.
 
 A Gate is identified by `gateId` and belongs to exactly one business key:
 
@@ -2047,7 +2033,7 @@ A Gate is identified by `gateId` and belongs to exactly one business key:
 sessionId + taskId + stageId + stageRevision
 ```
 
-A business key has at most one Gate. `taskId` and `stageId` are opaque external orchestration identifiers; v1 does not create Task or Stage objects. `stageRevision` is a positive integer that increments whenever the stage content or inputs change; a Gate is bound to one revision, and an old approval never migrates to a new revision. `runId` is optional and is only a correlation link to a stage's Run; it grants no permission to modify that Run.
+A business key has at most one Gate. `taskId` and `stageId` are opaque external orchestration identifiers; the current contract does not create Task or Stage objects. `stageRevision` is a positive integer that increments whenever the stage content or inputs change; a Gate is bound to one revision, and an old approval never migrates to a new revision. `runId` is optional and is only a correlation link to a stage's Run; it grants no permission to modify that Run.
 
 A Gate transitions:
 
@@ -2057,7 +2043,7 @@ task.gate.request → pending → approved  (task.gate.approve)
                            → cancelled (task.gate.cancel)
 ```
 
-`pending`, `approved`, `rejected`, and `cancelled` are the only statuses. `approved`, `rejected`, and `cancelled` are terminal: v1 never reopens a terminal Gate and has no `running`, `failed`, or `interrupted` Gate status.
+`pending`, `approved`, `rejected`, and `cancelled` are the only statuses. `approved`, `rejected`, and `cancelled` are terminal: the current contract never reopens a terminal Gate and has no `running`, `failed`, or `interrupted` Gate status.
 
 A Gate is a control-plane fact, not a Run terminal:
 
@@ -2096,9 +2082,9 @@ Field rules:
 - `sessionId`, `gateId`, `taskId`, `stageId`, `runId`, `actorId`, and `reasonCode` must pass the existing safe opaque identifier rules (bounded length, safe charset, no control characters); they are identifiers, not URLs, paths, commands, or payload containers.
 - `stageRevision` and `revision` are positive safe integers. `stageRevision` is immutable after the Gate is created.
 - `decidedAt` is present only for terminal statuses.
-- `actorId` is a trusted-Host-supplied operator label only; v1 performs no authentication, role check, or authorization of the actor.
+- `actorId` is a trusted-Host-supplied operator label only; the current contract performs no authentication, role check, or authorization of the actor.
 - `reasonCode` is a stable short code only. Free text, prompts, URLs, paths, commands, diffs, credentials, and model output are never Gate data.
-- v1 has no `expiresAt`; stale stages are invalidated by a new `stageRevision` or an explicit `cancel`.
+- the current contract has no `expiresAt`; stale stages are invalidated by a new `stageRevision` or an explicit `cancel`.
 
 #### task.gate.request
 
@@ -2182,7 +2168,7 @@ Success:
 }
 ```
 
-Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a v1 response may set `truncated: true` and introduces no cross-Session cursor. `task.gate.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
+Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a response may set `truncated: true` and introduces no cross-Session cursor. `task.gate.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
 
 #### task.gate.approve / task.gate.reject / task.gate.cancel
 
@@ -2209,7 +2195,7 @@ Decide a pending Gate. The three commands share this shape:
 }
 ```
 
-`reasonCode` is not accepted on `task.gate.approve`, and v1 defines no reason code for `task.gate.cancel`. A decision succeeds only when the Gate belongs to the current Session, is `pending`, and the transition appends successfully. Success returns the terminal Gate snapshot with `decidedAt` set and `idempotent: false` (or `true` for an idempotent replay).
+`reasonCode` is not accepted on `task.gate.approve`, and the current contract defines no reason code for `task.gate.cancel`. A decision succeeds only when the Gate belongs to the current Session, is `pending`, and the transition appends successfully. Success returns the terminal Gate snapshot with `decidedAt` set and `idempotent: false` (or `true` for an idempotent replay).
 
 Failures:
 
@@ -2251,7 +2237,7 @@ Each transition is persisted as a Session custom entry with `customType: "task.g
 
 ### Task Graph commands (task.graph.*)
 
-Task Graph is the v1 control-plane contract for decomposing a large goal into an immutable DAG of ordinary Run nodes and exposing the shared task state that results. A Graph records which nodes exist, what each node depends on, whether a node's stage Gate is satisfied, and which accepted Run executes each node. It is not a second Run ledger, not an execution engine, and not a scheduler: nodes are executed through the existing `run.start` / `run.resume` flow, and the Graph only observes and associates those Runs.
+Task Graph is the current control-plane contract for decomposing a large goal into an immutable DAG of ordinary Run nodes and exposing the shared task state that results. A Graph records which nodes exist, what each node depends on, whether a node's stage Gate is satisfied, and which accepted Run executes each node. It is not a second Run ledger, not an execution engine, and not a scheduler: nodes are executed through the existing `run.start` / `run.resume` flow, and the Graph only observes and associates those Runs.
 
 The commands are additive Automation Host capabilities advertised as `taskGraphCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch:
 
@@ -2283,7 +2269,7 @@ A Graph is identified by the business key:
 sessionId + taskId + graphRevision
 ```
 
-`taskId` is an opaque external orchestration identifier; v1 does not create a Task object. `graphRevision` is a positive integer; changing the node set or dependencies requires a new revision, which creates a new immutable Graph. Old graphs stay read-only, and facts on old graphs are never migrated. The same business key can only ever describe one Graph.
+`taskId` is an opaque external orchestration identifier; the current contract does not create a Task object. `graphRevision` is a positive integer; changing the node set or dependencies requires a new revision, which creates a new immutable Graph. Old graphs stay read-only, and facts on old graphs are never migrated. The same business key can only ever describe one Graph.
 
 `task.graph.create` submits the complete node set once:
 
@@ -2305,7 +2291,7 @@ Creation validates:
 
 - `taskId`, `nodeId`, and `stageId` pass the safe opaque identifier rules (bounded length, safe charset, no control characters), and `graphRevision` and `stageRevision` are positive safe integers;
 - node IDs are unique within the Graph; every `dependsOn` ID exists in the same Graph; a node cannot depend on itself; the Graph must be a DAG (a cycle returns `task_graph_dependency_cycle`);
-- the Graph contains at least one node, and node count, edge count, per-node dependency count, and total request size stay within server bounds (v1: 256 nodes, 1024 edges, 64 dependencies per node, 256-character task/node/stage IDs, 128-character `clientRequestId`);
+- the Graph contains at least one node, and node count, edge count, per-node dependency count, and total request size stay within server bounds (current limits: 256 nodes, 1024 edges, 64 dependencies per node, 256-character task/node/stage IDs, 128-character `clientRequestId`);
 - no prompt, message, command, args, cwd, path, content, environment, credential, or free text is accepted as node data.
 
 A successful `create` appends one immutable definition entry and returns the Graph with every node `pending`, the derived availability, the aggregate summary, `createdAt`, and the idempotency flag:
@@ -2338,7 +2324,7 @@ A successful `create` appends one immutable definition entry and returns the Gra
 
 #### Node status and derived availability
 
-Persisted node status is one of `pending`, `running`, `succeeded`, `failed`, or `cancelled`. `nodeRevision` is the monotonic transition version: `0` pending, `1` running, `2` terminal. v1 never reopens, retries, or rewrites a terminal node.
+Persisted node status is one of `pending`, `running`, `succeeded`, `failed`, or `cancelled`. `nodeRevision` is the monotonic transition version: `0` pending, `1` running, `2` terminal. the current contract never reopens, retries, or rewrites a terminal node.
 
 Node availability is a read-only value derived at read time from the node status, the dependency statuses, and the current Task Gate state. It is never persisted and never written back:
 
@@ -2406,7 +2392,7 @@ Success:
 }
 ```
 
-Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a v1 response may set `truncated: true` and introduces no cross-Session cursor. `task.graph.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
+Filters are exact matches. `limit` defaults to `50` and is server-restricted to a maximum of `100`; a response may set `truncated: true` and introduces no cross-Session cursor. `task.graph.list` only queries the current Session; it accepts no `sessionPath`, directory, or workspace path, and it is read-only.
 
 #### task.graph.node.attach
 
@@ -2480,15 +2466,15 @@ Graphs are scoped to the current Session. `task.graph.*` commands require an ini
 
 Each Graph mutation is persisted as a Session custom entry with `customType: "task.graph"` (schemaVersion 1): `create` writes the complete validated definition with all pending node snapshots, and each `node.attached` / `node.succeeded` / `node.failed` / `node.cancelled` transition writes the full node snapshot, `previousNodeRevision`, and `clientRequestId`. On session load the Host folds entries in file order and rejects a mismatched `sessionId`, an unsupported schema, unknown dependencies, dependency cycles, non-contiguous `nodeRevision`s, a second Run association for one node, or illegal status jumps; malformed entries never reach RPC, Audit, or model context, and `task.graph` custom entries never enter the LLM context.
 
-Task Graph v1 preserves the existing single-active-run boundary. A Graph is shared state and dependency structure, not concurrency: `task.graph.create` with many nodes does not start, queue, or preempt any Run, the host still rejects a second active Run with `session_busy`, and `attach` only associates Runs that were accepted through the normal Run RPC (including normal Policy preflight). Parallel Worker execution is not implemented: real parallelism requires a future multi-Session Coordinator / Worker platform.
+Task Graph preserves the existing single-active-run boundary. A Graph is shared state and dependency structure, not concurrency: `task.graph.create` with many nodes does not start, queue, or preempt any Run, the host still rejects a second active Run with `session_busy`, and `attach` only associates Runs that were accepted through the normal Run RPC (including normal Policy preflight). Without trusted Scheduler composition the Graph remains writable and exposes eligible nodes, but it does not advance them automatically. Parallel Worker execution is not implemented: real parallelism requires a future multi-Session Coordinator / Worker platform.
 
 #### Audit summary
 
-Each legal `task.graph` transition produces exactly one safe `task.graph` audit event whose summary allows only `taskId`, `graphRevision`, `nodeId`, `action`, `status`, `nodeRevision`, `dependsOn`, `gateRef`, `runId`, and `outcomeCode` (see [Execution Audit / Replay / External Mapping Contract](execution-audit-contract.md)). A Graph event with a `runId` matching the replayed Run appears in that Run's replay as a non-terminal correlation event; events without `runId` are never guessed into a Run by `taskId`, `nodeId`, or dependency structure. Audit and replay never attach a Run, settle a node, or start a Run.
+Each legal `task.graph` transition produces exactly one safe `task.graph` audit event whose summary allows only `taskId`, `graphRevision`, `nodeId`, `action`, `status`, `nodeRevision`, `dependsOn`, `gateRef`, `runId`, and `outcomeCode` (see [Execution Audit / Replay Contract](execution-audit-contract.md)). A Graph event with a `runId` matching the replayed Run appears in that Run's replay as a non-terminal correlation event; events without `runId` are never guessed into a Run by `taskId`, `nodeId`, or dependency structure. Audit and replay never attach a Run, settle a node, or start a Run.
 
 #### Non-goals
 
-Task Graph v1 deliberately does not implement:
+Task Graph deliberately does not implement:
 
 - a Worker scheduler, queue, preemption, leader election, distributed lock, or parallel Run scheduling; each Session still runs at most one active Run;
 - automatic `run.start`, `run.resume`, `run.cancel`, retry, skip, or rewrite of failed nodes;
@@ -2496,14 +2482,14 @@ Task Graph v1 deliberately does not implement:
 - a cross-agent message bus, shared prompts, free-text handoff, budget allocation, or a TaskReceipt ledger;
 - inline editing of a created Graph; structural changes require a new `graphRevision`;
 - Gate creation or decision; Graph only consumes Gate state;
-- an external Agent Adapter, MCP OAuth, resources/prompts, or remote Workers;
+- an additional External Agent Connector protocol, MCP OAuth, resources/prompts, or remote Workers;
 - CLI/TUI commands, login/roles, TLS, WebSocket, a database, or a message queue.
 
 Graph commands are control-plane commands only. They are not registered as builtin, Extension, Skill, or MCP tools, and a model cannot mutate Graph state itself.
 
 ### Task Credential commands (task.credential.*)
 
-Task Credential / Lease is the v1 control-plane contract for a short-lived, revocable, auditable grant bound to one Task Execution Binding. It records which scopes a task stage / Run may expose, to which target, until which deadline, and whether delivery or revocation completed. It is not a ModelRuntime key, not a Remote Operation lease, and not a Worker scheduler.
+Task Credential / Lease is the current control-plane contract for a short-lived, revocable, auditable grant bound to one Task Execution Binding. It records which scopes a task stage / Run may expose, to which target, until which deadline, and whether delivery or revocation completed. It is not a ModelRuntime key, not a Remote Operation lease, and not a Worker scheduler.
 
 The commands are additive Automation Host capabilities advertised as `taskCredentialCommands` by `initialize`; they require a successful `initialize`, and stdio and loopback TCP consume the same dispatch:
 
@@ -2666,76 +2652,58 @@ protocol frames. Stable command errors are `subagent_invalid`,
 `subagent_not_found`, `subagent_unavailable`, and
 `subagent_cancel_failed` (plus `host_not_initialized`).
 
-The `agent_runtime_host`, `acp`, and `sdk` provider descriptors are
-registration contracts with consumer-shaped fake conformance only. Their
-`implementedInThisLine` flag remains false and registry resolution fails with
-`subagent_provider_unavailable`; RPC does not turn them into implementations.
+The Native Subagent taxonomy contains only `in_process`, `fork`, and
+`agent_runtime_host`. External connectors do not enter this taxonomy.
 See [Native Subagent Runtime Contract](subagent-contract.md).
 
-### External Agent Adapter selection (`externalAgent`)
+### External Agent Connector selection (`externalConnector`)
 
-`run.start` and `run.resume` accept an optional `externalAgent` selection
-(`adapterId` + `targetId`, both bounded safe identifiers) that hands the Run's
-execution to an External Agent Adapter registered by the trusted Host
-composition. The full contract is frozen in
-[External Agent Adapter](external-agent-adapter.md); this section fixes the
-RPC surface only.
+`run.start` and `run.resume` accept an optional `externalConnector` selection
+that pins a descriptor registered by trusted Host composition. The full
+contract is described in [External Agent Connector](external-agent-connector.md).
 
-Selection is explicit and never implicit: a model provider, model ID,
-configuration name, or prompt never selects an Adapter. The `external`
-reference remains the identity relationship and can never replace
-`externalAgent`. No URL, command, args, env, header, credential, protocol
-payload, or callback field is accepted, and no `adapter.start`,
-`adapter.cancel`, `adapter.exec`, or other bypass command is added.
+Selection is explicit and never inferred from a model provider, model ID,
+configuration name, prompt, or vendor name. No URL, command, args, env,
+header, credential, protocol payload, callback, or driver handle is accepted.
 
 ```json
 {
   "type": "run.start",
   "message": "bounded in-memory Run input",
-  "externalAgent": {"adapterId": "trusted-adapter", "targetId": "target-a"},
+  "externalConnector": {
+    "providerId": "trusted-connector",
+    "revision": 1,
+    "capabilitySnapshotDigest": {"algorithm": "sha256", "value": "..."}
+  },
   "deadlineAt": "2026-08-16T12:00:00.000Z"
 }
 ```
 
-Preflight order for a selected Run:
+The selected Run follows the canonical path:
 
 ```text
-validate selection shape
-  → registry lookup and target ownership
-  → adapter.probe (protocol, version, start, cancel, receipt)
-  → normal Model / Capability / Policy / Sandbox preflight
-  → adapter.prepare (immutable prepared Binding)
-  → existing Run accepted fact
-  → adapter.start with in-memory input
-  → validate external ref and persist external.mapping
-  → publish run.started / bounded events
-  → existing cancel / deadline boundary
-  → validate terminal receipt
-  → remote.operation safe receipt
-  → existing Run terminal gate
+validate and pin selection
+  → registry resolve and capability revalidation
+  → canonical input / Model / Capability / Policy / Sandbox preflight
+  → Run accepted fact
+  → unified executor pool
+  → Task / Dispatch / Binding / Attempt / AttemptReceipt
+  → TaskResult / RunReceipt
 ```
 
-Rules:
+There is no legacy product fallback. Connector evidence settles the canonical
+`AttemptReceipt`; it does not create a peer receipt or Run terminal writer.
+Current external traces never contain an `AgentInstance`.
 
-- Probe or prepare failure rejects the request before acceptance: no Run ID,
-  no accepted ledger fact, no `run.started`, no external execution.
-- Accepted-persistence failure never starts the external Agent; mapping
-  persistence failure prefers `adapter.cancel` and fails closed as
-  `side-effect-unknown` when the target may have produced side effects. There
-  is no Host fallback execution.
-- `run.started` and bounded events are published only after the
-  `external.mapping` is durably persisted. Progress events are never terminal
-  and never change Run status.
-- Cancel, deadline, resume, receipt, and recovery keep the existing Run
-  Lifecycle semantics: an external receipt is evidence for the existing Run
-  terminal gate, never a direct terminal write; an accepted Run that reaches
-  its deadline still settles as `run.failed` with
-  `terminalError.code: "run_deadline_exceeded"`; a target without a verifiable
-  terminal receipt or cancel capability cannot be selected for a controlled
-  Run.
-- Run events, ordering, and terminal records are identical to a normal run:
-  one accepted response, `run.started`, zero or more `run.event` records, and
-  exactly one terminal event.
+The local connector closure regression exercises this RPC selection through the
+standard product composition and separately verifies RuntimeLimits, passive
+runtime-status projection, and terminal `side_effect_unknown` retry handling.
+Runtime status is projected in `initialize`; it adds no writable RPC command.
+Settings-based product entry composition is implemented. Line 13 promotion
+evidence includes multi-OS packaged smoke, previous-release upgrade/restart,
+deterministic soak, pinned vendor handshake, and Codex subscription
+print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully
+certified. Lines 14 and 15 remain later work.
 
 ### Structured errors
 
@@ -2756,7 +2724,7 @@ Error codes:
 | `unsupported_protocol_version` | `initialize` received a `protocolVersion` other than 1 | no |
 | `host_not_initialized` | A versioned Automation Host command was sent before a successful `initialize` | no |
 | `session_busy` | A run is already active in the session; only one run per session at a time | yes |
-| `start_rejected` | Host preflight rejected the run input (v1 rejects inputs beginning with `/`) | no |
+| `start_rejected` | Host preflight rejected the run input (the current contract rejects inputs beginning with `/`) | no |
 | `run_not_found` | The given `runId` does not exist in the current session's ledger | no |
 | `run_not_cancellable` | The run is not in a cancellable state | no |
 | `session_not_persistent` | The session has no `sessionFile`; it cannot be resumed | no |
@@ -2771,9 +2739,6 @@ Error codes:
 | `audit_scope_unavailable` | The requested Session audit scope cannot be read safely | no |
 | `audit_run_not_found` | The requested Run has no accepted audit fact in scope | no |
 | `audit_replay_incomplete` | No safe replay result could be constructed | no |
-| `external_mapping_invalid` | External mapping identifiers or metadata are invalid | no |
-| `external_mapping_conflict` | Mapping history already binds a key to another target | no |
-| `audit_persistence_failed` | The external mapping could not be durably appended | no |
 | `task_gate_invalid` | Task Gate input failed validation (IDs, `stageRevision`, `reasonCode`, or payload bounds) | no |
 | `task_gate_not_found` | The given `gateId` does not exist in the current session | no |
 | `task_gate_conflict` | The business key already has a Gate, or the Gate was already terminated by an opposite decision | no |
@@ -2815,21 +2780,36 @@ Error codes:
 | `subagent_not_found` | The child is not owned by the requested Run in the current Session | no |
 | `subagent_unavailable` | The current Session has no available Subagent authority | yes |
 | `subagent_cancel_failed` | The Run Supervisor did not confirm child cancellation | yes |
-| `external_agent_adapter_invalid` | Adapter selection or registration is invalid (unsafe `adapterId` / `targetId` / descriptor) | no |
-| `external_agent_target_not_found` | The trusted registry has no such target | no |
-| `external_agent_probe_failed` | Target probe failed or timed out; probe has no business side effects by contract | yes |
-| `external_agent_protocol_unsupported` | Protocol or version has no verified translator | no |
-| `external_agent_capability_missing` | The target lacks `start`, terminal `receipt`, `cancel`, or another required capability | no |
-| `external_agent_binding_unsupported` | The current Model / Capability / Policy / Sandbox Binding cannot be mapped safely | no |
-| `external_agent_start_failed` | The target rejected start or the start result is unconfirmed; reconcile before retrying | no |
-| `external_agent_mapping_invalid` | The external identity is unsafe or inconsistent with the request | no |
-| `external_agent_mapping_conflict` | Append-only mapping history already binds a key to another target | no |
-| `external_agent_cancel_unsupported` | The target has no verifiable cancel capability | no |
-| `external_agent_cancel_failed` | The cancel request failed; the target must not be claimed stopped | no |
-| `external_agent_receipt_invalid` | The receipt is missing, malformed, or identity-mismatched | no |
-| `external_agent_side_effect_unknown` | An external effect may have occurred; automatic retry is forbidden | no |
-| `external_agent_resume_unsupported` | The target cannot resume and no safe successor can be established | no |
-| `external_agent_persistence_failed` | Mapping or operation facts could not be durably persisted | no |
+| `external_connector_unavailable` | No trusted External Connector registry is composed, or the selected Connector is not registered | no |
+| `external_protocol_unsupported` | The selected Connector protocol or version is not supported by the trusted Host | no |
+| `external_capability_mismatch` | The pinned Connector capability snapshot is missing, unsupported, or changed during preflight | no |
+| `external_binding_invalid` | Connector selection, canonical input, or gateway model binding is invalid or cannot be translated safely | no |
+| `external_mapping_conflict` | Mapping history already conflicts with the persisted External Connector Attempt | no |
+| `external_resume_unsupported` | The source External Connector run cannot be restored as the same durable Attempt | no |
+| `external_event_invalid` | The Connector emitted invalid or out-of-order supervised output | no |
+| `external_tool_route_denied` | Tool Gateway policy or route denied a Connector-originated tool request | no |
+| `external_path_outside_workspace` | A Connector input or artifact reference resolves outside its trusted workspace | no |
+| `external_review_required` | The Connector operation requires an explicit review decision before execution | no |
+| `external_review_rejected` | The Connector operation was rejected by the required review decision | no |
+| `external_credential_unavailable` | A trusted credential target required by the Connector is unavailable | no |
+| `external_terminal_ambiguous` | Vendor terminal lookup returned ambiguous state; operator reconciliation is required | no |
+| `external_connector_config_invalid` | The trusted Connector configuration is invalid or violates the public registration contract | no |
+| `external_connector_not_ready` | The trusted Connector has not completed the readiness checks required for this operation | no |
+| `external_connector_readiness_stale` | The Connector readiness snapshot is stale and must be refreshed before execution | no |
+| `external_connector_circuit_open` | The Connector retry circuit is open after recent bounded failures | no |
+| `external_connector_dependency_missing` | A trusted dependency required by the Connector is missing or unavailable | no |
+| `external_connector_executable_untrusted` | The Connector executable or module is not from a trusted target | no |
+| `external_resource_limit_exceeded` | Connector input or supervised output exceeded a bounded resource limit | no |
+| `external_frame_oversize` | A Connector protocol frame exceeded the configured byte limit | no |
+| `tool_gateway_catalog_invalid` | The Tool Gateway route catalog is duplicate, incomplete, or inconsistent | no |
+| `control_state_corrupt` | Trusted control-plane state is corrupt and cannot be used safely | no |
+| `control_state_write_failed` | Trusted control-plane state could not be published atomically | no |
+| `session_transition_failed` | A transactional Session scope transition failed before commit | no |
+| `external_process_identity_ambiguous` | A Connector process identity could not be matched uniquely for safe recovery or termination | no |
+| `control_state_migration_failed` | Trusted control-plane state could not be migrated safely | no |
+| `shutdown_deadline_exceeded` | Host shutdown exceeded its bounded cleanup deadline | no |
+| `side_effect_unknown` | An external effect may have occurred without conclusive durable evidence; automatic retry is forbidden | no |
+| `run_terminal_conflict` | A terminal Run fact conflicts with the canonical Run receipt | no |
 | `model_error` | Terminal-only: a `run.failed` receipt reports a model or Agent execution failure | no |
 
 `retryable` tells the caller whether re-issuing the same command later may succeed. `model_error` is carried by a terminal `run.failed` receipt, not returned as a command failure. After acceptance, `run_deadline_exceeded` is likewise carried by a terminal `run.failed` receipt, not returned as a second command response. Legacy RPC commands keep the existing string `error` field, so old clients' error handling is unchanged.
@@ -2996,7 +2976,7 @@ has the same shape with the existing deadline metadata and stable code:
 
 ### One active run per session
 
-A session runs at most one active run at a time. A second `run.start` or `run.resume` while a run is active fails with `session_busy`, which is marked `retryable`: the caller should wait for the active run's terminal event and then retry. v1 does not queue or preempt; there is no implicit scheduling.
+A session runs at most one active run at a time. A second `run.start` or `run.resume` while a run is active fails with `session_busy`, which is marked `retryable`: the caller should wait for the active run's terminal event and then retry. the current contract does not queue or preempt; there is no implicit scheduling.
 
 ### Persistence and recovery
 
@@ -3094,11 +3074,11 @@ Source files:
 - [`src/core/messages.ts`](../src/core/messages.ts) - `BashExecutionMessage`
 - [`src/modes/json-event.ts`](../src/modes/json-event.ts) - `JsonAgentSessionEvent`
 - [`src/modes/rpc/rpc-types.ts`](../src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
-- [`src/core/run-lifecycle.ts`](../src/core/run-lifecycle.ts) - Automation Host run types, run record/receipt/stream event types, structured error type
-- [`src/core/task-gate.ts`](../src/core/task-gate.ts) - Task Gate record, status/action constants, transition, and mutation service types
-- [`src/core/task-graph.ts`](../src/core/task-graph.ts) - Task Graph record, node status/availability constants, DAG definition, transition, and mutation service types
-- [`src/core/subagent-composition.ts`](../src/core/subagent-composition.ts), [`src/core/subagent-supervisor.ts`](../src/core/subagent-supervisor.ts), and [`src/core/subagent-registry.ts`](../src/core/subagent-registry.ts) - trusted child-agent composition, Run-owned lifecycle projections, provider registry, and unavailable-provider registration contracts
-- [`src/core/external-agent-adapter.ts`](../src/core/external-agent-adapter.ts) and [`src/core/external-agent-registry.ts`](../src/core/external-agent-registry.ts) - External Agent Adapter contract and trusted registry (probe, prepared binding, events, terminal receipt, driver handle, stable `external_agent_*` errors); the fact guards and persistence live in [`src/core/external-session-mapping.ts`](../src/core/external-session-mapping.ts), [`src/core/remote-operation.ts`](../src/core/remote-operation.ts), [`src/core/execution-audit.ts`](../src/core/execution-audit.ts) / [`src/core/execution-audit-query.ts`](../src/core/execution-audit-query.ts), with host wiring in [`src/modes/rpc/rpc-host.ts`](../src/modes/rpc/rpc-host.ts)
+- [`src/core/session/run-lifecycle.ts`](../src/core/session/run-lifecycle.ts) - Automation Host run types, run record/receipt/stream event types, structured error type
+- [`src/core/policy/task-gate.ts`](../src/core/policy/task-gate.ts) - Task Gate record, status/action constants, transition, and mutation service types
+- [`src/core/scheduler/task-graph.ts`](../src/core/scheduler/task-graph.ts) - Task Graph record, node status/availability constants, DAG definition, transition, and mutation service types
+- [`src/core/subagent/composition.ts`](../src/core/subagent/composition.ts), [`src/core/subagent/supervisor.ts`](../src/core/subagent/supervisor.ts), and [`src/core/subagent/registry.ts`](../src/core/subagent/registry.ts) - trusted child-agent composition, Run-owned lifecycle projections, provider registry, and unavailable-provider registration contracts
+- [`src/core/connector/registry.ts`](../src/core/connector/registry.ts) and [`src/core/connector/durable-connector.ts`](../src/core/connector/durable-connector.ts) - the single trusted External Connector registry and executor implementation; vendor drivers remain private, with Host wiring in [`src/modes/rpc/rpc-host.ts`](../src/modes/rpc/rpc-host.ts)
 
 ### Model
 

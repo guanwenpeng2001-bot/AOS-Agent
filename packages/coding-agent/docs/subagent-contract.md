@@ -1,6 +1,6 @@
-# Native Subagent Runtime Contract (Line 12A)
+# Native Subagent Runtime Contract
 
-Line 12A implements native child agents for one Host and one Session. A child
+The native runtime implements child agents for one Host and one Session. A child
 agent is a distinct Task, Dispatch, Attempt, `AgentInstance`, Binding, Context,
 and mailbox identity. It is not an Operation Worker, a mode switch, a
 scheduler node, or a second Run terminal authority.
@@ -14,34 +14,34 @@ parent Attempt
   -> persist child TaskEnvelope
   -> prove child Binding is no broader than the parent Binding
   -> create child Context snapshot
-  -> executeAgentSpawnV1 -> ChildAgentProvider
-  -> child AgentHarness -> AttemptReceiptV1
-  -> SafeChildResultProjectionV1 -> parent Context
+  -> provider spawn entry -> ChildAgentProvider
+  -> child AgentHarness -> AttemptReceipt
+  -> safe child result projection -> parent Context
   -> Host settleTaskResult -> Host finalizeRunReceipt
 ```
 
 Spawn creates a new `AgentInstance`; mode switch only creates a new Binding
 epoch for the same Attempt and identity. A child can produce an
-`AttemptReceiptV1` with `producerKind: "agent_executor"`, but it cannot settle
-a `TaskResultV1` or write a `RunReceiptV1`. The Host terminal gate remains the
+`AttemptReceipt` with `producerKind: "agent_executor"`, but it cannot settle
+a `TaskResult` or write a `RunReceipt`. The Host terminal gate remains the
 only Run terminal writer.
 
 ## Providers and registration
 
-The immutable registry recognizes five provider kinds:
+The immutable Native Agent registry recognizes three provider kinds:
 
-| Provider kind | Line 12A status |
+| Provider kind | Status |
 | --- | --- |
 | `in_process` | implemented; independent child lane, Context, Binding, model gateway, and tool gateway in the Host process |
 | `fork` | implemented; trusted local child process over a private bounded JSONL protocol |
 | `agent_runtime_host` | registration contract and consumer-shaped fake conformance only; unavailable at runtime |
-| `acp` | registration contract and consumer-shaped fake conformance only; unavailable at runtime |
-| `sdk` | registration contract and consumer-shaped fake conformance only; unavailable at runtime |
+
+External protocols and SDKs are not Native Agent provider kinds. They use the separate `ExternalAgentConnector` contract and cannot be deserialized into a current Native Agent record.
 
 Only trusted Host composition registers provider instances. Prompts, project
 configuration, RPC payloads, models, and extensions cannot select an
 executable, module path, or provider implementation. Registry resolution of a
-descriptor with `implementedInThisLine: false` fails closed with
+descriptor marked unavailable fails closed with
 `subagent_provider_unavailable`. The fake conformance drives the frozen
 `ChildAgentProvider` contract through the public Foundation spawn entry; it is
 not a production implementation.
@@ -88,13 +88,14 @@ retried.
 Mailbox `send`, acknowledgement, `wait_any`, `wait_all`, and query operations
 are bounded durable facts within the current Session. A wait timeout does not
 cancel a child. Cross-Session messaging, queue ownership, claim, handoff, and
-DAG scheduling remain Line 12B work.
+DAG scheduling remain outside this single-Host runtime.
 
 Reload restores safe supervisor facts and validates an active `spawnId` through
 the provider's `lookupSpawn` surface before trusted continuation. A missing or
-invalid handle is durably marked `lost` and its mailbox is sealed; it is never
-reported as live or falsely `closed`. Resume rebuilds execution context from the
-durable child transcript and Context boundary. A fork resume starts a new
+invalid handle is durably marked `lost` and its mailbox rejects further
+messages; it is never reported as live or falsely considered cleanly closed.
+Resume rebuilds execution context from the durable child transcript and
+Context boundary. A fork resume starts a new
 process rather than reviving the old process. Agent-provider suspension receipts
 remain provisional; only the continued terminal receipt becomes the immutable
 AttemptReceipt. Optional worktree apply is fail-closed; an apply conflict or
@@ -115,11 +116,11 @@ worktree or quarantines it when cleanup cannot be proven.
 Trusted composition runs real child plans in `parallel` or `chain` mode inside
 one Host and Session. Parallel joins use explicit `all_succeed`, `quorum`, or
 `partial` policy. A chain starts from a root plan; every later step accepts
-only the prior `SafeChildResultProjectionV1` or a plan whose Context scope is
+only the prior safe child result projection or a plan whose Context scope is
 `task_package`. A failed child stops the chain before the next plan is created.
 
 Each child AttemptReceipt stays in its child lane. The Host parent-lane
-`LayeredResultSettlementV1` writes the joined TaskResult once from unique
+`LayeredResultSettlement` writes the joined TaskResult once from unique
 accepted receipts. Per-child `result_ref` messages are consumed at the next
 parent turn through the safe result projection boundary. Composition closes
 every provider handle, mailbox endpoint, and configured worktree after the
@@ -147,17 +148,14 @@ raw-receipt command.
 
 ## Capability ownership
 
-The machine-readable ledger is
-`packages/agent/src/harness/line12a-subagent-capabilities.ts`.
+The retired machine-readable capability ledger is preserved in the out-of-repository capability-ledger archive. It records:
 
 - Implemented: `90-97`, `99-118` (28 capabilities).
-- Consumed by direct reference to sealed Foundation closures:
+- Consumed by direct reference to Foundation closures:
   `2`, `6`, `8`, `9`, `17-20`, `26`, `29-34`, `98` (16 capabilities).
-- Deferred to 12B: `119-126`, `130`, `131`.
-- Deferred to 13: `132`, `133`, `138`.
-- Deferred to 14: `134`, `137`, `139`, `141-144`, `149`, `150`.
-- Deferred to 15: `147`, `148`.
-- Capability `140` remains on the Line 11 extension track and is excluded.
+- Outside this runtime: `119-126`, `130`, `131`, `132`, `133`, `138`,
+  `134`, `137`, `139`, `141-144`, `147-150`.
+- Capability `140` remains on the extension track and is excluded.
 
-The Line 12A ledger does not change the sealed Foundation manifest or Line 11
+The archived capability ledger does not change the Foundation manifest or extension
 closure semantics.

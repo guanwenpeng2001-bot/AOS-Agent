@@ -5,7 +5,7 @@
  * records: a fixed set of scenario scripts written against a facade-neutral
  * {@link ScenarioHost}. The old-session recorder (`old-agent-session-host.ts`)
  * implements the host over the current AgentSession; later facade-parity tasks
- * (T3/T9) implement the same host over the new AgentHarness and compare their
+ * (facade parity) implement the same host over the new AgentHarness and compare their
  * recorded observations against the committed fixture
  * (`fixtures/old-agent-session.transcript.json`).
  *
@@ -15,7 +15,7 @@
 
 import type { AgentTool } from "@aos-agent/agent-core";
 import type { Usage } from "@aos-agent/ai";
-import { fauxAssistantMessage, fauxToolCall, type FauxResponseStep } from "@aos-agent/ai/compat";
+import { fakeAssistantMessage, fakeToolCall, type FakeResponseStep } from "@aos-agent/ai/compat";
 import { Type } from "typebox";
 
 /** A tool call block projected with a stable id ("tc1", "tc2", ...). */
@@ -38,7 +38,7 @@ export type NormalizedMessage =
 /**
  * A stable projection of an observable session event. Streaming deltas
  * (`message_update`) are collapsed to a single marker per assistant stream
- * because the faux provider's delta chunking is intentionally random.
+ * because the fake provider's delta chunking is intentionally random.
  */
 export type NormalizedEvent =
 	| { type: "agent_start" }
@@ -77,8 +77,8 @@ export interface QueueSnapshot {
  * same surface over AgentHarness so the scripts run unchanged.
  */
 export interface ScenarioHost {
-	/** Queue scripted model responses (faux provider steps). */
-	setResponses(responses: FauxResponseStep[]): void;
+	/** Queue scripted model responses (fake provider steps). */
+	setResponses(responses: FakeResponseStep[]): void;
 	/** Register a custom tool before the first prompt. */
 	addTool(tool: AgentTool): void;
 	/** Lower the compaction threshold so the seeded session becomes compactable. */
@@ -218,7 +218,7 @@ export const foundationParityScripts: ScenarioScript[] = [
 			"Idle prompt: a user message is appended, the model streams an assistant reply through message_start/message_update/message_end, the run ends with agent_end/agent_settled, and the session returns to idle.",
 		coverage: ["prompt", "model stream", "message lifecycle", "agent settlement", "waitForIdle"],
 		run: async (host) => {
-			host.setResponses([fauxAssistantMessage("hello from the model")]);
+			host.setResponses([fakeAssistantMessage("hello from the model")]);
 			await host.prompt("hi");
 			await host.waitForIdle();
 			return {
@@ -256,8 +256,8 @@ export const foundationParityScripts: ScenarioScript[] = [
 				},
 			});
 			host.setResponses([
-				fauxAssistantMessage(fauxToolCall("echo", { text: "hello" }), { stopReason: "toolUse" }),
-				fauxAssistantMessage("done"),
+				fakeAssistantMessage(fakeToolCall("echo", { text: "hello" }), { stopReason: "toolUse" }),
+				fakeAssistantMessage("done"),
 			]);
 			await host.prompt("start");
 			const finalMessages = await host.finalMessages();
@@ -281,9 +281,9 @@ export const foundationParityScripts: ScenarioScript[] = [
 		run: async (host) => {
 			host.addBlockingTool("wait");
 			host.setResponses([
-				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
-				fauxAssistantMessage("handled steer"),
-				fauxAssistantMessage("handled follow-up"),
+				fakeAssistantMessage(fakeToolCall("wait", {}), { stopReason: "toolUse" }),
+				fakeAssistantMessage("handled steer"),
+				fakeAssistantMessage("handled follow-up"),
 			]);
 			const promptPromise = host.prompt("start");
 			await host.waitForToolStart("wait");
@@ -343,7 +343,7 @@ export const foundationParityScripts: ScenarioScript[] = [
 				summary: `summary from extension${customInstructions ? `: ${customInstructions}` : ""}`,
 				tokensBefore: 1,
 			}));
-			host.setResponses([fauxAssistantMessage("reply after compaction")]);
+			host.setResponses([fakeAssistantMessage("reply after compaction")]);
 			await host.seedCompactableSession();
 			await host.compact();
 			await host.waitForIdle();
@@ -369,12 +369,12 @@ export const foundationParityScripts: ScenarioScript[] = [
 			"Resume: a persisted transcript is restored by a fresh session over the same file (session_start reason 'resume') and the conversation continues without losing prior messages.",
 		coverage: ["resume", "session persistence", "session_start(resume)"],
 		run: async (host) => {
-			host.setResponses([fauxAssistantMessage("first reply")]);
+			host.setResponses([fakeAssistantMessage("first reply")]);
 			await host.prompt("first question");
 			const beforeResume = await host.finalMessages();
 			await host.resumeSession();
 			const restored = await host.finalMessages();
-			host.setResponses([fauxAssistantMessage("reply after resume")]);
+			host.setResponses([fakeAssistantMessage("reply after resume")]);
 			await host.prompt("second question");
 			await host.waitForIdle();
 			const finalMessages = await host.finalMessages();

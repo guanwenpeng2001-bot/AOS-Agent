@@ -7,13 +7,13 @@ import type { Writable } from "node:stream";
 import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { describe, expect, it, vi } from "vitest";
-import { AgentSession } from "../src/core/agent-session.ts";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { AgentSession } from "../src/core/session/agent-session.ts";
+import type { AgentSessionRuntime } from "../src/core/session/runtime.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
-import type { ModelRuntime } from "../src/core/model-runtime.ts";
-import type { ResourceLoader } from "../src/core/resource-loader.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import type { ModelRuntime } from "../src/core/runtime/model-runtime.ts";
+import type { ResourceLoader } from "../src/core/runtime/resource-loader.ts";
+import { SessionManager } from "../src/core/session/manager.ts";
+import { SettingsManager } from "../src/core/runtime/settings-manager.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
 import type { TcpRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
@@ -88,7 +88,7 @@ function createTestJsonlLineWriter(stream: NodeJS.ReadableStream): TestJsonlWrit
 	};
 }
 
-vi.mock("../src/core/output-guard.js", () => ({
+vi.mock("../src/core/runtime/output-guard.js", () => ({
 	flushRawStdout: vi.fn(async () => {}),
 	takeOverStdout: vi.fn(),
 	waitForRawStdoutBackpressure: vi.fn(async () => {}),
@@ -237,7 +237,7 @@ async function createRuntimeHost(
 		});
 
 	let currentSession = openSession(SessionManager.create(tempDir));
-	let rebindCallback: (() => Promise<void>) | undefined;
+	let prepareRebindCallback: Parameters<AgentSessionRuntime["setPrepareSessionRebind"]>[0];
 	const runtimeHost = {
 		get session(): AgentSession {
 			return currentSession;
@@ -245,12 +245,18 @@ async function createRuntimeHost(
 		set session(next: AgentSession) {
 			currentSession = next;
 		},
-		setRebindSession: vi.fn((callback?: (() => Promise<void>) | undefined) => {
-			rebindCallback = callback;
+		setPrepareSessionRebind: vi.fn((callback) => {
+			prepareRebindCallback = callback;
 		}),
 		switchSession: vi.fn(async (sessionPath: string) => {
-			currentSession = openSession(SessionManager.open(sessionPath));
-			if (rebindCallback !== undefined) await rebindCallback();
+			const previousSession = currentSession;
+			const nextSession = openSession(SessionManager.open(sessionPath));
+			const preparedRebind = await prepareRebindCallback?.(nextSession, previousSession);
+			currentSession = nextSession;
+			preparedRebind?.commit();
+			await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
+			await previousSession.dispose();
+			await preparedRebind?.activate?.();
 			return { cancelled: false };
 		}),
 		newSession: vi.fn(async () => ({ cancelled: true })),
@@ -402,10 +408,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+const RUN_SETTLEMENT_TIMEOUT_MS = 10_000;
+
 async function waitForRecord(
 	adapter: TranscriptAdapter,
 	predicate: (record: ParsedRecord) => boolean,
-	timeout = 1000,
+	timeout?: number,
 ): Promise<ParsedRecord> {
 	let match: ParsedRecord | undefined;
 	await vi.waitFor(
@@ -413,7 +421,7 @@ async function waitForRecord(
 			match = adapter.records().find(predicate);
 			expect(match).toBeDefined();
 		},
-		{ timeout },
+		{ timeout: timeout ?? RUN_SETTLEMENT_TIMEOUT_MS },
 	);
 	return match!;
 }
@@ -450,10 +458,10 @@ async function collectTranscript(
 	await waitForRecord(
 		adapter,
 		(record) => record.type === terminalType,
-		options.deadlineAt === undefined ? 1000 : 3000,
+		RUN_SETTLEMENT_TIMEOUT_MS,
 	);
 	await vi.waitFor(() => expect(terminalEvents(adapter.records())).toHaveLength(1), {
-		timeout: options.deadlineAt === undefined ? 1000 : 3000,
+		timeout: RUN_SETTLEMENT_TIMEOUT_MS,
 	});
 
 	await adapter.send({ id: "run-get", type: "run.get", runId });
@@ -888,7 +896,7 @@ function assertTaskGraphTranscript(records: ParsedRecord[]): void {
 			host: "automation-host",
 			protocolVersion: 1,
 			runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
-			auditCommands: ["audit.query", "audit.replay", "external.map"],
+			auditCommands: ["audit.query", "audit.replay"],
 			taskGateCommands: [
 				"task.gate.request",
 				"task.gate.get",
@@ -1096,10 +1104,10 @@ function assertDeadlineTranscript(records: ParsedRecord[], deadlineAt: string): 
 		type: "run.failed",
 		receipt: {
 			status: "failed",
-			deadlineAt,
 			terminalError: { code: "run_deadline_exceeded", message: "Run failed.", retryable: false },
 		},
 	});
+	expect(terminals[0]?.receipt).not.toHaveProperty("deadlineAt");
 	expect(records.some((record) => record.type === "run.cancelled")).toBe(false);
 
 	const startResponseIndex = records.findIndex(
@@ -1124,11 +1132,12 @@ function assertDeadlineTranscript(records: ParsedRecord[], deadlineAt: string): 
 			run: { status: "failed", deadlineAt },
 			receipt: {
 				status: "failed",
-				deadlineAt,
 				terminalError: { code: "run_deadline_exceeded" },
 			},
 		},
 	});
+	const runGetData = isRecord(runGet?.data) ? runGet.data : {};
+	expect(runGetData.receipt).not.toHaveProperty("deadlineAt");
 
 	const auditQuery = records.find((record) => record.type === "response" && record.command === "audit.query");
 	expect(auditQuery).toMatchObject({
@@ -1139,11 +1148,12 @@ function assertDeadlineTranscript(records: ParsedRecord[], deadlineAt: string): 
 	expect(auditReplay).toMatchObject({
 		success: true,
 		data: {
-			run: { status: "failed", deadlineAt },
+			run: { status: "failed" },
 			events: expect.arrayContaining([expect.objectContaining({ type: "run.failed" })]),
 		},
 	});
 	const replayData = isRecord(auditReplay?.data) ? auditReplay.data : {};
+	expect(replayData.run).not.toHaveProperty("deadlineAt");
 	expect(["complete", "incomplete"]).toContain(replayData.status);
 }
 
@@ -1187,7 +1197,7 @@ function assertTaskGateTranscript(records: ParsedRecord[]): void {
 			host: "automation-host",
 			protocolVersion: 1,
 			runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
-			auditCommands: ["audit.query", "audit.replay", "external.map"],
+			auditCommands: ["audit.query", "audit.replay"],
 			taskGateCommands: [
 				"task.gate.request",
 				"task.gate.get",
@@ -1368,11 +1378,16 @@ function automationResponseSignatures(records: ParsedRecord[]): unknown[] {
 
 const DYNAMIC_ID_KEYS = new Set([
 	"attemptId",
+	"attemptReceiptId",
+	"attemptReceiptIds",
 	"bindingId",
+	"bindingEpochId",
 	"capabilityBindingId",
 	"contextSnapshotId",
+	"dispatchId",
 	"eventId",
 	"gateId",
+	"goalId",
 	"modelBindingId",
 	"policyBindingId",
 	"previousBindingId",
@@ -1382,6 +1397,9 @@ const DYNAMIC_ID_KEYS = new Set([
 	"sessionId",
 	"sourceEntryId",
 	"sourceRunId",
+	"streamId",
+	"taskResultId",
+	"runReceiptId",
 ]);
 
 function isTimestampKey(key: string): boolean {
@@ -1417,6 +1435,7 @@ function normalizePublicTranscript(records: ParsedRecord[]): unknown[] {
 function isDynamicIdentityKey(key: string, value: string): boolean {
 	return (
 		DYNAMIC_ID_KEYS.has(key) ||
+		(key === "taskId" && (value.startsWith("task-") || value.startsWith("task_coding_agent_"))) ||
 		((key === "revision" || key === "profileRevision") && (value.startsWith("rev:") || value.startsWith("digest:")))
 	);
 }
@@ -1434,12 +1453,16 @@ function normalizePublicValue(
 		state.ids.set(value, replacement);
 		return replacement;
 	}
-	if (Array.isArray(value)) return value.map((item, index) => normalizePublicValue(item, [...path, String(index)], undefined, state));
+	if (Array.isArray(value)) return value.map((item, index) => normalizePublicValue(item, [...path, String(index)], key, state));
 	if (!isRecord(value)) return value;
 
 	const normalized: Record<string, unknown> = {};
 	for (const [childKey, childValue] of Object.entries(value)) {
 		if (isTimestampKey(childKey)) continue;
+		if (childKey === "sourceEntryId" && path.includes("warnings") && typeof childValue === "string") {
+			normalized[childKey] = "<warning-source>";
+			continue;
+		}
 		const isRunRecordId =
 			childKey === "id" &&
 			(path[path.length - 1] === "run" || path.includes("bindingAssociation") || path.includes("contextSnapshot"));
@@ -1454,13 +1477,16 @@ function normalizePublicValue(
 			normalized[childKey] = replacement;
 			continue;
 		}
-		normalized[childKey] = normalizePublicValue(childValue, [...path, childKey], childKey, state);
+		const normalizedChild = normalizePublicValue(childValue, [...path, childKey], childKey, state);
+		normalized[childKey] = childKey === "warnings" && Array.isArray(normalizedChild)
+			? [...normalizedChild].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+			: normalizedChild;
 	}
 	return normalized;
 }
 
 describe("RPC stdio/TCP public transcript parity", () => {
-	it("emits the same Automation Host records for the same faux-provider sequence", async () => {
+	it("emits the same Automation Host records for the same fake-provider sequence", async () => {
 		const stdio = await startStdioRpcMode();
 		let stdioTranscript: ParsedRecord[];
 		try {

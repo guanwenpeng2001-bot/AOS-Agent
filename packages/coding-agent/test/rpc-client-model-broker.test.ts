@@ -59,7 +59,7 @@ describe("RpcClient ModelBroker API", () => {
 		const { client, privateClient } = createClient();
 		const catalog = {
 			schemaVersion: 1,
-			models: [{ provider: "faux", id: "faux-1" }],
+			models: [{ provider: "fake", id: "fake-1" }],
 			routes: [],
 			roles: [],
 			roleRoutes: [],

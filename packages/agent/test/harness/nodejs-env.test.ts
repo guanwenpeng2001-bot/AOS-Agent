@@ -12,23 +12,43 @@ import { createTempDir } from "./session-test-utils.ts";
 
 const chmodRestorePaths: string[] = [];
 
-function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
-	return new Promise<T>((resolve, reject) => {
-		const timeoutId = setTimeout(() => {
-			onTimeout?.();
-			reject(new Error(`Timed out after ${ms}ms`));
-		}, ms);
-		promise.then(
-			(value) => {
-				clearTimeout(timeoutId);
-				resolve(value);
-			},
-			(error: unknown) => {
-				clearTimeout(timeoutId);
-				reject(error);
-			},
-		);
+async function startCommandAfterOutput(
+	env: NodeExecutionEnv,
+	command: string,
+	marker: string,
+	abortSignal?: AbortSignal,
+): Promise<{ execution: ReturnType<NodeExecutionEnv["exec"]> }> {
+	let stdout = "";
+	let markerObserved = false;
+	let resolveMarker!: () => void;
+	const markerOutput = new Promise<void>((resolve) => {
+		resolveMarker = resolve;
 	});
+	const execution = env.exec(command, {
+		abortSignal,
+		onStdout: (chunk) => {
+			stdout += chunk;
+			if (!markerObserved && stdout.includes(marker)) {
+				markerObserved = true;
+				resolveMarker();
+			}
+		},
+	});
+
+	await Promise.race([
+		markerOutput,
+		execution.then((result) => {
+			if (!markerObserved) {
+				throw new Error(`Command settled before stdout contained ${JSON.stringify(marker)}: ${JSON.stringify(result)}`);
+			}
+		}),
+		new Promise<never>((_, reject) => {
+			setTimeout(() => {
+				reject(new Error(`Timed out waiting for stdout to contain ${JSON.stringify(marker)}`));
+			}, 30_000);
+		}),
+	]);
+	return { execution };
 }
 
 function toBashSingleQuotedArg(value: string): string {
@@ -311,13 +331,13 @@ describe("NodeExecutionEnv", () => {
 				cwd: root,
 				shellEnv: {
 					AOS_AGENT_SESSION_FILE: "/stale/parent.jsonl",
-					AOS_AGENT_CODING_AGENT: "true",
+					AOS_AGENT: "true",
 					AOS_AGENT_NODE_ENV_PRESERVED_TEST: "preserved",
 				},
 			});
 			const result = getOrThrow(
 				await env.exec(
-					`printf '%s:%s|%s|%s' "\${AOS_AGENT_SESSION_FILE+x}" "\${AOS_AGENT_SESSION_FILE-}" "$AOS_AGENT_CODING_AGENT" "$AOS_AGENT_NODE_ENV_PRESERVED_TEST"`,
+					`printf '%s:%s|%s|%s' "\${AOS_AGENT_SESSION_FILE+x}" "\${AOS_AGENT_SESSION_FILE-}" "$AOS_AGENT" "$AOS_AGENT_NODE_ENV_PRESERVED_TEST"`,
 					{ env: overrides },
 				),
 			);
@@ -390,13 +410,13 @@ describe("NodeExecutionEnv", () => {
 			const env = new NodeExecutionEnv({ cwd: root });
 			const controller = new AbortController();
 			try {
-				const result = getOrThrow(
-					await withTimeout(
-						env.exec(createInheritedStdioCommand(pidFile), { abortSignal: controller.signal }),
-						3000,
-						() => controller.abort(),
-					),
+				const { execution } = await startCommandAfterOutput(
+					env,
+					createInheritedStdioCommand(pidFile),
+					"child-exiting",
+					controller.signal,
 				);
+				const result = getOrThrow(await execution);
 				expect(result.stdout).toContain("child-exiting");
 			} finally {
 				controller.abort();
@@ -408,14 +428,10 @@ describe("NodeExecutionEnv", () => {
 	it("cleanup terminates active shell processes", async () => {
 		const root = createTempDir();
 		const env = new NodeExecutionEnv({ cwd: root });
-		const execution = env.exec("touch started; sleep 60");
-		for (let attempt = 0; attempt < 100 && !getOrThrow(await env.exists("started")); attempt++) {
-			await new Promise((resolve) => setTimeout(resolve, 10));
-		}
-		expect(getOrThrow(await env.exists("started"))).toBe(true);
+		const { execution } = await startCommandAfterOutput(env, "printf started; sleep 60", "started");
 		await env.cleanup();
-		await expect(withTimeout(execution, 3000)).resolves.toMatchObject({ ok: true });
-	});
+		await expect(execution).resolves.toMatchObject({ ok: true });
+	}, 30_000);
 
 	it("streams stdout and stderr chunks", async () => {
 		const root = createTempDir();

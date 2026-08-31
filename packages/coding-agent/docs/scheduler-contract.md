@@ -1,10 +1,14 @@
 # Scheduler contract
 
-The Line 12B Scheduler is a trusted Host composition over the existing Foundation Task, Binding, Dispatch, Attempt, Result, Workflow, Ask, Session, and Run contracts. It is disabled unless a Host calls `createAgentSessionWithTrustedScheduler` and supplies `enabled: true`; settings, prompts, extensions, models, and RPC callers cannot enable it.
+The Scheduler is a trusted Host composition over the existing Foundation Task,
+Binding, Dispatch, Attempt, Result, Workflow, Ask, Session, and Run contracts.
+It is disabled unless a Host calls `createAgentSessionWithTrustedScheduler` and
+supplies `enabled: true`; settings, prompts, extensions, models, and RPC callers
+cannot enable it.
 
 ## Composition and authority
 
-`TrustedSchedulerCompositionV1` registers Run lifecycle observers, creates the Run lifecycle coordinator, and then creates the source Task Graph in that order. It then wires the durable queue and executor dispatch to fan-in settlement, cross-Session messages, fenced handoff, Workflow progression, deadlock/backpressure control, and the Scheduler Host.
+`TrustedSchedulerComposition` registers Run lifecycle observers, creates the Run lifecycle coordinator, and then creates the source Task Graph in that order. It then wires the durable queue and executor dispatch to fan-in settlement, cross-Session messages, fenced handoff, Workflow progression, deadlock/backpressure control, and the Scheduler Host.
 
 The composition owns the Session's single Scheduler lifecycle hook and forwards cancellation, deadline, and terminal observations to executor dispatch. Dispatch uses that same Run ledger for claim validation and never registers a competing hook owner.
 
@@ -20,4 +24,7 @@ Automation Host advertises `schedulerCommands: ["scheduler.status"]` only when t
 
 ## Capability closure
 
-Line 12B implements capabilities 119–126, 130, and 131. It consumes sealed Foundation capabilities 3, 5, 6, 10, 16, 26, 47, 51, 53, 55–58, 61, 98, and 127–129 by direct manifest reference. Native Subagent capabilities remain owned by 12A; external connectors by 13; platform hardening by 14; and product UI by 15.
+The Scheduler implements capabilities 119–126, 130, and 131. It consumes
+Foundation capabilities 3, 5, 6, 10, 16, 26, 47, 51, 53, 55–58, 61, 98, and
+127–129 by direct manifest reference. Native subagent capabilities, external
+connectors, platform hardening, and product UI remain separate contract areas.
