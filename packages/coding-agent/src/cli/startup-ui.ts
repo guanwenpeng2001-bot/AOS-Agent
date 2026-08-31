@@ -1,6 +1,6 @@
 import { ProcessTerminal, setKeybindings, type TUI, TuiMainScreen } from "@aos-agent/tui";
 import { existsSync } from "fs";
-import { APP_NAME, CONFIG_DIR_NAME, ENV_CODING_AGENT_DIR, getAgentDir, getSettingsPath, PACKAGE_NAME } from "../config.ts";
+import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_CODING_AGENT_DIR, getAgentDir, getSettingsPath, PACKAGE_NAME } from "../config.ts";
 import { areExperimentalFeaturesEnabled } from "../core/experimental.ts";
 import { KeybindingsManager } from "../core/runtime/keybindings.ts";
 import { DefaultPackageManager, type ResolvedResource } from "../core/runtime/package-manager.ts";
@@ -125,7 +125,7 @@ export function shouldRunFirstTimeSetup(settingsPath: string = getSettingsPath()
 	if (!areExperimentalFeaturesEnabled()) {
 		return false;
 	}
-	if (process.env[ENV_CODING_AGENT_DIR]) {
+	if (process.env[ENV_AGENT_DIR] || process.env[ENV_CODING_AGENT_DIR]) {
 		return false;
 	}
 	return !existsSync(settingsPath);

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENV_CODING_AGENT_DIR } from "../../../src/config.ts";
+import { ENV_AGENT_DIR } from "../../../src/config.ts";
 import { SessionManager } from "../../../src/core/session/manager.ts";
 
 const DIRECTORY_LINK_TYPE = process.platform === "win32" ? "junction" : "dir";
@@ -16,7 +16,7 @@ describe("regression #7497: discover sessions through symlinked directories", ()
 		const agentDir = join(tempDir, "agent");
 		sessionsDir = join(agentDir, "sessions");
 		mkdirSync(sessionsDir, { recursive: true });
-		vi.stubEnv(ENV_CODING_AGENT_DIR, agentDir);
+		vi.stubEnv(ENV_AGENT_DIR, agentDir);
 	});
 
 	afterEach(() => {

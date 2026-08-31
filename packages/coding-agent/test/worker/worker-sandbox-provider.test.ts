@@ -412,7 +412,7 @@ function realWorkerProvider(root: string, policyBindingId: string, runId: string
 				profileId: "real-worker-sandbox",
 				profileRevision: 1,
 				capabilities,
-				environment: { AOS_WORKER_SANDBOX_ROOT: root, AOS_WORKER_RUN_ID: runId },
+				environment: { AOS_AGENT_WORKER_SANDBOX_ROOT: root, AOS_AGENT_WORKER_RUN_ID: runId },
 				// The test launcher compiles TypeScript before protocol stdout exists. Keep that
 				// Windows full-suite bootstrap inside the Host-owned operation deadline.
 				readyTimeoutMs: 20_000,

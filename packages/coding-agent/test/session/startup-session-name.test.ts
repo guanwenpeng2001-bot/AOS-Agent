@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ENV_CODING_AGENT_DIR } from "../../src/config.ts";
+import { ENV_AGENT_DIR } from "../../src/config.ts";
 import { FOUNDATION_FACT_CUSTOM_TYPE } from "../../src/core/session/manager-storage.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
 
@@ -78,7 +78,7 @@ async function runCli(args: string[], dirs: CliDirs, timeoutMs = 40_000): Promis
 	let stderr = "";
 	const child = spawn(process.execPath, sourceProcessArgs(cliPath, args), {
 		cwd: dirs.projectDir,
-		env: { ...sourceProcessEnv(), [ENV_CODING_AGENT_DIR]: dirs.agentDir, AOS_AGENT_OFFLINE: "1" },
+		env: { ...sourceProcessEnv(), [ENV_AGENT_DIR]: dirs.agentDir, AOS_AGENT_OFFLINE: "1" },
 		stdio: ["ignore", "ignore", "pipe"],
 	});
 	child.stderr.on("data", (chunk) => {

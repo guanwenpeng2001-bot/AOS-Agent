@@ -169,7 +169,7 @@ function ready(frame: Extract<OperationWorkerRequestFrame, { type: "initialize" 
 function handleInitialize(frame: Extract<OperationWorkerRequestFrame, { type: "initialize" }>): void {
 	binding = frame.binding;
 	const profile = frame.binding.profileId;
-	if (profile === "environment_probe" && process.env.AOS_WORKER_SECRET_SENTINEL !== undefined) {
+	if (profile === "environment_probe" && process.env.AOS_AGENT_WORKER_SECRET_SENTINEL !== undefined) {
 		process.stdout.write("{invalid inherited environment\n");
 		return;
 	}

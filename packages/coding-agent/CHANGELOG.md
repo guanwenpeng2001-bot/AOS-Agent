@@ -50,6 +50,7 @@
 
 ### Changed
 
+- LICENSE copyright is now AOS Agent. Security reports go through GitHub Security Advisories. Config and session environment variables are `AOS_AGENT_DIR` and `AOS_AGENT_SESSION_DIR`; the previous `AOS_AGENT_CODING_AGENT*` names remain read-only aliases for one release.
 - Private ACP stable-v1 connectors now accept verified Artifact Store files and images as native embedded-resource and image prompt blocks when the agent advertises those content capabilities. `aos_gateway` remains explicitly unsupported because ACP stable-v1 cannot preserve exact provider, model, effort, and service-tier selection.
 - `--help` and `--list-models` now use side-effect-free metadata startup paths that do not run migrations, load extensions, or write runtime state.
 - Restricted the current Native Subagent taxonomy, descriptors, and lifecycle validation to in-process, fork, and Agent Runtime Host providers; historical ACP/SDK placeholders remain private migration input only.

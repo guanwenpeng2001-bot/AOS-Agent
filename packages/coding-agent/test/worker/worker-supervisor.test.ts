@@ -151,13 +151,13 @@ function recoveredReadyState(workerBinding: WorkerBinding): WorkerLifecycleState
 }
 
 afterEach(async () => {
-	delete process.env.AOS_WORKER_SECRET_SENTINEL;
+	delete process.env.AOS_AGENT_WORKER_SECRET_SENTINEL;
 	for (const supervisor of supervisors.splice(0)) await supervisor.dispose();
 });
 
 describe("Operation Worker supervisor", () => {
 	it("keeps preflight effect-free and activates only a trusted fixed launcher with an explicit environment", async () => {
-		process.env.AOS_WORKER_SECRET_SENTINEL = "must-not-cross";
+		process.env.AOS_AGENT_WORKER_SECRET_SENTINEL = "must-not-cross";
 		const { supervisor, workerBinding } = create("environment_probe");
 		const preflight = supervisor.preflight({ binding: workerBinding, runAccepted: true });
 		expect(preflight.ok).toBe(true);

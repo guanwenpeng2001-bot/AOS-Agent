@@ -4,7 +4,7 @@
 
 import type { ThinkingLevel } from "@aos-agent/agent-core";
 import chalk from "chalk";
-import { APP_NAME, APP_TITLE, CONFIG_DIR_NAME, ENV_CODING_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
+import { APP_NAME, APP_TITLE, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 import type { TuiMode } from "../core/runtime/settings-manager.ts";
 import { parseRpcTransportAddress, type RpcTransportAddress } from "../modes/rpc/rpc-transport-address.ts";
@@ -449,7 +449,7 @@ ${chalk.bold("Environment Variables:")}
   AWS_SECRET_ACCESS_KEY            - AWS secret key for Amazon Bedrock
   AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)
   AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)
-  ${ENV_CODING_AGENT_DIR.padEnd(32)} - Config directory (default: ~/${CONFIG_DIR_NAME}/agent)
+  ${ENV_AGENT_DIR.padEnd(32)} - Config directory (default: ~/${CONFIG_DIR_NAME}/agent)
   ${ENV_SESSION_DIR.padEnd(32)} - Session storage directory (overridden by --session-dir)
   AOS_AGENT_PACKAGE_DIR            - Override package directory (for Nix/Guix store paths)
   AOS_AGENT_OFFLINE                - Disable startup network operations when set to 1/true/yes

@@ -210,7 +210,7 @@ Keep `retry.provider.maxRetries` at `0` unless provider-level retries are explic
 { "sessionDir": ".aos-agent/sessions" }
 ```
 
-When multiple sources specify a session directory, precedence is `--session-dir`, `AOS_AGENT_CODING_AGENT_SESSION_DIR`, then `sessionDir` in settings.json.
+When multiple sources specify a session directory, precedence is `--session-dir`, `AOS_AGENT_SESSION_DIR` (then the deprecated `AOS_AGENT_CODING_AGENT_SESSION_DIR` alias), then `sessionDir` in settings.json.
 
 ### Model Cycling
 

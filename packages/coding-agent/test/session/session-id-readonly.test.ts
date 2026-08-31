@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ENV_CODING_AGENT_DIR } from "../../src/config.ts";
+import { ENV_AGENT_DIR } from "../../src/config.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
 
 const cliPath = resolve(__dirname, "../../src/cli.ts");
@@ -82,7 +82,7 @@ async function runCli(
 			cwd: dirs.projectDir,
 			env: {
 				...sourceProcessEnv(),
-				[ENV_CODING_AGENT_DIR]: dirs.agentDir,
+				[ENV_AGENT_DIR]: dirs.agentDir,
 				AOS_AGENT_OFFLINE: "1",
 				HOME: dirs.homeDir,
 				USERPROFILE: dirs.homeDir,

@@ -11,8 +11,8 @@ import { runOperationWorkerProcess } from "../../src/worker-entry.ts";
 
 const execFileAsync = promisify(execFile);
 const providerId = "sandbox-worker";
-const root = process.env.AOS_WORKER_SANDBOX_ROOT;
-const runId = process.env.AOS_WORKER_RUN_ID;
+const root = process.env.AOS_AGENT_WORKER_SANDBOX_ROOT;
+const runId = process.env.AOS_AGENT_WORKER_RUN_ID;
 if (root === undefined || runId === undefined || !isAbsolute(root)) {
 	throw new Error("Trusted real-sandbox Worker composition is incomplete");
 }

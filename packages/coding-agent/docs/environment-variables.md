@@ -4,7 +4,7 @@ AOS Agent uses environment variables for process configuration, provider credent
 
 ## Process marker
 
-The CLI and RPC entry points set `AOS_AGENT_CODING_AGENT=true`. Child processes inherit it and can use it to detect that they run inside AOS Agent.
+The CLI and RPC entry points set `AOS_AGENT=true`. Child processes inherit it and can use it to detect that they run inside AOS Agent. The previous `AOS_AGENT_CODING_AGENT` name is no longer written.
 
 ## AOS Agent configuration
 
@@ -12,8 +12,8 @@ These are the product-specific variables:
 
 | Variable | Description |
 |----------|-------------|
-| `AOS_AGENT_CODING_AGENT_DIR` | Override the config directory; default is `~/.aos-agent/agent` |
-| `AOS_AGENT_CODING_AGENT_SESSION_DIR` | Override session storage; overridden by `--session-dir` |
+| `AOS_AGENT_DIR` | Override the config directory; default is `~/.aos-agent/agent`. `AOS_AGENT_CODING_AGENT_DIR` remains a deprecated read alias for one release. |
+| `AOS_AGENT_SESSION_DIR` | Override session storage; overridden by `--session-dir`. `AOS_AGENT_CODING_AGENT_SESSION_DIR` remains a deprecated read alias for one release. |
 | `AOS_AGENT_PACKAGE_DIR` | Override the installed package directory, useful for Nix/Guix store paths |
 | `AOS_AGENT_OFFLINE` | Disable startup network operations, including update checks, package updates, and install/update telemetry |
 | `AOS_AGENT_SKIP_VERSION_CHECK` | Disable version-check network requests when a checker is configured |

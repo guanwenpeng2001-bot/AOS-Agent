@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ENV_CODING_AGENT_DIR } from "../../src/config.ts";
+import { ENV_AGENT_DIR } from "../../src/config.ts";
 import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
 
 const cliPath = resolve(__dirname, "../../src/cli.ts");
@@ -26,7 +26,7 @@ async function runCli(args: string[], cwd: string, agentDir: string): Promise<{ 
 	const code = await new Promise<number | null>((resolvePromise, reject) => {
 		const child = spawn(process.execPath, sourceProcessArgs(cliPath, args), {
 			cwd,
-			env: { ...sourceProcessEnv(), [ENV_CODING_AGENT_DIR]: agentDir, AOS_AGENT_OFFLINE: "1" },
+			env: { ...sourceProcessEnv(), [ENV_AGENT_DIR]: agentDir, AOS_AGENT_OFFLINE: "1" },
 			stdio: ["ignore", "ignore", "pipe"],
 		});
 		child.stderr.on("data", (chunk) => {

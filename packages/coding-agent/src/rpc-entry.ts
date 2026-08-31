@@ -4,7 +4,7 @@ import { configureHttpDispatcher } from "./core/runtime/http-dispatcher.ts";
 import { main } from "./main.ts";
 
 process.title = `${APP_NAME}-rpc`;
-process.env.AOS_AGENT_CODING_AGENT = "true";
+process.env.AOS_AGENT = "true";
 process.env.AI_AGENT = "aos-agent";
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
