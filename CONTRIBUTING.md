@@ -2,6 +2,8 @@
 
 This guide exists to save both sides time.
 
+Repository development notes are in [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ## Philosophy
 
 First things first: **AOS Agent's core is minimal**.

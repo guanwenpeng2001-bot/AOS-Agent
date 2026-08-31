@@ -59,4 +59,4 @@ Then run `aos` in the project you want to work on. See [Quickstart](quickstart.m
 - [Terminal setup](terminal-setup.md)
 - [Shell aliases](shell-aliases.md)
 
-For upstream provenance, licensing, and the maintenance boundary, see [`../../UPSTREAM.md`](../../UPSTREAM.md).
+For upstream provenance, licensing, and the maintenance boundary, see [`../../../UPSTREAM.md`](../../../UPSTREAM.md).

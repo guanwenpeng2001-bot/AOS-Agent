@@ -4,7 +4,7 @@
 
 Extensions and custom tools can render custom TUI components for interactive user interfaces. This page covers the component system and available building blocks.
 
-**Source:** [`@aos-agent/tui`](UPSTREAM.md)
+**Source:** [`@aos-agent/tui`](../../../UPSTREAM.md)
 
 ## Component Interface
 

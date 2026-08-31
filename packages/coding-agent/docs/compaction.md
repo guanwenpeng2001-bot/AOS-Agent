@@ -2,12 +2,12 @@
 
 LLMs have limited context windows. When conversations grow too long, AOS Agent uses compaction to summarize older content while preserving recent work. This page covers both auto-compaction and branch summarization.
 
-**Source files and provenance** ([UPSTREAM.md](../../UPSTREAM.md)):
-- [`packages/coding-agent/src/core/compaction/compaction.ts`](UPSTREAM.md) - Auto-compaction logic
-- [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](UPSTREAM.md) - Branch summarization
-- [`packages/coding-agent/src/core/compaction/utils.ts`](UPSTREAM.md) - Shared utilities (file tracking, serialization)
-- [`packages/coding-agent/src/core/session/manager.ts`](UPSTREAM.md) - Entry types (`CompactionEntry`, `BranchSummaryEntry`)
-- [`packages/coding-agent/src/core/extensions/types.ts`](UPSTREAM.md) - Extension event types
+**Source files and provenance** ([UPSTREAM.md](../../../UPSTREAM.md)):
+- [`packages/coding-agent/src/core/compaction/compaction.ts`](../../../UPSTREAM.md) - Auto-compaction logic
+- [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](../../../UPSTREAM.md) - Branch summarization
+- [`packages/coding-agent/src/core/compaction/utils.ts`](../../../UPSTREAM.md) - Shared utilities (file tracking, serialization)
+- [`packages/coding-agent/src/core/session/manager.ts`](../../../UPSTREAM.md) - Entry types (`CompactionEntry`, `BranchSummaryEntry`)
+- [`packages/coding-agent/src/core/extensions/types.ts`](../../../UPSTREAM.md) - Extension event types
 
 For TypeScript definitions in your project, inspect `node_modules/aos-agent/dist/`.
 
@@ -120,7 +120,7 @@ Never cut at tool results (they must stay with their tool call).
 
 ### CompactionEntry Structure
 
-Defined in [`session-manager.ts`](UPSTREAM.md):
+Defined in [`session-manager.ts`](../../../UPSTREAM.md):
 
 ```typescript
 interface CompactionEntry<T = unknown> {
@@ -145,7 +145,7 @@ interface CompactionDetails {
 
 Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their LLM `usage` when available so session totals include summarization work.
 
-See [`prepareCompaction()`](UPSTREAM.md) and [`compact()`](UPSTREAM.md) for the implementation. For direct programmatic summarization, `generateSummary()` returns the summary text and `generateSummaryWithUsage()` returns `{ text, usage }`.
+See [`prepareCompaction()`](../../../UPSTREAM.md) and [`compact()`](../../../UPSTREAM.md) for the implementation. For direct programmatic summarization, `generateSummary()` returns the summary text and `generateSummaryWithUsage()` returns `{ text, usage }`.
 
 ## Branch Summarization
 
@@ -188,7 +188,7 @@ This means file tracking accumulates across multiple compactions or nested branc
 
 ### BranchSummaryEntry Structure
 
-Defined in [`session-manager.ts`](UPSTREAM.md):
+Defined in [`session-manager.ts`](../../../UPSTREAM.md):
 
 ```typescript
 interface BranchSummaryEntry<T = unknown> {
@@ -212,7 +212,7 @@ interface BranchSummaryDetails {
 
 Same as compaction, extensions can store custom data in `details`.
 
-See [`collectEntriesForBranchSummary()`](UPSTREAM.md), [`prepareBranchEntries()`](UPSTREAM.md), and [`generateBranchSummary()`](UPSTREAM.md) for the implementation.
+See [`collectEntriesForBranchSummary()`](../../../UPSTREAM.md), [`prepareBranchEntries()`](../../../UPSTREAM.md), and [`generateBranchSummary()`](../../../UPSTREAM.md) for the implementation.
 
 ## Summary Format
 
@@ -256,7 +256,7 @@ path/to/changed.ts
 
 ### Message Serialization
 
-Before summarization, messages are serialized to text via [`serializeConversation()`](UPSTREAM.md):
+Before summarization, messages are serialized to text via [`serializeConversation()`](../../../UPSTREAM.md):
 
 ```
 [User]: What they said
@@ -272,7 +272,7 @@ Tool results are truncated to 2000 characters during serialization. Content beyo
 
 ## Custom Summarization via Extensions
 
-Extensions can intercept and customize both compaction and branch summarization. See [`extensions/types.ts`](UPSTREAM.md) for event type definitions.
+Extensions can intercept and customize both compaction and branch summarization. See [`extensions/types.ts`](../../../UPSTREAM.md) for event type definitions.
 
 ### session_before_compact
 

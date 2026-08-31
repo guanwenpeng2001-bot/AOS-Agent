@@ -228,4 +228,4 @@ cd /path/to/brave-search && npm install
 ## Skill Repositories
 
 - [Anthropic Skills](https://github.com/anthropics/skills) - Document processing (docx, pdf, pptx, xlsx), web development
-- [AOS Agent Skills](UPSTREAM.md) - Web search, browser automation, Google APIs, transcription
+- [AOS Agent Skills](../../../UPSTREAM.md) - Web search, browser automation, Google APIs, transcription

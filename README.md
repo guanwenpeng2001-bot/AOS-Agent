@@ -44,7 +44,7 @@ The installable package is `aos-agent`, and it exposes the `aos` executable. The
 
 This repository contains the source for the published `0.84.3` package set. Hosted services and generated model catalogs remain outside the release boundary.
 
-The External Agent Connector contract and the architecture convergence are implemented. Product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) and the final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) are not complete. This checkout does not claim product readiness.
+settings entry composition is implemented; final promotion gate (multi-platform smoke, upgrade, soak, vendor certification) is not done; do not claim product readiness.
 
 The root `./test.sh` script runs non-e2e product tests.
 
@@ -85,7 +85,7 @@ AOS Agent is an independent product. Maintainer-only source provenance lives in 
 
 ## Contributing and release boundaries
 
-Keep changes inside the isolated baseline and keep AOS-specific changes separable from imported upstream source. For an upstream update, record a new immutable revision, compare legal notices and generated inputs, review the exact diff, and rerun the build and isolated `aos --help` install check.
+Keep AOS Agent changes organized as an independent product. For an upstream update, record a new immutable revision in `UPSTREAM.md`, compare legal notices and generated inputs, review the exact diff, and rerun the build and isolated `aos --help` install check.
 
 The immutable `v0.84.3` tag identifies the published `0.84.3` release snapshot. `main` may contain post-tag maintenance commits; those commits are not retroactively part of the `v0.84.3` tag or its package artifact. The earlier `v0.84.2` tag remains immutable. Any future release that distributes generated model metadata requires a separate record-level source-terms review, clean artifact and credential checks, and independent review of the upstream provenance boundary; the ignored local registry is not a release artifact.
 

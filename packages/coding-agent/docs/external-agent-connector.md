@@ -2,7 +2,7 @@
 
 ## Status
 
-The External Agent Connector contract, architecture convergence, and settings-based product entry composition are implemented. The final promotion gate (multi-OS packaged smoke, upgrade/restart, soak, pinned vendor certification) is not complete. This checkout does not claim product readiness.
+settings entry composition is implemented; final promotion gate (multi-platform smoke, upgrade, soak, vendor certification) is not done; do not claim product readiness.
 
 `ExternalAgentConnector` is the only public execution contract for an external
 agent. It implements the shared `TaskExecutorProvider` boundary and therefore

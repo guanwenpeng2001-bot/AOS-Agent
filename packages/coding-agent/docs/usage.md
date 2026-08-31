@@ -171,7 +171,7 @@ Use `/export [file]` to write a session to HTML.
 
 Use `/share` to upload a private GitHub gist with a shareable HTML link.
 
-If you use AOS Agent for open source work and want to publish sessions for model, prompt, tool, and evaluation research, see [`aos-agent-share-hf`](UPSTREAM.md). It publishes sessions to Hugging Face datasets.
+If you use AOS Agent for open source work and want to publish sessions for model, prompt, tool, and evaluation research, see [`aos-agent-share-hf`](../../../UPSTREAM.md). It publishes sessions to Hugging Face datasets.
 
 ## CLI Reference
 
@@ -338,4 +338,4 @@ AOS Agent keeps the core small and pushes workflow-specific behavior into extens
 
 It intentionally does not include sub-agents, plan mode, to-dos, or background bash. You can build or install those workflows as extensions or packages, or use external tools such as containers and tmux.
 
-For implementation background and source history, see the [upstream provenance record](../../UPSTREAM.md).
+For implementation background and source history, see the [upstream provenance record](../../../UPSTREAM.md).

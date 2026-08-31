@@ -116,7 +116,7 @@ aos
 | Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` | `xiaomi-token-plan-ams` |
 | Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY` | `xiaomi-token-plan-sgp` |
 
-Reference for environment variables and `auth.json` keys: [`const envMap`](UPSTREAM.md) in [`packages/ai/src/env-api-keys.ts`](UPSTREAM.md).
+Reference for environment variables and `auth.json` keys: [`const envMap`](../../../UPSTREAM.md) in [`packages/ai/src/env-api-keys.ts`](../../../UPSTREAM.md).
 
 #### Auth File
 

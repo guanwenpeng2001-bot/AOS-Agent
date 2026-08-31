@@ -93,11 +93,7 @@ no-widen rules, passive connector runtime-status projection, and terminal
 `side_effect_unknown` retry handling. They do not prove Bun or compiled
 artifacts, Windows/Linux/macOS CI, upgrade from a previously published package,
 vendor certification, or exact-head remote artifacts. The External Agent
-Connector contract and the architecture convergence are implemented. Product
-entry wiring (default CLI/RPC/SDK composition and settings-based connector registration)
-and the final promotion gate (multi-OS packaged smoke, upgrade/restart, soak,
-pinned vendor certification) are not complete. This checkout does not claim
-product readiness.
+settings entry composition is implemented; final promotion gate (multi-platform smoke, upgrade, soak, vendor certification) is not done; do not claim product readiness.
 
 ## Package contents
 
@@ -108,4 +104,4 @@ product readiness.
 
 ## License
 
-This package is MIT-licensed as part of the imported upstream baseline. Preserve the repository-level license, package attribution, and all third-party notices when copying or redistributing it.
+This package is MIT-licensed as part of the independent AOS Agent product. Preserve the repository-level license, package attribution, and all third-party notices when copying or redistributing it.

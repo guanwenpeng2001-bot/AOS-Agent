@@ -397,12 +397,12 @@ interface OAuthCredentials {
 For providers with non-standard APIs, implement `streamSimple`. Study the existing provider implementations before writing your own:
 
 **Reference implementations:**
-- [anthropic.ts](UPSTREAM.md) - Anthropic Messages API
-- [mistral.ts](UPSTREAM.md) - Mistral Conversations API
-- [openai-completions.ts](UPSTREAM.md) - OpenAI Chat Completions
-- [openai-responses.ts](UPSTREAM.md) - OpenAI Responses API
-- [google.ts](UPSTREAM.md) - Google Generative AI
-- [amazon-bedrock.ts](UPSTREAM.md) - AWS Bedrock
+- [anthropic.ts](../../../UPSTREAM.md) - Anthropic Messages API
+- [mistral.ts](../../../UPSTREAM.md) - Mistral Conversations API
+- [openai-completions.ts](../../../UPSTREAM.md) - OpenAI Chat Completions
+- [openai-responses.ts](../../../UPSTREAM.md) - OpenAI Responses API
+- [google.ts](../../../UPSTREAM.md) - Google Generative AI
+- [amazon-bedrock.ts](../../../UPSTREAM.md) - AWS Bedrock
 
 ### Stream Pattern
 
@@ -571,7 +571,7 @@ When a request exceeds the model's context window, AOS Agent can recover automat
 Detection runs on the finalized assistant message:
 
 - `stopReason === "error"`
-- `errorMessage` matches one of AOS Agent's known overflow patterns (see [`packages/ai/src/utils/overflow.ts`](UPSTREAM.md))
+- `errorMessage` matches one of AOS Agent's known overflow patterns (see [`packages/ai/src/utils/overflow.ts`](../../../UPSTREAM.md))
 
 If your provider returns overflow errors with a message AOS Agent does not recognize, normalize the error from the same extension that registers the provider. Use a `message_end` handler to rewrite the assistant message so its `errorMessage` starts with a phrase AOS Agent recognizes. The generic fallback `context_length_exceeded` is the safest choice.
 
@@ -634,7 +634,7 @@ agent.registerProvider("my-provider", {
 
 ## Testing Your Implementation
 
-Test your provider against the same test suites used by built-in providers. Copy and adapt these test files from [packages/ai/test/](UPSTREAM.md):
+Test your provider against the same test suites used by built-in providers. Copy and adapt these test files from [packages/ai/test/](../../../UPSTREAM.md):
 
 | Test | Purpose |
 |------|---------|

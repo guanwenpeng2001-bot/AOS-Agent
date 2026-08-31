@@ -9,7 +9,7 @@ Outputs all session events as JSON lines to stdout. Useful for integrating AOS A
 ## Event Types
 
 Wire events use `JsonAgentSessionEvent`. It matches
-[`AgentSessionEvent`](UPSTREAM.md)
+[`AgentSessionEvent`](../../../UPSTREAM.md)
 except that streaming message updates omit cumulative snapshots:
 
 ```typescript
@@ -26,7 +26,7 @@ type JsonAgentSessionEvent =
 `queue_update` emits the full pending steering and follow-up queues whenever they change. `compaction_start` and `compaction_end` cover both manual and automatic compaction.
 
 Other base events come from
-[`AgentEvent`](UPSTREAM.md):
+[`AgentEvent`](../../../UPSTREAM.md):
 
 ```typescript
 type AgentEvent =
@@ -48,12 +48,12 @@ type AgentEvent =
 
 ## Message Types
 
-Base messages from [`packages/ai/src/types.ts`](UPSTREAM.md):
+Base messages from [`packages/ai/src/types.ts`](../../../UPSTREAM.md):
 - `UserMessage` (line 134)
 - `AssistantMessage` (line 140)
 - `ToolResultMessage` (line 152)
 
-Extended messages from [`packages/coding-agent/src/core/messages.ts`](UPSTREAM.md):
+Extended messages from [`packages/coding-agent/src/core/messages.ts`](../../../UPSTREAM.md):
 - `BashExecutionMessage` (line 29)
 - `CustomMessage` (line 46)
 - `BranchSummaryMessage` (line 55)
