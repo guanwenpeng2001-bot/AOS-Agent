@@ -22,6 +22,7 @@ import {
 	assertPackageSmokeResult,
 	createPackageSmokeResult,
 	PACKAGED_FIXTURE_TOOL_CALL_ID,
+	bunIsAvailable,
 	runInstalledBootSmokes,
 } from "./pack-smoke.mjs";
 import { digestJson } from "./pack-smoke-common.mjs";
@@ -300,39 +301,44 @@ test("external npm install boots the CLI and SDK before executing the test-suppo
 				"",
 			].join("\n"),
 		);
-		for (const command of [process.execPath, "bun"]) {
+		const bunAvailable = bunIsAvailable(process.env, install);
+		const commands = [process.execPath];
+		if (bunAvailable) commands.push("bun");
+		for (const command of commands) {
 			const output = JSON.parse(run(command, [runner], install));
 			assert.match(output.resolved, /external-install[\\/]node_modules[\\/]aos-agent[\\/]dist[\\/]external-connector-testing\.js$/u);
 			assertExecutedTrace(output.trace);
 		}
 
-		const compiledDirectory = join(install, "compiled");
-		mkdirSync(join(compiledDirectory, "external-connector-assets"), { recursive: true });
-		const executable = join(compiledDirectory, process.platform === "win32" ? "packaged-smoke.exe" : "packaged-smoke");
-		const compiledRunner = join(install, "compiled-runner.mjs");
-		writeFileSync(
-			compiledRunner,
-			[
-				'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector/testing";',
-				'const trace = await runPackagedExternalAgentDriverFixture();',
-				'process.stdout.write(`${JSON.stringify({ trace })}\\n`);',
-				"",
-			].join("\n"),
-		);
-		run(
-			"bun",
-			["build", "--compile", "--no-compile-autoload-bunfig", compiledRunner, "--outfile", executable],
-			install,
-		);
-		copyFileSync(
-			join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "fake-connector.json"),
-			join(compiledDirectory, "external-connector-assets", "fake-connector.json"),
-		);
-		copyFileSync(
-			join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "fake-connector-process.mjs"),
-			join(compiledDirectory, "external-connector-assets", "fake-connector-process.mjs"),
-		);
-		assertExecutedTrace(JSON.parse(run(executable, [], compiledDirectory)).trace);
+		if (bunAvailable) {
+			const compiledDirectory = join(install, "compiled");
+			mkdirSync(join(compiledDirectory, "external-connector-assets"), { recursive: true });
+			const executable = join(compiledDirectory, process.platform === "win32" ? "packaged-smoke.exe" : "packaged-smoke");
+			const compiledRunner = join(install, "compiled-runner.mjs");
+			writeFileSync(
+				compiledRunner,
+				[
+					'import { runPackagedExternalAgentDriverFixture } from "aos-agent/external-connector/testing";',
+					'const trace = await runPackagedExternalAgentDriverFixture();',
+					'process.stdout.write(`${JSON.stringify({ trace })}\\n`);',
+					"",
+				].join("\n"),
+			);
+			run(
+				"bun",
+				["build", "--compile", "--no-compile-autoload-bunfig", compiledRunner, "--outfile", executable],
+				install,
+			);
+			copyFileSync(
+				join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "fake-connector.json"),
+				join(compiledDirectory, "external-connector-assets", "fake-connector.json"),
+			);
+			copyFileSync(
+				join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "fake-connector-process.mjs"),
+				join(compiledDirectory, "external-connector-assets", "fake-connector-process.mjs"),
+			);
+			assertExecutedTrace(JSON.parse(run(executable, [], compiledDirectory)).trace);
+		}
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

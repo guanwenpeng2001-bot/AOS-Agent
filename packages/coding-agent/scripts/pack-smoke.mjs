@@ -355,11 +355,12 @@ function runProbe(runtime, command, args, options) {
 		return runtimeResult(runtime, options.headSha, "passed", { runtime, trace });
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
+		console.error(`Package-smoke ${runtime} probe failed: ${reason}`);
 		return runtimeResult(runtime, options.headSha, "failed", { runtime, state: "failed", reason });
 	}
 }
 
-function bunIsAvailable(environment, cwd) {
+export function bunIsAvailable(environment, cwd) {
 	const result = spawn.sync("bun", ["--version"], {
 		cwd,
 		encoding: "utf8",
@@ -657,6 +658,7 @@ export function runPackageSmoke(options) {
 		runtimes = runInstalledRuntimes({ headSha, installDirectory, env: environment });
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
+		console.error(`Package-smoke execution failed: ${reason}`);
 		runtimes = runtimes.map((runtime) => runtime.state === "not_run"
 			? runtimeResult(runtime.runtime, headSha, "failed", { runtime: runtime.runtime, state: "failed", reason })
 			: runtime);
@@ -727,7 +729,8 @@ function main() {
 		console.log(`Packaged runtime smoke dry-run validated: ${result.digest}`);
 		return;
 	}
-	throw new Error(`Packaged runtime smoke failed: ${result.digest}`);
+	const runtimeSummary = result.runtimes.map((runtime) => `${runtime.runtime}=${runtime.state}`).join(", ");
+	throw new Error(`Packaged runtime smoke failed: ${result.digest} (${runtimeSummary})`);
 }
 
 if (isMain(import.meta.url)) {
