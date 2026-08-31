@@ -2246,6 +2246,21 @@ describe("WorkerSandboxProvider", () => {
 
 	it("snapshots preflight authority facts before Supervisor construction callbacks", async () => {
 		const request = operation("operation-preflight-authority-snapshot");
+		class PreflightSnapshotSupervisor extends OperationWorkerSupervisor {
+			preflightBinding?: WorkerBinding;
+
+			override preflight(input: Parameters<OperationWorkerSupervisor["preflight"]>[0]) {
+				this.preflightBinding = input.binding;
+				return super.preflight(input);
+			}
+
+			override activate(_plan: WorkerActivationPlan) {
+				return Promise.resolve(Result.err(new FoundationError(
+					"worker_start_failed",
+					"Preflight snapshot observed before process activation",
+				)));
+			}
+		}
 		const mutableFacts = facts(request, "success") as unknown as {
 			binding: {
 				workerId: string;
@@ -2258,6 +2273,7 @@ describe("WorkerSandboxProvider", () => {
 			runAccepted: boolean;
 			sessionOwned: boolean;
 		};
+		let supervisor: PreflightSnapshotSupervisor | undefined;
 		const current = provider("success", {
 			resolvePreflight: () => mutableFacts as unknown as WorkerSandboxPreflightFacts,
 			createSupervisor: (config) => {
@@ -2269,19 +2285,26 @@ describe("WorkerSandboxProvider", () => {
 				mutableFacts.binding.credentialTargetRefs.push("secret-target");
 				mutableFacts.runAccepted = false;
 				mutableFacts.sessionOwned = false;
-				return new OperationWorkerSupervisor(config);
+				supervisor = new PreflightSnapshotSupervisor(config);
+				return supervisor;
 			},
 		});
 		expect(await current.start(request, { correlation: correlation(request.operationId) })).toMatchObject({
-			ok: true,
-			value: { operationId: request.operationId, status: "succeeded" },
+			ok: false,
+			error: { code: "worker_start_failed" },
 		});
-		expect(current.getWorkerRecord(`worker-${request.operationId}`)).toMatchObject({
+		if (supervisor === undefined) throw new Error("Expected deterministic preflight Supervisor");
+		expect(supervisor.preflightBinding).toMatchObject({
+			workerId: `worker-${request.operationId}`,
 			sessionId: "session-1",
 			runId: "run-1",
 			bindingId: "binding-1",
+			capabilitySummary: ["filesystem.read", "process.spawn"],
+			credentialTargetRefs: [],
 		});
-		expect(current.getWorkerRecord("worker-mutated-after-validation")).toBeUndefined();
+		expect(Object.isFrozen(supervisor.preflightBinding)).toBe(true);
+		expect(Object.isFrozen(supervisor.preflightBinding?.capabilitySummary)).toBe(true);
+		expect(Object.isFrozen(supervisor.preflightBinding?.credentialTargetRefs)).toBe(true);
 
 		let malformedCreates = 0;
 		const malformed = provider("success", {
