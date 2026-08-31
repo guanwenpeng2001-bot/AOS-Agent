@@ -204,12 +204,17 @@ function localFileSpec(path) {
 
 function createInstallManifest(repoRoot, packDirectory, candidateTarball, environment) {
 	const dependencies = { "aos-agent": localFileSpec(candidateTarball) };
+	const overrides = {};
 	for (const directory of INTERNAL_PACKAGE_DIRECTORIES) {
 		const packageDirectory = join(repoRoot, "packages", directory);
 		const packed = packPackage(packageDirectory, packDirectory, environment);
-		dependencies[packageIdentity(packageDirectory)] = localFileSpec(packed.tarballPath);
+		overrides[packageIdentity(packageDirectory)] = localFileSpec(packed.tarballPath);
 	}
-	return { private: true, type: "module", dependencies };
+	// Workspace packages are unpublished. Install only the candidate so npm uses
+	// its shrinkwrap for registry tarballs already in the local cache. Listing
+	// those workspace packages as sibling dependencies would resolve their
+	// package.json ranges from the registry and fail `--offline` with ENOTCACHED.
+	return { private: true, type: "module", dependencies, overrides };
 }
 
 function assertTrace(value) {
