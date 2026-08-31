@@ -585,8 +585,8 @@ describe("imageFallback", () => {
 	it("leaves bare basenames unchanged and does not hyperlink them", () => {
 		setCapabilities({ images: null, trueColor: false, hyperlinks: true });
 		try {
-			const result = imageFallback("image/png", { widthPx: 1, heightPx: 1 }, "clankolas.png");
-			assert.strictEqual(result, "[Image: clankolas.png [image/png] 1x1]");
+			const result = imageFallback("image/png", { widthPx: 1, heightPx: 1 }, "sample.png");
+			assert.strictEqual(result, "[Image: sample.png [image/png] 1x1]");
 			assert.ok(!result.includes("\x1b]8;"), "basename must not be hyperlinked");
 		} finally {
 			resetCapabilitiesCache();
