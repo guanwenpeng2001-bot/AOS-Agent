@@ -76,6 +76,7 @@
 ### Fixed
 
 - Made Cursor login and logout report the committed credential state, explain empty model catalogs, and provide `/reload` or `/model` recovery paths after local synchronization or CLI probe failures.
+- 只读搜索超时不再误报未知副作用.
 - Packaged-runtime smoke now prints execution and per-runtime probe failures, and the Node-only unit test skips Bun compile probes when Bun is not installed.
 - Offline packaged-runtime install uses workspace package overrides and the candidate shrinkwrap cache instead of fetching packuments.
 - Packaged-runtime smoke can warm the npm cache with one online install of the same package set before the offline install, and CI writes the run log into the evidence artifact.

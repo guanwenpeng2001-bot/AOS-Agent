@@ -221,6 +221,7 @@ export class OperationWorkerSupervisor {
 	private recoveredWithoutProcess = false;
 	private quarantinedValue = false;
 	private reclaimPromise?: Promise<ResultValue<WorkerRecord, FoundationError>>;
+	private activeSideEffect: "none" | "writes" = "writes";
 
 	constructor(config: WorkerSupervisorConfig) {
 		this.config = Object.freeze({ ...config, capabilities: Object.freeze([...config.capabilities]) });
@@ -384,6 +385,7 @@ export class OperationWorkerSupervisor {
 		}
 		this.receiptWaiter = deferred();
 		this.terminalWaiter = deferred();
+		this.activeSideEffect = request.sideEffect ?? "writes";
 		const frame: OperationWorkerRequestFrame = {
 			type: "execute",
 			requestId: this.nextRequestId("execute"),
@@ -466,7 +468,7 @@ export class OperationWorkerSupervisor {
 			this.config.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS,
 		);
 		if (!settled.timedOut && settled.value) return Result.ok(undefined);
-		this.markLost("worker_cancel_failed");
+		this.markLost("worker_cancel_failed", "Operation Worker cancellation timed out");
 		await this.reclaim();
 		return Result.err(stableError("worker_cancel_failed", "Operation Worker cancellation timed out"));
 	}
@@ -904,22 +906,26 @@ export class OperationWorkerSupervisor {
 		return Result.ok(applied.value.record);
 	}
 
-	private markLost(code: SupervisorErrorCode): FoundationError {
-		const error = stableError(code, "Operation Worker lost a trusted terminal outcome");
+	private markLost(
+		code: SupervisorErrorCode,
+		message = "Operation Worker lost a trusted terminal outcome",
+	): FoundationError {
+		const error = stableError(code, message);
 		this.clearWatchdog();
 		this.discardPendingFrameCommits();
 		const status = this.lifecycle?.record.status;
+		const readOnlyFailure = this.receiptWaiter !== undefined && this.activeSideEffect === "none";
 		if (
 			status === "starting" ||
 			status === "ready" ||
 			status === "running" ||
 			status === "cancelling"
 		) {
-			this.transition("lost", {
+			this.transition(readOnlyFailure ? "failed" : "lost", {
 				...(this.lifecycle?.record.activeOperationId === undefined
 					? {}
 					: { activeOperationId: this.lifecycle.record.activeOperationId }),
-				sideEffectState: "side_effect_unknown",
+				sideEffectState: readOnlyFailure ? "none" : "side_effect_unknown",
 			});
 		}
 		this.readyWaiter?.resolve(Result.err(error));
@@ -928,8 +934,8 @@ export class OperationWorkerSupervisor {
 		return error;
 	}
 
-	private protocolFailure(code: SupervisorErrorCode): void {
-		this.markLost(code);
+	private protocolFailure(code: SupervisorErrorCode, message?: string): void {
+		this.markLost(code, message);
 		void this.ensureProcessStoppedAndCleaned();
 	}
 
@@ -944,7 +950,12 @@ export class OperationWorkerSupervisor {
 			const deadlineElapsed =
 				this.lifecycle?.binding.deadlineAt !== undefined &&
 				this.lifecycle.binding.deadlineAt <= this.now().getTime();
-			this.protocolFailure(deadlineElapsed ? "worker_deadline_exceeded" : "worker_lost");
+			this.protocolFailure(
+				deadlineElapsed ? "worker_deadline_exceeded" : "worker_lost",
+				deadlineElapsed
+					? "Operation Worker deadline timed out"
+					: "Operation Worker heartbeat timed out",
+			);
 		}, timeoutMs);
 		this.watchdogTimer.unref();
 	}

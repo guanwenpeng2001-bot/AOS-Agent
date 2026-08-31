@@ -893,6 +893,69 @@ describe("sandbox host policy for built-in tools", () => {
 		}
 	});
 
+	it("does not apply the process timeout to fake large-directory readonly searches", async () => {
+		const workspace = await tempRoot();
+		const searchProfile: ExecutionPolicyProfile = {
+			...sandboxProfile,
+			id: "sandbox-large-readonly-search",
+			process: { ...sandboxProfile.process, timeoutMs: 1, allowEnvironment: ["PATH", "Path"] },
+		};
+		const fake = createFakeSandboxProvider({
+			onExecute: async (request): Promise<SandboxOperationResult | undefined> => {
+				if (request.operation === "filesystem.find") {
+					return {
+						content: Array.from(
+							{ length: 1_200 },
+							(_value, index) => join(request.path ?? "", "fake-large-tree", `file-${index}.ts`),
+						).join("\n"),
+					};
+				}
+				if (request.operation === "filesystem.grep") {
+					return {
+						content: Array.from(
+							{ length: 150 },
+							(_value, index) => ripgrepMatch(
+								join(request.path ?? "", "fake-large-tree", `file-${index}.ts`),
+								index + 1,
+								"needle\n",
+							),
+						).join("\n"),
+					};
+				}
+				throw new Error(`Unexpected sandbox operation: ${request.operation}`);
+			},
+		});
+		let sandbox: SandboxHandle | undefined;
+		try {
+			const policyBinding = binding(searchProfile, workspace, true);
+			sandbox = await fake.provider.prepare(policyBinding);
+			const policy = createBuiltinToolPolicy({
+				profile: searchProfile,
+				binding: policyBinding,
+				roots: { workspace },
+				sandbox,
+			});
+
+			await createFindTool(workspace, { policy }).execute("large-fake-find", {
+				pattern: "**/*.ts",
+				path: ".",
+			});
+			await createGrepTool(workspace, { policy }).execute("large-fake-grep", {
+				pattern: "needle",
+				path: ".",
+			});
+
+			expect(fake.state.invocations).toHaveLength(2);
+			expect(fake.state.invocations.map((invocation) => invocation.timeoutMs)).toEqual([
+				undefined,
+				undefined,
+			]);
+		} finally {
+			if (sandbox !== undefined) await fake.provider.dispose(sandbox);
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	});
+
 	it("fails closed for strict filesystem profiles without a usable sandbox handle", async () => {
 		const workspace = await tempRoot();
 		try {
