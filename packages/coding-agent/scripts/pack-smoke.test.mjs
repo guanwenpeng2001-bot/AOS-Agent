@@ -22,6 +22,7 @@ import {
 	assertPackageSmokeResult,
 	createPackageSmokeResult,
 	PACKAGED_FIXTURE_TOOL_CALL_ID,
+	runInstalledBootSmokes,
 } from "./pack-smoke.mjs";
 import { digestJson } from "./pack-smoke-common.mjs";
 
@@ -97,6 +98,24 @@ function createStagedPackage(root) {
 	const distConnector = join(distCore, "connector");
 	const assets = join(distConnector, "assets");
 	mkdirSync(assets, { recursive: true });
+	writeFileSync(
+		join(staged, "dist", "cli.js"),
+		[
+			"#!/usr/bin/env node",
+			'const supported = new Set(["--version", "--help", "--list-models"]);',
+			"if (process.argv.length !== 3 || !supported.has(process.argv[2])) process.exitCode = 2;",
+			"",
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	writeFileSync(
+		join(staged, "dist", "index.js"),
+		"export async function createAgentSession() { return { session: { dispose() {} } }; }\n",
+	);
+	writeFileSync(
+		join(staged, "dist", "index.d.ts"),
+		"export declare function createAgentSession(options?: unknown): Promise<{ session: { dispose(): void } }>;\n",
+	);
 	const transpiled = ts.transpileModule(readFileSync(loaderPath, "utf8"), {
 		compilerOptions: {
 			module: ts.ModuleKind.ESNext,
@@ -123,7 +142,12 @@ function createStagedPackage(root) {
 			name: "aos-agent",
 			version: "1.0.0",
 			type: "module",
+			bin: { aos: "dist/cli.js" },
 			exports: {
+				".": {
+					types: "./dist/index.d.ts",
+					import: "./dist/index.js",
+				},
 				"./external-connector": {
 					types: "./dist/external-connector.d.ts",
 					import: "./dist/external-connector.js",
@@ -136,8 +160,13 @@ function createStagedPackage(root) {
 	return staged;
 }
 
-test("package metadata owns the external Connector export and both asset copies", () => {
+test("package metadata owns the CLI, SDK, external Connector export, and both asset copies", () => {
 	const packageJson = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"));
+	assert.equal(packageJson.bin.aos, "dist/cli.js");
+	assert.deepEqual(packageJson.exports["."], {
+		types: "./dist/index.d.ts",
+		import: "./dist/index.js",
+	});
 	assert.deepEqual(packageJson.exports["./external-connector"], {
 		types: "./dist/external-connector.d.ts",
 		import: "./dist/external-connector.js",
@@ -152,8 +181,11 @@ test("package metadata owns the external Connector export and both asset copies"
 
 test("package-content validation catches missing public exports and assets", () => {
 	const files = [
+		"dist/cli.js",
 		"dist/external-connector.js",
 		"dist/external-connector.d.ts",
+		"dist/index.js",
+		"dist/index.d.ts",
 		"dist/core/connector/packaged-driver.js",
 		"dist/core/connector/packaged-driver.d.ts",
 		"dist/core/connector/assets/fake-connector.json",
@@ -213,7 +245,7 @@ test("outside-repository validation rejects a link or junction targeting the rep
 	}
 });
 
-test("external npm install executes the packed public subpath in Node, Bun, and a compiled binary", () => {
+test("external npm install boots the CLI and SDK before executing the public subpath runtimes", () => {
 	const root = mkdtempSync(join(tmpdir(), "aos-pack-test-"));
 	try {
 		assertOutsideRepository(root, repoRoot);
@@ -233,6 +265,7 @@ test("external npm install executes the packed public subpath in Node, Bun, and 
 			["install", "--offline", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", tarball],
 			install,
 		);
+		runInstalledBootSmokes({ installDirectory: install, env: process.env });
 		const runner = join(install, "runner.mjs");
 		writeFileSync(
 			runner,

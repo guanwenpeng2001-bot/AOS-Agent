@@ -8,6 +8,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,8 +42,11 @@ const INTERNAL_PACKAGE_DIRECTORIES = Object.freeze([
 	"tui",
 ]);
 const REQUIRED_PACKAGE_FILES = Object.freeze([
+	"package/dist/cli.js",
 	"package/dist/external-connector.js",
 	"package/dist/external-connector.d.ts",
+	"package/dist/index.js",
+	"package/dist/index.d.ts",
 	"package/dist/core/connector/packaged-driver.js",
 	"package/dist/core/connector/packaged-driver.d.ts",
 	"package/dist/core/connector/assets/fake-connector.json",
@@ -323,10 +327,15 @@ function parseProbeOutput(output, packageDirectory, requireResolvedPath) {
 		if (typeof probe.resolved !== "string") throw new Error("Packaged runtime did not report its resolved export");
 		const resolvedEntry = realpathSync(fileURLToPath(probe.resolved));
 		const installedPackage = realpathSync(packageDirectory);
-		if (!isWithinPath(resolvedEntry, installedPackage)) {
+		const installedEntry = realpathSync(join(installedPackage, "dist", "external-connector.js"));
+		const resolvedIdentity = statSync(resolvedEntry, { bigint: true });
+		const installedIdentity = statSync(installedEntry, { bigint: true });
+		const resolvesInstalledEntry =
+			resolvedIdentity.dev === installedIdentity.dev && resolvedIdentity.ino === installedIdentity.ino;
+		if (!resolvesInstalledEntry && !isWithinPath(resolvedEntry, installedPackage)) {
 			throw new Error("Packaged runtime resolved repository-owned files outside its install");
 		}
-		if (resolvedEntry !== realpathSync(join(installedPackage, "dist", "external-connector.js"))) {
+		if (!resolvesInstalledEntry) {
 			throw new Error("Packaged runtime resolved an unexpected public export entry");
 		}
 	}
@@ -379,6 +388,44 @@ function writeRuntimeProbes(installDirectory) {
 	writeFileSync(probePath, source, { encoding: "utf8", mode: 0o600 });
 	writeFileSync(compiledProbePath, compiledSource, { encoding: "utf8", mode: 0o600 });
 	return { probePath, compiledProbePath };
+}
+
+export function runInstalledBootSmokes(options) {
+	const executable = join(
+		options.installDirectory,
+		"node_modules",
+		".bin",
+		process.platform === "win32" ? "aos.cmd" : "aos",
+	);
+	for (const args of [["--version"], ["--help"], ["--list-models"]]) {
+		runCommand(executable, args, {
+			cwd: options.installDirectory,
+			env: options.env,
+			timeoutMs: 120_000,
+		});
+	}
+
+	const sdkProbePath = join(options.installDirectory, "sdk-boot-probe.mjs");
+	writeFileSync(
+		sdkProbePath,
+		[
+			'import { createAgentSession } from "aos-agent";',
+			'const { session } = await createAgentSession({ session: { mode: "memory" } });',
+			'if (typeof session?.dispose !== "function") throw new Error("SDK session creation returned no disposable session");',
+			"session.dispose();",
+			'process.stdout.write("sdk-session-created\\n");',
+			"",
+		].join("\n"),
+		{ encoding: "utf8", mode: 0o600 },
+	);
+	const sdkOutput = runCommand(process.execPath, [sdkProbePath], {
+		cwd: options.installDirectory,
+		env: options.env,
+		timeoutMs: 120_000,
+	});
+	if (sdkOutput.trim() !== "sdk-session-created") {
+		throw new Error("Installed SDK session-create smoke returned unexpected output");
+	}
 }
 
 function runInstalledRuntimes(options) {
@@ -510,6 +557,12 @@ export function assertPackageSmokeResult(value, options = {}) {
 
 function validateDryRunInputs(repoRoot) {
 	const packageJson = JSON.parse(readFileSync(join(repoRoot, "packages", "coding-agent", "package.json"), "utf8"));
+	if (
+		packageJson.bin?.aos !== "dist/cli.js" ||
+		packageJson.exports?.["."]?.import !== "./dist/index.js"
+	) {
+		throw new Error("Package metadata does not expose the CLI and SDK boot entrypoints");
+	}
 	if (packageJson.exports?.["./external-connector"]?.import !== "./dist/external-connector.js") {
 		throw new Error("Package metadata does not expose the External Connector subpath");
 	}
@@ -593,6 +646,7 @@ export function runPackageSmoke(options) {
 			],
 			{ cwd: installDirectory, env: environment, timeoutMs: 600_000 },
 		);
+		runInstalledBootSmokes({ installDirectory, env: environment });
 		runtimes = runInstalledRuntimes({ headSha, installDirectory, env: environment });
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);

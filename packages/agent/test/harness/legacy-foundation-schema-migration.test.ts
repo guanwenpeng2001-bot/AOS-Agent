@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { decodeLegacyFoundationRecordV1 } from "../../src/index.ts";
 import { encodeFoundationMutation } from "../../src/harness/session/durable/codec.ts";
 import { FoundationLedgerState } from "../../src/harness/session/durable/state.ts";
 import {
@@ -115,6 +116,7 @@ describe("private legacy Foundation schema migration", () => {
 	it("accepts and preserves current writer correlation fields from Foundation JSONL", () => {
 		const record = writerProducedRecord();
 		const wrapper = JSON.parse(encodeFoundationMutation(record)) as unknown;
+		expect(decodeLegacyFoundationRecordV1(record)).toEqual(record);
 		expect(decodeLegacyFoundationSchemaWrapperV1(wrapper)).toEqual(record);
 		expect(planLegacyFoundationSchemaMigrationV1(wrapper).result).toEqual(record);
 		expect(record.correlation).toMatchObject({

@@ -1,9 +1,9 @@
-import { FoundationError } from "../../../../agent/src/harness/foundation/errors.ts";
+import { FoundationError } from "@aos-agent/agent-core";
 import type {
 	ChildAgentProvider,
 	ExecutionProviderDescriptor,
 	TaskExecutorProvider,
-} from "../../../../agent/src/harness/foundation/providers.ts";
+} from "@aos-agent/agent-core";
 import { SUBAGENT_PROVIDER_KINDS, type SubagentProviderKind } from "./lifecycle.ts";
 
 export type { SubagentProviderKind } from "./lifecycle.ts";
