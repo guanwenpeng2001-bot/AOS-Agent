@@ -27,7 +27,7 @@ Provider credentials such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and cloud-pr
 
 ## External OAuth dependency
 
-The Radius OAuth client currently uses the legacy `pi-gateway` client ID because the gateway has not issued an AOS client ID. This is an intentional, pending external dependency; keep the value until the gateway publishes and registers its replacement, then update the client and gateway together.
+The Radius OAuth client uses the upstream-issued `pi-gateway` client ID, and the default Radius gateway (`https://radius.pi.dev`) is operated by the same issuer, so the out-of-box identity and address match. This is a standing external dependency, not a pending task: only that operator can register an AOS replacement client ID. If you run your own gateway, register an AOS client ID on its authorization server first, then update `OAUTH_CLIENT_ID` in `packages/ai/src/auth/oauth/radius.ts`, `DEFAULT_RADIUS_GATEWAY` in `packages/ai/src/providers/radius-config.ts`, and the matching test assertions together.
 
 ## Bash-tool session metadata
 
