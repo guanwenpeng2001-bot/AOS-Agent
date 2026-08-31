@@ -133,7 +133,6 @@
         "AppKeybinding",
         "ApprovalPolicy",
         "Args",
-        "ArminComponent",
         "ArtifactReference",
         "AssistantMessageComponent",
         "AuditEvent",
@@ -2921,15 +2920,6 @@
         "packages/coding-agent/src/cli/initial-message.ts:2",
         "packages/coding-agent/src/main.ts:13",
         "packages/coding-agent/src/cli/experimental/command-options.ts:1"
-      ]
-    },
-    {
-      "name": "ArminComponent",
-      "entry": ".",
-      "decision": "internal",
-      "evidence": [
-        "packages/coding-agent/src/modes/interactive/interactive-mode.ts:138",
-        "packages/coding-agent/src/modes/interactive/components/index.ts:2"
       ]
     },
     {

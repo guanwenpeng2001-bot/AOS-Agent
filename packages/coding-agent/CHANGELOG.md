@@ -105,6 +105,8 @@
 
 ### Removed
 
+- Removed the leftover Armin easter-egg component after its slash command was deleted.
+
 ## [0.84.3] - 2026-08-10
 
 ### Added
