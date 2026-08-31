@@ -115,6 +115,8 @@ import {
 const NOW = "2026-08-26T00:00:00.000Z";
 const CHILD_ENTRY = fileURLToPath(new URL("../fixtures/fake-worker-child.ts", import.meta.url));
 const MAIN_RPC_ENTRY = fileURLToPath(new URL("../fixtures/main-rpc-runtime-composition.ts", import.meta.url));
+// Full-suite source-loader contention is outside the RPC initialize budget.
+const MAIN_RPC_READY_MARKER = "--- Startup Timings: main ---";
 
 interface RuntimeFixture {
 	readonly cwd: string;
@@ -712,6 +714,7 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 				AOS_AGENT_SESSION_DIR: join(agentDir, "sessions"),
 				AOS_AGENT_OFFLINE: "1",
 				AOS_AGENT_SKIP_VERSION_CHECK: "1",
+				AOS_AGENT_TIMING: "1",
 			},
 			stdio: ["pipe", "pipe", "pipe"],
 		});
@@ -719,10 +722,8 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 		let stderr = "";
 		let response: unknown;
 		let timeoutError: Error | undefined;
-		const timer = setTimeout(() => {
-			timeoutError = new Error(`main -> RPC initialize timed out: ${stderr}`);
-			child.kill();
-		}, 60_000);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let initializeSent = false;
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk.toString();
 			for (const line of stdout.split(/\r?\n/u)) {
@@ -734,6 +735,8 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 						record.id === "main-rpc-initialize"
 					) {
 						response = record;
+						if (timer !== undefined) clearTimeout(timer);
+						timer = undefined;
 						child.stdin.end();
 					}
 				} catch {
@@ -743,13 +746,20 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 		});
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk.toString();
+			if (initializeSent || !stderr.includes(MAIN_RPC_READY_MARKER)) return;
+			initializeSent = true;
+			timer = setTimeout(() => {
+				timeoutError = new Error(`main -> RPC initialize timed out after startup: ${stderr}`);
+				child.kill();
+			}, 60_000);
+			child.stdin.write(`${JSON.stringify({ id: "main-rpc-initialize", type: "initialize", protocolVersion: 1 })}\n`);
 		});
 		child.on("error", (error) => {
-			clearTimeout(timer);
+			if (timer !== undefined) clearTimeout(timer);
 			reject(error);
 		});
 		child.on("close", (code) => {
-			clearTimeout(timer);
+			if (timer !== undefined) clearTimeout(timer);
 			if (timeoutError !== undefined) {
 				reject(timeoutError);
 				return;
@@ -760,7 +770,6 @@ async function runMainRpcInitialize(cwd: string): Promise<{
 			}
 			resolvePromise({ code, stderr, response });
 		});
-		child.stdin.write(`${JSON.stringify({ id: "main-rpc-initialize", type: "initialize", protocolVersion: 1 })}\n`);
 	});
 }
 
@@ -2354,6 +2363,7 @@ describe("AgentRuntimeComposition", () => {
 		}
 	});
 
+	// The helper waits for standard main's startup event, then bounds only RPC initialize.
 	it("passes an explicit trusted root through standard main into RPC initialize", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-main-rpc-composition-"));
 		directories.push(cwd);
@@ -2386,7 +2396,7 @@ describe("AgentRuntimeComposition", () => {
 			},
 		});
 		expect(result.stderr).not.toContain("Error:");
-	}, 70_000);
+	}, 0);
 
 	it("runs and resumes an External Connector through package-root main after a crash", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-main-rpc-external-resume-"));
