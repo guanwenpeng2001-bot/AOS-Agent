@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { Session, type AgentMessage, type ThinkingLevel } from "@aos-agent/agent-core";
 import type { AuthEvent, AuthPrompt } from "@aos-agent/ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@aos-agent/ai/compat";
+import { checkCursorCliStatus } from "@aos-agent/ai/providers/cursor";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -251,6 +252,20 @@ function isDeadTerminalError(error: unknown): boolean {
 
 const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
 	"Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage. Disable this warning in /settings.";
+
+const CURSOR_PROVIDER_ID = "cursor";
+const CURSOR_OPERATION_TIMEOUT_MS = 30_000;
+
+export function formatCursorCredentialSynchronizationFailure(operation: "login" | "logout"): string {
+	return operation === "login"
+		? "Cursor credentials were saved, but local model state could not be refreshed. Run /reload to retry the local refresh; you do not need to enter the credentials again."
+		: "Stored Cursor credentials were removed from AOS Agent, but local model state could not be refreshed. Run /reload to retry the local refresh. Cursor CLI login is unchanged.";
+}
+
+export function formatCursorCatalogUnavailable(reason?: string): string {
+	const detail = reason?.trim() || "Cursor CLI returned no models for this account.";
+	return `Cursor credentials were saved, but its model catalog is unavailable: ${detail} Run /model to retry after fixing the Cursor CLI issue.`;
+}
 
 function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
 	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
@@ -5756,12 +5771,19 @@ export class InteractiveMode {
 					}
 
 					try {
+						if (providerOption.id === CURSOR_PROVIDER_ID) {
+							await checkCursorCliStatus({ signal: AbortSignal.timeout(CURSOR_OPERATION_TIMEOUT_MS) });
+						}
 						await this.session.modelRuntime.logout(providerOption.id, {
-							signal: AbortSignal.timeout(15_000),
+							signal: AbortSignal.timeout(
+								providerOption.id === CURSOR_PROVIDER_ID ? CURSOR_OPERATION_TIMEOUT_MS : 15_000,
+							),
 						});
 						await this.updateAvailableProviderCount();
 						const message =
-							providerOption.authType === "oauth"
+							providerOption.id === CURSOR_PROVIDER_ID
+								? "Removed stored Cursor credentials from AOS Agent. Cursor CLI login is unchanged."
+								: providerOption.authType === "oauth"
 								? `Logged out of ${providerOption.name}`
 								: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
 						this.showStatus(message);
@@ -5769,7 +5791,9 @@ export class InteractiveMode {
 						const message = error instanceof Error ? error.message : String(error);
 						this.showError(
 							error instanceof CredentialSynchronizationError
-								? `Credentials removed for ${providerOption.name}, but local model state could not be synchronized: ${message}`
+								? providerOption.id === CURSOR_PROVIDER_ID
+									? formatCursorCredentialSynchronizationFailure("logout")
+									: `Credentials removed for ${providerOption.name}, but local model state could not be synchronized: ${message}`
 								: `Logout failed: ${message}`,
 						);
 					}
@@ -5790,13 +5814,47 @@ export class InteractiveMode {
 		previousModel: Model<any> | undefined,
 	): Promise<void> {
 		const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
+		let cursorCatalogFailure: string | undefined;
+		if (providerId === CURSOR_PROVIDER_ID) {
+			const controller = new AbortController();
+			let timedOut = false;
+			const timeout = setTimeout(() => {
+				timedOut = true;
+				controller.abort();
+			}, CURSOR_OPERATION_TIMEOUT_MS);
+			try {
+				const result = await this.session.modelRuntime.refresh({
+					providers: [providerId],
+					signal: controller.signal,
+				});
+				if (result.aborted && timedOut) {
+					cursorCatalogFailure =
+						'Cursor model discovery timed out. Run "cursor-agent status" to verify the CLI responds.';
+				} else {
+					cursorCatalogFailure = result.errors.get(providerId)?.message;
+				}
+			} catch (error) {
+				cursorCatalogFailure = timedOut
+					? 'Cursor model discovery timed out. Run "cursor-agent status" to verify the CLI responds.'
+					: error instanceof Error
+						? error.message
+						: String(error);
+			} finally {
+				clearTimeout(timeout);
+			}
+		}
 
 		let selectedModel: Model<any> | undefined;
 		let selectionError: string | undefined;
+		const availableModels = this.session.modelRuntime.getAvailableSnapshot();
+		const providerModels = availableModels.filter((model) => model.provider === providerId);
+		if (providerId === CURSOR_PROVIDER_ID && providerModels.length === 0) {
+			selectionError = formatCursorCatalogUnavailable(cursorCatalogFailure);
+		}
 		if (isUnknownModel(previousModel)) {
-			const availableModels = this.session.modelRuntime.getAvailableSnapshot();
-			const providerModels = availableModels.filter((model) => model.provider === providerId);
-			if (!hasDefaultModelProvider(providerId)) {
+			if (selectionError) {
+				// Keep the Cursor-specific catalog diagnosis produced above.
+			} else if (!hasDefaultModelProvider(providerId)) {
 				selectionError = `${actionLabel}, but no default model is configured for provider "${providerId}". Use /model to select a model.`;
 			} else if (providerModels.length === 0) {
 				selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
@@ -5835,6 +5893,8 @@ export class InteractiveMode {
 				void this.maybeWarnAboutAnthropicSubscriptionAuth();
 			}
 		}
+
+		if (providerId === CURSOR_PROVIDER_ID) return;
 
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 15_000);
@@ -5922,7 +5982,9 @@ export class InteractiveMode {
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (error instanceof CredentialSynchronizationError) {
 				this.showError(
-					`Saved API key for ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
+					providerId === CURSOR_PROVIDER_ID
+						? formatCursorCredentialSynchronizationFailure("login")
+						: `Saved API key for ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
 				);
 			} else if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
@@ -6036,7 +6098,9 @@ export class InteractiveMode {
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (error instanceof CredentialSynchronizationError) {
 				this.showError(
-					`Logged in to ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
+					providerId === CURSOR_PROVIDER_ID
+						? formatCursorCredentialSynchronizationFailure("login")
+						: `Logged in to ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
 				);
 			} else if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to login to ${providerName}: ${errorMsg}`);

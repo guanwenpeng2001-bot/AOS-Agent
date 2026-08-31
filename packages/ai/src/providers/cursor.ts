@@ -44,15 +44,19 @@ const UNKNOWN_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as con
  * auth env handling. Prefer the installed node.exe + index.js so args stay
  * argv-separated without a shell.
  */
-function resolveCursorInvocation(): { command: string; prefixArgs: string[]; shell: boolean } {
+export function resolveCursorInvocation(): { command: string; prefixArgs: string[]; shell: boolean } {
 	const localApp = process.env.LOCALAPPDATA;
 	if (localApp) {
 		const versionsDir = join(localApp, "cursor-agent", "versions");
 		if (existsSync(versionsDir)) {
-			const versions = readdirSync(versionsDir)
-				.filter((name) => /^\d{4}\.\d{1,2}\.\d{1,2}/.test(name))
-				.sort()
-				.reverse();
+			let versions: string[] = [];
+			try {
+				versions = readdirSync(versionsDir)
+					.filter((name) => /^\d{4}\.\d{1,2}\.\d{1,2}(?:-|$)/u.test(name))
+					.sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
+			} catch {
+				// A stale or unreadable versions directory must not prevent root/PATH fallback.
+			}
 			for (const version of versions) {
 				const nodePath = join(versionsDir, version, "node.exe");
 				const indexPath = join(versionsDir, version, "index.js");
@@ -92,6 +96,7 @@ export interface CursorCliRunOptions {
 export type CursorCliResult =
 	| { status: "completed"; code: 0 }
 	| { status: "not_installed"; message: string }
+	| { status: "timed_out"; message: string }
 	| { status: "aborted"; message: string }
 	| { status: "failed"; code: number | null; message: string };
 
@@ -288,8 +293,7 @@ function runCursorProcess(
 			timeout = setTimeout(() => {
 				child.kill();
 				finish({
-					status: "failed",
-					code: null,
+					status: "timed_out",
 					message: "Cursor CLI command timed out.",
 					stdout,
 					stderr,
@@ -343,6 +347,29 @@ export function runCursorCliCapture(
 	return runCursorProcess(args, cwd, { ...options, stdio: "pipe" }, spawnImpl);
 }
 
+export function cursorCliError(
+	result: CursorCliResult | CursorCliCaptureResult | { status: string; message?: string },
+	operation: string,
+): Error {
+	if (result.status === "not_installed") {
+		return new Error(
+			`Cursor CLI is not installed or could not be found. Install it from https://cursor.com/docs/cli/installation, verify "${CURSOR_COMMAND} --version", then retry ${operation}.`,
+		);
+	}
+	if (result.status === "timed_out") {
+		return new Error(
+			`Cursor CLI timed out while trying to ${operation}. Run "${CURSOR_COMMAND} status" to verify it responds, then retry.`,
+		);
+	}
+	if (result.status === "aborted") {
+		return new Error(`Cursor CLI ${operation} was cancelled.`);
+	}
+	if (result.status === "failed") {
+		return new Error(`Cursor CLI could not ${operation}${result.message ? `: ${result.message}` : "."}`);
+	}
+	return new Error(`Cursor CLI ${operation} returned an invalid result.`);
+}
+
 function createCursorCli(
 	execute: CursorCliExecutor = runCursorCli,
 	capture: CursorCliCaptureExecutor = runCursorCliCapture,
@@ -384,6 +411,16 @@ function createCursorCli(
 export const cursorCli = createCursorCli();
 export { createCursorCli };
 
+export async function checkCursorCliStatus(options: {
+	cli?: CursorCli;
+	cwd?: string;
+	signal?: AbortSignal;
+} = {}): Promise<CursorStatusJson> {
+	const result = await (options.cli ?? cursorCli).status(options.cwd ?? process.cwd(), options.signal);
+	if (result.status !== "completed") throw cursorCliError(result, "check its status");
+	return parseCursorStatusJson(result.stdout);
+}
+
 // ---------------------------------------------------------------------------
 // Dynamic model catalog (no static cursor.models.ts)
 // ---------------------------------------------------------------------------
@@ -406,14 +443,19 @@ export function parseCursorModelList(stdout: string): CursorModelReference[] {
 		.split("\n")
 		.map((line) => line.trim())
 		.filter(Boolean);
-	if (lines.length < 3 || lines[0] !== "Available models") {
+	if (lines[0] !== "Available models") {
 		throw new Error("Cursor CLI model catalog format is unsupported.");
 	}
 
 	const footer = lines.at(-1) ?? "";
 	const entries = lines.slice(1, -1);
-	if (entries.length === 0 || !/--model\s+<?[^>\s]+>?/u.test(footer)) {
+	if (!/--model\s+<?[^>\s]+>?/u.test(footer)) {
 		throw new Error("Cursor CLI model catalog format is unsupported.");
+	}
+	if (entries.length === 0) {
+		throw new Error(
+			`Cursor CLI returned no models for this account. Run "${CURSOR_COMMAND} status", then "${CURSOR_COMMAND} login" if needed, and retry.`,
+		);
 	}
 
 	const seen = new Set<string>();
@@ -590,22 +632,6 @@ function createAssistantMessage(model: Model<typeof CURSOR_API>): AssistantMessa
 	};
 }
 
-function cursorCliError(
-	result: CursorCliCaptureResult | { status: string; message?: string },
-	operation: string,
-): Error {
-	if (result.status === "not_installed") {
-		return new Error(`Cursor CLI is not installed; cannot ${operation}.`);
-	}
-	if (result.status === "aborted") {
-		return new Error(`Cursor CLI ${operation} was aborted.`);
-	}
-	if (result.status === "failed") {
-		return new Error(`Cursor CLI ${operation} failed${result.message ? `: ${result.message}` : "."}`);
-	}
-	return new Error(`Cursor CLI ${operation} returned an invalid result.`);
-}
-
 function restoreCursorModels(stored: { models: readonly Model<Api>[] } | undefined): Model<typeof CURSOR_API>[] {
 	if (!stored) return [];
 	return stored.models
@@ -691,13 +717,21 @@ export function cursorProvider(options: CursorProviderOptions = {}): Provider<ty
 	const cli = options.cli ?? cursorCli;
 	const cwd = options.cwd ?? process.cwd();
 	let models: readonly Model<typeof CURSOR_API>[] = [];
+	const apiKeyAuth = envApiKeyAuth("Cursor API key", ["CURSOR_API_KEY"]);
 
 	return {
 		id: CURSOR_ID,
 		name: CURSOR_NAME,
 		baseUrl: "cursor-cli://local",
 		auth: {
-			apiKey: envApiKeyAuth("Cursor API key", ["CURSOR_API_KEY"]),
+			apiKey: {
+				...apiKeyAuth,
+				login: async (interaction) => {
+					await checkCursorCliStatus({ cli, cwd, signal: interaction.signal });
+					if (!apiKeyAuth.login) throw new Error("Cursor API key login is unavailable.");
+					return apiKeyAuth.login(interaction);
+				},
+			},
 			oauth: lazyOAuth({
 				name: "Cursor",
 				isSubscription: true,

@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Made Cursor login check for the CLI before saving credentials, distinguish missing, timed-out, expired, and token-missing states, and explain empty or unsupported model catalogs.
 - Made clean and offline checkouts use reproducible tracked model catalogs generated from the canonical catalog scripts.
 - Made the Anthropic OAuth callback flow fall back to manual code entry when a local callback listener is unavailable.
 

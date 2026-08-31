@@ -1,16 +1,23 @@
-import type { ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
 	createCursorCli,
 	cursorCliApiKey,
+	cursorCliError,
 	cursorProvider,
 	normalizeCursorModels,
 	parseCursorExecutionOutput,
 	parseCursorModelList,
 	parseCursorStatusJson,
+	resolveCursorInvocation,
 	runCursorCli,
 	runCursorCliCapture,
+	type CursorSpawn,
 } from "../src/providers/cursor.ts";
 
 function fakeChild(): ChildProcess {
@@ -26,6 +33,22 @@ composer-2.5 - Composer 2.5
 Tip: use --model <id> (or /model <id> in interactive mode) to switch. Parameterized models also accept quoted overrides, e.g. --model 'claude-opus-4-8[context=1m,effort=high,fast=false]'.
 `;
 
+const FAKE_CURSOR_AGENT_PATH = fileURLToPath(new URL("./fixtures/fake-cursor-agent.mjs", import.meta.url));
+
+function fixtureSpawn(state: string): CursorSpawn {
+	return (_command, args, options) => {
+		const commandIndex = args.findIndex((arg) =>
+			["status", "login", "logout", "models"].includes(arg),
+		);
+		const fixtureArgs = commandIndex === -1 ? [...args] : args.slice(commandIndex);
+		return spawn(process.execPath, [FAKE_CURSOR_AGENT_PATH, ...fixtureArgs], {
+			...options,
+			shell: false,
+			env: { ...process.env, ...options.env, FAKE_CURSOR_AGENT_STATE: state },
+		});
+	};
+}
+
 describe("Cursor dynamic model catalog", () => {
 	it("parses the documented line-oriented models output", () => {
 		expect(parseCursorModelList(SAMPLE_MODELS)).toEqual([
@@ -40,6 +63,12 @@ describe("Cursor dynamic model catalog", () => {
 			/invalid model catalog/i,
 		);
 		expect(() => parseCursorModelList("not a catalog")).toThrow(/unsupported/i);
+	});
+
+	it("distinguishes an empty supported catalog from an unsupported shape", () => {
+		expect(() =>
+			parseCursorModelList("Available models\n\nTip: use --model <id> to switch.\n"),
+		).toThrow(/returned no models/i);
 	});
 
 	it("normalizes references into Model entries", () => {
@@ -91,6 +120,40 @@ describe("Cursor status and stream-json parsing", () => {
 });
 
 describe("Cursor CLI adapter", () => {
+	it("chooses the newest complete Windows version directory and falls back to the root layout", () => {
+		const originalLocalAppData = process.env.LOCALAPPDATA;
+		const localAppData = mkdtempSync(join(tmpdir(), "cursor-cli-layout-"));
+		try {
+			process.env.LOCALAPPDATA = localAppData;
+			const versions = join(localAppData, "cursor-agent", "versions");
+			for (const version of ["2026.9.1-old", "2026.10.1-new"]) {
+				const versionDir = join(versions, version);
+				mkdirSync(versionDir, { recursive: true });
+				writeFileSync(join(versionDir, "node.exe"), "");
+				writeFileSync(join(versionDir, "index.js"), "");
+			}
+			expect(resolveCursorInvocation()).toEqual({
+				command: join(versions, "2026.10.1-new", "node.exe"),
+				prefixArgs: [join(versions, "2026.10.1-new", "index.js")],
+				shell: false,
+			});
+
+			rmSync(versions, { recursive: true, force: true });
+			const root = join(localAppData, "cursor-agent");
+			writeFileSync(join(root, "node.exe"), "");
+			writeFileSync(join(root, "index.js"), "");
+			expect(resolveCursorInvocation()).toEqual({
+				command: join(root, "node.exe"),
+				prefixArgs: [join(root, "index.js")],
+				shell: false,
+			});
+		} finally {
+			if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+			else process.env.LOCALAPPDATA = originalLocalAppData;
+			rmSync(localAppData, { recursive: true, force: true });
+		}
+	});
+
 	it("maps login/status/models/execute to documented arguments", async () => {
 		const calls: Array<{ args: readonly string[]; env?: Record<string, string> }> = [];
 		const capture = async (args: readonly string[], _cwd: string, options?: { env?: Record<string, string> }) => {
@@ -142,6 +205,57 @@ describe("Cursor CLI adapter", () => {
 			status: "not_installed",
 			message: 'Cursor CLI command "cursor-agent" was not found on PATH.',
 		});
+		expect(cursorCliError({ status: "not_installed", message: "missing" }, "check its status").message).toContain(
+			"https://cursor.com/docs/cli/installation",
+		);
+	});
+
+	it("classifies a probe timeout separately from command failure", async () => {
+		const result = await runCursorCliCapture(
+			["status", "--format", "json"],
+			process.cwd(),
+			{ timeoutMs: 25 },
+			fixtureSpawn("timeout"),
+		);
+		expect(result).toMatchObject({ status: "timed_out", message: "Cursor CLI command timed out." });
+		expect(cursorCliError(result, "check its status").message).toContain("cursor-agent status");
+	});
+
+	it("uses the fake CLI fixture for normal, unauthenticated, and empty catalogs", async () => {
+		const notLoggedInStatus = await runCursorCliCapture(
+			["status", "--format", "json"],
+			process.cwd(),
+			{},
+			fixtureSpawn("not_logged_in"),
+		);
+		expect(notLoggedInStatus.status).toBe("completed");
+		if (notLoggedInStatus.status === "completed") {
+			expect(parseCursorStatusJson(notLoggedInStatus.stdout).isAuthenticated).toBe(false);
+		}
+
+		const expiredStatus = await runCursorCliCapture(
+			["status", "--format", "json"],
+			process.cwd(),
+			{},
+			fixtureSpawn("expired"),
+		);
+		expect(expiredStatus.status).toBe("completed");
+
+		const normal = await runCursorCliCapture(["models"], process.cwd(), {}, fixtureSpawn("normal"));
+		expect(normal.status).toBe("completed");
+		if (normal.status === "completed") expect(parseCursorModelList(normal.stdout)).toHaveLength(2);
+
+		const unauthenticated = await runCursorCliCapture(
+			["models"],
+			process.cwd(),
+			{},
+			fixtureSpawn("not_logged_in"),
+		);
+		expect(unauthenticated).toMatchObject({ status: "failed", code: 1 });
+
+		const empty = await runCursorCliCapture(["models"], process.cwd(), {}, fixtureSpawn("empty_models"));
+		expect(empty.status).toBe("completed");
+		if (empty.status === "completed") expect(() => parseCursorModelList(empty.stdout)).toThrow(/no models/i);
 	});
 
 	it("captures stdout from a successful child process", async () => {
@@ -162,6 +276,28 @@ describe("Cursor CLI adapter", () => {
 });
 
 describe("Cursor provider responses", () => {
+	it("preflights the CLI before prompting for or storing an API key", async () => {
+		const prompt = async () => "cursor-key";
+		const missingCliProvider = cursorProvider({
+			cli: {
+				id: "cursor",
+				name: "Cursor",
+				login: async () => ({ status: "completed", code: 0 }),
+				logout: async () => ({ status: "completed", code: 0 }),
+				status: async () => ({ status: "not_installed", message: "missing", stdout: "", stderr: "" }),
+				listModels: async () => ({ status: "completed", code: 0, stdout: SAMPLE_MODELS, stderr: "" }),
+				execute: async () => ({ status: "completed", code: 0, stdout: "", stderr: "" }),
+			},
+		});
+		await expect(
+			missingCliProvider.auth.apiKey?.login?.({
+				signal: new AbortController().signal,
+				prompt,
+				notify: () => {},
+			}),
+		).rejects.toThrow(/install.*cursor.*cli/i);
+	});
+
 	it("does not inject JWT session tokens as CURSOR_API_KEY", () => {
 		expect(cursorCliApiKey("aaa.bbb.ccc")).toBeUndefined();
 		expect(cursorCliApiKey("cursor_user_key_abc")).toBe("cursor_user_key_abc");

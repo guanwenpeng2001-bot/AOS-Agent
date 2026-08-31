@@ -12,12 +12,11 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-	CURSOR_COMMAND,
 	type CursorCli,
-	type CursorCliResult,
+	checkCursorCliStatus,
+	cursorCliError,
 	cursorCli,
 	isCursorStatusAuthenticated,
-	parseCursorStatusJson,
 } from "../../providers/cursor.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 
@@ -193,7 +192,13 @@ function credentialFromPrivateTokens(
 	tokens: CursorPrivateTokens,
 	userInfo?: { email?: string; userId?: number | string },
 ): OAuthCredential {
-	const expires = expiresFromAccessToken(tokens.accessToken) ?? Date.now() + 60 * 24 * 60 * 60 * 1000;
+	const tokenExpires = expiresFromAccessToken(tokens.accessToken);
+	if (tokenExpires !== undefined && tokenExpires <= Date.now()) {
+		throw new Error(
+			'Cursor credentials have expired. Run "cursor-agent logout", then "cursor-agent login", and retry /login cursor.',
+		);
+	}
+	const expires = tokenExpires ?? Date.now() + 60 * 24 * 60 * 60 * 1000;
 	const credential: OAuthCredential = {
 		type: "oauth",
 		access: tokens.accessToken,
@@ -208,21 +213,6 @@ function credentialFromPrivateTokens(
 	return credential;
 }
 
-function cliError(result: CursorCliResult, operation: string): Error {
-	if (result.status === "not_installed") {
-		return new Error(
-			`Cursor CLI is not installed or not available on PATH (expected "${CURSOR_COMMAND}"). Install Cursor CLI separately, then retry /login cursor.`,
-		);
-	}
-	if (result.status === "aborted") {
-		return new Error(`Cursor CLI ${operation} was aborted.`);
-	}
-	if (result.status === "failed") {
-		return new Error(`Cursor CLI ${operation} failed: ${result.message}`);
-	}
-	return new Error(`Cursor CLI ${operation} failed.`);
-}
-
 async function ensureCursorAuthenticated(
 	cli: CursorCli,
 	cwd: string,
@@ -231,11 +221,7 @@ async function ensureCursorAuthenticated(
 ): Promise<{ email?: string; userId?: number | string }> {
 	interaction.signal.throwIfAborted();
 
-	const readStatus = async () => {
-		const result = await cli.status(cwd, interaction.signal);
-		if (result.status !== "completed") throw cliError(result, "status");
-		return parseCursorStatusJson(result.stdout);
-	};
+	const readStatus = () => checkCursorCliStatus({ cli, cwd, signal: interaction.signal });
 
 	let status = await readStatus();
 	const authenticated = isCursorStatusAuthenticated(status);
@@ -248,19 +234,25 @@ async function ensureCursorAuthenticated(
 				: "Starting Cursor browser login via cursor-agent…",
 		});
 		const loginResult = await cli.login(cwd, interaction.signal);
-		if (loginResult.status !== "completed") throw cliError(loginResult, "login");
+		if (loginResult.status !== "completed") throw cursorCliError(loginResult, "log in");
 		interaction.signal.throwIfAborted();
 		status = await readStatus();
 	}
 
 	if (!isCursorStatusAuthenticated(status)) {
-		throw new Error("Cursor CLI reports it is not authenticated after login.");
+		throw new Error(
+			'Cursor CLI is not logged in. Run "cursor-agent login", complete browser authentication, then retry /login cursor.',
+		);
 	}
 	if (status.hasAccessToken === false) {
-		throw new Error("Cursor CLI reports no access token. Complete cursor-agent login and retry.");
+		throw new Error(
+			'Cursor CLI has no access token. Run "cursor-agent logout", then "cursor-agent login", and retry /login cursor.',
+		);
 	}
 	if (status.hasRefreshToken === false) {
-		throw new Error("Cursor CLI reports no refresh token. Complete cursor-agent login and retry.");
+		throw new Error(
+			'Cursor CLI has no refresh token. Run "cursor-agent logout", then "cursor-agent login", and retry /login cursor.',
+		);
 	}
 
 	return {
@@ -276,7 +268,7 @@ async function importPrivateCredential(
 	const privateCred = await readPrivate();
 	if (!privateCred) {
 		throw new Error(
-			"Could not read Cursor private credentials. Expected accessToken/refreshToken in Cursor auth.json (or macOS Keychain). Public CLI status does not export token strings.",
+			'Cursor CLI credentials are missing from auth.json or the macOS Keychain. Run "cursor-agent logout", then "cursor-agent login", and retry /login cursor.',
 		);
 	}
 	return credentialFromPrivateTokens(privateCred.tokens, userInfo);
