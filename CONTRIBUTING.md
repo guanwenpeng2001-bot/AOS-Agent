@@ -22,7 +22,7 @@ If you use an agent, run it from the repository root so it picks up `AGENTS.md` 
 
 All issues and PRs are reviewed by an owner or maintainer. There is no automated contributor-gate workflow.
 
-Issues submitted Friday through Sunday are not guaranteed to be reviewed.  If something is urgent, ask on Discord: https://discord.com/invite/3cU7Bz4UPx
+Issues submitted Friday through Sunday are not guaranteed to be reviewed.  If something is urgent, open a GitHub issue.
 
 Maintainers triage issues against the quality bar below and may close reports that do not meet it without replying.
 
@@ -67,7 +67,7 @@ If you are adding a new provider to `packages/ai`, see `AGENTS.md` for required 
 
 ## Questions?
 
-Ask on [Discord](https://discord.com/invite/nKXTsAcmbT).
+Open a GitHub issue.
 
 ## FAQ
 
@@ -77,7 +77,7 @@ AOS Agent receives more issues than the maintainers can responsibly review in re
 
 ### Why are weekend issues lower priority?
 
-We triage the tracker during working hours. That means more issues can accumulate over the weekend. Anything submitted Friday through Sunday may be missed or given lower priority in the Monday review queue. If a problem is urgent, ask on Discord and include the short version, a repro, and the relevant logs.
+We triage the tracker during working hours. That means more issues can accumulate over the weekend. Anything submitted Friday through Sunday may be missed or given lower priority in the Monday review queue. If a problem is urgent, open a GitHub issue and include the short version, a repro, and the relevant logs.
 
 ### Why do some issues get no reply?
 
@@ -93,5 +93,4 @@ No. It is a guardrail against burnout and tracker spam. Short, concrete, reprodu
 
 ## Where can I learn about plans?
 
-Earendil uses RFCs to discuss larger changes.  Not all of them are public, but
-quite a few are.  They can be found at [rfc.earendil.com](https://rfc.earendil.com/).
+Larger changes are discussed in GitHub issues.
