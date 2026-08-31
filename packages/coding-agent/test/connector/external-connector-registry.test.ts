@@ -335,6 +335,7 @@ function createSupportedConnector(
 			readonly receipt?: { readonly hardMs: number; readonly idleMs: number };
 			readonly dispose?: { readonly hardMs: number; readonly idleMs: number };
 		};
+		readonly supervisionClock?: DeterministicClock;
 	} = {},
 ): SupportedConnectorFixture {
 	supervisedFixtureId += 1;
@@ -355,13 +356,13 @@ function createSupportedConnector(
 			probeSnapshot: ConnectorCapabilitySnapshot,
 			_options?: FoundationProviderExecutionOptions,
 		): Promise<ResultValue<ConnectorCapabilitySnapshot, FoundationError>> => Result.ok(probeSnapshot));
-	const supervisionOptions =
-		options.supervisionDeadlines === undefined
-			? supervision.options
-			: {
-					...supervision.options,
-					deadlines: { ...supervision.options.deadlines, ...options.supervisionDeadlines },
-				};
+	const supervisionOptions = {
+		...supervision.options,
+		...(options.supervisionClock === undefined ? {} : { clock: options.supervisionClock }),
+		...(options.supervisionDeadlines === undefined
+			? {}
+			: { deadlines: { ...supervision.options.deadlines, ...options.supervisionDeadlines } }),
+	};
 	const connector = createDurableExternalAgentConnector({
 		providerId: snapshot.providerId,
 		capability: snapshot,
@@ -2039,9 +2040,10 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 	});
 
 	it("drains a selected run whose supervisor appears while registry replacement disposes the connector", async () => {
+		const clock = new DeterministicClock({ wallTimeMs: Date.parse(NOW) });
 		const driver = new ThirdPartyZetaDriver({ readHangs: true });
-		const fixture = createSupportedConnector({ driver });
-		const registry = createExternalConnectorRegistry();
+		const fixture = createSupportedConnector({ driver, supervisionClock: clock });
+		const registry = createExternalConnectorRegistry({ clock });
 		expect(registry.registerPrepared(registration(fixture), fixture.snapshot)).toMatchObject({ ok: true });
 		const persisted = await createPersistedProductAttempt(fixture, registry, "run-zeta-replacement-race");
 		let markPrivateWrite: (() => void) | undefined;
