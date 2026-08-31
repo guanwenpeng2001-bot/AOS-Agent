@@ -330,7 +330,6 @@ export function createGrepToolDefinition(
 								args,
 								cwd: searchPath,
 								env: authorized.env,
-								timeoutMs: policy?.profile.process.timeoutMs,
 								path: searchPath,
 								pattern,
 								...(glob === undefined ? {} : { glob }),

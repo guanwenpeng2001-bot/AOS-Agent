@@ -307,7 +307,6 @@ export function createFindToolDefinition(
 								args,
 								cwd: searchPath,
 								env: authorized.env,
-								timeoutMs: policy?.profile.process.timeoutMs,
 								path: searchPath,
 								pattern,
 								limit: effectiveLimit,
