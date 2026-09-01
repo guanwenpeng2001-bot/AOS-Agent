@@ -353,20 +353,43 @@ describe("Operation Worker supervisor", () => {
 
 	it("rejects a late deadline receipt and never rewrites the terminal outcome", async () => {
 		const activationDeadlineAt = Date.now() + 10_000;
+		const heartbeatTimeoutMs = 500;
 		let clockOffsetMs = 0;
 		const current = create("deadline_late", {
 			binding: { deadlineAt: activationDeadlineAt },
 			config: {
-				heartbeatTimeoutMs: 500,
+				heartbeatTimeoutMs,
 				now: () => new Date(Date.now() + clockOffsetMs),
 			},
 		});
 		await activate(current.supervisor, current.workerBinding);
-		// Give activation the suite-load budget, then place the ready worker near its deadline.
-		clockOffsetMs = activationDeadlineAt - Date.now() - 300;
+		// Place now inside the heartbeat window but still before the deadline so a
+		// stale heartbeat timer can fire first. That expiry must stay a deadline
+		// failure, and the child's later success receipt must not write completed.
+		clockOffsetMs = activationDeadlineAt - Date.now() - (heartbeatTimeoutMs - 50);
 		const outcome = await current.supervisor.execute(request(current.workerBinding));
 		expect(outcome).toMatchObject({ ok: false, error: { code: "worker_deadline_exceeded" } });
 		expect(current.supervisor.snapshot.record?.status).toBe("lost");
+		expect(current.supervisor.lifecycleState?.transitions.some((item) => item.to === "completed")).toBe(false);
+	});
+
+	it("keeps a jumped clock inside the heartbeat window from reporting worker_lost", async () => {
+		const activationDeadlineAt = Date.now() + 8_000;
+		const heartbeatTimeoutMs = 400;
+		let clockOffsetMs = 0;
+		const current = create("deadline_late", {
+			binding: { deadlineAt: activationDeadlineAt },
+			config: {
+				heartbeatTimeoutMs,
+				now: () => new Date(Date.now() + clockOffsetMs),
+			},
+		});
+		await activate(current.supervisor, current.workerBinding);
+		clockOffsetMs = activationDeadlineAt - Date.now() - 80;
+		const pending = current.supervisor.execute(request(current.workerBinding));
+		await waitForStatus(current.supervisor, "lost", 2_000);
+		const outcome = await pending;
+		expect(outcome).toMatchObject({ ok: false, error: { code: "worker_deadline_exceeded" } });
 		expect(current.supervisor.lifecycleState?.transitions.some((item) => item.to === "completed")).toBe(false);
 	});
 

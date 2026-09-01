@@ -77,6 +77,7 @@
 ### Fixed
 
 - Read-only control-plane readers no longer reject otherwise valid `auth.json` / `models-store.json` files whose mode is not owner-only `0600`.
+- Operation Worker watchdog expiry inside a binding deadline window stays `worker_deadline_exceeded`, and a late success receipt cannot rewrite that terminal outcome.
 - System prompts now terminate the current-working-directory line with a newline.
 - Fallback extension tool output now collapses long results and honors expansion.
 - Fullscreen selection copy now uses the host clipboard and reports verified success or failure.

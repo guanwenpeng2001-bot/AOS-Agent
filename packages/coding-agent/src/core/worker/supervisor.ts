@@ -393,7 +393,16 @@ export class OperationWorkerSupervisor {
 			operationId: request.operationId,
 			request,
 		};
+		// Recast the watchdog against the current clock before sendFrame. A
+		// jumped `now()` can leave a stale heartbeat timer that would otherwise
+		// fire inside the deadline window and be misclassified as worker_lost.
+		this.armWatchdog();
 		const sent = await this.sendFrame(frame);
+		if (this.receiptWaiter.settled()) {
+			const outcome = await this.receiptWaiter.promise;
+			if (!outcome.ok && this.snapshot.record?.status === "lost") await this.ensureProcessStoppedAndCleaned();
+			return outcome;
+		}
 		if (!sent.ok) {
 			this.markLost("worker_operation_invalid");
 			await this.ensureProcessStoppedAndCleaned();
@@ -722,6 +731,13 @@ export class OperationWorkerSupervisor {
 		}
 		if (frame.type === "heartbeat") {
 			if (this.lifecycle === undefined || isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) return;
+			if (this.deadlineElapsed()) {
+				this.protocolFailure(
+					"worker_deadline_exceeded",
+					"Operation Worker deadline timed out",
+				);
+				return;
+			}
 			const heartbeatAt = [
 				frame.at,
 				this.lifecycle.transitions.at(-1)?.at ?? this.lifecycle.record.createdAt,
@@ -796,6 +812,13 @@ export class OperationWorkerSupervisor {
 		}
 
 		if (receiptFrame === undefined) return;
+		if (this.deadlineElapsed()) {
+			this.protocolFailure(
+				"worker_deadline_exceeded",
+				"Operation Worker deadline timed out",
+			);
+			return;
+		}
 		const receipt = receiptFrame.receipt;
 		const status: WorkerLifecycleStatus | undefined =
 			receipt.status === "succeeded"
@@ -947,17 +970,31 @@ export class OperationWorkerSupervisor {
 			this.remainingDeadlineMs(this.lifecycle.binding),
 		);
 		this.watchdogTimer = setTimeout(() => {
-			const deadlineElapsed =
-				this.lifecycle?.binding.deadlineAt !== undefined &&
-				this.lifecycle.binding.deadlineAt <= this.now().getTime();
+			if (this.hasTrustedExecutionTerminal()) return;
+			const deadlineFailure = this.deadlineOwnsWatchdogExpiry();
 			this.protocolFailure(
-				deadlineElapsed ? "worker_deadline_exceeded" : "worker_lost",
-				deadlineElapsed
+				deadlineFailure ? "worker_deadline_exceeded" : "worker_lost",
+				deadlineFailure
 					? "Operation Worker deadline timed out"
 					: "Operation Worker heartbeat timed out",
 			);
 		}, timeoutMs);
 		this.watchdogTimer.unref();
+	}
+
+	private deadlineElapsed(): boolean {
+		const deadlineAt = this.lifecycle?.binding.deadlineAt;
+		return deadlineAt !== undefined && deadlineAt <= this.now().getTime();
+	}
+
+	private deadlineOwnsWatchdogExpiry(): boolean {
+		const deadlineAt = this.lifecycle?.binding.deadlineAt;
+		if (deadlineAt === undefined) return false;
+		const heartbeatTimeoutMs = this.config.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
+		// armWatchdog uses min(heartbeat, remaining deadline). If a stale
+		// heartbeat-length timer fires while that remaining window is already
+		// shorter than the heartbeat bound, expiry is a deadline failure.
+		return this.now().getTime() + heartbeatTimeoutMs >= deadlineAt;
 	}
 
 	private clearWatchdog(): void {
