@@ -41,6 +41,12 @@ const AUDIT: AuditQueryResult = {
 	scope: "current-session",
 	events: [],
 	warnings: [],
+	integrity: {
+		schemaVersion: 1,
+		status: "legacy",
+		cursorProtection: "injected",
+		sessions: [],
+	},
 };
 
 const PENDING_GATE: TaskGateListData["gates"][number] = {
