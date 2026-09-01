@@ -65,6 +65,7 @@
 
 ### Changed
 
+- Network egress policy now supports exact hosts, `*.suffix` wildcards, optional port constraints, explicit default-deny allowlists, and the same fail-closed audited decision in sandbox Operation Workers.
 - Product prompts and external connectors now populate task-result summaries, tests, and artifacts from durable execution records.
 - Product prompts, harness settlement, and external connectors now share durable workspace-diff aggregation for `TaskResult.diff`.
 - Windows full-load regression coverage now bounds and terminates a stalled invalid-session source child and makes reftable watcher changes observable without weakening behavior assertions.

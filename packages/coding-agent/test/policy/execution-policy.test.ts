@@ -4,6 +4,7 @@ import {
 	POLICY_DEFAULT_PROFILE,
 	PolicyError,
 	freezePolicyProfile,
+	matchesNetworkDestination,
 	type ApprovalPolicy,
 	type ExecutionPolicyProfile,
 	resolveExecutionPolicy,
@@ -55,6 +56,80 @@ function resolve(
 }
 
 describe("execution policy resolver", () => {
+	it.each([
+		["exact host", "https://api.example.com/v1", undefined, "api.example.com", true],
+		["case-normalized exact host", "API.EXAMPLE.COM", undefined, "api.example.com", true],
+		["exact host rejects suffix", "notapi.example.com", undefined, "api.example.com", false],
+		["wildcard matches a subdomain", "api.example.com", undefined, "*.example.com", true],
+		["wildcard matches a nested subdomain", "v2.api.example.com", undefined, "*.example.com", true],
+		["wildcard rejects the apex", "example.com", undefined, "*.example.com", false],
+		["wildcard rejects a deceptive suffix", "example.com.evil.invalid", undefined, "*.example.com", false],
+		["explicit port matches", "api.example.com", 8443, "api.example.com:8443", true],
+		["explicit port rejects another port", "api.example.com", 443, "api.example.com:8443", false],
+		["URL default port matches", "https://api.example.com", undefined, "*.example.com:443", true],
+		["port-scoped pattern rejects an unknown port", "api.example.com", undefined, "*.example.com:443", false],
+	] as const)("matches network destinations by %s", (_label, destination, port, allowed, expected) => {
+		expect(matchesNetworkDestination(destination, port, allowed)).toBe(expected);
+	});
+
+	it("supports an explicit deny-default network allowlist and denies unmatched destinations", () => {
+		const profile: ExecutionPolicyProfile = {
+			...hostProfile,
+			id: "network-deny-default",
+			network: { action: "deny", allowDestinations: ["api.example.com:443", "*.trusted.example:8443"] },
+			approvals: { ...hostProfile.approvals, network: "allow" },
+		};
+		const exact = resolve(profile, { resource: "network.connect", source: "mcp", destination: "https://api.example.com" });
+		const wildcard = resolve(profile, { resource: "network.connect", source: "extension", destination: "worker.trusted.example", port: 8443 });
+		const wrongPort = resolve(profile, { resource: "network.connect", source: "extension", destination: "worker.trusted.example", port: 443 });
+		const unmatched = resolve(profile, { resource: "network.connect", source: "mcp", destination: "evil.invalid", port: 443 });
+
+		expect(exact.ok && exact.decision).toMatchObject({ outcome: "allow" });
+		expect(wildcard.ok && wildcard.decision).toMatchObject({ outcome: "allow" });
+		expect(wrongPort.ok && wrongPort.decision).toMatchObject({ outcome: "deny", reasonCode: "network_policy_violation", hardDeny: true });
+		expect(unmatched.ok && unmatched.decision).toMatchObject({ outcome: "deny", reasonCode: "network_policy_violation", hardDeny: true });
+	});
+
+	it("keeps an empty deny-default network allowlist closed", () => {
+		const profile: ExecutionPolicyProfile = {
+			...hostProfile,
+			id: "network-closed",
+			approvals: { ...hostProfile.approvals, network: "allow" },
+		};
+		const result = resolve(profile, { resource: "network.connect", source: "mcp", destination: "api.example.com", port: 443 });
+		expect(result.ok && result.decision).toMatchObject({ outcome: "deny", reasonCode: "network_policy_violation", hardDeny: true });
+	});
+
+	it("validates network patterns and preserves narrowing across wildcard scopes", () => {
+		const base: ExecutionPolicyProfile = {
+			...hostProfile,
+			id: "network-narrowing",
+			network: { action: "deny", allowDestinations: ["*.example.com:443"] },
+			approvals: { ...hostProfile.approvals, network: "allow" },
+		};
+		const narrowed = resolveExecutionPolicy({
+			profiles: { [base.id]: base },
+			defaultProfile: base.id,
+			projectProfile: { network: { allowDestinations: ["api.example.com:443"] } },
+			projectTrusted: true,
+			operation: { resource: "network.connect", source: "extension", destination: "https://api.example.com" },
+		});
+		const apexExpansion = resolveExecutionPolicy({
+			profiles: { [base.id]: base },
+			defaultProfile: base.id,
+			projectProfile: { network: { allowDestinations: ["example.com:443"] } },
+			projectTrusted: true,
+		});
+		const invalidPattern = resolveExecutionPolicy({
+			profiles: { broken: { ...base, id: "broken", network: { action: "deny", allowDestinations: ["*example.com"] } } },
+			defaultProfile: "broken",
+		});
+
+		expect(narrowed.ok && narrowed.decision).toMatchObject({ outcome: "allow" });
+		expect(apexExpansion).toMatchObject({ ok: false, error: { code: "policy_profile_untrusted" } });
+		expect(invalidPattern).toMatchObject({ ok: false, error: { code: "policy_settings_invalid" } });
+	});
+
 	it("uses the last matching rule while keeping the default for unmatched resources", () => {
 		const profile: ExecutionPolicyProfile = {
 			...hostProfile,

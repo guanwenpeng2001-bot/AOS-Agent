@@ -204,6 +204,42 @@ interface ExecutionPolicyProfile {
 }
 ```
 
+### Network destination matching
+
+A non-empty `allowDestinations` is a closed boundary: unmatched destinations
+are hard-denied. With `network.action: "deny"`, matching entries are explicit
+allow exceptions, which provides the opt-in default-deny mode. The built-in
+`legacy` profile remains `action: "allow"` with an empty allowlist, so its
+default behavior is unchanged:
+
+```json
+{
+  "network": {
+    "action": "deny",
+    "allowDestinations": [
+      "api.example.com",
+      "*.services.example.com:443"
+    ]
+  },
+  "approvals": {
+    "network": "allow"
+  }
+}
+```
+
+Entries match a case-normalized exact hostname or a suffix wildcard. The
+wildcard `*.example.com` matches `api.example.com` and
+`v2.api.example.com`, but not the apex `example.com` or
+`example.com.evil.invalid`. An optional `:port` restricts the entry to that
+port. HTTP, HTTPS, WS, and WSS URL destinations use their default port when
+the URL omits one. A non-empty allowlist fails closed when the operation omits
+the destination, supplies an invalid port, or does not match any entry.
+
+The matcher is a local policy decision point. It does not implement DNS
+filtering, redirect inspection, proxy enforcement, or packet-level egress.
+Sandbox providers that claim `network: true` remain responsible for enforcing
+the authorized destination inside their own boundary.
+
 ### DLP output boundary
 
 `dlp` scans tool results immediately before durable persistence and again when
@@ -287,7 +323,7 @@ interface SandboxCapabilities {
   filesystem: boolean;
   /** Controls cwd, process tree, timeout, and cancellation. */
   process: boolean;
-  /** Enforces egress after DNS, redirects, IPv4/IPv6, and proxy handling. */
+  /** Enforces authorized egress inside the provider boundary. */
   network: boolean;
   /** Keeps ModelRuntime credentials out of tool environments. */
   credentialIsolation: boolean;
@@ -419,6 +455,13 @@ accepted. A missing capability fails closed with
 with `task_credential_target_unavailable`. These canonical errors close
 contract omissions; they are additive vocabulary, not a schema redesign.
 Neither failure falls back to Host execution.
+
+`network.connect` Worker payloads carry only the destination and optional
+port. The child authorizes them through the same Execution Policy matcher used
+by MCP startup and Tool Gateway classification before calling
+`SandboxHandle.execute`. A denial never reaches the handle; the decision hook
+receives `network_policy_violation` so the Host can persist the policy decision
+and `policy.violation` evidence.
 
 Heartbeat is process liveness only. Task Credential lease/heartbeat governs
 credential TTL and revocation, while the Session writer lease/fencing contract

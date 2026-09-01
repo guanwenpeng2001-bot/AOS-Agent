@@ -370,7 +370,7 @@ function routeSelectedByPolicy(route: ToolGatewayRoute, policy: PolicyBinding): 
 		(route.operation.resource === "filesystem.write" && !workspaceAllowed("write")) ||
 		(requiresWrite && !workspaceAllowed("write")) ||
 		(requiresProcess && policy.constraints.process.action === "deny") ||
-		(requiresNetwork && policy.constraints.network.action === "deny")
+		(requiresNetwork && policy.constraints.network.action === "deny" && policy.constraints.network.allowedDestinationCount === 0)
 	) return false;
 	if (route.operation.requiresSandbox === true) {
 		if (

@@ -824,6 +824,113 @@ function isPort(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535;
 }
 
+interface ParsedNetworkDestination {
+	readonly hostname: string;
+	readonly port?: number;
+	readonly wildcard: boolean;
+}
+
+const NETWORK_URL_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+
+function defaultNetworkPort(protocol: string): number | undefined {
+	switch (protocol.toLowerCase()) {
+		case "http:":
+		case "ws:":
+			return 80;
+		case "https:":
+		case "wss:":
+			return 443;
+		default:
+			return undefined;
+	}
+}
+
+function parseNetworkDestination(
+	value: string,
+	explicitPort: number | undefined,
+	options: { readonly allowWildcard: boolean; readonly allowUrlPath: boolean },
+): ParsedNetworkDestination | undefined {
+	if (value.length === 0 || value !== value.trim() || (explicitPort !== undefined && !isPort(explicitPort))) return undefined;
+	const wildcard = options.allowWildcard && value.startsWith("*.");
+	const address = wildcard ? value.slice(2) : value;
+	if (address.length === 0 || address.includes("*")) return undefined;
+	const hasScheme = NETWORK_URL_SCHEME_PATTERN.test(address);
+	if (wildcard && hasScheme) return undefined;
+	if (!hasScheme && /[/@?#]/.test(address)) return undefined;
+	let parsed: URL;
+	try {
+		parsed = new URL(hasScheme ? address : `network://${address}`);
+	} catch {
+		return undefined;
+	}
+	if (
+		parsed.hostname.length === 0 ||
+		parsed.username.length > 0 ||
+		parsed.password.length > 0 ||
+		(!options.allowUrlPath &&
+			(parsed.pathname !== "" && parsed.pathname !== "/" || parsed.search.length > 0 || parsed.hash.length > 0))
+	) {
+		return undefined;
+	}
+	const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+	if (hostname.length === 0) return undefined;
+	const parsedPort = parsed.port.length > 0
+		? Number(parsed.port)
+		: hasScheme
+			? defaultNetworkPort(parsed.protocol)
+			: undefined;
+	if (parsedPort !== undefined && !isPort(parsedPort)) return undefined;
+	if (explicitPort !== undefined && parsedPort !== undefined && explicitPort !== parsedPort) return undefined;
+	return {
+		hostname,
+		...(explicitPort === undefined && parsedPort === undefined ? {} : { port: explicitPort ?? parsedPort }),
+		wildcard,
+	};
+}
+
+function isNetworkDestinationPattern(value: unknown): value is string {
+	return typeof value === "string" && parseNetworkDestination(value, undefined, { allowWildcard: true, allowUrlPath: false }) !== undefined;
+}
+
+/** Match one requested destination against one exact-host or `*.suffix` allowlist pattern. */
+export function matchesNetworkDestination(
+	destination: string,
+	port: number | undefined,
+	allowedDestination: string,
+): boolean {
+	const requested = parseNetworkDestination(destination, port, { allowWildcard: false, allowUrlPath: true });
+	const allowed = parseNetworkDestination(allowedDestination, undefined, { allowWildcard: true, allowUrlPath: false });
+	if (requested === undefined || allowed === undefined) return false;
+	if (allowed.port !== undefined && requested.port !== allowed.port) return false;
+	if (!allowed.wildcard) return requested.hostname === allowed.hostname;
+	return requested.hostname !== allowed.hostname && requested.hostname.endsWith(`.${allowed.hostname}`);
+}
+
+function networkDestinationAllowed(
+	destination: string | undefined,
+	port: number | undefined,
+	allowedDestinations: ReadonlyArray<string>,
+): boolean {
+	return destination !== undefined && allowedDestinations.some((allowed) => matchesNetworkDestination(destination, port, allowed));
+}
+
+function networkPatternIsSubset(candidateValue: string, allowedValue: string): boolean {
+	const candidate = parseNetworkDestination(candidateValue, undefined, { allowWildcard: true, allowUrlPath: false });
+	const allowed = parseNetworkDestination(allowedValue, undefined, { allowWildcard: true, allowUrlPath: false });
+	if (candidate === undefined || allowed === undefined) return false;
+	if (allowed.port !== undefined && candidate.port !== allowed.port) return false;
+	if (!allowed.wildcard) {
+		return !candidate.wildcard && candidate.hostname === allowed.hostname;
+	}
+	return candidate.wildcard
+		? candidate.hostname === allowed.hostname || candidate.hostname.endsWith(`.${allowed.hostname}`)
+		: candidate.hostname !== allowed.hostname && candidate.hostname.endsWith(`.${allowed.hostname}`);
+}
+
+function networkPatternsSubset(requested: ReadonlyArray<string>, allowed: ReadonlyArray<string>): boolean {
+	return requested.every((candidate) => allowed.some((pattern) => networkPatternIsSubset(candidate, pattern)));
+}
+
 function parseRule(value: unknown): PolicyRule | undefined {
 	if (!isRecord(value) || !isAction(value.action)) return undefined;
 	const allowedKeys = ["resource", "resources", "source", "sources", "scope", "scopes", "action"];
@@ -956,7 +1063,7 @@ function parseProfile(value: unknown, expectedId?: string): ExecutionPolicyProfi
 		return undefined;
 	}
 	const networkAction = parseAction(value.network.action);
-	const networkDestinations = parseStringArray(value.network.allowDestinations, isSafeText);
+	const networkDestinations = parseStringArray(value.network.allowDestinations, isNetworkDestinationPattern);
 	const credentialsAction = parseAction(value.credentials.action);
 	const credentialNames = parseStringArray(value.credentials.allowNames, isEnvironmentName);
 	if (networkAction === undefined || networkDestinations === undefined || credentialsAction === undefined || credentialNames === undefined) {
@@ -1072,7 +1179,7 @@ function parseNarrowing(value: unknown): PolicyProfileNarrowing | undefined {
 			network.action = action;
 		}
 		if (value.network.allowDestinations !== undefined) {
-			const destinations = parseStringArray(value.network.allowDestinations, isSafeText);
+			const destinations = parseStringArray(value.network.allowDestinations, isNetworkDestinationPattern);
 			if (destinations === undefined) return undefined;
 			network.allowDestinations = destinations;
 		}
@@ -1276,8 +1383,9 @@ function mergeNarrowing(
 	}
 	if (
 		narrowing.network?.allowDestinations !== undefined &&
-		base.network.allowDestinations.length > 0 &&
-		!arraySubset(narrowing.network.allowDestinations, base.network.allowDestinations)
+		((base.network.allowDestinations.length === 0 && base.network.action !== "allow" && narrowing.network.allowDestinations.length > 0) ||
+			(base.network.allowDestinations.length > 0 &&
+				!networkPatternsSubset(narrowing.network.allowDestinations, base.network.allowDestinations)))
 	) {
 		return { ok: false, error: policyError("policy_profile_untrusted") };
 	}
@@ -1573,7 +1681,11 @@ function defaultResourceAction(profile: ExecutionPolicyProfile, operation: Polic
 		case "process.spawn":
 			return profile.process.action;
 		case "network.connect":
-			return profile.network.action;
+			return profile.network.allowDestinations.length > 0 &&
+				networkDestinationAllowed(operation.destination, operation.port, profile.network.allowDestinations) &&
+				profile.network.action === "deny"
+				? "allow"
+				: profile.network.action;
 		case "credential.expose":
 		case "credential.task.issue":
 		case "credential.task.renew":
@@ -1702,10 +1814,6 @@ function requiredSandboxCapabilities(resource: PolicyResource): ReadonlyArray<ke
 	return required === undefined ? [] : [required];
 }
 
-function safeDestinationMatches(destination: string, allowed: ReadonlyArray<string>): boolean {
-	return allowed.includes(destination);
-}
-
 function operationBoundaryReason(profile: ExecutionPolicyProfile, operation: PolicyOperationRequest): PolicyErrorCode | undefined {
 	if (
 		operation.resource === "filesystem.read" ||
@@ -1730,7 +1838,7 @@ function operationBoundaryReason(profile: ExecutionPolicyProfile, operation: Pol
 		}
 	}
 	if (operation.resource === "network.connect" && profile.network.allowDestinations.length > 0) {
-		if (operation.destination === undefined || !safeDestinationMatches(operation.destination, profile.network.allowDestinations)) {
+		if (!networkDestinationAllowed(operation.destination, operation.port, profile.network.allowDestinations)) {
 			return "network_policy_violation";
 		}
 	}
@@ -2114,7 +2222,11 @@ export function authorizePolicyOperation(input: {
 	}
 	if (action === "deny") {
 		const reasonCode: PolicyErrorCode =
-			operation.resource === "credential.expose" ? "credential_policy_violation" : "policy_denied";
+			operation.resource === "credential.expose"
+				? "credential_policy_violation"
+				: operation.resource === "network.connect"
+					? "network_policy_violation"
+					: "policy_denied";
 		return deepFreeze({
 			bindingId: input.binding.id,
 			profileId: input.profile.id,

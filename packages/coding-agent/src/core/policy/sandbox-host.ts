@@ -68,6 +68,7 @@ function requiredWorkerCapability(operation: SandboxOperationRequest): string {
 	if (operation.resource === "filesystem.find") return "filesystem.find";
 	if (operation.resource === "filesystem.grep") return "filesystem.grep";
 	if (operation.resource === "process.spawn") return "process.spawn";
+	if (operation.resource === "network.connect") return "network.connect";
 	return "filesystem.read";
 }
 
@@ -112,6 +113,7 @@ export function createSandboxHandleOperationProvider(
 	const policy = options.policy;
 	const authorizeFilesystem = policy.authorizeFilesystem.bind(policy);
 	const authorizeProcess = policy.authorizeProcess.bind(policy);
+	const authorizeNetwork = policy.authorizeNetwork.bind(policy);
 	const correlationIdentity = Object.freeze({ ...options.correlation });
 	const policyIdentity = Object.freeze({
 		bindingId: policy.binding.id,
@@ -246,14 +248,25 @@ export function createSandboxHandleOperationProvider(
 				return Result.err(new FoundationError("sandbox_capability_insufficient", "Operation Worker process capability is insufficient"));
 			}
 			if (
-				operation.resource !== "process.spawn" && !handle.capabilities.filesystem ||
-				usesProcess && (!handle.capabilities.process || !handle.capabilities.credentialIsolation)
+				operation.resource === "network.connect"
+					? !handle.capabilities.network
+					: operation.resource !== "process.spawn" && !handle.capabilities.filesystem ||
+						usesProcess && (!handle.capabilities.process || !handle.capabilities.credentialIsolation)
 			) {
 				return Result.err(new FoundationError("sandbox_capability_insufficient", "Operation Worker sandbox capability is unavailable"));
 			}
 			let authorizedOperation: SandboxOperationRequest;
 			try {
-				if (operation.resource === "process.spawn") {
+				if (operation.resource === "network.connect") {
+					const networkAuthorization = await awaitAuthorization(authorizeNetwork({
+						destination: operation.destination!,
+						...(operation.port === undefined ? {} : { port: operation.port }),
+						requestId: request.value.operationId,
+					}), controller.signal);
+					if (disposed || controller.signal.aborted) throw new DOMException("Operation Worker authorization cancelled", "AbortError");
+					if (networkAuthorization.sandbox !== handle) throw new Error("Sandbox authorization returned another handle");
+					authorizedOperation = operation;
+				} else if (operation.resource === "process.spawn") {
 					const processAuthorization = await awaitAuthorization(authorizeProcess({
 						command: operation.command!,
 						args: operation.args,
@@ -475,6 +488,11 @@ export interface BuiltinToolPolicy {
 		readonly timeout?: number;
 		readonly requestId?: string;
 	}): Promise<{ readonly cwd?: string; readonly env: NodeJS.ProcessEnv; readonly sandbox?: SandboxHandle }>;
+	authorizeNetwork(input: {
+		readonly destination: string;
+		readonly port?: number;
+		readonly requestId?: string;
+	}): Promise<{ readonly sandbox?: SandboxHandle }>;
 	authorizeRaw(input: {
 		readonly resource: PolicyResource;
 		readonly scope?: WorkspaceScope;
@@ -485,6 +503,8 @@ export interface BuiltinToolPolicy {
 		readonly args?: ReadonlyArray<string>;
 		readonly cwd?: string;
 		readonly environmentNames?: ReadonlyArray<string>;
+		readonly destination?: string;
+		readonly port?: number;
 	}): PolicyDecision;
 }
 
@@ -552,6 +572,22 @@ function assertSandboxForStrictFilesystem(policy: {
 	return sandbox;
 }
 
+function assertSandboxForStrictNetwork(policy: {
+	readonly profile: ExecutionPolicyProfile;
+	readonly binding: PolicyBinding;
+	readonly sandbox?: SandboxHandle;
+}): SandboxHandle | undefined {
+	if (policy.profile.enforcement !== "sandbox") return undefined;
+	const sandbox = policy.sandbox;
+	if (sandbox === undefined || sandbox.id.length === 0) throw new PolicyError("sandbox_required");
+	if (sandbox.bindingId !== undefined && sandbox.bindingId !== policy.binding.id) throw new PolicyError("sandbox_unavailable");
+	if (sandbox.providerId !== undefined && sandbox.providerId !== policy.binding.sandboxProviderId) throw new PolicyError("sandbox_unavailable");
+	if (sandbox.status !== undefined && sandbox.status !== "ready") throw new PolicyError("sandbox_unavailable");
+	if (!sandbox.capabilities.network) throw new PolicyError("sandbox_capability_insufficient");
+	if (policy.binding.sandboxStatus !== "ready") throw new PolicyError("sandbox_unavailable");
+	return sandbox;
+}
+
 export function createBuiltinToolPolicy(options: BuiltinToolPolicyOptions): BuiltinToolPolicy {
 	const source = options.source ?? "builtin";
 	const approvedRequestIds = new Set(options.approvedRequestIds ?? []);
@@ -566,6 +602,8 @@ export function createBuiltinToolPolicy(options: BuiltinToolPolicyOptions): Buil
 		readonly args?: ReadonlyArray<string>;
 		readonly cwd?: string;
 		readonly environmentNames?: ReadonlyArray<string>;
+		readonly destination?: string;
+		readonly port?: number;
 	}) => {
 		const decision = authorizePolicyOperation({
 			profile: options.profile,
@@ -581,6 +619,8 @@ export function createBuiltinToolPolicy(options: BuiltinToolPolicyOptions): Buil
 				...(input.args === undefined ? {} : { args: input.args }),
 				...(input.cwd === undefined ? {} : { cwd: input.cwd }),
 				...(input.environmentNames === undefined ? {} : { environmentNames: input.environmentNames }),
+				...(input.destination === undefined ? {} : { destination: input.destination }),
+				...(input.port === undefined ? {} : { port: input.port }),
 			},
 		});
 		options.hooks?.onDecision?.(decision);
@@ -645,6 +685,23 @@ export function createBuiltinToolPolicy(options: BuiltinToolPolicyOptions): Buil
 			options.hooks?.onDecision?.(decision);
 			assertAllowedDecision(decision, approvedRequestIds, rejectedRequestIds);
 			return { cwd: cwdResolution.realPath, env: environment.env, ...(sandbox === undefined ? {} : { sandbox }) };
+		},
+		async authorizeNetwork(input) {
+			const sandbox = assertSandboxForStrictNetwork(options);
+			const decision = authorizePolicyOperation({
+				profile: options.profile,
+				binding: options.binding,
+				operation: {
+					resource: "network.connect",
+					source,
+					...(input.requestId === undefined ? {} : { id: input.requestId }),
+					destination: input.destination,
+					...(input.port === undefined ? {} : { port: input.port }),
+				},
+			});
+			options.hooks?.onDecision?.(decision);
+			assertAllowedDecision(decision, approvedRequestIds, rejectedRequestIds);
+			return sandbox === undefined ? {} : { sandbox };
 		},
 	};
 }

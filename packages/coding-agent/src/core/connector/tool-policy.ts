@@ -32,6 +32,13 @@ function stringArgument(args: Readonly<Record<string, unknown>>, ...keys: readon
 	return undefined;
 }
 
+function portArgument(args: Readonly<Record<string, unknown>>): number | undefined {
+	const value = args.port;
+	if (value === undefined) return undefined;
+	if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535) return value;
+	throw new PolicyError("policy_settings_invalid");
+}
+
 function requiredStringArgument(args: Readonly<Record<string, unknown>>, ...keys: readonly string[]): string {
 	const value = stringArgument(args, ...keys);
 	if (value === undefined) throw new PolicyError("protected_path_invalid");
@@ -128,11 +135,13 @@ export async function classifyExternalToolPolicyOperation(
 
 	if (operation.resource === "network.connect") {
 		const destination = stringArgument(args, "destination", "url", "host");
+		const port = portArgument(args);
 		return {
 			...base,
 			resource: operation.resource,
 			effects: operation.effects,
 			...(destination === undefined ? {} : { destination }),
+			...(port === undefined ? {} : { port }),
 		};
 	}
 
