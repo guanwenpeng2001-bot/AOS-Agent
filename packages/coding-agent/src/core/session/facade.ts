@@ -184,6 +184,7 @@ import {
 	createAgentSessionReadProjection,
 	type AgentSessionReadProjection,
 } from "./read-projection.ts";
+import { acquireSessionProcessingLease } from "./processing-lease.ts";
 
 /**
  * Construction inputs for the compatibility facade. The canonical Session and
@@ -2333,7 +2334,7 @@ export class CanonicalAgentSessionServices {
 			options.preflightResult?.(false);
 			throw new Error("Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.");
 		}
-		if (this.isStreaming) {
+		if (this.promptPreflightPending || this.harness.currentSignal !== undefined) {
 			if (options.streamingBehavior === "steer") {
 				await this.steer(text, images);
 				options.preflightResult?.(true);
@@ -2346,6 +2347,40 @@ export class CanonicalAgentSessionServices {
 			}
 			throw new Error("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
 		}
+		const processingLease = this.sessionFile === undefined
+			? undefined
+			: acquireSessionProcessingLease(this.sessionFile);
+		try {
+			await this.recoverInterruptedOperation();
+			await this.executePreparedPrompt(text, images, options);
+		} finally {
+			processingLease?.release();
+		}
+	}
+
+	private async recoverInterruptedOperation(): Promise<void> {
+		const aborted = await this.harness.abort();
+		const abortError = resultError(aborted);
+		if (abortError !== undefined) {
+			if (/No active operation/.test(abortError.message)) return;
+			throw abortError;
+		}
+		const resumed = await this.harness.resume();
+		const resumeError = resultError(resumed);
+		if (
+			resumeError !== undefined &&
+			!("code" in resumeError && resumeError.code === "suspended" && !this.harness.isRunning)
+		) {
+			throw resumeError;
+		}
+		await this.refreshCompatibilityMessages();
+	}
+
+	private async executePreparedPrompt(
+		text: string,
+		images: ImageContent[] | undefined,
+		options: PromptOptions,
+	): Promise<void> {
 		const runId = options.runId ?? randomUUID();
 		const deadlineSignal = options.deadlineMs === undefined ? undefined : AbortSignal.timeout(options.deadlineMs);
 		const signal = options.signal === undefined
