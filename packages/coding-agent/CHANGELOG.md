@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Fallback extension tool output now collapses long results and honors expansion.
 - Fullscreen selection copy now uses the host clipboard and reports verified success or failure.
 - Edit tools now normalize a single edit object into a one-entry edit array.
 - Root Markdown documentation is no longer treated as a skill unless it declares skill frontmatter.
