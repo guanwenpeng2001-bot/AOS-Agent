@@ -8,7 +8,7 @@ export interface WebModeOptions {
 	readonly port?: number;
 }
 
-/** Start a child Automation Host and expose its read-only views over loopback HTTP. */
+/** Start a child Automation Host and expose its bounded Web surface over loopback HTTP. */
 export async function runWebMode(options: WebModeOptions): Promise<void> {
 	const client = new RpcClient({
 		cliPath: fileURLToPath(new URL("../../cli.js", import.meta.url)),
@@ -20,7 +20,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		await client.initializeAutomationHost();
 		const surface = await startWebSurfaceServer(client, { port: options.port });
 		console.error(`AOS Agent web surface listening on ${surface.url}`);
-		console.error("Loopback only. The HTTP RPC proxy is read-only and serves no external resources.");
+		console.error("Loopback only. Web writes require confirmation and are restricted to Gate decisions and Run control.");
 		await waitForShutdown();
 		await surface.close();
 	} finally {

@@ -5,6 +5,11 @@ import {
 	type WebReadOnlyRpcClient,
 	WebRpcRequestError,
 } from "./read-only-rpc.ts";
+import {
+	invokeWebOperationRpc,
+	type WebOperationRpcClient,
+	WebOperationError,
+} from "./operations-rpc.ts";
 
 export const WEB_SURFACE_HOST = "127.0.0.1" as const;
 const MAX_REQUEST_BYTES = 64 * 1024;
@@ -29,7 +34,7 @@ export interface StartWebSurfaceServerOptions {
 }
 
 export async function startWebSurfaceServer(
-	client: WebReadOnlyRpcClient,
+	client: WebReadOnlyRpcClient & WebOperationRpcClient,
 	options: StartWebSurfaceServerOptions = {},
 ): Promise<WebSurfaceServer> {
 	const port = options.port ?? 0;
@@ -52,13 +57,13 @@ export async function startWebSurfaceServer(
 }
 
 async function handleRequest(
-	client: WebReadOnlyRpcClient,
+	client: WebReadOnlyRpcClient & WebOperationRpcClient,
 	request: IncomingMessage,
 	response: ServerResponse,
 ): Promise<void> {
 	try {
 		const url = new URL(request.url ?? "/", `http://${WEB_SURFACE_HOST}`);
-		if (url.pathname === "/api/rpc") {
+		if (url.pathname === "/api/rpc" || url.pathname === "/api/ops") {
 			if (request.method !== "POST") {
 				writeJson(response, 405, { error: { code: "method_not_allowed", message: "Use POST for RPC requests." } });
 				return;
@@ -71,7 +76,10 @@ async function handleRequest(
 			if (typeof record.method !== "string") {
 				throw new WebRpcRequestError(400, "invalid_request", "method must be a string.");
 			}
-			const data = await invokeWebReadOnlyRpc(client, record.method, record.params);
+			const data =
+				url.pathname === "/api/rpc"
+					? await invokeWebReadOnlyRpc(client, record.method, record.params)
+					: await invokeWebOperationRpc(client, record.method, record.params);
 			writeJson(response, 200, { data });
 			return;
 		}
@@ -88,11 +96,15 @@ async function handleRequest(
 		response.writeHead(200, { ...SECURITY_HEADERS, "content-type": asset.contentType });
 		response.end(request.method === "HEAD" ? undefined : asset.body);
 	} catch (error: unknown) {
+		if (error instanceof WebOperationError) {
+			writeJson(response, error.statusCode, { error: { code: error.code, message: error.message } });
+			return;
+		}
 		if (error instanceof WebRpcRequestError) {
 			writeJson(response, error.statusCode, { error: { code: error.code, message: error.message } });
 			return;
 		}
-		writeJson(response, 502, { error: { code: "rpc_failed", message: "Read-only RPC request failed." } });
+		writeJson(response, 502, { error: { code: "rpc_failed", message: "RPC request failed." } });
 	}
 }
 

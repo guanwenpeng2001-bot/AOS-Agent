@@ -20,6 +20,7 @@
 
 ### Added
 
+- Added confirmed Web controls for Task Gate approval/rejection and Run cancellation/resume through an exact four-method write allowlist with safe error mapping.
 - Added a loopback-only `--mode web` dashboard for read-only run, task graph, and audit inspection through an allowlisted RPC proxy.
 - Public Automation Host Run receipts now expose validated TaskResult summary, artifact references, and test results through RPC, SDK, terminal events, and replay.
 - Claude connector artifact input and exact Bedrock `aos_gateway` model projection support, with verified native image/PDF/text blocks and material-free lease correlation.

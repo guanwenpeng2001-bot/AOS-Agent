@@ -69,6 +69,9 @@ import type {
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
+	TaskGateListData,
+	TaskGateMutationData,
+	TaskGateStatus,
 	TaskGraphGetData,
 	TaskGraphListData,
 	TaskGraphStatus,
@@ -851,6 +854,45 @@ export class RpcClient {
 	async getRun(runId: string): Promise<RunGetData> {
 		const response = await this.sendAutomation({ type: "run.get", runId });
 		return this.getAutomationData<RunGetData>(response);
+	}
+
+	/** List safe task gates for the current session. */
+	async listTaskGates(filter: {
+		taskId?: string;
+		stageId?: string;
+		status?: TaskGateStatus;
+		limit?: number;
+	} = {}): Promise<TaskGateListData> {
+		const response = await this.sendAutomation({ type: "task.gate.list", ...filter });
+		return this.getAutomationData<TaskGateListData>(response);
+	}
+
+	/** Approve one pending task gate. */
+	async approveTaskGate(gateId: string, clientRequestId: string, actorId?: string): Promise<TaskGateMutationData> {
+		const response = await this.sendAutomation({
+			type: "task.gate.approve",
+			gateId,
+			clientRequestId,
+			...(actorId === undefined ? {} : { actorId }),
+		});
+		return this.getAutomationData<TaskGateMutationData>(response);
+	}
+
+	/** Reject one pending task gate with an optional stable reason code. */
+	async rejectTaskGate(
+		gateId: string,
+		clientRequestId: string,
+		actorId?: string,
+		reasonCode?: string,
+	): Promise<TaskGateMutationData> {
+		const response = await this.sendAutomation({
+			type: "task.gate.reject",
+			gateId,
+			clientRequestId,
+			...(actorId === undefined ? {} : { actorId }),
+			...(reasonCode === undefined ? {} : { reasonCode }),
+		});
+		return this.getAutomationData<TaskGateMutationData>(response);
 	}
 
 	/** Read one safe task graph view. */
