@@ -95,20 +95,25 @@ describe("openai-completions reasoning_details streaming", () => {
 		mockState.payloads = [];
 	});
 
-	it("preserves reasoning_details that arrive before their matching tool call", async () => {
+	it("preserves reasoning_details in the thinking signature", async () => {
 		mockState.chunkSets = [
 			[chunk({ reasoning_details: [reasoningDetail] }), toolCallChunk(), chunk({}, "tool_calls")],
 			[chunk({ content: "ok" }), chunk({}, "stop")],
 		];
 
 		const assistantMessage = await runOpenAICompletionsStream();
+		const thinking = assistantMessage.content.find((block) => block.type === "thinking");
+		expect(thinking).toEqual({
+			type: "thinking",
+			thinking: "",
+			thinkingSignature: JSON.stringify([reasoningDetail]),
+		});
 		const toolCall = assistantMessage.content.find((block) => block.type === "toolCall");
-		expect(toolCall).toMatchObject({
+		expect(toolCall).toEqual({
 			type: "toolCall",
 			id: "call_1",
 			name: "read",
 			arguments: { path: "README.md" },
-			thoughtSignature: JSON.stringify(reasoningDetail),
 		});
 
 		await runOpenAICompletionsStream([assistantMessage]);

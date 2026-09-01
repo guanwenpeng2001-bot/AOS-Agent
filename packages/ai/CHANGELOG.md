@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- OpenAI-compatible reasoning details now persist in thinking signatures and replay in their original order.
 - Fragmented Mistral tool calls now merge by stream index when continuation chunks omit the call ID.
 - Assigned conservative nonzero context and output limits to Cursor's dynamic models so requests are not rejected before reaching the Cursor CLI.
 - Made Cursor login check for the CLI before saving credentials, distinguish missing, timed-out, expired, and token-missing states, and explain empty or unsupported model catalogs.
