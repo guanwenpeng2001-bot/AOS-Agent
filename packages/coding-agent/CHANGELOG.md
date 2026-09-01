@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Long tool results now trigger threshold compaction before the next provider request, while terminating tools still stop without compacting.
 - Threshold auto-compaction now falls back to message-size estimates when a provider omits usage data.
 - Branch summaries now record the leaf being left in `fromId` instead of the navigation destination.
 - Resumed sessions now repair a valid final JSONL record that lacks a trailing newline before appending new entries.

@@ -135,6 +135,8 @@ export interface ShouldStopAfterTurnContext {
 	context: AgentContext;
 	/** Messages that this loop invocation will return if it exits at this point. Prompt runs include the initial prompt messages; continuation runs do not include pre-existing context messages. */
 	newMessages: AgentMessage[];
+	/** Whether completed tool execution already requires another provider turn. */
+	willContinue: boolean;
 }
 
 /** Replacement runtime state used by the agent loop before starting another provider request. */
@@ -235,7 +237,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext) => boolean | Promise<boolean>;
 
 	/**
-	 * Called after `turn_end` and before the loop decides whether another provider request should start.
+	 * Called after `turn_end` only when the loop will continue, immediately before another provider request starts.
 	 * Return replacement context/model/thinking state to affect the next turn in this run.
 	 * Return undefined to keep using the current context/config.
 	 */

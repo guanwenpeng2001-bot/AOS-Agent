@@ -643,6 +643,7 @@ export class CanonicalAgentSessionServices {
 			: createCanonicalOptionsFromLegacy(options);
 		const storage = canonical.canonicalStorage ?? new SessionManagerStorage(canonical.sessionManager);
 		this.harness = canonical.harness;
+		this.harness.enableProductPostToolCompaction();
 		this.canonicalSession = canonical.canonicalSession;
 		this.storage = storage;
 		this.sessionManager = canonical.sessionManager;
@@ -2424,12 +2425,15 @@ export class CanonicalAgentSessionServices {
 		}
 		const assistant = [...this.messages].reverse().find((message): message is AssistantMessage => message.role === "assistant");
 		if (assistant === undefined) return;
+		const postToolCompactionRequested = this.harness.consumePostToolCompactionRequest();
 		const model = this.model;
 		const overflowNeedsContinuation = model !== undefined && assistant.stopReason !== "stop" && (
 			isContextOverflow(assistant, model.contextWindow) || isRecoverableLength(assistant, model.maxTokens)
 		);
-		const compacted = await this._checkCompaction(assistant);
-		if (!compacted || !overflowNeedsContinuation) return;
+		const compacted = postToolCompactionRequested
+			? await this._runAutoCompaction("threshold", false)
+			: await this._checkCompaction(assistant);
+		if (!compacted || (!overflowNeedsContinuation && !postToolCompactionRequested)) return;
 		execution = await this.productPromptIngress.execute({
 			prompt: text,
 			surface: options.surface ?? this.promptSurface,

@@ -1195,6 +1195,8 @@ export class AgentHarness implements AgentLane {
 	private readonly retryCancelledOperations = new Set<string>();
 	private readonly pendingPromptEvents = new Set<string>();
 	private overflowRecoveryAttempted = false;
+	private productPostToolCompactionEnabled = false;
+	private postToolCompactionRequested = false;
 
 	private constructor(options: AgentHarnessOptions) {
 		this.durableSession = options.session;
@@ -1488,6 +1490,18 @@ export class AgentHarness implements AgentLane {
 
 	beginPromptCompactionCycle(): void {
 		this.overflowRecoveryAttempted = false;
+		this.postToolCompactionRequested = false;
+	}
+
+	/** Enable product-facade stop/compact/continue composition for post-tool turns. */
+	enableProductPostToolCompaction(): void {
+		this.productPostToolCompactionEnabled = true;
+	}
+
+	consumePostToolCompactionRequest(): boolean {
+		const requested = this.postToolCompactionRequested;
+		this.postToolCompactionRequested = false;
+		return requested;
 	}
 
 	private async runWithPreflight(
@@ -3185,7 +3199,24 @@ export class AgentHarness implements AgentLane {
 					this.foundationToolHookResults.delete(key);
 					return result;
 				},
-			shouldStopAfterTurn: async (messages) => this.terminalToolFailureOperations.has(operationId) || (await this.shouldStopAfterTurn?.(messages)) === true,
+			shouldStopAfterTurn: async (turn) => {
+				if (this.terminalToolFailureOperations.has(operationId)) return true;
+				if (
+					this.productPostToolCompactionEnabled
+					&& turn.willContinue
+					&& this.compactionSettings.enabled
+					&& this.modelAvailable
+					&& shouldCompact(
+						estimateContextTokens(turn.context.messages).tokens,
+						this.currentModel.contextWindow,
+						this.compactionSettings,
+					)
+				) {
+					this.postToolCompactionRequested = true;
+					return true;
+				}
+				return (await this.shouldStopAfterTurn?.(turn)) === true;
+			},
 			prepareNextTurn: this.prepareNextTurn,
 			...(signal ? { signal } : {}),
 			...(context ? {} : {}),

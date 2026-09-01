@@ -31,6 +31,7 @@ import type {
 	AgentTool,
 	AgentToolCall,
 	AgentToolResult,
+	PrepareNextTurnContext,
 	StreamFn,
 } from "./types.ts";
 
@@ -241,6 +242,25 @@ async function runLoop(
 	let config = initialConfig;
 	const convergence = createAgentLoopConvergenceGuard(initialConfig.loopConvergence);
 	let firstTurn = true;
+	let lastCompletedTurn: PrepareNextTurnContext | undefined;
+	const prepareNextTurn = async (turn: PrepareNextTurnContext): Promise<void> => {
+		const nextTurnSnapshot = await raceWithAbortSignal(
+			Promise.resolve(config.prepareNextTurn?.(turn)),
+			signal,
+		);
+		if (!nextTurnSnapshot) return;
+		currentContext = nextTurnSnapshot.context ?? currentContext;
+		config = {
+			...config,
+			model: nextTurnSnapshot.model ?? config.model,
+			reasoning:
+				nextTurnSnapshot.thinkingLevel === undefined
+					? config.reasoning
+					: nextTurnSnapshot.thinkingLevel === "off"
+						? undefined
+						: nextTurnSnapshot.thinkingLevel,
+		};
+	};
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
@@ -320,40 +340,17 @@ async function runLoop(
 				return;
 			}
 
-			const nextTurnContext = {
+			lastCompletedTurn = {
 				message,
 				toolResults,
 				context: currentContext,
 				newMessages,
+				willContinue: hasMoreToolCalls,
 			};
-			const nextTurnSnapshot = await raceWithAbortSignal(
-				Promise.resolve(config.prepareNextTurn?.(nextTurnContext)),
-				signal,
-			);
-			if (nextTurnSnapshot) {
-				currentContext = nextTurnSnapshot.context ?? currentContext;
-				config = {
-					...config,
-					model: nextTurnSnapshot.model ?? config.model,
-					reasoning:
-						nextTurnSnapshot.thinkingLevel === undefined
-							? config.reasoning
-							: nextTurnSnapshot.thinkingLevel === "off"
-								? undefined
-								: nextTurnSnapshot.thinkingLevel,
-				};
-			}
 
 			if (
 				await raceWithAbortSignal(
-					Promise.resolve(
-						config.shouldStopAfterTurn?.({
-					message,
-					toolResults,
-					context: currentContext,
-					newMessages,
-						}),
-					),
+					Promise.resolve(config.shouldStopAfterTurn?.(lastCompletedTurn)),
 					signal,
 				)
 			) {
@@ -363,11 +360,19 @@ async function runLoop(
 
 			pendingMessages =
 				(await raceWithAbortSignal(Promise.resolve(config.getSteeringMessages?.()), signal)) || [];
+			if (hasMoreToolCalls || pendingMessages.length > 0) {
+				lastCompletedTurn = { ...lastCompletedTurn, willContinue: true };
+				await prepareNextTurn(lastCompletedTurn);
+			}
 		}
 
 		// Agent would stop here. Check for follow-up messages.
 		const followUpMessages = (await raceWithAbortSignal(Promise.resolve(config.getFollowUpMessages?.()), signal)) || [];
 		if (followUpMessages.length > 0) {
+			if (lastCompletedTurn) {
+				lastCompletedTurn = { ...lastCompletedTurn, willContinue: true };
+				await prepareNextTurn(lastCompletedTurn);
+			}
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;
 			continue;
