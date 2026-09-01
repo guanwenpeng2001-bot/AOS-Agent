@@ -52,7 +52,7 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/runtime/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/runtime/model-resolver.ts";
 import { ModelRuntime } from "./core/runtime/model-runtime.ts";
-import { InMemoryCodingAgentModelsStore } from "./core/session/models-store.ts";
+import { ReadOnlyModelsStore } from "./core/session/models-store.ts";
 import { restoreStdout, takeOverStdout } from "./core/runtime/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/policy/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/runtime/sdk.ts";
@@ -657,7 +657,7 @@ async function handleRuntimeMetadataCommand(parsed: Args, agentDir: string): Pro
 		const modelRuntime = await ModelRuntime.create({
 			credentials: new ReadOnlyAuthStorage(join(agentDir, "auth.json")),
 			modelsPath: join(agentDir, "models.json"),
-			modelsStore: new InMemoryCodingAgentModelsStore(),
+			modelsStore: new ReadOnlyModelsStore(join(agentDir, "models-store.json")),
 			allowModelNetwork: false,
 			signal: AbortSignal.timeout(15_000),
 		});

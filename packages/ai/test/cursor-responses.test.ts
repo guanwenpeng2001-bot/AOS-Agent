@@ -79,6 +79,8 @@ describe("Cursor dynamic model catalog", () => {
 			provider: "cursor",
 			api: "cursor-cli",
 			baseUrl: "cursor-cli://local",
+			contextWindow: 128_000,
+			maxTokens: 16_384,
 		});
 	});
 });

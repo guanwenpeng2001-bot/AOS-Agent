@@ -35,6 +35,8 @@ const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_LIST_TIMEOUT_MS = 15_000;
 const DEFAULT_EXECUTION_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_STATUS_TIMEOUT_MS = 15_000;
+const DEFAULT_CONTEXT_WINDOW = 128_000;
+const DEFAULT_MAX_TOKENS = 16_384;
 const UNKNOWN_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 
 /**
@@ -487,10 +489,11 @@ export function normalizeCursorModels(references: readonly CursorModelReference[
 		baseUrl: "cursor-cli://local",
 		reasoning: false,
 		input: ["text"] as ("text" | "image")[],
-		// Zero means unknown; not a claim the model is free or unlimited.
 		cost: UNKNOWN_COST,
-		contextWindow: 0,
-		maxTokens: 0,
+		// Cursor does not publish limits in its catalog. Use the same conservative
+		// defaults as custom models so local context validation remains usable.
+		contextWindow: DEFAULT_CONTEXT_WINDOW,
+		maxTokens: DEFAULT_MAX_TOKENS,
 	}));
 }
 
