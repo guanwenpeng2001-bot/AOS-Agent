@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Cloudflare AI Gateway provider typing now includes every registered API, and its generated catalog mirrors Workers AI passthroughs.
 - Kimi top-level `cached_tokens` usage now counts as cache reads instead of uncached input.
 - OpenAI-compatible requests now omit `tool_choice` when no tools are present.
 - OpenAI-compatible thinking signatures are now serialized once after reasoning-detail streaming completes.
