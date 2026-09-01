@@ -17,6 +17,7 @@ import {
 	ControlPlaneStorageError,
 	getControlPlaneLastKnownGoodPath,
 	readControlPlaneState,
+	readControlPlaneStateReadOnly,
 	type ControlPlaneStorageOperation,
 	type ControlPlaneStorageOptions,
 	writeControlPlaneState,
@@ -94,6 +95,19 @@ describe("control-plane atomic storage", () => {
 			expect(readControlPlaneState(statePath, STORAGE_OPTIONS)).toBe('{"generation":"new"}');
 		},
 	);
+
+	it("reads existing state without requiring owner-only permissions", () => {
+		writeFileSync(statePath, '{"valid":true}', "utf-8");
+		if (process.platform !== "win32") {
+			chmodSync(statePath, 0o644);
+			expect(statSync(statePath).mode & 0o777).toBe(0o644);
+		}
+
+		expect(readControlPlaneStateReadOnly(statePath, { ...STORAGE_OPTIONS, mode: 0o600 })).toBe('{"valid":true}');
+		if (process.platform !== "win32") {
+			expect(statSync(statePath).mode & 0o777).toBe(0o644);
+		}
+	});
 
 	it("validates schema and owner-only permissions before publishing", () => {
 		writeControlPlaneState(statePath, '{"valid":true}', { ...STORAGE_OPTIONS, mode: 0o600 });

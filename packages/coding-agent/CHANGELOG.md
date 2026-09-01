@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Read-only control-plane readers no longer reject otherwise valid `auth.json` / `models-store.json` files whose mode is not owner-only `0600`.
 - System prompts now terminate the current-working-directory line with a newline.
 - Fallback extension tool output now collapses long results and honors expansion.
 - Fullscreen selection copy now uses the host clipboard and reports verified success or failure.
