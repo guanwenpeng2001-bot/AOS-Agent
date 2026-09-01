@@ -65,6 +65,8 @@ import type {
 	AuditReplayResult,
 	AutomationError,
 	AutomationErrorCode,
+	DeliveryArtifactData,
+	DeliveryData,
 	ExternalConnectorSelection,
 	GetCapabilitiesData,
 	GetContextData,
@@ -1087,6 +1089,33 @@ export class RpcClient {
 	async getRun(runId: string): Promise<RunGetData> {
 		const response = await this.sendAutomation({ type: "run.get", runId });
 		return this.getAutomationData<RunGetData>(response);
+	}
+
+	/** Create a GitHub pull request for a completed Run and persist its PR/check association. */
+	async createPullRequestDelivery(
+		runId: string,
+		options: {
+			branch: string;
+			title: string;
+			body: string;
+			base?: string;
+			clientRequestId: string;
+		},
+	): Promise<DeliveryData> {
+		const response = await this.sendAutomation({ type: "delivery.create-pr", runId, ...options });
+		return this.getAutomationData<DeliveryData>(response);
+	}
+
+	/** Read current GitHub checks for a completed Run and persist the refreshed conclusion. */
+	async refreshPullRequestDelivery(runId: string, clientRequestId: string): Promise<DeliveryData> {
+		const response = await this.sendAutomation({ type: "delivery.refresh", runId, clientRequestId });
+		return this.getAutomationData<DeliveryData>(response);
+	}
+
+	/** Read one artifact that belongs to a completed Run's canonical TaskResult. */
+	async getDeliveryArtifact(runId: string, artifactId: string): Promise<DeliveryArtifactData> {
+		const response = await this.sendAutomation({ type: "delivery.artifact.get", runId, artifactId });
+		return this.getAutomationData<DeliveryArtifactData>(response);
 	}
 
 	/** List safe task gates for the current session. */

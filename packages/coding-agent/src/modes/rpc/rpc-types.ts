@@ -82,6 +82,7 @@ import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
 import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
 import type { ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import type { WorkerLifecycleStatus, WorkerPoolBinding } from "../../core/worker/lifecycle.ts";
+import type { DeliveryRef } from "../../core/delivery/github-delivery.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -277,6 +278,18 @@ export type RpcCommand =
 	  }
 	| { id?: string; type: "run.get"; runId: string }
 	| { id?: string; type: "run.cancel"; runId: string }
+	| {
+			id?: string;
+			type: "delivery.create-pr";
+			runId: string;
+			branch: string;
+			title: string;
+			body: string;
+			base?: string;
+			clientRequestId: string;
+	  }
+	| { id?: string; type: "delivery.refresh"; runId: string; clientRequestId: string }
+	| { id?: string; type: "delivery.artifact.get"; runId: string; artifactId: string }
 	| {
 			id?: string;
 			type: "run.resume";
@@ -1105,6 +1118,9 @@ export type RpcCommandType = RpcCommand["type"];
 /** Commands introduced by the Automation Host RPC protocol. */
 export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.resume";
 
+/** GitHub delivery and claim commands. PR creation is explicit; status and artifacts are read-only inputs. */
+export type RpcDeliveryCommandType = "delivery.create-pr" | "delivery.refresh" | "delivery.artifact.get";
+
 /** Automation Host audit commands. */
 export type RpcAuditCommandType = "audit.query" | "audit.replay" | "audit.export";
 
@@ -1144,6 +1160,7 @@ export type RpcSchedulerCommandType = "scheduler.status";
 export type RpcAutomationCommandType =
 	| "initialize"
 	| RpcRunCommandType
+	| RpcDeliveryCommandType
 	| RpcAuditCommandType
 	| RpcTaskGateCommandType
 	| RpcTaskGraphCommandType
@@ -1158,6 +1175,8 @@ export interface InitializeData {
 	protocolVersion: 1;
 	sessionId: string;
 	runCommands: RpcRunCommandType[];
+	/** Additive GitHub delivery and artifact-claim command list. */
+	deliveryCommands?: RpcDeliveryCommandType[];
 	/** Foundation negotiation details for framed network transports. */
 	protocol?: {
 		server: ProtocolCapabilities;
@@ -1215,7 +1234,20 @@ export interface RunAcceptedData {
 export interface RunGetData {
 	run: PublicRunRecord;
 	receipt?: PublicRunReceipt;
+	delivery?: DeliveryRef;
 	recovery?: RunRecoveryState;
+}
+
+export interface DeliveryData {
+	delivery: DeliveryRef;
+}
+
+export interface DeliveryArtifactData {
+	artifactId: string;
+	mediaType: string;
+	digest: string;
+	sizeBytes: number;
+	base64: string;
 }
 
 /** Data returned by a successful `run.cancel`. */
@@ -1446,6 +1478,9 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "run.resume"; success: true; data: RunAcceptedData }
 	| { id?: string; type: "response"; command: "run.get"; success: true; data: RunGetData }
 	| { id?: string; type: "response"; command: "run.cancel"; success: true; data: RunCancelData }
+	| { id?: string; type: "response"; command: "delivery.create-pr"; success: true; data: DeliveryData }
+	| { id?: string; type: "response"; command: "delivery.refresh"; success: true; data: DeliveryData }
+	| { id?: string; type: "response"; command: "delivery.artifact.get"; success: true; data: DeliveryArtifactData }
 	| { id?: string; type: "response"; command: "audit.query"; success: true; data: AuditQueryData }
 	| { id?: string; type: "response"; command: "audit.replay"; success: true; data: AuditReplayData }
 	| { id?: string; type: "response"; command: "audit.export"; success: true; data: AuditExportData }

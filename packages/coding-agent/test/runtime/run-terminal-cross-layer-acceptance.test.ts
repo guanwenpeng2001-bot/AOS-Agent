@@ -181,6 +181,7 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 			taskResult: {
 				summary: "public TaskResult summary",
 				artifacts: [artifact],
+				diff: artifact,
 				tests: [test],
 			},
 		});
@@ -194,6 +195,12 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 				mediaType: artifact.mediaType,
 				digest: artifact.digest,
 			}],
+			diff: {
+				schemaVersion: 1,
+				artifactId: artifact.artifactId,
+				mediaType: artifact.mediaType,
+				digest: artifact.digest,
+			},
 			tests: [{
 				...test,
 				evidenceRefs: [{
@@ -210,12 +217,14 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 		const sdkReceipt: SdkRunReceipt = serializePublicRunReceipt(receipt);
 		expect(sdkReceipt).toMatchObject(expectedTaskResult);
 		expect(sdkReceipt.artifacts).not.toBe(receipt.artifacts);
+		expect(sdkReceipt.diff).not.toBe(receipt.diff);
 		expect(sdkReceipt.tests).not.toBe(receipt.tests);
 		expect(sdkReceipt.tests?.[0]?.evidenceRefs).not.toBe(receipt.tests?.[0]?.evidenceRefs);
 
 		const replayed = createRunLifecycleCoordinator(session).getRun(run.runId)?.receipt;
 		expect(replayed).toEqual(sdkReceipt);
 		expect(replayed?.artifacts).not.toBe(observed.canonical.taskResult?.artifacts);
+		expect(replayed?.diff).not.toBe(observed.canonical.taskResult?.diff);
 		expect(replayed?.tests).not.toBe(observed.canonical.taskResult?.tests);
 	});
 
@@ -238,6 +247,7 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 			expect(receipt).toBeDefined();
 			expect(receipt).not.toHaveProperty("summary");
 			expect(receipt).not.toHaveProperty("artifacts");
+			expect(receipt).not.toHaveProperty("diff");
 			expect(receipt).not.toHaveProperty("tests");
 		}
 	});

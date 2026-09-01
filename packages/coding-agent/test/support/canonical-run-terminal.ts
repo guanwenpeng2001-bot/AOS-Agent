@@ -34,6 +34,7 @@ export interface CanonicalTerminalOptions {
 		| {
 				readonly summary?: string;
 				readonly artifacts?: readonly ArtifactRef[];
+				readonly diff?: ArtifactRef;
 				readonly tests?: readonly ValidationResult[];
 		  };
 }
@@ -198,6 +199,7 @@ export async function writeCanonicalRunResult(
 				sourceAttemptReceiptIds: [attemptReceiptId],
 				summary: options.taskResult?.summary ?? "canonical Automation Run terminal",
 				artifacts: options.taskResult?.artifacts ?? [],
+				...(options.taskResult?.diff === undefined ? {} : { diff: options.taskResult.diff }),
 				tests: options.taskResult?.tests ?? [],
 				evidence: [],
 				producer: {

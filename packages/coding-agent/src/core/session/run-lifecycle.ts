@@ -542,6 +542,8 @@ export interface PublicRunReceipt {
 	/** Present only when the canonical RunReceipt resolves to a validated TaskResult. */
 	artifacts?: ReadonlyArray<TaskArtifactProjection>;
 	/** Present only when the canonical RunReceipt resolves to a validated TaskResult. */
+	diff?: TaskArtifactProjection;
+	/** Present only when the canonical RunReceipt resolves to a validated TaskResult. */
 	tests?: ReadonlyArray<PublicRunValidationResult>;
 	attemptReceiptIds: ReadonlyArray<string>;
 	sideEffectState: SideEffectState;
@@ -735,6 +737,15 @@ export type AutomationErrorCode =
 	| "side_effect_unknown"
 	| "run_terminal_conflict"
 	| "user_aborted"
+	// GitHub delivery and TaskResult claim errors.
+	| "delivery_invalid"
+	| "delivery_not_found"
+	| "delivery_artifact_not_claimable"
+	| "delivery_artifact_read_failed"
+	| "gh_missing"
+	| "gh_timeout"
+	| "gh_failed"
+	| "gh_output_invalid"
 	// Task-level Human Gate control-plane errors.
 	| "task_gate_invalid"
 	| "task_gate_not_found"
@@ -849,6 +860,14 @@ export function isAutomationErrorCode(value: unknown): value is AutomationErrorC
 		value === "run_cancelled" ||
 		value === "side_effect_unknown" ||
 		value === "user_aborted" ||
+		value === "delivery_invalid" ||
+		value === "delivery_not_found" ||
+		value === "delivery_artifact_not_claimable" ||
+		value === "delivery_artifact_read_failed" ||
+		value === "gh_missing" ||
+		value === "gh_timeout" ||
+		value === "gh_failed" ||
+		value === "gh_output_invalid" ||
 		value === "task_gate_invalid" ||
 		value === "task_gate_not_found" ||
 		value === "task_gate_conflict" ||
@@ -2245,6 +2264,7 @@ export function serializePublicRunReceipt(receipt: PublicRunReceipt): PublicRunR
 	if (receipt.artifacts !== undefined) {
 		copy.artifacts = receipt.artifacts.map((artifact) => cloneRunReceiptArtifact(artifact));
 	}
+	if (receipt.diff !== undefined) copy.diff = cloneRunReceiptArtifact(receipt.diff);
 	if (receipt.tests !== undefined) copy.tests = receipt.tests.map((test) => cloneRunReceiptTest(test));
 	if (receipt.terminalError !== undefined) copy.terminalError = serializePublicAutomationError(receipt.terminalError);
 	return copy;
@@ -2296,9 +2316,16 @@ export function serializePublicContextDrift(drift: ContextSourceDrift): PublicCo
  * file paths, so it cannot serve as this public serialization boundary.
  */
 export function serializePublicAutomationError(error: AutomationError, message?: string): AutomationError {
+	const deliveryMessage = error.code === "gh_missing"
+		? "GitHub CLI (gh) is required. Install it from https://cli.github.com/ and run 'gh auth login'."
+		: error.code === "gh_timeout"
+			? "GitHub CLI timed out while reading or creating the pull request."
+			: error.code.startsWith("delivery_") || error.code === "gh_failed" || error.code === "gh_output_invalid"
+				? error.message
+				: undefined;
 	const publicMessage = Object.hasOwn(EXTERNAL_ERROR_MESSAGES, error.code)
 		? EXTERNAL_ERROR_MESSAGES[error.code as ExternalErrorCode]
-		: message ?? "Run failed.";
+		: deliveryMessage ?? message ?? "Run failed.";
 	return createAutomationError(
 		error.code,
 		publicMessage,
@@ -2778,6 +2805,7 @@ function cloneRunReceipt(receipt: PublicRunReceipt): PublicRunReceipt {
 	if (receipt.artifacts !== undefined) {
 		copy.artifacts = receipt.artifacts.map((artifact) => cloneRunReceiptArtifact(artifact));
 	}
+	if (receipt.diff !== undefined) copy.diff = cloneRunReceiptArtifact(receipt.diff);
 	if (receipt.tests !== undefined) copy.tests = receipt.tests.map((test) => cloneRunReceiptTest(test));
 	if (receipt.terminalError !== undefined) copy.terminalError = cloneAutomationError(receipt.terminalError);
 	return copy;
@@ -3024,6 +3052,9 @@ function receiptFromCanonicalProjection(projection: CanonicalAutomationRunProjec
 						cloneRunReceiptArtifact(artifact),
 					),
 				}),
+		...(projection.canonicalResult.diff === undefined
+			? {}
+			: { diff: cloneRunReceiptArtifact(projection.canonicalResult.diff) }),
 		...(projection.canonicalResult.tests === undefined
 			? {}
 			: { tests: projection.canonicalResult.tests.map((test) => cloneRunReceiptTest(test)) }),

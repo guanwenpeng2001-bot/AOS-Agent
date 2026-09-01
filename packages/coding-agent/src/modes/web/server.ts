@@ -67,6 +67,26 @@ async function handleRequest(
 			writeJson(response, 200, { data: await loadTaskGraphBoard(client) });
 			return;
 		}
+		const artifactMatch = /^\/api\/delivery\/artifacts\/([^/]+)\/([^/]+)$/u.exec(url.pathname);
+		if (artifactMatch !== null) {
+			if (request.method !== "GET" && request.method !== "HEAD") {
+				writeJson(response, 405, { error: { code: "method_not_allowed", message: "Use GET for artifact claims." } });
+				return;
+			}
+			const runId = decodeURIComponent(artifactMatch[1]!);
+			const artifactId = decodeURIComponent(artifactMatch[2]!);
+			const artifact = await client.getDeliveryArtifact(runId, artifactId);
+			const body = Buffer.from(artifact.base64, "base64");
+			if (body.byteLength !== artifact.sizeBytes) throw new Error("Artifact claim size mismatch");
+			response.writeHead(200, {
+				...SECURITY_HEADERS,
+				"content-type": artifact.mediaType,
+				"content-length": String(body.byteLength),
+				"content-disposition": `attachment; filename="${artifact.artifactId}"`,
+			});
+			response.end(request.method === "HEAD" ? undefined : body);
+			return;
+		}
 		if (
 			url.pathname === "/api/rpc" ||
 			url.pathname === "/api/ops" ||

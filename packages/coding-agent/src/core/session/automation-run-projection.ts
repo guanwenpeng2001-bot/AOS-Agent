@@ -51,6 +51,7 @@ export interface AutomationRunCanonicalResultProjection {
 	readonly attemptReceiptIds: readonly string[];
 	readonly taskSummary?: string;
 	readonly artifacts?: readonly TaskArtifactProjection[];
+	readonly diff?: TaskArtifactProjection;
 	readonly tests?: readonly AutomationRunValidationProjection[];
 	readonly sideEffectState: SideEffectState;
 }
@@ -409,6 +410,16 @@ function projectRun(
 							mediaType: artifact.mediaType,
 							digest: artifact.digest,
 						})),
+						...(taskResult.diff === undefined
+							? {}
+							: {
+									diff: {
+										schemaVersion: 1 as const,
+										artifactId: taskResult.diff.artifactId,
+										mediaType: taskResult.diff.mediaType,
+										digest: taskResult.diff.digest,
+									},
+								}),
 						tests: taskResult.tests.map((test) => ({
 							...test,
 							...(test.evidenceRefs === undefined
