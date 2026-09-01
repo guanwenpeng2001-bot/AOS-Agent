@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- OpenAI-compatible thinking signatures are now serialized once after reasoning-detail streaming completes.
 - OpenAI-compatible text and summary reasoning-detail deltas now concatenate before replay.
 - OpenAI-compatible reasoning details now persist in thinking signatures and replay in their original order.
 - Fragmented Mistral tool calls now merge by stream index when continuation chunks omit the call ID.

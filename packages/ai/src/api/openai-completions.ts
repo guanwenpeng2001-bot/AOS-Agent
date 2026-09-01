@@ -314,6 +314,12 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		let streamedReasoningDetails: OpenAIReasoningDetail[] | undefined;
+		const applyStreamedReasoningDetails = (block: ThinkingContent): void => {
+			if (streamedReasoningDetails !== undefined) {
+				block.thinkingSignature = JSON.stringify(streamedReasoningDetails);
+			}
+		};
 
 		try {
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
@@ -405,6 +411,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 						partial: output,
 					});
 				} else if (block.type === "thinking") {
+					applyStreamedReasoningDetails(block);
 					stream.push({
 						type: "thinking_end",
 						contentIndex,
@@ -632,10 +639,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					if (Array.isArray(reasoningDetails)) {
 						for (const detail of reasoningDetails) {
 							if (!isOpenAIReasoningDetail(detail)) continue;
-							const block = ensureThinkingBlock("");
-							const preservedDetails = parseOpenAIReasoningDetails(block.thinkingSignature) ?? [];
-							appendOpenAIReasoningDetail(preservedDetails, detail);
-							block.thinkingSignature = JSON.stringify(preservedDetails);
+							ensureThinkingBlock("");
+							streamedReasoningDetails ??= [];
+							appendOpenAIReasoningDetail(streamedReasoningDetails, detail);
 						}
 					}
 				}
@@ -665,6 +671,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) {
+				if (block.type === "thinking") applyStreamedReasoningDetails(block);
 				delete (block as { index?: number }).index;
 				// Streaming scratch buffers are only used during parsing; never persist them.
 				delete (block as { partialArgs?: string }).partialArgs;
