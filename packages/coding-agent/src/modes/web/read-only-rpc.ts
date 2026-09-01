@@ -1,6 +1,7 @@
 import type {
 	AuditQuery,
 	AuditQueryResult,
+	DeliveryArtifactData,
 	RunGetData,
 	SubagentListData,
 	TaskGateListData,
@@ -19,6 +20,7 @@ export const WEB_READ_ONLY_RPC_METHODS = [
 	"task.graph.list",
 	"worker.list",
 	"subagent.list",
+	"delivery.artifact.get",
 ] as const;
 
 export type WebReadOnlyRpcMethod = (typeof WEB_READ_ONLY_RPC_METHODS)[number];
@@ -53,6 +55,7 @@ export interface WebReadOnlyRpcClient {
 			limit?: number;
 		},
 	): Promise<SubagentListData>;
+	getDeliveryArtifact(runId: string, artifactId: string): Promise<DeliveryArtifactData>;
 }
 
 export class WebRpcRequestError extends Error {
@@ -93,6 +96,10 @@ export async function invokeWebReadOnlyRpc(
 			const record = requireRecord(params);
 			const runId = requireString(record, "runId");
 			return client.listSubagents(runId, parseSubagentFilter(record));
+		}
+		case "delivery.artifact.get": {
+			const record = requireRecord(params);
+			return client.getDeliveryArtifact(requireString(record, "runId"), requireString(record, "artifactId"));
 		}
 		default:
 			throw new WebRpcRequestError(403, "method_not_allowed", "RPC method is not available on the read-only web surface.");

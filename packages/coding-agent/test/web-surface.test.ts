@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AutomationRpcError } from "../src/modes/rpc/rpc-client.ts";
 import type {
 	AuditQueryResult,
+	DeliveryArtifactData,
 	RunGetData,
 	SubagentListData,
 	TaskGateListData,
@@ -34,6 +35,46 @@ const RUN: RunGetData = {
 		status: "completed",
 		model: { provider: "test", id: "model", thinkingLevel: "off" },
 	},
+	receipt: {
+		runId: "run-1",
+		sessionId: "session-1",
+		runReceiptId: "run-receipt-1",
+		taskResultId: "task-result-1",
+		summary: "Delivery ready",
+		artifacts: [],
+		diff: {
+			schemaVersion: 1,
+			artifactId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			mediaType: "text/x-diff",
+			digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		tests: [{ name: "test", required: true, status: "passed", summary: "All tests passed" }],
+		attemptReceiptIds: ["attempt-receipt-1"],
+		sideEffectState: "none",
+		status: "completed",
+		usage: { input: 1, output: 1, total: 2 },
+	},
+	delivery: {
+		schemaVersion: 1,
+		taskResultId: "task-result-1",
+		provider: "github",
+		repo: "example/project",
+		number: 42,
+		url: "https://github.com/example/project/pull/42",
+		branch: "feat/delivery",
+		checks: [{ name: "test", status: "completed", conclusion: "success" }],
+		conclusion: "success",
+		concludedAt: "2026-09-01T00:00:00.000Z",
+		updatedAt: "2026-09-01T00:00:00.000Z",
+	},
+};
+
+const CLAIMED_ARTIFACT: DeliveryArtifactData = {
+	artifactId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	mediaType: "text/x-diff",
+	digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	sizeBytes: 13,
+	base64: Buffer.from("diff content\n").toString("base64"),
 };
 
 const AUDIT: AuditQueryResult = {
@@ -161,6 +202,8 @@ describe("web operations surface", () => {
 		expect(html.body).toContain("Pending gates");
 		expect(script.body).toContain("createElementNS(SVG_NS");
 		expect(script.body).toContain("Parent / Child tree");
+		expect(script.body).toContain("Delivery results");
+		expect(script.body).toContain("/api/delivery/artifacts/");
 		expect(script.body).toContain("window.confirm(confirmation)");
 		expect(script.body).toContain('callApi("/api/ops"');
 		for (const method of ["task.gate.approve", "task.gate.reject", "run.cancel", "run.resume"]) {
@@ -170,7 +213,7 @@ describe("web operations surface", () => {
 		expect(resources).not.toMatch(/https?:\/\/|(?:src|href)=["']\/\//u);
 	});
 
-	it("forwards only the seven allowlisted read methods", async () => {
+	it("forwards only the eight allowlisted read methods", async () => {
 		const fake = createFakeClient();
 		surface = await startWebSurfaceServer(fake.client);
 
@@ -186,6 +229,10 @@ describe("web operations surface", () => {
 			status: "running",
 			limit: 10,
 		});
+		const artifact = await postRpc(surface, "delivery.artifact.get", {
+			runId: "run-1",
+			artifactId: CLAIMED_ARTIFACT.artifactId,
+		});
 
 		expect([
 			run.statusCode,
@@ -195,7 +242,8 @@ describe("web operations surface", () => {
 			graphs.statusCode,
 			workers.statusCode,
 			subagents.statusCode,
-		]).toEqual([200, 200, 200, 200, 200, 200, 200]);
+			artifact.statusCode,
+		]).toEqual([200, 200, 200, 200, 200, 200, 200, 200]);
 		expect(fake.getRun).toHaveBeenCalledWith("run-1");
 		expect(fake.auditQuery).toHaveBeenCalledWith({ scope: "current-session", limit: 25 });
 		expect(fake.listTaskGates).toHaveBeenCalledWith({ status: "pending", limit: 10 });
@@ -207,6 +255,23 @@ describe("web operations surface", () => {
 			status: "running",
 			limit: 10,
 		});
+		expect(fake.getDeliveryArtifact).toHaveBeenCalledWith("run-1", CLAIMED_ARTIFACT.artifactId);
+	});
+
+	it("claims a TaskResult diff through the artifact store download path", async () => {
+		const fake = createFakeClient();
+		surface = await startWebSurfaceServer(fake.client);
+
+		const result = await requestSurface(
+			surface,
+			`/api/delivery/artifacts/run-1/${CLAIMED_ARTIFACT.artifactId}`,
+		);
+
+		expect(result.statusCode).toBe(200);
+		expect(result.headers["content-type"]).toBe("text/x-diff");
+		expect(result.headers["content-disposition"]).toContain(CLAIMED_ARTIFACT.artifactId);
+		expect(result.body).toBe("diff content\n");
+		expect(fake.getDeliveryArtifact).toHaveBeenCalledWith("run-1", CLAIMED_ARTIFACT.artifactId);
 	});
 
 	it("assembles graph, Run, Attempt, Worker, and Child projections for the board", async () => {
@@ -365,6 +430,7 @@ function createFakeClient(): {
 	readonly listTaskGraphs: ReturnType<typeof vi.fn>;
 	readonly listWorkers: ReturnType<typeof vi.fn>;
 	readonly listSubagents: ReturnType<typeof vi.fn>;
+	readonly getDeliveryArtifact: ReturnType<typeof vi.fn>;
 } {
 	const getRun = vi.fn(async (): Promise<RunGetData> => RUN);
 	const auditQuery = vi.fn(async (): Promise<AuditQueryResult> => AUDIT);
@@ -392,6 +458,7 @@ function createFakeClient(): {
 	const listTaskGraphs = vi.fn(async (): Promise<TaskGraphListData> => ({ graphs: [GRAPH], truncated: false }));
 	const listWorkers = vi.fn(async (): Promise<WorkerListData> => WORKERS);
 	const listSubagents = vi.fn(async (): Promise<SubagentListData> => SUBAGENTS);
+	const getDeliveryArtifact = vi.fn(async (): Promise<DeliveryArtifactData> => CLAIMED_ARTIFACT);
 	return {
 		client: {
 			getRun,
@@ -405,6 +472,7 @@ function createFakeClient(): {
 			listTaskGraphs,
 			listWorkers,
 			listSubagents,
+			getDeliveryArtifact,
 		},
 		getRun,
 		auditQuery,
@@ -417,6 +485,7 @@ function createFakeClient(): {
 		listTaskGraphs,
 		listWorkers,
 		listSubagents,
+		getDeliveryArtifact,
 	};
 }
 

@@ -157,6 +157,10 @@ import {
 	type WorkerRecord,
 } from "../../core/worker/lifecycle.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
+import {
+	GithubDeliveryError,
+	GithubDeliveryService,
+} from "../../core/delivery/github-delivery.ts";
 import { filterAndSortSessions } from "../interactive/components/session-selector-search.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { type JsonAgentSessionEvent, toJsonEvent } from "../json-event.ts";
@@ -167,12 +171,15 @@ import type {
 	AuditQueryData,
 	AuditReplayData,
 	AuditReplayQuery,
+	DeliveryArtifactData,
+	DeliveryData,
 	GetCapabilitiesData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
+	RpcDeliveryCommandType,
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
@@ -920,6 +927,7 @@ export class RpcHostController {
 		interface RpcSessionBinding {
 			session: AgentSession;
 			coordinator?: RunLifecycleCoordinator;
+			deliveryService?: GithubDeliveryService;
 			taskGateStore?: TaskGateStore;
 			taskGraphStore?: TaskGraphStore;
 			taskCredentialService?: TaskCredentialService;
@@ -1362,6 +1370,23 @@ export class RpcHostController {
 				false,
 			);
 
+		const deliveryCommandError = (err: unknown, fallback: AutomationError["code"]): AutomationError => {
+			const code = err instanceof GithubDeliveryError ? err.code : fallback;
+			const message = err instanceof GithubDeliveryError ? err.message : "The delivery request failed.";
+			return createAutomationError(code, message, err instanceof GithubDeliveryError && err.retryable);
+		};
+
+		const DELIVERY_COMMAND_KEYS: Readonly<Record<RpcDeliveryCommandType, ReadonlySet<string>>> = {
+			"delivery.create-pr": new Set(["id", "type", "runId", "branch", "title", "body", "base", "clientRequestId"]),
+			"delivery.refresh": new Set(["id", "type", "runId", "clientRequestId"]),
+			"delivery.artifact.get": new Set(["id", "type", "runId", "artifactId"]),
+		};
+
+		const isDeliveryCommandShapeValid = (command: RpcCommand): boolean => {
+			const allowed = DELIVERY_COMMAND_KEYS[command.type as RpcDeliveryCommandType];
+			return allowed !== undefined && Object.keys(command).every((key) => allowed.has(key));
+		};
+
 		const taskGateErrorMessage = (code: TaskGateError["code"]): string => {
 			switch (code) {
 				case "task_gate_invalid":
@@ -1655,6 +1680,9 @@ export class RpcHostController {
 		 * task_credential_unavailable.
 		 */
 		const prepareAutomationStores = (binding: RpcSessionBinding): void => {
+			binding.deliveryService = new GithubDeliveryService(getAgentCanonicalSession(binding.session), {
+				writer: binding.session.agentRuntimeComposition.harness.ledger.writer,
+			});
 			binding.taskCredentialService = binding.session.getTaskCredentialService?.();
 			binding.coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(binding.session), {
 				credentialHooks: {
@@ -3932,6 +3960,7 @@ export class RpcHostController {
 						protocolVersion: 1,
 						sessionId: currentBinding.session.sessionId,
 						runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
+						deliveryCommands: ["delivery.create-pr", "delivery.refresh", "delivery.artifact.get"],
 						...(networkProtocol === undefined ? {} : { protocol: networkProtocol }),
 						auditCommands: ["audit.query", "audit.replay", "audit.export"],
 						taskGateCommands: [
@@ -5136,6 +5165,10 @@ export class RpcHostController {
 					}
 					const getData: RunGetData = { run: serializePublicRunRecord(result.record) };
 					if (result.receipt !== undefined) getData.receipt = serializePublicRunReceipt(result.receipt);
+					if (result.receipt?.taskResultId !== undefined && currentBinding.deliveryService !== undefined) {
+						const delivery = await currentBinding.deliveryService.get(result.receipt.taskResultId);
+						if (delivery !== undefined) getData.delivery = delivery;
+					}
 					if (result.recovery !== undefined) getData.recovery = result.recovery;
 					const getResponse: RpcAutomationResponse = {
 						id,
@@ -5145,6 +5178,91 @@ export class RpcHostController {
 						data: getData,
 					};
 					return getResponse;
+				}
+
+				case "delivery.create-pr": {
+					if (!hostInitialized || currentBinding.coordinator === undefined || currentBinding.deliveryService === undefined) {
+						return automationError(id, "delivery.create-pr", hostNotInitializedError());
+					}
+					if (!isDeliveryCommandShapeValid(command) || !isRunClientRequestId(command.clientRequestId)) {
+						return automationError(id, "delivery.create-pr", deliveryCommandError(undefined, "delivery_invalid"));
+					}
+					const result = currentBinding.coordinator.getRun(command.runId);
+					if (result?.record.status !== "completed" || result.receipt?.taskResultId === undefined) {
+						return automationError(id, "delivery.create-pr", deliveryCommandError(undefined, "delivery_invalid"));
+					}
+					try {
+						const delivery = await currentBinding.deliveryService.createPullRequest({
+							taskResultId: result.receipt.taskResultId,
+							cwd: currentBinding.session.cwd,
+							branch: command.branch,
+							title: command.title,
+							body: command.body,
+							...(command.base === undefined ? {} : { base: command.base }),
+							clientRequestId: command.clientRequestId,
+						});
+						return { id, type: "response", command: "delivery.create-pr", success: true, data: { delivery } satisfies DeliveryData };
+					} catch (err) {
+						return automationError(id, "delivery.create-pr", deliveryCommandError(err, "gh_failed"));
+					}
+				}
+
+				case "delivery.refresh": {
+					if (!hostInitialized || currentBinding.coordinator === undefined || currentBinding.deliveryService === undefined) {
+						return automationError(id, "delivery.refresh", hostNotInitializedError());
+					}
+					if (!isDeliveryCommandShapeValid(command) || !isRunClientRequestId(command.clientRequestId)) {
+						return automationError(id, "delivery.refresh", deliveryCommandError(undefined, "delivery_invalid"));
+					}
+					const result = currentBinding.coordinator.getRun(command.runId);
+					if (result?.receipt?.taskResultId === undefined) {
+						return automationError(id, "delivery.refresh", deliveryCommandError(undefined, "delivery_not_found"));
+					}
+					try {
+						const delivery = await currentBinding.deliveryService.refresh(
+							result.receipt.taskResultId,
+							currentBinding.session.cwd,
+							command.clientRequestId,
+						);
+						return { id, type: "response", command: "delivery.refresh", success: true, data: { delivery } satisfies DeliveryData };
+					} catch (err) {
+						return automationError(id, "delivery.refresh", deliveryCommandError(err, "gh_failed"));
+					}
+				}
+
+				case "delivery.artifact.get": {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
+						return automationError(id, "delivery.artifact.get", hostNotInitializedError());
+					}
+					if (!isDeliveryCommandShapeValid(command)) {
+						return automationError(id, "delivery.artifact.get", deliveryCommandError(undefined, "delivery_invalid"));
+					}
+					const result = currentBinding.coordinator.getRun(command.runId);
+					const receipt = result?.receipt;
+					const claimable = [
+						...(receipt?.artifacts ?? []),
+						...(receipt?.diff === undefined ? [] : [receipt.diff]),
+						...(receipt?.tests ?? []).flatMap((test) => test.evidenceRefs ?? []),
+					].find((artifact) => artifact.artifactId === command.artifactId);
+					if (receipt?.taskResultId === undefined || claimable === undefined) {
+						return automationError(id, "delivery.artifact.get", deliveryCommandError(undefined, "delivery_artifact_not_claimable"));
+					}
+					try {
+						const artifact = await currentBinding.session.agentRuntimeComposition.harness.artifacts.get(command.artifactId);
+						if (artifact.metadata.digest !== claimable.digest || artifact.metadata.mediaType !== claimable.mediaType) {
+							return automationError(id, "delivery.artifact.get", deliveryCommandError(undefined, "delivery_artifact_read_failed"));
+						}
+						const data: DeliveryArtifactData = {
+							artifactId: artifact.metadata.artifactId,
+							mediaType: artifact.metadata.mediaType,
+							digest: artifact.metadata.digest,
+							sizeBytes: artifact.content.byteLength,
+							base64: Buffer.from(artifact.content).toString("base64"),
+						};
+						return { id, type: "response", command: "delivery.artifact.get", success: true, data };
+					} catch {
+						return automationError(id, "delivery.artifact.get", deliveryCommandError(undefined, "delivery_artifact_read_failed"));
+					}
 				}
 
 				case "run.cancel": {
