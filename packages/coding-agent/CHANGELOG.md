@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- JSON and RPC streaming updates now retain cumulative usage while omitting cumulative message snapshots.
 - Toggling thinking visibility no longer clears partial output from running Bash tools.
 - Context-only custom messages arriving during tool execution are now persisted after that turn's tool results.
 - Repeated truncated-response recovery now reports truncation instead of mislabeling it as context overflow.
