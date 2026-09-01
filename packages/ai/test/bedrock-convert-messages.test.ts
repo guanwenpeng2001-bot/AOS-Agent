@@ -271,4 +271,45 @@ describe("bedrock convertMessages skips unknown content types", () => {
 		const p = payload as { messages: Array<{ role: string; content: unknown[] }> };
 		expect(p.messages).toHaveLength(0);
 	});
+
+	it("removes empty keys from replayed tool arguments without mutating history", async () => {
+		const argumentsWithEmptyKey = {
+			path: "/workspace/file.js",
+			edits: [{ oldText: "before", newText: "after", "": "" }],
+		};
+		const messages: Message[] = [
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "tool-1", name: "edit", arguments: argumentsWithEmptyKey }],
+				api: "bedrock-converse-stream",
+				provider: "amazon-bedrock",
+				model: baseModel.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+			},
+			{
+				role: "toolResult",
+				toolCallId: "tool-1",
+				toolName: "edit",
+				content: [{ type: "text", text: "done" }],
+				isError: false,
+				timestamp: Date.now(),
+			},
+		];
+
+		const payload = await capturePayload({ messages });
+		const input = (payload as {
+			messages: Array<{ content: Array<{ toolUse?: { input: unknown } }> }>;
+		}).messages[0].content[0].toolUse?.input;
+		expect(input).toEqual({ path: "/workspace/file.js", edits: [{ oldText: "before", newText: "after" }] });
+		expect(argumentsWithEmptyKey.edits[0]).toEqual({ oldText: "before", newText: "after", "": "" });
+	});
 });
