@@ -1,5 +1,5 @@
 /**
- * Host-side lifecycle authority for one local Operation Worker process.
+ * Host-side lifecycle authority for one local or remote Operation Worker.
  *
  * Preflight is read-only and returns an activation token. Only activate may
  * create the fixed trusted child. Process details and private protocol data
@@ -19,6 +19,16 @@ import {
 	type SandboxOperationRequest,
 	type WorkerReceipt,
 } from "@aos-agent/agent-core";
+import {
+	RemoteOperationError,
+	type RemoteArtifactReference,
+	type RemoteOperationExecutionContext,
+	type RemoteOperationHeartbeat,
+	type RemoteOperationInvoker,
+	type RemoteOperationLease,
+	type RemoteOperationRequest,
+	type RemoteOperationResult,
+} from "../runtime/remote-operation.ts";
 import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
 	OperationWorkerProtocolSession,
@@ -49,6 +59,12 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
+import {
+	RemoteWorkerChannel,
+	resolveWorkerRemoteEndpoint,
+	type RemoteWorkerChannelClose,
+	type WorkerRemoteEndpointConfig,
+} from "./remote-channel.ts";
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 15_000;
@@ -77,9 +93,11 @@ type SupervisorErrorCode =
 
 export interface WorkerSupervisorConfig {
 	/** Absolute trusted executable selected by Host composition. */
-	readonly executable: string;
+	readonly executable?: string;
 	/** Absolute fixed entrypoint selected by Host composition. */
-	readonly entrypoint: string;
+	readonly entrypoint?: string;
+	/** Omit for local spawn; when set, activation connects to this remote Worker endpoint. */
+	readonly remoteEndpoint?: WorkerRemoteEndpointConfig;
 	readonly profileId: string;
 	readonly profileRevision: number;
 	readonly capabilities: readonly string[];
@@ -114,6 +132,11 @@ interface Deferred<T> {
 	readonly promise: Promise<T>;
 	readonly resolve: (value: T) => void;
 	readonly settled: () => boolean;
+}
+
+interface WorkerPingWaiter {
+	readonly requestId: string;
+	readonly result: Deferred<ResultValue<void, FoundationError>>;
 }
 
 type TimedWait<T> =
@@ -195,6 +218,55 @@ function wait(milliseconds: number): Promise<void> {
 	});
 }
 
+function remoteArtifacts(receipt: WorkerReceipt): readonly RemoteArtifactReference[] {
+	return Object.freeze((receipt.artifacts ?? []).map((artifact) => Object.freeze({
+		id: artifact.artifactId,
+		kind: "output" as const,
+		digest: artifact.digest,
+		...(artifact.sizeBytes === undefined ? {} : { sizeBytes: artifact.sizeBytes }),
+		mediaType: artifact.mediaType,
+	})));
+}
+
+function remoteFailure(
+	code: string,
+	sideEffects: "none" | "associated" | "unknown",
+	retryable = false,
+): RemoteOperationError {
+	if (sideEffects === "unknown") return new RemoteOperationError("side-effect-unknown");
+	if (code.includes("deadline")) return new RemoteOperationError("deadline", { sideEffects });
+	if (code.includes("cancel")) return new RemoteOperationError("cancelled", { sideEffects });
+	if (code.includes("invalid") || code.includes("binding") || code.includes("conflict")) {
+		return new RemoteOperationError("invalid", { sideEffects });
+	}
+	if (retryable && sideEffects === "none") {
+		return new RemoteOperationError("transient", { retryable: true, sideEffects });
+	}
+	return new RemoteOperationError("rejected", { sideEffects });
+}
+
+function remoteReceiptFailure(
+	receipt: WorkerReceipt,
+	sideEffects: "none" | "associated" | "unknown",
+): RemoteOperationError {
+	const category = receipt.error?.category;
+	if (sideEffects === "unknown" || category === "side_effect_unknown" || category === "unknown") {
+		return new RemoteOperationError("side-effect-unknown");
+	}
+	if (receipt.status === "cancelled" || category === "cancelled") {
+		return new RemoteOperationError("cancelled", { sideEffects });
+	}
+	if (category === "deadline") return new RemoteOperationError("deadline", { sideEffects });
+	if (category === "transient") {
+		return new RemoteOperationError("transient", {
+			retryable: receipt.error?.retryable === true && sideEffects === "none",
+			sideEffects,
+		});
+	}
+	if (category === "parameter") return new RemoteOperationError("invalid", { sideEffects });
+	return new RemoteOperationError("rejected", { sideEffects });
+}
+
 export class OperationWorkerSupervisor {
 	private readonly config: WorkerSupervisorConfig;
 	private readonly environment: Readonly<Record<string, string>>;
@@ -203,12 +275,14 @@ export class OperationWorkerSupervisor {
 	private activationPlan?: WorkerActivationPlan;
 	private activationAttempted = false;
 	private child?: ChildProcessWithoutNullStreams;
+	private remoteChannel?: RemoteWorkerChannel;
 	private lifecycle?: WorkerLifecycleState;
 	private stdoutBuffer = "";
 	private requestSequence = 0;
 	private readyWaiter?: Deferred<ResultValue<WorkerRecord, FoundationError>>;
 	private receiptWaiter?: Deferred<ResultValue<WorkerReceipt, FoundationError>>;
 	private terminalWaiter?: Deferred<boolean>;
+	private pingWaiter?: WorkerPingWaiter;
 	private exitWaiter?: Deferred<void>;
 	private watchdogTimer?: NodeJS.Timeout;
 	private pendingReadyFrame?: Extract<OperationWorkerEventFrame, { type: "ready" }>;
@@ -218,13 +292,21 @@ export class OperationWorkerSupervisor {
 	private closing = false;
 	private exitSeen = false;
 	private reclaimFailure = false;
+	private remoteTerminationUnconfirmed = false;
 	private recoveredWithoutProcess = false;
 	private quarantinedValue = false;
 	private reclaimPromise?: Promise<ResultValue<WorkerRecord, FoundationError>>;
 	private activeSideEffect: "none" | "writes" = "writes";
+	private remoteOperationBound = false;
 
 	constructor(config: WorkerSupervisorConfig) {
-		this.config = Object.freeze({ ...config, capabilities: Object.freeze([...config.capabilities]) });
+		this.config = Object.freeze({
+			...config,
+			capabilities: Object.freeze([...config.capabilities]),
+			...(config.remoteEndpoint === undefined
+				? {}
+				: { remoteEndpoint: resolveWorkerRemoteEndpoint(config.remoteEndpoint) }),
+		});
 		this.environment = Object.freeze({ ...(config.environment ?? {}) });
 		this.now = config.now ?? (() => new Date());
 	}
@@ -232,13 +314,112 @@ export class OperationWorkerSupervisor {
 	get snapshot(): WorkerSupervisorSnapshot {
 		return Object.freeze({
 			...(this.lifecycle === undefined ? {} : { record: this.lifecycle.record }),
-			hasLiveProcess: this.child !== undefined && !this.exitSeen,
+			hasLiveProcess: this.hasLiveConnection(),
 			quarantined: this.quarantinedValue,
 		});
 	}
 
 	get lifecycleState(): WorkerLifecycleState | undefined {
 		return this.lifecycle;
+	}
+
+	/**
+	 * Bind one provider-neutral operation to the already-authorized Worker
+	 * request. The existing Worker frame contract remains the only wire format.
+	 */
+	bindRemoteOperation(operation: SandboxOperationRequest): RemoteOperationInvoker {
+		if (this.remoteOperationBound) throw new RemoteOperationError("invalid");
+		this.remoteOperationBound = true;
+		const workerOperation = Object.freeze({
+			...operation,
+			...(operation.credentialTargets === undefined
+				? {}
+				: { credentialTargets: Object.freeze([...operation.credentialTargets]) }),
+		});
+		let requestValue: RemoteOperationRequest | undefined;
+		let leaseValue: RemoteOperationLease | undefined;
+		let heartbeatSequence = 0;
+
+		return Object.freeze({
+			execute: async (
+				request: RemoteOperationRequest,
+				context: RemoteOperationExecutionContext,
+			): Promise<RemoteOperationResult> => {
+				const lifecycle = this.lifecycle;
+				if (
+					lifecycle === undefined ||
+					this.config.remoteEndpoint === undefined ||
+					request.operationId !== workerOperation.operationId ||
+					context.operationId !== workerOperation.operationId ||
+					(request.sessionId !== undefined && request.sessionId !== lifecycle.binding.sessionId) ||
+					(request.runId !== undefined && request.runId !== lifecycle.binding.runId)
+				) {
+					throw new RemoteOperationError("invalid");
+				}
+				requestValue = request;
+				leaseValue = request.lease;
+				const neutralDeadline = request.deadlineAt === undefined ? undefined : Date.parse(request.deadlineAt);
+				const deadlines = [workerOperation.deadlineAt, lifecycle.binding.deadlineAt, neutralDeadline]
+					.filter((value): value is number => value !== undefined);
+				const requestDeadline = deadlines.length === 0 ? undefined : Math.min(...deadlines);
+				const outcome = await this.execute({
+					...workerOperation,
+					...(requestDeadline === undefined ? {} : { deadlineAt: requestDeadline }),
+				});
+				if (!outcome.ok) {
+					const unknown = workerOperation.sideEffect !== "none" && this.snapshot.record?.status === "lost";
+					throw remoteFailure(outcome.error.code, unknown ? "unknown" : "none", true);
+				}
+				const receipt = outcome.value;
+				const artifacts = remoteArtifacts(receipt);
+				const unknown = receipt.sideEffectState === "unknown" || receipt.sideEffectState === "side_effect_unknown";
+				const associated = workerOperation.sideEffect !== "none" || artifacts.length > 0;
+				if (associated || unknown) context.recordSideEffect(artifacts);
+				const sideEffects = unknown ? "unknown" : associated ? "associated" : "none";
+				if (receipt.status !== "succeeded") throw remoteReceiptFailure(receipt, sideEffects);
+				return Object.freeze({ artifactRefs: artifacts, sideEffects });
+			},
+			cancel: async (operationId: string): Promise<void> => {
+				if (operationId !== workerOperation.operationId) throw new RemoteOperationError("invalid");
+				const cancelled = await this.cancel("cancel", operationId);
+				if (!cancelled.ok) {
+					throw remoteFailure(
+						cancelled.error.code,
+						workerOperation.sideEffect === "none" ? "none" : "unknown",
+					);
+				}
+			},
+			heartbeat: async (heartbeat: RemoteOperationHeartbeat): Promise<RemoteOperationLease> => {
+				if (
+					requestValue === undefined ||
+					leaseValue === undefined ||
+					heartbeat.operationId !== workerOperation.operationId ||
+					heartbeat.leaseId !== leaseValue.leaseId ||
+					heartbeat.sequence !== heartbeatSequence + 1
+				) {
+					throw new RemoteOperationError("invalid");
+				}
+				const live = await this.probeLiveness(workerOperation.operationId);
+				if (!live.ok) {
+					throw remoteFailure(
+						live.error.code,
+						workerOperation.sideEffect === "none" ? "none" : "unknown",
+						true,
+					);
+				}
+				heartbeatSequence = heartbeat.sequence;
+				const base = Math.max(
+					Date.parse(heartbeat.sentAt),
+					Date.parse(leaseValue.expiresAt),
+					this.now().getTime(),
+				);
+				leaseValue = Object.freeze({
+					leaseId: leaseValue.leaseId,
+					expiresAt: new Date(base + (this.config.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS)).toISOString(),
+				});
+				return leaseValue;
+			},
+		});
 	}
 
 	preflight(input: WorkerSupervisorPreflightInput): ResultValue<WorkerActivationPlan, FoundationError> {
@@ -260,11 +441,20 @@ export class OperationWorkerSupervisor {
 		if (!sameStringSequence(input.binding.capabilitySummary, this.config.capabilities)) {
 			return Result.err(stableError("worker_unavailable", "Operation Worker capabilities are unavailable"));
 		}
-		if (
-			!pathIsTrustedFile(this.config.executable) ||
-			!pathIsTrustedFile(this.config.entrypoint) ||
-			!environmentIsSafe(this.environment)
-		) {
+		const remote = this.config.remoteEndpoint;
+		const localLauncherTrusted =
+			remote === undefined &&
+			this.config.executable !== undefined &&
+			this.config.entrypoint !== undefined &&
+			pathIsTrustedFile(this.config.executable) &&
+			pathIsTrustedFile(this.config.entrypoint) &&
+			environmentIsSafe(this.environment);
+		const remoteLauncherTrusted =
+			remote !== undefined &&
+			this.config.executable === undefined &&
+			this.config.entrypoint === undefined &&
+			Object.keys(this.environment).length === 0;
+		if (!localLauncherTrusted && !remoteLauncherTrusted) {
 			return Result.err(stableError("worker_profile_untrusted", "Operation Worker launcher is not trusted"));
 		}
 		if (
@@ -272,7 +462,8 @@ export class OperationWorkerSupervisor {
 			!isPositiveTimeout(this.config.heartbeatTimeoutMs) ||
 			!isPositiveTimeout(this.config.cancelTimeoutMs) ||
 			!isPositiveTimeout(this.config.terminateTimeoutMs) ||
-			!isPositiveTimeout(this.config.maxPendingWriteBytes)
+			!isPositiveTimeout(this.config.maxPendingWriteBytes) ||
+			(remote !== undefined && !isPositiveTimeout(remote.connectTimeoutMs))
 		) {
 			return Result.err(stableError("worker_invalid", "Operation Worker bounds are invalid"));
 		}
@@ -302,30 +493,48 @@ export class OperationWorkerSupervisor {
 		const starting = this.transition("starting");
 		if (!starting.ok) return starting;
 
-		try {
-			this.child = spawn(this.config.executable, [this.config.entrypoint], {
-				cwd: dirname(this.config.entrypoint),
-				env: { ...this.environment },
-				stdio: ["pipe", "pipe", "pipe"],
-				detached: true,
-				windowsHide: true,
-				shell: false,
-			});
-		} catch {
-			this.transition("failed", { sideEffectState: "none" });
-			return Result.err(stableError("worker_start_failed", "Operation Worker failed to start"));
-		}
-
-		const child = this.child;
 		this.readyWaiter = deferred();
 		this.exitWaiter = deferred();
-		this.attachProcessListeners(child);
-		if (child.pid === undefined) {
-			const failure = this.failStart();
-			await this.ensureProcessStoppedAndCleaned();
-			return Result.err(failure);
+		if (this.config.remoteEndpoint !== undefined) {
+			try {
+				const remoteChannel = new RemoteWorkerChannel(this.config.remoteEndpoint, {
+					onData: this.onStdoutData,
+					onEnd: this.onRemoteEnd,
+					onError: this.onProcessError,
+				});
+				this.remoteChannel = remoteChannel;
+				await remoteChannel.connect();
+			} catch {
+				const failure = this.failStart();
+				await this.ensureProcessStoppedAndCleaned();
+				return Result.err(failure);
+			}
+		} else {
+			const executable = this.config.executable!;
+			const entrypoint = this.config.entrypoint!;
+			try {
+				this.child = spawn(executable, [entrypoint], {
+					cwd: dirname(entrypoint),
+					env: { ...this.environment },
+					stdio: ["pipe", "pipe", "pipe"],
+					detached: true,
+					windowsHide: true,
+					shell: false,
+				});
+			} catch {
+				this.transition("failed", { sideEffectState: "none" });
+				return Result.err(stableError("worker_start_failed", "Operation Worker failed to start"));
+			}
+
+			const child = this.child;
+			this.attachProcessListeners(child);
+			if (child.pid === undefined) {
+				const failure = this.failStart();
+				await this.ensureProcessStoppedAndCleaned();
+				return Result.err(failure);
+			}
+			trackDetachedChildPid(child.pid);
 		}
-		trackDetachedChildPid(child.pid);
 
 		const initialize: OperationWorkerRequestFrame = {
 			type: "initialize",
@@ -351,7 +560,7 @@ export class OperationWorkerSupervisor {
 			}
 			if (
 				this.lifecycle?.record.status !== "ready" ||
-				this.child === undefined ||
+				!this.hasLiveConnection() ||
 				this.exitSeen ||
 				this.closing
 			) {
@@ -373,7 +582,7 @@ export class OperationWorkerSupervisor {
 
 	async execute(request: SandboxOperationRequest): Promise<ResultValue<WorkerReceipt, FoundationError>> {
 		if (
-			this.child === undefined ||
+			!this.hasLiveConnection() ||
 			this.lifecycle === undefined ||
 			this.lifecycle.record.status !== "ready" ||
 			this.receiptWaiter !== undefined
@@ -439,7 +648,7 @@ export class OperationWorkerSupervisor {
 			return Result.err(stableError("worker_lost", "Operation Worker lost a trusted terminal outcome"));
 		}
 		if (isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) return Result.ok(undefined);
-		if (this.child === undefined) {
+		if (!this.hasLiveConnection()) {
 			return Result.err(stableError("worker_not_found", "Operation Worker was not activated"));
 		}
 		if (this.lifecycle.record.status !== "ready" && this.lifecycle.record.status !== "running" && this.lifecycle.record.status !== "cancelling") {
@@ -480,6 +689,53 @@ export class OperationWorkerSupervisor {
 		this.markLost("worker_cancel_failed", "Operation Worker cancellation timed out");
 		await this.reclaim();
 		return Result.err(stableError("worker_cancel_failed", "Operation Worker cancellation timed out"));
+	}
+
+	/** Actively prove cross-host Worker responsiveness through ping/pong. */
+	async probeLiveness(operationId?: string): Promise<ResultValue<void, FoundationError>> {
+		if (
+			this.lifecycle === undefined ||
+			(this.lifecycle.record.status !== "ready" && this.lifecycle.record.status !== "running") ||
+			!this.hasLiveConnection()
+		) {
+			return Result.err(stableError("worker_lost", "Operation Worker is unavailable for liveness probe"));
+		}
+		if (
+			operationId !== undefined &&
+			this.lifecycle.record.activeOperationId !== undefined &&
+			this.lifecycle.record.activeOperationId !== operationId
+		) {
+			return Result.err(stableError("worker_conflict", "Operation Worker liveness identity conflicts"));
+		}
+		if (this.pingWaiter !== undefined) {
+			return Result.err(stableError("worker_conflict", "Operation Worker liveness probe is already active"));
+		}
+		const requestId = this.nextRequestId("ping");
+		const ping: WorkerPingWaiter = { requestId, result: deferred() };
+		this.pingWaiter = ping;
+		const sent = await this.sendFrame({
+			type: "ping",
+			requestId,
+			workerId: this.lifecycle.binding.workerId,
+		});
+		if (!sent.ok) {
+			this.pingWaiter = undefined;
+			const failure = this.markLost("worker_lost", "Operation Worker liveness probe failed");
+			await this.ensureProcessStoppedAndCleaned();
+			return Result.err(failure);
+		}
+		const settled = await this.withTimeout(
+			ping.result.promise,
+			Math.min(
+				this.config.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS,
+				this.remainingDeadlineMs(this.lifecycle.binding),
+			),
+		);
+		if (this.pingWaiter === ping) this.pingWaiter = undefined;
+		if (!settled.timedOut) return settled.value;
+		const failure = this.markLost("worker_lost", "Operation Worker liveness probe timed out");
+		await this.ensureProcessStoppedAndCleaned();
+		return Result.err(failure);
 	}
 
 	/** Request safe-ref projection; a successful write is not delivery proof. */
@@ -599,7 +855,7 @@ export class OperationWorkerSupervisor {
 		}
 
 		this.closing = true;
-		if (this.child !== undefined && !this.exitSeen && this.protocol.state.phase !== "lost") {
+		if (this.hasLiveConnection() && this.protocol.state.phase !== "lost") {
 			const sent = await this.sendFrame({
 				type: "reclaim",
 				requestId: this.nextRequestId("reclaim"),
@@ -626,7 +882,11 @@ export class OperationWorkerSupervisor {
 			}
 		}
 
-		const unknown = this.recoveredWithoutProcess || this.reclaimFailure || !exited;
+		const unknown =
+			this.recoveredWithoutProcess ||
+			this.reclaimFailure ||
+			this.remoteTerminationUnconfirmed ||
+			!exited;
 		this.quarantinedValue = unknown;
 		this.cleanupProcess();
 		const finished = this.transition(unknown ? "reclaim_unknown" : "reclaimed");
@@ -699,6 +959,13 @@ export class OperationWorkerSupervisor {
 		if (!this.closing && !this.hasTrustedExecutionTerminal()) this.protocolFailure("worker_lost");
 	};
 
+	private readonly onRemoteEnd = (_close: RemoteWorkerChannelClose): void => {
+		const reclaiming = this.closing && this.lifecycle?.record.status === "reclaiming";
+		if (!reclaiming) this.remoteTerminationUnconfirmed = true;
+		this.onStdoutEnd();
+		this.onProcessExit();
+	};
+
 	private handleWorkerLine(line: string): void {
 		const parsed = parseOperationWorkerFrame(line);
 		if (!parsed.ok || !this.isWorkerEvent(parsed.value)) {
@@ -762,7 +1029,15 @@ export class OperationWorkerSupervisor {
 			if (!running.ok) this.protocolFailure("worker_persistence_failed");
 			return;
 		}
-		if (frame.type === "operation.data" || frame.type === "operation.completed" || frame.type === "pong") {
+		if (frame.type === "operation.data" || frame.type === "operation.completed") {
+			return;
+		}
+		if (frame.type === "pong") {
+			if (this.pingWaiter?.requestId !== frame.requestId) {
+				this.protocolFailure("worker_operation_invalid");
+				return;
+			}
+			this.pingWaiter.result.resolve(Result.ok(undefined));
 			return;
 		}
 		if (frame.type === "error") {
@@ -798,7 +1073,7 @@ export class OperationWorkerSupervisor {
 		if (this.closing || this.lifecycle?.record.status === "lost") return;
 
 		if (readyFrame !== undefined) {
-			if (this.lifecycle?.record.status !== "starting" || this.child === undefined || this.exitSeen) {
+			if (this.lifecycle?.record.status !== "starting" || !this.hasLiveConnection() || this.exitSeen) {
 				this.protocolFailure("worker_lost");
 				return;
 			}
@@ -848,7 +1123,11 @@ export class OperationWorkerSupervisor {
 
 	private async sendFrame(frame: OperationWorkerRequestFrame): Promise<ResultValue<void, FoundationError>> {
 		const child = this.child;
-		if (child === undefined || child.stdin.destroyed || !child.stdin.writable) {
+		const remoteChannel = this.remoteChannel;
+		if (
+			(child === undefined || child.stdin.destroyed || !child.stdin.writable) &&
+			(remoteChannel === undefined || remoteChannel.closed)
+		) {
 			return Result.err(stableError("worker_lost", "Operation Worker connection is unavailable"));
 		}
 		const accepted = this.protocol.receiveHostFrame(frame);
@@ -862,23 +1141,34 @@ export class OperationWorkerSupervisor {
 		const bytes = Buffer.byteLength(line, "utf8");
 		if (
 			bytes > WORKER_PROTOCOL_MAX_FRAME_BYTES ||
-			child.stdin.writableLength + bytes >
+			(child?.stdin.writableLength ?? remoteChannel?.bufferedAmount ?? 0) + bytes >
 				(this.config.maxPendingWriteBytes ?? DEFAULT_MAX_PENDING_WRITE_BYTES)
 		) {
 			return Result.err(stableError("worker_operation_invalid", "Operation Worker backpressure limit was exceeded"));
 		}
+		if (remoteChannel !== undefined) {
+			try {
+				await remoteChannel.write(
+					line,
+					this.config.maxPendingWriteBytes ?? DEFAULT_MAX_PENDING_WRITE_BYTES,
+				);
+				return Result.ok(undefined);
+			} catch {
+				return Result.err(stableError("worker_lost", "Operation Worker connection is unavailable"));
+			}
+		}
 		try {
-			if (child.stdin.write(line, "utf8")) return Result.ok(undefined);
+			if (child!.stdin.write(line, "utf8")) return Result.ok(undefined);
 		} catch {
 			return Result.err(stableError("worker_lost", "Operation Worker connection is unavailable"));
 		}
 		const drained = deferred<void>();
-		child.stdin.once("drain", drained.resolve);
+		child!.stdin.once("drain", drained.resolve);
 		const result = await this.withTimeout(
 			drained.promise,
 			this.config.terminateTimeoutMs ?? DEFAULT_TERMINATE_TIMEOUT_MS,
 		);
-		child.stdin.removeListener("drain", drained.resolve);
+		child!.stdin.removeListener("drain", drained.resolve);
 		return result.timedOut
 			? Result.err(stableError("worker_lost", "Operation Worker backpressure did not drain"))
 			: Result.ok(undefined);
@@ -954,6 +1244,7 @@ export class OperationWorkerSupervisor {
 		this.readyWaiter?.resolve(Result.err(error));
 		this.receiptWaiter?.resolve(Result.err(error));
 		this.terminalWaiter?.resolve(false);
+		this.pingWaiter?.result.resolve(Result.err(error));
 		return error;
 	}
 
@@ -1010,6 +1301,14 @@ export class OperationWorkerSupervisor {
 	}
 
 	private async stopProcessTree(): Promise<void> {
+		const remoteChannel = this.remoteChannel;
+		if (remoteChannel !== undefined && !remoteChannel.closed) {
+			this.closing = true;
+			this.remoteTerminationUnconfirmed = true;
+			remoteChannel.close();
+			await wait(0);
+			return;
+		}
 		const child = this.child;
 		if (child === undefined || this.exitSeen) return;
 		this.closing = true;
@@ -1025,7 +1324,7 @@ export class OperationWorkerSupervisor {
 
 	private async stopAndCleanupProcess(): Promise<void> {
 		const child = this.child;
-		if (child === undefined) return;
+		if (child === undefined && this.remoteChannel === undefined) return;
 		await this.stopProcessTree();
 		let exited = this.exitSeen;
 		if (!exited && this.exitWaiter !== undefined) {
@@ -1034,7 +1333,7 @@ export class OperationWorkerSupervisor {
 				this.config.terminateTimeoutMs ?? DEFAULT_TERMINATE_TIMEOUT_MS,
 			)).timedOut;
 		}
-		if (!exited && child.pid !== undefined) {
+		if (!exited && child?.pid !== undefined) {
 			killProcessTree(child.pid);
 			if (this.exitWaiter !== undefined) {
 				exited = !(await this.withTimeout(
@@ -1043,7 +1342,11 @@ export class OperationWorkerSupervisor {
 				)).timedOut;
 			}
 		}
-		if (!exited && child.pid !== undefined) this.quarantinedValue = true;
+		if (!exited && child?.pid !== undefined) this.quarantinedValue = true;
+		if (!exited && this.remoteChannel !== undefined) {
+			this.remoteTerminationUnconfirmed = true;
+			this.quarantinedValue = true;
+		}
 		this.cleanupProcess();
 	}
 
@@ -1086,7 +1389,16 @@ export class OperationWorkerSupervisor {
 			child.stderr.destroy();
 		}
 		this.child = undefined;
+		this.remoteChannel?.detach();
+		this.remoteChannel = undefined;
 		this.stdoutBuffer = "";
+	}
+
+	private hasLiveConnection(): boolean {
+		return !this.exitSeen && (
+			this.child !== undefined ||
+			(this.remoteChannel !== undefined && !this.remoteChannel.closed)
+		);
 	}
 
 	private hasTrustedExecutionTerminal(): boolean {

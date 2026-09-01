@@ -19,6 +19,9 @@ export type {
 	TelemetryAttributeMetadata,
 	TelemetryAttributeType,
 	TelemetryContext,
+	OtlpHttpTelemetryDiagnostic,
+	OtlpHttpTelemetryOptions,
+	OtlpHttpTelemetryStats,
 	TelemetryEventAttributeDefinition,
 	TelemetryEventDefinition,
 	TelemetryParentDefinition,
@@ -39,6 +42,7 @@ export {
 	defineTelemetrySchema,
 	InMemoryTelemetryContext,
 	NOOP_TELEMETRY_CONTEXT,
+	OtlpHttpTelemetryContext,
 } from "@aos-agent/telemetry";
 export * from "./agent.ts";
 // Loop functions
@@ -123,6 +127,7 @@ export * from "./harness/prompt-templates.ts";
 // Foundation runtime contracts
 export * from "./harness/profile.ts";
 export * from "./harness/plugins.ts";
+export * from "./harness/result-producers.ts";
 export * from "./harness/runtime-services.ts";
 export * from "./harness/tool-gateway.ts";
 export * from "./harness/tool-pipeline.ts";

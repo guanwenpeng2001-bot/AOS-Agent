@@ -151,6 +151,11 @@ describe("parseArgs", () => {
 			expect(result.mode).toBe("rpc");
 		});
 
+		test("parses --mode web", () => {
+			const result = parseArgs(["--mode", "web"]);
+			expect(result.mode).toBe("web");
+		});
+
 		test("parses and validates --rpc-listen", () => {
 			const result = parseArgs(["--mode", "rpc", "--rpc-listen", "tcp://127.0.0.1:4123"]);
 			expect(result.rpcListen).toEqual({ transport: "tcp", host: "127.0.0.1", port: 4123 });
@@ -163,22 +168,115 @@ describe("parseArgs", () => {
 			expect(result.diagnostics).toEqual([]);
 		});
 
+		test("parses a loopback WebSocket --rpc-listen address", () => {
+			const result = parseArgs(["--mode", "rpc", "--rpc-listen", "ws://127.0.0.1:4123"]);
+			expect(result.rpcListen).toEqual({
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: 4123,
+				path: "/rpc",
+			});
+			expect(result.diagnostics).toEqual([]);
+		});
+
 		test("requires --mode rpc for --rpc-listen", () => {
 			const result = parseArgs(["--rpc-listen", "tcp://127.0.0.1:4123"]);
 			expect(result.rpcListen).toBeUndefined();
 			expect(result.diagnostics).toEqual([{ type: "error", message: "--rpc-listen requires --mode rpc" }]);
 		});
 
-		test("rejects an invalid --rpc-listen address", () => {
+		test("rejects an unsecured non-loopback --rpc-listen address", () => {
 			const result = parseArgs(["--mode", "rpc", "--rpc-listen", "tcp://0.0.0.0:4123"]);
-			expect(result.rpcListen).toBeUndefined();
+			expect(result.rpcListen).toEqual({ transport: "tcp", host: "0.0.0.0", port: 4123 });
 			expect(result.diagnostics).toEqual([
 				{
 					type: "error",
-					message:
-						"Invalid --rpc-listen address: TCP transport address must use the IPv4 loopback host 127.0.0.1.",
+					message: "non-loopback endpoint requires authentication",
 				},
 			]);
+		});
+
+		test("parses a remote bearer TLS listener only when all three gates are explicit", () => {
+			const result = parseArgs([
+				"--mode",
+				"rpc",
+				"--rpc-listen",
+				"wss://0.0.0.0:4123",
+				"--rpc-auth",
+				"bearer",
+				"--rpc-bearer-token",
+				"secret",
+				"--rpc-tls-cert",
+				"server.crt",
+				"--rpc-tls-key",
+				"server.key",
+				"--rpc-allow-remote",
+			]);
+			expect(result.diagnostics).toEqual([]);
+			expect(result.rpcListen).toEqual({
+				transport: "websocket",
+				host: "0.0.0.0",
+				port: 4123,
+				path: "/rpc",
+				auth: { scheme: "bearer", bearerToken: "secret" },
+				tls: { enabled: true, minVersion: "1.2", certRef: "server.crt", keyRef: "server.key" },
+				allowRemote: true,
+			});
+		});
+
+		test("rejects remote bearer auth without TLS", () => {
+			const result = parseArgs([
+				"--mode",
+				"rpc",
+				"--rpc-listen",
+				"tcp://0.0.0.0:4123",
+				"--rpc-bearer-token",
+				"secret",
+				"--rpc-allow-remote",
+			]);
+			expect(result.diagnostics).toEqual([
+				{ type: "error", message: "non-loopback endpoint requires TLS" },
+			]);
+		});
+
+		test("requires explicit allowRemote after remote auth and TLS are configured", () => {
+			const result = parseArgs([
+				"--mode",
+				"rpc",
+				"--rpc-listen",
+				"wss://0.0.0.0:4123",
+				"--rpc-bearer-token",
+				"secret",
+				"--rpc-tls-cert",
+				"server.crt",
+				"--rpc-tls-key",
+				"server.key",
+			]);
+			expect(result.diagnostics).toEqual([
+				{ type: "error", message: "remote endpoint requires explicit allowRemote" },
+			]);
+		});
+
+		test("parses mTLS credential paths", () => {
+			const result = parseArgs([
+				"--mode",
+				"rpc",
+				"--rpc-listen",
+				"wss://127.0.0.1:4123",
+				"--rpc-auth",
+				"mtls",
+				"--rpc-tls-cert",
+				"server.crt",
+				"--rpc-tls-key",
+				"server.key",
+				"--rpc-tls-client-ca",
+				"clients.pem",
+			]);
+			expect(result.diagnostics).toEqual([]);
+			expect(result.rpcListen).toMatchObject({
+				auth: { scheme: "mtls" },
+				tls: { certRef: "server.crt", keyRef: "server.key", clientCaRef: "clients.pem" },
+			});
 		});
 
 		test("requires a value for --rpc-listen", () => {
@@ -246,6 +344,20 @@ describe("parseArgs", () => {
 			expect(result.print).toBe(true);
 			expect(result.model).toBe("gpt-4o");
 			expect(result.messages).toEqual(["hello"]);
+		});
+	});
+
+	describe("--from-pr flag", () => {
+		test("parses a pull request reference", () => {
+			const result = parseArgs(["--from-pr", "https://github.com/example/repo/pull/42"]);
+			expect(result.fromPr).toBe("https://github.com/example/repo/pull/42");
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("reports a missing pull request reference", () => {
+			expect(parseArgs(["--from-pr"]).diagnostics).toEqual([
+				{ type: "error", message: "--from-pr requires a value" },
+			]);
 		});
 	});
 

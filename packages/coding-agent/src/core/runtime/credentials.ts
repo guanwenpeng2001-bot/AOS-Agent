@@ -50,6 +50,22 @@ export class RuntimeCredentials implements CredentialStore {
 		return [...entries.values()];
 	}
 
+	/** @internal Read current secret material for exact-match DLP scanning. */
+	async getDlpCredentialMaterials(options?: AuthOperationOptions): Promise<readonly string[]> {
+		const providerIds = new Set((await this.store.list(options)).map((entry) => entry.providerId));
+		for (const providerId of this.overrides.keys()) providerIds.add(providerId);
+		const credentials = await Promise.all([...providerIds].map((providerId) => this.read(providerId, options)));
+		const materials: string[] = [];
+		for (const credential of credentials) {
+			if (credential?.type === "api_key") {
+				if (credential.key !== undefined) materials.push(credential.key);
+				continue;
+			}
+			if (credential?.type === "oauth") materials.push(credential.access, credential.refresh);
+		}
+		return materials;
+	}
+
 	modify(
 		providerId: string,
 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,

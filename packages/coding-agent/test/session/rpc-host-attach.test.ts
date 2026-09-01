@@ -4,15 +4,15 @@ import { join } from "node:path";
 import { Agent } from "@aos-agent/agent-core";
 import { type AssistantMessage, type AssistantMessageEvent, EventStream, type Model } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentSession } from "../../src/core/session/agent-session.ts";
-import { getAgentCanonicalSession, getAgentSessionLedger } from "../../src/core/session/facade.ts";
-import type { AgentSessionRuntime } from "../../src/core/session/runtime.ts";
 import { createExtensionRuntime } from "../../src/core/extensions/loader.ts";
-import { ExecutionAuditQuery } from "../../src/core/session/execution-audit-query.ts";
 import type { ModelRuntime } from "../../src/core/runtime/model-runtime.ts";
 import type { ResourceLoader } from "../../src/core/runtime/resource-loader.ts";
-import { SessionManager } from "../../src/core/session/manager.ts";
 import { SettingsManager } from "../../src/core/runtime/settings-manager.ts";
+import { AgentSession } from "../../src/core/session/agent-session.ts";
+import { ExecutionAuditQuery } from "../../src/core/session/execution-audit-query.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../../src/core/session/facade.ts";
+import { SessionManager } from "../../src/core/session/manager.ts";
+import type { AgentSessionRuntime } from "../../src/core/session/runtime.ts";
 import {
 	RpcHostController,
 	type RpcHostOutputRecord,
@@ -175,6 +175,49 @@ function hasRecord(records: RpcHostOutputRecord[], type: string): boolean {
 
 describe("RpcHostController dispatch and attach", () => {
 	afterEach(() => vi.restoreAllMocks());
+
+	it("negotiates network auth and TLS features with validated endpoint facts", async () => {
+		const { runtimeHost, cleanup } = await createRuntimeHost();
+		const controller = new RpcHostController(runtimeHost, {
+			endpointKind: "websocket",
+			endpointSecurity: {
+				kind: "websocket",
+				loopback: false,
+				authScheme: "bearer",
+				tlsEnabled: true,
+				allowRemote: true,
+			},
+		});
+		await controller.start();
+		try {
+			const response = await controller.dispatch({
+				id: "initialize",
+				type: "initialize",
+				protocolVersion: 1,
+				client: {
+					versions: { min: 1, max: 1 },
+					features: ["transport.websocket", "transport.auth", "transport.tls"],
+				},
+			});
+			expect(response).toMatchObject({
+				success: true,
+				data: {
+					protocol: {
+						server: {
+							features: ["transport.websocket", "transport.auth", "transport.tls"],
+						},
+						negotiated: {
+							features: ["transport.websocket", "transport.auth", "transport.tls"],
+						},
+						endpoint: { authScheme: "bearer", tlsEnabled: true, allowRemote: true },
+					},
+				},
+			});
+		} finally {
+			await controller.shutdown();
+			await cleanup();
+		}
+	});
 
 	it("returns dispatch responses and settles a detached run without replaying it", async () => {
 		const { runtimeHost, cleanup } = await createRuntimeHost();

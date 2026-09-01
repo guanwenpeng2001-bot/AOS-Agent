@@ -101,6 +101,34 @@ describe("RpcClient Automation Host request shapes", () => {
 		expect(data.run.status).toBe("completed");
 	});
 
+	it("reads task graphs through typed get and list commands", async () => {
+		const { client, privateClient } = createClient();
+		const graph = {
+			schemaVersion: 1 as const,
+			sessionId: "s1",
+			taskId: "task-1",
+			graphRevision: 1,
+			createdAt: "2026-09-01T00:00:00.000Z",
+			nodes: [],
+			summary: { status: "active", pending: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0 },
+		};
+		const send = vi.fn(async (command: { type: string }) => ({
+			type: "response",
+			command: command.type,
+			success: true,
+			data: command.type === "task.graph.get" ? { graph } : { graphs: [graph], truncated: false },
+		}));
+		privateClient.send = send;
+
+		await expect(client.getTaskGraph("task-1", 1)).resolves.toEqual({ graph });
+		expect(send).toHaveBeenLastCalledWith({ type: "task.graph.get", taskId: "task-1", graphRevision: 1 });
+		await expect(client.listTaskGraphs({ status: "active", limit: 10 })).resolves.toEqual({
+			graphs: [graph],
+			truncated: false,
+		});
+		expect(send).toHaveBeenLastCalledWith({ type: "task.graph.list", status: "active", limit: 10 });
+	});
+
 	it("cancelRun sends run.cancel and returns the immediate status without waiting for a terminal", async () => {
 		const { client, privateClient } = createClient();
 		const send = vi.fn(async () => ({

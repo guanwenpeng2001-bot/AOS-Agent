@@ -3,6 +3,7 @@ import type {
 	AgentEvent,
 	AgentMessage,
 	AgentTool,
+	TelemetryContext,
 	ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { Api, ImageContent, Model } from "@aos-agent/ai";
@@ -102,6 +103,8 @@ export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
+	telemetryContext?: TelemetryContext;
+	telemetryShutdown?: () => Promise<void>;
 	agentDir?: string;
 	cwd: string;
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
@@ -125,6 +128,8 @@ export interface AgentSessionConfig {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	policyProfile?: string;
+	/** @internal Initial exact-match DLP material; retained in memory only. */
+	dlpCredentialMaterials?: readonly string[];
 	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
 	capabilityApprovedDescriptorIds?: ReadonlyArray<string>;
 	noTools?: "all" | "builtin";

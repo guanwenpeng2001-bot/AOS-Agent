@@ -80,6 +80,18 @@ export interface RetrySettings {
 	provider?: ProviderRetrySettings;
 }
 
+export interface TelemetrySettings {
+	enabled?: boolean; // default: false
+	endpoint?: string; // default: http://localhost:4318
+	sampleRate?: number; // default: 1
+}
+
+export interface ResolvedTelemetrySettings {
+	enabled: boolean;
+	endpoint: string;
+	sampleRate: number;
+}
+
 export type TuiMode = RendererTuiMode;
 export type FullscreenExitOutput = "transcript" | "resume-hint";
 
@@ -111,6 +123,11 @@ export interface MarkdownSettings {
 
 export interface WarningSettings {
 	anthropicExtraUsage?: boolean; // default: true
+}
+
+export interface AuditSettings {
+	/** HMAC secret shared by audit cursors across Host restarts. */
+	cursorSecret?: string;
 }
 
 export type DefaultProjectTrust = "ask" | "always" | "never";
@@ -148,6 +165,7 @@ export interface Settings {
 	memory?: MemorySettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
+	telemetry?: TelemetrySettings;
 	hideThinkingBlock?: boolean;
 	showCacheMissNotices?: boolean; // default: false - show transcript notices for significant prompt-cache misses
 	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR
@@ -178,6 +196,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
+	audit?: AuditSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for AOS Agent-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
@@ -1237,6 +1256,33 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getTelemetrySettings(): ResolvedTelemetrySettings {
+		const telemetry = this.settings.telemetry;
+		if (telemetry === undefined) {
+			return { enabled: false, endpoint: "http://localhost:4318", sampleRate: 1 };
+		}
+		if (telemetry.enabled !== undefined && typeof telemetry.enabled !== "boolean") {
+			throw new Error("Invalid telemetry.enabled setting: expected a boolean");
+		}
+		if (
+			telemetry.endpoint !== undefined &&
+			(typeof telemetry.endpoint !== "string" || telemetry.endpoint.trim().length === 0)
+		) {
+			throw new Error("Invalid telemetry.endpoint setting: expected a non-empty string");
+		}
+		if (
+			telemetry.sampleRate !== undefined &&
+			(!Number.isFinite(telemetry.sampleRate) || telemetry.sampleRate < 0 || telemetry.sampleRate > 1)
+		) {
+			throw new Error("Invalid telemetry.sampleRate setting: expected a number between 0 and 1");
+		}
+		return {
+			enabled: telemetry.enabled ?? false,
+			endpoint: telemetry.endpoint?.trim() ?? "http://localhost:4318",
+			sampleRate: telemetry.sampleRate ?? 1,
+		};
+	}
+
 	getEnableAnalytics(): boolean {
 		return this.settings.enableAnalytics ?? false;
 	}
@@ -1557,6 +1603,15 @@ export class SettingsManager {
 
 	getWarnings(): WarningSettings {
 		return { ...(this.settings.warnings ?? {}) };
+	}
+
+	getAuditCursorSecret(): string | undefined {
+		const secret = this.settings.audit?.cursorSecret;
+		if (secret === undefined) return undefined;
+		if (typeof secret !== "string" || secret.length < 32) {
+			throw new Error("Invalid audit.cursorSecret setting: expected at least 32 characters");
+		}
+		return secret;
 	}
 
 	setWarnings(warnings: WarningSettings): void {

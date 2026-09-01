@@ -68,6 +68,7 @@ export type AuditQueryScope = (typeof AUDIT_QUERY_SCOPES)[number];
 
 export const AUDIT_QUERY_COMMAND = "audit.query" as const;
 export const AUDIT_REPLAY_COMMAND = "audit.replay" as const;
+export const AUDIT_EXPORT_COMMAND = "audit.export" as const;
 
 export const AUDIT_WARNING_CODES = [
 	"unknown_source",

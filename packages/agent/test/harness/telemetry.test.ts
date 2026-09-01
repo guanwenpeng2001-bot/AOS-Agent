@@ -1,8 +1,21 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createTypedSpanStarter, NOOP_TELEMETRY_CONTEXT, type TelemetryContext } from "@aos-agent/telemetry";
+import {
+	createAssistantMessageEventStream,
+	createModels,
+	createProvider,
+	type Model,
+} from "@aos-agent/ai";
+import {
+	createTypedSpanStarter,
+	InMemoryTelemetryContext,
+	NOOP_TELEMETRY_CONTEXT,
+	type TelemetryContext,
+} from "@aos-agent/telemetry";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { renderAgentTelemetrySchemaMarkdown } from "../../scripts/generate-telemetry-docs.ts";
+import { AgentHarness } from "../../src/harness/agent-harness.ts";
+import { InMemorySessionStorage, Session } from "../../src/harness/session/index.ts";
 import {
 	AGENT_TELEMETRY_SCHEMAS,
 	AI_TELEMETRY_SCHEMA,
@@ -184,5 +197,106 @@ describe("agent telemetry schemas", () => {
 			void startHarnessSpan(telemetryContext, "aos.harness.run", {}, () => {});
 		};
 		expectTypeOf(compileTimeFailures).toBeFunction();
+	});
+
+	it("records nested production run, turn, step, and AI request spans", async () => {
+		const telemetry = new InMemoryTelemetryContext();
+		const model: Model<"telemetry-production"> = {
+			id: "model",
+			name: "Model",
+			api: "telemetry-production",
+			provider: "telemetry-provider",
+			baseUrl: "https://example.test",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		};
+		const models = createModels();
+		models.setProvider(createProvider({
+			id: model.provider,
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: { apiKey: "key" } }) } },
+			models: [model],
+			api: {
+				stream: (requestModel) => {
+					const stream = createAssistantMessageEventStream();
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "ok" }],
+							api: requestModel.api,
+							provider: requestModel.provider,
+							model: requestModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 2,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							stopReason: "stop",
+							timestamp: 1,
+						},
+					});
+					return stream;
+				},
+				streamSimple: (requestModel) => {
+					const stream = createAssistantMessageEventStream();
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: "ok" }],
+							api: requestModel.api,
+							provider: requestModel.provider,
+							model: requestModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 2,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							stopReason: "stop",
+							timestamp: 1,
+						},
+					});
+					return stream;
+				},
+			},
+		}));
+		const session = new Session(new InMemorySessionStorage({ id: "telemetry-session", createdAt: 1 }));
+		const { harness } = await AgentHarness.create({ session, models, model, context: telemetry });
+		try {
+			const result = await harness.prompt("hello");
+			expect(result.ok && result.value.kind).toBe("completed");
+		} finally {
+			await harness.close();
+		}
+
+		const spans = telemetry.getSpans();
+		expect(spans.map((span) => span.name)).toEqual([
+			"aos.harness.run",
+			"aos.harness.turn",
+			"aos.harness.step",
+			"aos.ai.request",
+		]);
+		const [runSpan, turnSpan, stepSpan, requestSpan] = spans;
+		expect(runSpan?.attributes).toMatchObject({
+			"aos.session.id": "telemetry-session",
+			"aos.operation.kind": "run",
+			"aos.operation.outcome": "completed",
+		});
+		expect(turnSpan?.parentId).toBe(runSpan?.id);
+		expect(stepSpan?.parentId).toBe(turnSpan?.id);
+		expect(requestSpan?.parentId).toBe(stepSpan?.id);
+		expect(stepSpan?.attributes["aos.step.outcome"]).toBe("succeeded");
+		expect(requestSpan?.attributes["aos.ai.response.stop_reason"]).toBe("stop");
 	});
 });

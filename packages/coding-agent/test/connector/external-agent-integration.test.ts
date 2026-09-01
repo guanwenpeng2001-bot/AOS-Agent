@@ -291,6 +291,7 @@ describe("final acceptance: External Connector product integration", () => {
 		expect(current.driver.spawnedRequest?.input).toEqual(input);
 		expect(execution.attemptReceipt.provenance.producerKind).toBe("external_connector");
 		expect(execution.taskResult.sourceAttemptReceiptIds).toEqual([execution.attemptReceipt.attemptReceiptId]);
+		expect(execution.taskResult.diff).toBeUndefined();
 		expect(execution.runReceipt.taskResultId).toBe(execution.taskResult.taskResultId);
 		expect(execution.runReceipt.terminalStatus).toBe("completed");
 		expect(execution.initialBindingEpoch.agentInstanceId).toBeUndefined();
@@ -313,6 +314,49 @@ describe("final acceptance: External Connector product integration", () => {
 		]) {
 			expect(types.filter((type) => type === objectType)).toHaveLength(1);
 		}
+	});
+
+	it("projects a content-addressed Connector patch artifact as the durable TaskResult diff", async () => {
+		const current = await fixture({ artifacts: true });
+		const digest = "d".repeat(64);
+		current.driver.terminalArtifacts = [{
+			schemaVersion: 1,
+			artifactId: "vendor-patch-name",
+			mediaType: "text/x-diff",
+			digest: `sha256:${digest}`,
+			sizeBytes: 71,
+		}];
+		const input: CanonicalExternalAgentInput = {
+			schemaVersion: 1,
+			text: "produce a durable patch",
+			artifacts: [],
+		};
+		const execution = await executeExternalConnectorProductRun({
+			session: current.session,
+			writer: current.ledger.writer,
+			registry: current.registry,
+			selection: {
+				providerId: current.descriptor.providerId,
+				revision: current.descriptor.revision,
+				capabilitySnapshotDigest: current.descriptor.capabilitySnapshotDigest,
+			},
+			runId: "run-external-diff",
+			message: input.text,
+			canonicalInput: input,
+			inputAdmission: { inspectArtifact: () => { throw new Error("no input artifacts"); } },
+			workspace: "workspace-ref",
+			now: () => NOW,
+		});
+		const expected = {
+			schemaVersion: 1,
+			artifactId: digest,
+			mediaType: "text/x-diff",
+			digest: `sha256:${digest}`,
+			sizeBytes: 71,
+		};
+		expect(execution.attemptReceipt.artifacts).toEqual([expected]);
+		expect(execution.taskResult.diff).toEqual(expected);
+		expect(execution.taskResult.artifacts).toContainEqual(expected);
 	});
 
 	it("canonicalizes untrusted terminal errors and Artifact metadata before every durable or public surface", async () => {

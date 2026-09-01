@@ -44,6 +44,7 @@ import type {
 } from "./manager.ts";
 import { registerSessionReadProjectionInitializer, type SessionManager } from "./manager.ts";
 import { createCustomMessage } from "../messages.ts";
+import type { DlpScanner } from "../dlp.ts";
 
 /** Reserved custom-entry types used to store canonical Harness state in the existing JSONL file. */
 export const FOUNDATION_ENTRY_CUSTOM_TYPE = "__aos.foundation.entry.v1";
@@ -73,6 +74,9 @@ export interface CodingAgentSessionMetadata extends SessionMetadata {
 	cwd: string;
 	path?: string;
 	legacyVersion: 3;
+	fromPr?: string;
+	archived: boolean;
+	archivedAt?: number;
 }
 
 interface FoundationEntryEnvelope {
@@ -461,6 +465,8 @@ function usageStats(records: readonly LaneRecord[]): SessionStats {
 function makeMetadata(manager: SessionManager): CodingAgentSessionMetadata {
 	const header = manager.getHeader();
 	if (!header) failClosed("session header is missing");
+	const archiveState = manager.getArchiveState();
+	const fromPr = manager.getFromPr();
 	return {
 		id: header.id,
 		createdAt: toTimestamp(header.timestamp, 0),
@@ -468,6 +474,11 @@ function makeMetadata(manager: SessionManager): CodingAgentSessionMetadata {
 		cwd: header.cwd,
 		...(manager.getSessionFile() === undefined ? {} : { path: manager.getSessionFile() }),
 		legacyVersion: 3,
+		...(fromPr === undefined ? {} : { fromPr }),
+		archived: archiveState.archived,
+		...(archiveState.archivedAt === undefined
+			? {}
+			: { archivedAt: Date.parse(archiveState.archivedAt) }),
 	};
 }
 
@@ -480,14 +491,14 @@ function makeMetadata(manager: SessionManager): CodingAgentSessionMetadata {
  */
 export class SessionManagerStorage implements SessionStorage<CodingAgentSessionMetadata>, DurableLedgerApi {
 	private readonly manager: SessionManager;
-	private readonly metadata: CodingAgentSessionMetadata;
 	private readonly tail: { promise: Promise<void> } = { promise: Promise.resolve() };
 	private ledgerLease: LedgerWriterLease | null = null;
 	private ledgerLeaseRevision = 0;
+	private dlpScanner: DlpScanner | undefined;
 
-	constructor(manager: SessionManager) {
+	constructor(manager: SessionManager, options?: { dlpScanner?: DlpScanner }) {
 		this.manager = manager;
-		this.metadata = makeMetadata(manager);
+		this.dlpScanner = options?.dlpScanner;
 		this.snapshot();
 		this.manager.setEntriesReadProjection(
 			() => this.legacyEntriesSnapshot(),
@@ -495,6 +506,14 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 			() => this.snapshot().lanes.find((lane) => lane.lane === "main")?.leafId ?? null,
 			() => new Map(this.snapshot().lanes.map((lane) => [lane.lane, lane.leafId])),
 		);
+	}
+
+	setDlpScanner(scanner: DlpScanner): void {
+		this.dlpScanner = scanner;
+	}
+
+	getDlpScanner(): DlpScanner | undefined {
+		return this.dlpScanner;
 	}
 
 	/**
@@ -889,6 +908,12 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		return clone(assigned);
 	}
 
+	private async protectEntryForPersistence<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>): Promise<ProvisionedEntry<TEntry>> {
+		if (entry.type !== "message" || entry.message.role !== "toolResult" || this.dlpScanner === undefined) return entry;
+		const message = await this.dlpScanner.protectToolResultForPersistence(entry.message);
+		return (message === entry.message ? entry : { ...entry, message }) as ProvisionedEntry<TEntry>;
+	}
+
 	private async appendCanonicalRecord<TRecord extends LaneRecord>(record: NewRecord<TRecord>): Promise<TRecord> {
 		const snapshot = this.snapshot();
 		if (!snapshot.lanes.some((lane) => lane.lane === record.lane)) {
@@ -904,7 +929,7 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 	}
 
 	private foundationState(): FoundationLedgerState {
-		const state = new FoundationLedgerState({ sessionId: this.metadata.id });
+		const state = new FoundationLedgerState({ sessionId: this.manager.getSessionId() });
 		const physical = this.physicalEntries();
 		for (let index = 0; index < physical.length; index += 1) {
 			const seq = index + 1;
@@ -978,6 +1003,21 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 					record: result.record,
 				}, result.record.id);
 			}
+			const currentState = this.foundationState();
+			const latestRetention = currentState.getRecords()
+				.filter((record): record is Extract<FoundationRecord, { kind: "retention" }> => record.kind === "retention")
+				.at(-1);
+			if (
+				result.record.kind === "retention" &&
+				latestRetention?.retentionRevision === result.record.retentionRevision
+			) {
+				const prunable = currentState.prunableFoundationRecords();
+				this.manager.executeFoundationRetention(prunable, {
+					recordId: result.record.id,
+					revision: result.record.retentionRevision,
+					cutSequence: policy.cutSequence,
+				});
+			}
 			return clone(result);
 		});
 	}
@@ -1007,7 +1047,14 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 	}
 
 	getMetadata(): Promise<CodingAgentSessionMetadata> {
-		return Promise.resolve(clone(this.metadata));
+		return Promise.resolve(clone(makeMetadata(this.manager)));
+	}
+
+	setArchived(archived: boolean, archivedAt?: Date): Promise<CodingAgentSessionMetadata> {
+		return this.enqueue(async () => {
+			this.manager.setArchived(archived, archivedAt);
+			return clone(makeMetadata(this.manager));
+		});
 	}
 
 	getLanes(): Promise<LanePointer[]> {
@@ -1033,11 +1080,14 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 	}
 
 	appendEntry<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>, lane: string): Promise<TEntry> {
-		return this.enqueue(() => this.appendCanonicalEntry(entry, lane));
+		return this.enqueue(async () => this.appendCanonicalEntry(await this.protectEntryForPersistence(entry), lane));
 	}
 
 	/** Synchronous physical commit for legacy callers whose logical writer is AgentHarness. */
 	appendHarnessEntry<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>, lane: string): TEntry {
+		if (entry.type === "message" && entry.message.role === "toolResult" && this.dlpScanner !== undefined) {
+			throw new TypeError("Tool results must use the asynchronous DLP persistence boundary");
+		}
 		return this.appendCanonicalEntry(entry, lane);
 	}
 
@@ -1193,7 +1243,9 @@ export function createHarnessCompatibilityWriter(
 ): HarnessCompatibilityWriter {
 	return {
 		recordMessage: (message) => {
-			storage.appendHarnessEntry({ type: "message", id: session.idGenerator.next(), message }, "main");
+			const entry = { type: "message" as const, id: session.idGenerator.next(), message };
+			if (message.role === "toolResult") return storage.appendEntry(entry, "main").then(() => undefined);
+			storage.appendHarnessEntry(entry, "main");
 		},
 		recordCustomEntry: (customType, data) => {
 			const id = session.idGenerator.next();

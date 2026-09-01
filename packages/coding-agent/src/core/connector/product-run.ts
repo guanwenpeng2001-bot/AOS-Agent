@@ -9,10 +9,12 @@ import {
 	fingerprintFoundationValue,
 	FoundationError,
 	LayeredResultSettlement,
+	aggregateTaskResultProducers,
 	persistTaskEnvelopeBeforeResolver,
 	resolveAgentBinding,
 	resolveMcpSelection,
 	SessionLedger,
+	writeTaskResultArtifact,
 	validateBindingEpoch,
 	validateDispatch,
 	validateTaskEnvelope,
@@ -21,6 +23,7 @@ import {
 	type AttemptReceipt,
 	type BindingEpoch,
 	type Dispatch,
+	type DurableTaskResultToolRecord,
 	type ExecutionCorrelation,
 	type Fingerprint,
 	type FoundationJsonValue,
@@ -62,16 +65,20 @@ import {
 } from "./registry.ts";
 import {
 	EXTERNAL_CONNECTOR_EXECUTION_INPUT_OBJECT_TYPE,
+	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 	SessionExternalConnectorDurableStore,
+	externalConnectorToolGatewayExchangeId,
 	type ExternalConnectorExecutionInput,
 	type ExternalConnectorToolGatewayTerminal,
 } from "./operation.ts";
 import type { ExternalConnectorToolGatewayBinding } from "./tool-gateway-binding.ts";
 
 const DECLARED_AT = "1970-01-01T00:00:00.000Z";
+type TaskResultArtifactStore = Parameters<typeof writeTaskResultArtifact>[0];
 
 export interface ExternalConnectorProductExecutionInput {
 	readonly session: Session;
+	readonly artifactStore?: TaskResultArtifactStore;
 	readonly writer?: SessionLedgerWriter;
 	readonly registry: ExternalConnectorRegistry;
 	readonly selection: ExternalConnectorSelection;
@@ -114,6 +121,7 @@ export interface ExternalConnectorToolGatewayExchange {
 
 export interface ExternalConnectorProductRecoveryInput {
 	readonly session: Session;
+	readonly artifactStore?: TaskResultArtifactStore;
 	readonly writer?: SessionLedgerWriter;
 	readonly registry: ExternalConnectorRegistry;
 	readonly runId: string;
@@ -829,6 +837,7 @@ export async function executePreparedExternalConnectorProductRun(
 			...(input.signal === undefined ? {} : { signal: input.signal }),
 		});
 		if (!executed.ok) throw executed.error;
+		const gatewayExchanges = await toolGatewayExchanges(store, epoch.attemptId);
 		const execution = await settleExternalConnectorProductRun(
 			settlement,
 			{
@@ -841,8 +850,9 @@ export async function executePreparedExternalConnectorProductRun(
 				timestamp,
 			},
 			input.runId,
+			gatewayExchanges,
+			input.artifactStore,
 		);
-		const gatewayExchanges = await toolGatewayExchanges(store, epoch.attemptId);
 		return gatewayExchanges.length === 0
 			? execution
 			: Object.freeze({ ...execution, toolGatewayExchanges: gatewayExchanges });
@@ -857,19 +867,43 @@ async function settleExternalConnectorProductRun(
 	settlement: LayeredResultSettlement,
 	persisted: PersistedExternalConnectorProductRun,
 	runId: string,
+	gatewayExchanges: readonly ExternalConnectorToolGatewayExchange[] = [],
+	artifactStore?: TaskResultArtifactStore,
 ): Promise<ExternalConnectorProductExecution> {
 	const { task, binding, dispatch, initialBindingEpoch, correlation, attemptReceipt, timestamp } = persisted;
 	const taskResultId = `task_result_${runId}`;
+	const durableTools: DurableTaskResultToolRecord[] = gatewayExchanges.map((exchange) => ({
+		toolCallId: exchange.request.toolCallId,
+		toolName: exchange.request.toolName,
+		arguments: exchange.request.originalArguments,
+		outcome: exchange.result.ok ? "succeeded" : "failed",
+		sideEffectState: exchange.result.sideEffectState,
+		artifacts: [...(exchange.result.artifacts ?? [])],
+		...(exchange.result.result === undefined ? {} : { result: exchange.result.result }),
+		source: {
+			objectType: EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
+			objectId: externalConnectorToolGatewayExchangeId(attemptReceipt.attemptId, exchange.request.toolCallId),
+			revision: 2,
+			digest: fingerprintFoundationValue(exchange).value,
+		},
+	}));
+	const produced = await aggregateTaskResultProducers({
+		...(attemptReceipt.error?.message === undefined ? {} : { summary: attemptReceipt.error.message }),
+		artifacts: attemptReceipt.artifacts,
+		durableTools,
+		attemptReceipt,
+		...(artifactStore === undefined
+			? {}
+			: { writeArtifact: (artifact) => writeTaskResultArtifact(artifactStore, artifact) }),
+	});
 	const settled = await settlement.settle({
 		taskResultId,
 		task,
 		sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId],
-		summary:
-			attemptReceipt.status === "succeeded"
-				? "External connector run completed"
-				: "External connector run did not complete",
-		artifacts: attemptReceipt.artifacts,
-		tests: [],
+		summary: produced.summary,
+		artifacts: produced.artifacts,
+		...(produced.diff === undefined ? {} : { diff: produced.diff }),
+		tests: produced.tests,
 		evidence: [],
 		producer: {
 			producerKind: "host",
@@ -1133,6 +1167,7 @@ export async function recoverExternalConnectorProductRun(
 			prepared = {
 				input: {
 					session: input.session,
+					...(input.artifactStore === undefined ? {} : { artifactStore: input.artifactStore }),
 					...(input.writer === undefined ? {} : { writer: input.writer }),
 					registry: input.registry,
 					selection,
@@ -1179,6 +1214,7 @@ export async function recoverExternalConnectorProductRun(
 			}
 			const admission = await prepareExternalConnectorProductRun({
 				session: input.session,
+				...(input.artifactStore === undefined ? {} : { artifactStore: input.artifactStore }),
 				...(input.writer === undefined ? {} : { writer: input.writer }),
 				registry: input.registry,
 				selection,
@@ -1298,6 +1334,7 @@ export async function recoverExternalConnectorProductRun(
 								requireFactPayload(priorTaskResultRecord, "task_result", `task_result_${input.runId}`),
 							),
 						).provenance.producedAt;
+			const gatewayExchanges = await toolGatewayExchanges(store, identity.attemptId);
 			const execution = await settleExternalConnectorProductRun(
 				settlement,
 				{
@@ -1310,8 +1347,9 @@ export async function recoverExternalConnectorProductRun(
 					timestamp: settlementTimestamp,
 				},
 				input.runId,
+				gatewayExchanges,
+				input.artifactStore,
 			);
-			const gatewayExchanges = await toolGatewayExchanges(store, identity.attemptId);
 			return gatewayExchanges.length === 0
 				? execution
 				: Object.freeze({ ...execution, toolGatewayExchanges: gatewayExchanges });

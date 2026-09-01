@@ -186,6 +186,13 @@ import {
 	type AgentSessionReadProjection,
 } from "./read-projection.ts";
 import { acquireSessionProcessingLease } from "./processing-lease.ts";
+import { DlpScanner } from "../dlp.ts";
+
+function sandboxProviderIds(providers: AgentSessionConfig["sandboxProviders"]): string[] {
+	if (providers === undefined) return [];
+	if (Array.isArray(providers)) return providers.map((provider) => provider.id);
+	return [...(providers as ReadonlyMap<string, { readonly id: string }>).keys()];
+}
 
 /**
  * Construction inputs for the compatibility facade. The canonical Session and
@@ -199,6 +206,7 @@ export interface CanonicalAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
+	telemetryShutdown?: () => Promise<void>;
 	cwd: string;
 	agentDir?: string;
 	resourceLoader: ResourceLoader;
@@ -308,7 +316,12 @@ function syntheticModelError(model: Model<Api>, errorMessage: string, aborted = 
 }
 
 function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): CanonicalAgentSessionOptions {
-	const storage = new SessionManagerStorage(options.sessionManager);
+	const dlpScanner = new DlpScanner({
+		policy: () => options.settingsManager.getExecutionPolicySettings({ policyProfile: options.policyProfile }).selectedProfile.dlp,
+		credentialMaterials: () => options.modelRuntime.getDlpCredentialMaterials(),
+		initialCredentialMaterials: options.dlpCredentialMaterials,
+	});
+	const storage = new SessionManagerStorage(options.sessionManager, { dlpScanner });
 	const session = new Session(storage);
 	const legacyAgent = options.agent;
 	const harnessModels = typeof options.modelRuntime.getModel === "function"
@@ -402,6 +415,7 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		followUpMode: options.settingsManager.getFollowUpMode(),
 		retry: options.settingsManager.getRetrySettings(),
 		compaction: options.settingsManager.getCompactionSettings(),
+		context: options.telemetryContext,
 		compatibilityWriter: createHarnessCompatibilityWriter(session, storage),
 		...(options.sessionManager.isPersisted()
 			? {}
@@ -414,6 +428,7 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		systemPrompt: legacyAgent.state.systemPrompt,
 		sessionManager: options.sessionManager,
 		settingsManager: options.settingsManager,
+		telemetryShutdown: options.telemetryShutdown,
 		cwd: options.cwd,
 		agentDir: options.agentDir,
 		resourceLoader: options.resourceLoader,
@@ -634,6 +649,7 @@ export class CanonicalAgentSessionServices {
 	private disposed = false;
 	private disposePromise: Promise<void> | undefined;
 	private readonly sessionInfoSubscribers = new Set<AgentSessionEventListener>();
+	private readonly telemetryShutdown: (() => Promise<void>) | undefined;
 
 	constructor(options: CanonicalAgentSessionOptions);
 	/** @deprecated Legacy construction is a synchronous compatibility composition root. */
@@ -648,7 +664,7 @@ export class CanonicalAgentSessionServices {
 		this.canonicalSession = canonical.canonicalSession;
 		this.storage = storage;
 		this.sessionManager = canonical.sessionManager;
-		this.sessionReadProjection = createAgentSessionReadProjection(canonical.sessionManager);
+		this.sessionReadProjection = createAgentSessionReadProjection(canonical.sessionManager, storage.getDlpScanner());
 		this.sessionLedger = {
 			getEntries: () => this.sessionRead.getEntries(),
 			getPhysicalEntries: () => this.storage.getAuditEntriesSnapshot(),
@@ -657,6 +673,7 @@ export class CanonicalAgentSessionServices {
 			appendCustomEntry: (customType: string, data: unknown) => this.harness.recordCustomEntry(customType, data),
 		};
 		this.settingsManager = canonical.settingsManager;
+		this.telemetryShutdown = canonical.telemetryShutdown;
 		this._resourceLoader = canonical.resourceLoader;
 		this._modelRuntime = canonical.modelRuntime;
 		this._modelBroker = canonical.modelBroker ?? new ModelBroker();
@@ -725,6 +742,12 @@ export class CanonicalAgentSessionServices {
 			excludedToolNames: canonical.excludedToolNames,
 			canonicalSession: this.canonicalSession,
 		});
+		this.storage.getDlpScanner()?.setPolicyProvider(
+			() => this.settingsManager.getExecutionPolicySettings({
+				policyProfile: this.controlPlane.getActiveExecutionPolicyProfile(),
+				registeredProviderIds: ["legacy-host", "host-policy", ...sandboxProviderIds(this.runtimeComposition.sandboxProviders)],
+			}).selectedProfile.dlp,
+		);
 		bindAgentRuntimeToolGatewayPolicy(this.runtimeComposition, {
 			authorizeExternalToolGatewayRequest: (request, route) =>
 				this.controlPlane.authorizeExternalToolGatewayRequest(request, route),
@@ -1970,7 +1993,7 @@ export class CanonicalAgentSessionServices {
 		this.sessionInfoSubscribers.add(listener);
 		const unsubscribeAgent = this.harness.events.on("agent_event", (value) => {
 			if (!this.isAgentEventEnvelope(value)) return;
-			listener(agentEventToSessionEvent(value.event));
+			listener(this.projectDlpEvent(agentEventToSessionEvent(value.event)));
 		});
 		const unsubscribeQueue = this.harness.events.on("queue_update", (value) => {
 			if (!this.isQueueUpdate(value)) return;
@@ -2041,6 +2064,32 @@ export class CanonicalAgentSessionServices {
 			unsubscribeSummarizationRetryAttemptStart();
 			unsubscribeSummarizationRetryFinished();
 		};
+	}
+
+	private projectDlpEvent(event: AgentSessionEvent): AgentSessionEvent {
+		const scanner = this.storage.getDlpScanner();
+		if (scanner === undefined) return event;
+		switch (event.type) {
+			case "entry_appended":
+				return event.entry.type === "message" && event.entry.message.role === "toolResult"
+					? { ...event, entry: { ...event.entry, message: scanner.projectToolResult(event.entry.message) } }
+					: event;
+			case "message_start":
+			case "message_end":
+				return event.message.role === "toolResult" ? { ...event, message: scanner.projectToolResult(event.message) } : event;
+			case "turn_end":
+				return { ...event, toolResults: event.toolResults.map((message) => scanner.projectToolResult(message)) };
+			case "tool_execution_update":
+				return { ...event, partialResult: scanner.projectStructured(event.partialResult) };
+			case "tool_execution_end":
+				return { ...event, result: scanner.projectStructured(event.result) };
+			case "agent_end":
+				return { ...event, messages: event.messages.map((message) => scanner.projectToolResult(message)) };
+			case "bash_execution_update":
+				return { ...event, delta: scanner.projectStructured(event.delta) };
+			default:
+				return event;
+		}
 	}
 
 	private isAgentEventEnvelope(value: unknown): value is { type: "agent_event"; event: AgentEvent } {
@@ -3601,7 +3650,7 @@ export class CanonicalAgentSessionServices {
 		const targetSessionFile = targetManager.getSessionFile();
 		onTargetCreated?.(targetSessionFile);
 		try {
-			const targetStorage = new SessionManagerStorage(targetManager);
+			const targetStorage = new SessionManagerStorage(targetManager, { dlpScanner: this.storage.getDlpScanner() });
 			const targetSession = new Session(targetStorage);
 			const copiedEntries = targetId === null
 				? []
@@ -3788,11 +3837,15 @@ export class CanonicalAgentSessionServices {
 	}
 
 	private async disposeInternal(): Promise<void> {
-		this._extensionRunner.invalidate();
-		await this.controlPlane.dispose();
-		this.flushPendingExternalMessages();
-		await this.harness.close();
-		await this.storage.drain();
+		try {
+			this._extensionRunner.invalidate();
+			await this.controlPlane.dispose();
+			this.flushPendingExternalMessages();
+			await this.harness.close();
+			await this.storage.drain();
+		} finally {
+			await this.telemetryShutdown?.();
+		}
 	}
 }
 

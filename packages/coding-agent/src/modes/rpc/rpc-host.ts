@@ -12,12 +12,19 @@
  */
 
 import * as crypto from "node:crypto";
+import { dirname } from "node:path";
 import {
 	AgentOperationError,
 	type CanonicalRunResult,
+	type EndpointKind,
+	type EndpointSecurityVerdict,
 	type FoundationError,
 	fingerprintFoundationValue,
 	LayeredResultSettlement,
+	negotiateProtocol,
+	PROTOCOL_VERSION,
+	type ProtocolCapabilities,
+	type ProtocolFeature,
 	type ResultValue,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
@@ -112,7 +119,12 @@ import {
 	serializePublicSessionEvent,
 	serializePublicSessionTreeNode,
 } from "../../core/session/run-lifecycle.ts";
-import { loadEntriesFromFile, type SessionEntry } from "../../core/session/manager.ts";
+import {
+	loadEntriesFromFile,
+	SessionManager,
+	type SessionEntry,
+	type SessionInfo,
+} from "../../core/session/manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
@@ -145,9 +157,12 @@ import {
 	type WorkerRecord,
 } from "../../core/worker/lifecycle.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
+import { filterAndSortSessions } from "../interactive/components/session-selector-search.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { type JsonAgentSessionEvent, toJsonEvent } from "../json-event.ts";
 import type {
+	AuditExportData,
+	AuditExportQuery,
 	AuditQuery,
 	AuditQueryData,
 	AuditReplayData,
@@ -178,6 +193,7 @@ import type {
 	RpcResponse,
 	RpcSchedulerResponse,
 	RpcSessionState,
+	RpcSessionInfo,
 	RpcSessionStats,
 	RpcSlashCommand,
 	RpcSourceInfo,
@@ -249,6 +265,10 @@ export interface RpcHostOutputSink {
 export interface RpcHostControllerOptions {
 	/** Legacy constructor sink; new callers should use attach(). */
 	output?: RpcHostOutputSink | RpcOutputSink;
+	/** Active transport endpoint used for protocol feature negotiation. */
+	endpointKind?: EndpointKind;
+	/** Validated security facts for the active network listener. */
+	endpointSecurity?: EndpointSecurityVerdict;
 	/** Called after the runtime has been disposed by an internal shutdown request. */
 	onShutdown?: () => void;
 	/** Trusted Host-only authority for dereferencing canonical External Connector artifacts. */
@@ -258,6 +278,8 @@ export interface RpcHostControllerOptions {
 			reference: CanonicalExternalAgentArtifactReference,
 		): ExternalAgentArtifactInspection | Promise<ExternalAgentArtifactInspection>;
 	};
+	/** Host-owned override; settings or a random process secret are used when omitted. */
+	auditCursorSecret?: string | Uint8Array;
 }
 
 /** Minimal authoritative Worker registry seam supplied by Host composition. */
@@ -322,6 +344,9 @@ function adaptOutputSink(sink: RpcOutputSinkLike): RpcHostOutputSink {
 export type {
 	AuditEvent,
 	AuditEventType,
+	AuditExportData,
+	AuditExportQuery,
+	AuditExportResult,
 	AuditQuery,
 	AuditQueryData,
 	AuditQueryResult,
@@ -400,6 +425,36 @@ export type {
 function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
 	const { sessionFile: _sessionFile, ...publicStats } = stats;
 	return publicStats;
+}
+
+function serializeRpcSessionInfo(info: SessionInfo): RpcSessionInfo {
+	return {
+		path: info.path,
+		id: info.id,
+		cwd: info.cwd,
+		...(info.name === undefined ? {} : { name: info.name }),
+		...(info.parentSessionPath === undefined ? {} : { parentSessionPath: info.parentSessionPath }),
+		...(info.fromPr === undefined ? {} : { fromPr: info.fromPr }),
+		ephemeral: false,
+		archived: info.archived,
+		...(info.archivedAt === undefined ? {} : { archivedAt: info.archivedAt.toISOString() }),
+		created: info.created.toISOString(),
+		modified: info.modified.toISOString(),
+		messageCount: info.messageCount,
+		firstMessage: info.firstMessage,
+		allMessagesText: info.allMessagesText,
+	};
+}
+
+async function listRpcSessionInfos(
+	session: AgentSession,
+	options: { all?: boolean; includeArchived?: boolean },
+): Promise<SessionInfo[]> {
+	const sessionDir = session.sessionFile === undefined ? undefined : dirname(session.sessionFile);
+	const listOptions = { includeArchived: options.includeArchived === true };
+	return options.all === true
+		? SessionManager.listAll(sessionDir, listOptions)
+		: SessionManager.list(session.cwd, sessionDir, listOptions);
 }
 
 function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
@@ -729,7 +784,10 @@ export class RpcHostController {
 	private readonly runtimeHost: AgentSessionRuntime;
 	private outputSink: RpcHostOutputSink | undefined;
 	private readonly onShutdown?: () => void;
+	private readonly endpointKind: EndpointKind;
+	private readonly endpointSecurity: EndpointSecurityVerdict;
 	private readonly externalArtifactAuthority?: NonNullable<RpcHostControllerOptions["externalArtifactAuthority"]>;
+	private readonly auditCursorSecret: string | Uint8Array;
 	private commandHandler?: (
 		command: RpcCommand,
 	) => Promise<
@@ -754,7 +812,20 @@ export class RpcHostController {
 		this.runtimeHost = runtimeHost;
 		this.outputSink = options.output === undefined ? undefined : adaptOutputSink(options.output);
 		this.onShutdown = options.onShutdown;
+		this.endpointKind = options.endpointKind ?? "stdio";
+		this.endpointSecurity = options.endpointSecurity ?? {
+			kind: this.endpointKind,
+			loopback: true,
+			authScheme: "none",
+			tlsEnabled: false,
+			allowRemote: false,
+		};
 		this.externalArtifactAuthority = options.externalArtifactAuthority;
+		const runtimeServices = (runtimeHost as { readonly services?: AgentSessionRuntime["services"] }).services;
+		this.auditCursorSecret =
+			options.auditCursorSecret ??
+			runtimeServices?.settingsManager.getAuditCursorSecret() ??
+			crypto.randomBytes(32);
 	}
 
 	private inspectExternalArtifact(
@@ -1192,6 +1263,8 @@ export class RpcHostController {
 			"fork",
 			"clone",
 			"set_session_name",
+			"archive_session",
+			"unarchive_session",
 			"mcp.resource.attach",
 			"mcp.prompt.attach",
 		]);
@@ -1244,6 +1317,16 @@ export class RpcHostController {
 			"to",
 			"cursor",
 			"limit",
+		]);
+		const AUDIT_EXPORT_COMMAND_KEYS = new Set([
+			"id",
+			"type",
+			"scope",
+			"sessionId",
+			"runId",
+			"types",
+			"from",
+			"to",
 		]);
 
 		const auditErrorMessage = (code: AuditAutomationCode): string => {
@@ -2869,6 +2952,7 @@ export class RpcHostController {
 					// capability drift cannot cross the acceptance boundary.
 					externalProductAdmission = await prepareExternalConnectorProductRun({
 						session: getAgentCanonicalSession(runBinding.session),
+						artifactStore: runBinding.session.agentRuntimeComposition.harness.artifacts,
 						writer: runBinding.session.agentRuntimeComposition.harness.ledger.writer,
 						registry: runBinding.session.getExternalConnectorRegistry()!,
 						selection: externalConnector,
@@ -3777,7 +3861,7 @@ export class RpcHostController {
 				// =================================================================
 
 				case "initialize": {
-					if (command.protocolVersion !== 1) {
+					if (command.protocolVersion !== PROTOCOL_VERSION) {
 						return automationError(
 							id,
 							"initialize",
@@ -3787,6 +3871,36 @@ export class RpcHostController {
 								false,
 							),
 						);
+					}
+					let networkProtocol: InitializeData["protocol"] | undefined;
+					if (this.endpointKind === "websocket") {
+						const transportFeature = "transport.websocket";
+						const serverFeatures: readonly ProtocolFeature[] = [
+							transportFeature,
+							"transport.auth",
+							"transport.tls",
+						];
+						const server: ProtocolCapabilities = {
+							versions: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION },
+							features: serverFeatures,
+						};
+						const client: ProtocolCapabilities = command.client ?? {
+							versions: { min: command.protocolVersion, max: command.protocolVersion },
+							features: serverFeatures,
+						};
+						const negotiation = negotiateProtocol(server, client);
+						if (!negotiation.ok) {
+							return automationError(
+								id,
+								"initialize",
+								createAutomationError("unsupported_protocol_version", negotiation.error.message, false),
+							);
+						}
+						networkProtocol = {
+							server,
+							negotiated: negotiation.value,
+							endpoint: this.endpointSecurity,
+						};
 					}
 					// Idempotent: a repeat initialize re-advertises the contract without
 					// recreating the coordinator or resetting run state, so an in-flight
@@ -3818,7 +3932,8 @@ export class RpcHostController {
 						protocolVersion: 1,
 						sessionId: currentBinding.session.sessionId,
 						runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
-						auditCommands: ["audit.query", "audit.replay"],
+						...(networkProtocol === undefined ? {} : { protocol: networkProtocol }),
+						auditCommands: ["audit.query", "audit.replay", "audit.export"],
 						taskGateCommands: [
 							"task.gate.request",
 							"task.gate.get",
@@ -4190,7 +4305,9 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).query(
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session), {
+							cursorSecret: this.auditCursorSecret,
+						}).query(
 							query,
 						) satisfies AuditQueryData;
 						return { id, type: "response", command: "audit.query", success: true, data };
@@ -4217,12 +4334,39 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).replay(
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session), {
+							cursorSecret: this.auditCursorSecret,
+						}).replay(
 							query,
 						) satisfies AuditReplayData;
 						return { id, type: "response", command: "audit.replay", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.replay", auditCommandError(err, "audit_replay_incomplete"));
+					}
+				}
+
+				case "audit.export": {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
+						return automationError(id, "audit.export", hostNotInitializedError());
+					}
+					if (Object.keys(command).some((key) => !AUDIT_EXPORT_COMMAND_KEYS.has(key))) {
+						return automationError(id, "audit.export", auditCommandError(undefined, "audit_query_invalid"));
+					}
+					const query: AuditExportQuery = {
+						scope: command.scope,
+						...(command.sessionId === undefined ? {} : { sessionId: command.sessionId }),
+						...(command.runId === undefined ? {} : { runId: command.runId }),
+						...(command.types === undefined ? {} : { types: command.types }),
+						...(command.from === undefined ? {} : { from: command.from }),
+						...(command.to === undefined ? {} : { to: command.to }),
+					};
+					try {
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session), {
+							cursorSecret: this.auditCursorSecret,
+						}).export(query) satisfies AuditExportData;
+						return { id, type: "response", command: "audit.export", success: true, data };
+					} catch (err) {
+						return automationError(id, "audit.export", auditCommandError(err, "audit_query_invalid"));
 					}
 				}
 
@@ -5534,6 +5678,7 @@ export class RpcHostController {
 								}
 								const recoveryInput = {
 									session: getAgentCanonicalSession(recoveryBinding.session),
+									artifactStore: recoveryBinding.session.agentRuntimeComposition.harness.artifacts,
 									writer: recoveryBinding.session.agentRuntimeComposition.harness.ledger.writer,
 									registry,
 									runId: command.sourceRunId,
@@ -5699,7 +5844,13 @@ export class RpcHostController {
 				}
 
 				case "new_session": {
-					const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
+					const options =
+						command.parentSession === undefined && command.fromPr === undefined
+							? undefined
+							: {
+									...(command.parentSession === undefined ? {} : { parentSession: command.parentSession }),
+									...(command.fromPr === undefined ? {} : { fromPr: command.fromPr }),
+								};
 					const result = await runtimeHost.newSession(options);
 					return success(id, "new_session", result);
 				}
@@ -5709,6 +5860,7 @@ export class RpcHostController {
 				// =================================================================
 
 				case "get_state": {
+					const metadata = await getAgentCanonicalSession(currentBinding.session).getMetadata();
 					const state: RpcSessionState = {
 						model: currentBinding.session.model,
 						thinkingLevel: currentBinding.session.thinkingLevel,
@@ -5718,6 +5870,12 @@ export class RpcHostController {
 						followUpMode: currentBinding.session.followUpMode,
 						sessionId: currentBinding.session.sessionId,
 						sessionName: currentBinding.session.sessionName,
+						...(metadata.fromPr === undefined ? {} : { fromPr: metadata.fromPr }),
+						ephemeral: currentBinding.session.sessionFile === undefined,
+						archived: metadata.archived,
+						...(metadata.archivedAt === undefined
+							? {}
+							: { archivedAt: new Date(metadata.archivedAt).toISOString() }),
 						autoCompactionEnabled: currentBinding.session.autoCompactionEnabled,
 						messageCount: currentBinding.session.messages.length,
 						pendingMessageCount: currentBinding.session.pendingMessageCount,
@@ -5860,6 +6018,39 @@ export class RpcHostController {
 				case "get_session_stats": {
 					const stats = currentBinding.session.getSessionStats();
 					return success(id, "get_session_stats", serializePublicSessionStats(stats));
+				}
+
+				case "list_sessions": {
+					const sessions = await listRpcSessionInfos(currentBinding.session, command);
+					return success(id, "list_sessions", {
+						sessions: sessions.map(serializeRpcSessionInfo),
+					});
+				}
+
+				case "search_sessions": {
+					const sessions = await listRpcSessionInfos(currentBinding.session, command);
+					const matches = filterAndSortSessions(
+						sessions,
+						command.query,
+						command.sort ?? "relevance",
+						command.nameFilter ?? "all",
+					);
+					const limited = command.limit === undefined
+						? matches
+						: matches.slice(0, Math.max(0, Math.trunc(command.limit)));
+					return success(id, "search_sessions", {
+						sessions: limited.map(serializeRpcSessionInfo),
+					});
+				}
+
+				case "archive_session": {
+					const state = runtimeHost.setSessionArchived(command.sessionPath, true);
+					return success(id, "archive_session", state);
+				}
+
+				case "unarchive_session": {
+					const state = runtimeHost.setSessionArchived(command.sessionPath, false);
+					return success(id, "unarchive_session", state);
 				}
 
 				case "get_context": {

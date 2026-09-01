@@ -1,14 +1,18 @@
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
+import { join } from "node:path";
+import { connect as createTlsConnection } from "node:tls";
+import { WebSocket } from "undici";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { attachJsonlLineReader } from "../src/modes/rpc/jsonl.ts";
 import {
 	createRpcTransport,
 	type RpcTransport,
-	type RpcTransportSink,
 	type RpcTransportError,
+	type RpcTransportSink,
 } from "../src/modes/rpc/rpc-transport.ts";
-import type { TcpRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
+import type { TcpRpcAddress, WebsocketRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
 
 interface TestCommand {
 	readonly type: "echo" | "ordered";
@@ -26,8 +30,15 @@ interface Peer {
 	readonly nextRecord: () => Promise<unknown>;
 }
 
-const transports = new Set<RpcTransport<TestCommand, TestOutput>>();
+type TestTransport =
+	| RpcTransport<TestCommand, TestOutput, TcpRpcAddress>
+	| RpcTransport<TestCommand, TestOutput, WebsocketRpcAddress>;
+
+const transports = new Set<TestTransport>();
 const peers = new Set<Peer>();
+const websockets = new Set<WebSocket>();
+const TLS_FIXTURE_CERT = join(import.meta.dirname, "../../../node_modules/ssh2/test/fixtures/https_cert.pem");
+const TLS_FIXTURE_KEY = join(import.meta.dirname, "../../../node_modules/ssh2/test/fixtures/https_key.pem");
 
 afterEach(async () => {
 	await Promise.all([...transports].map((transport) => transport.close()));
@@ -40,6 +51,10 @@ afterEach(async () => {
 	await Promise.all(pendingClose);
 	transports.clear();
 	peers.clear();
+	for (const websocket of websockets) {
+		if (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING) websocket.close();
+	}
+	websockets.clear();
 });
 
 describe("RPC TCP transport", () => {
@@ -53,6 +68,82 @@ describe("RPC TCP transport", () => {
 		} catch (error: unknown) {
 			expect(error).toMatchObject({ code: "rpc_transport_address_invalid" });
 		}
+	});
+
+	test("rejects a non-loopback listener without the full auth, TLS, and allowRemote gate", () => {
+		expect(() =>
+			createRpcTransport({
+				address: {
+					transport: "tcp",
+					host: "0.0.0.0",
+					port: 4123,
+					auth: { scheme: "bearer", bearerToken: "secret" },
+					allowRemote: true,
+				},
+				dispatch: () => undefined,
+			}),
+		).toThrowError(expect.objectContaining({ code: "transport_requires_tls" }));
+	});
+
+	test("rejects and accepts TCP bearer handshakes before dispatch", async () => {
+		const transport = createRpcTransport<TestCommand, TestOutput>({
+			address: {
+				transport: "tcp",
+				host: "127.0.0.1",
+				port: await getAvailablePort(),
+				auth: { scheme: "bearer", bearerToken: "expected-token" },
+			},
+			dispatch: (command, sink) => sink.send({ type: "response", value: command.value }),
+		});
+		transports.add(transport);
+		await transport.start();
+
+		const rejected = await connectPeer(transport.address as TcpRpcAddress);
+		await writeRecord(rejected.socket, { type: "authenticate", bearerToken: "wrong-token" });
+		expect(await rejected.nextRecord()).toEqual({
+			type: "error",
+			error: { code: "rpc_transport_not_authorized", message: "RPC transport connection is not authorized" },
+		});
+		await once(rejected.socket, "close");
+
+		const accepted = await connectPeer(transport.address as TcpRpcAddress);
+		await writeRecord(accepted.socket, { type: "authenticate", bearerToken: "expected-token" });
+		expect(await accepted.nextRecord()).toEqual({ type: "authenticated" });
+		await writeRecord(accepted.socket, { type: "echo", value: "authorized" });
+		expect(await accepted.nextRecord()).toEqual({ type: "response", value: "authorized" });
+	});
+
+	test("terminates TLS and accepts a CA-verified mTLS TCP client", async () => {
+		const transport = createRpcTransport<TestCommand, TestOutput>({
+			address: {
+				transport: "tcp",
+				host: "127.0.0.1",
+				port: await getAvailablePort(),
+				auth: { scheme: "mtls" },
+				tls: {
+					enabled: true,
+					minVersion: "1.2",
+					certRef: TLS_FIXTURE_CERT,
+					keyRef: TLS_FIXTURE_KEY,
+					clientCaRef: TLS_FIXTURE_CERT,
+				},
+			},
+			dispatch: (command, sink) => sink.send({ type: "response", value: command.value }),
+		});
+		transports.add(transport);
+		await transport.start();
+		const socket = createTlsConnection({
+			host: "127.0.0.1",
+			port: transport.address!.port,
+			servername: "localhost",
+			ca: readFileSync(TLS_FIXTURE_CERT),
+			cert: readFileSync(TLS_FIXTURE_CERT),
+			key: readFileSync(TLS_FIXTURE_KEY),
+		});
+		await once(socket, "secureConnect");
+		const peer = attachPeer(socket);
+		await writeRecord(socket, { type: "echo", value: "mtls" });
+		expect(await peer.nextRecord()).toEqual({ type: "response", value: "mtls" });
 	});
 
 	test("reports a stable bind failure when the listener port is occupied", async () => {
@@ -179,6 +270,183 @@ describe("RPC TCP transport", () => {
 	});
 });
 
+describe("RPC WebSocket transport", () => {
+	test("authenticates the bearer header before accepting an upgrade", async () => {
+		const transport = createRpcTransport<TestCommand, TestOutput>({
+			address: {
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: await getAvailablePort(),
+				path: "/rpc",
+				auth: { scheme: "bearer", bearerToken: "expected-token" },
+			},
+			dispatch: (command, sink) => sink.send({ type: "response", value: command.value }),
+		});
+		transports.add(transport);
+		await transport.start();
+
+		await expect(connectWebsocketPeer(transport.address as WebsocketRpcAddress, "wrong-token")).rejects.toThrow(
+			"WebSocket connection failed",
+		);
+		const accepted = await connectWebsocketPeer(
+			transport.address as WebsocketRpcAddress,
+			"expected-token",
+		);
+		accepted.websocket.send(JSON.stringify({ type: "echo", value: "authorized" }));
+		expect(await accepted.nextRecord()).toEqual({ type: "response", value: "authorized" });
+	});
+
+	test("performs the handshake and treats each text message as one JSONL frame", async () => {
+		const dispatched: TestCommand[] = [];
+		const transport = createRpcTransport<TestCommand, TestOutput>({
+			address: {
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: await getAvailablePort(),
+				path: "/rpc",
+			},
+			parseCommand: (value) => value as TestCommand,
+			dispatch: (command, sink) => {
+				dispatched.push(command);
+				return sink.send({ type: "response", value: command.value });
+			},
+		});
+		transports.add(transport);
+		await transport.start();
+
+		const peer = await connectWebsocketPeer(transport.address as WebsocketRpcAddress);
+		peer.websocket.send(JSON.stringify({ type: "echo", value: "hello" }));
+
+		expect(await peer.nextRecord()).toEqual({ type: "response", value: "hello" });
+		expect(dispatched).toEqual([{ type: "echo", value: "hello" }]);
+	});
+
+	test("rejects a second WebSocket control connection as busy", async () => {
+		const transport = createRpcTransport<TestCommand, TestOutput>({
+			address: {
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: await getAvailablePort(),
+				path: "/rpc",
+			},
+			dispatch: () => undefined,
+		});
+		transports.add(transport);
+		await transport.start();
+		const first = await connectWebsocketPeer(transport.address as WebsocketRpcAddress);
+		const second = await connectWebsocketPeer(transport.address as WebsocketRpcAddress);
+
+		expect(await second.nextRecord()).toEqual({
+			type: "error",
+			error: { code: "rpc_transport_connection_busy", message: "Another control connection is active" },
+		});
+		await waitForWebsocketClose(second.websocket);
+		expect(first.websocket.readyState).toBe(WebSocket.OPEN);
+	});
+
+	test("notifies the disconnect observer and admits a replacement connection", async () => {
+		const closed: number[] = [];
+		const transport = createRpcTransport<TestCommand, TestOutput>({
+			address: {
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: await getAvailablePort(),
+				path: "/rpc",
+			},
+			dispatch: (command, sink) => sink.send({ type: "response", value: command.value }),
+			onConnectionClose: (connection) => closed.push(connection.id),
+		});
+		transports.add(transport);
+		await transport.start();
+		const first = await connectWebsocketPeer(transport.address as WebsocketRpcAddress);
+
+		first.websocket.close();
+		await waitForWebsocketClose(first.websocket);
+		await vi.waitFor(() => expect(closed).toEqual([1]));
+
+		const second = await connectWebsocketPeer(transport.address as WebsocketRpcAddress);
+		second.websocket.send(JSON.stringify({ type: "echo", value: "second" }));
+		expect(await second.nextRecord()).toEqual({ type: "response", value: "second" });
+	});
+
+	test.each([false, true])("accepts a JSONL frame exactly at the byte limit (LF=%s)", async (includeLf) => {
+		const transport = createRpcTransport<TestCommand, TestOutput>({
+			address: {
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: await getAvailablePort(),
+				path: "/rpc",
+			},
+			maxFrameBytes: 128,
+			dispatch: (_command, sink) => sink.send({ type: "response", value: "ok" }),
+		});
+		transports.add(transport);
+		await transport.start();
+		const peer = await connectWebsocketPeer(transport.address as WebsocketRpcAddress);
+		const line = JSON.stringify({ type: "echo", value: "x".repeat(101) });
+		expect(Buffer.byteLength(line, "utf8") + 1).toBe(128);
+
+		peer.websocket.send(includeLf ? `${line}\n` : line);
+
+		expect(await peer.nextRecord()).toEqual({ type: "response", value: "ok" });
+	});
+
+	test("enforces the pending-write entry limit", async () => {
+		const errors: RpcTransportError[] = [];
+		const transport = createRpcTransport<TestCommand, TestOutput>({
+			address: {
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: await getAvailablePort(),
+				path: "/rpc",
+			},
+			maxPendingWriteEntries: 1,
+			dispatch: (_command, sink) => {
+				void sink.send({ type: "response", value: 1 }).catch(() => {});
+				void sink.send({ type: "response", value: 2 }).catch(() => {});
+			},
+			onError: (error) => errors.push(error),
+		});
+		transports.add(transport);
+		await transport.start();
+		const peer = await connectWebsocketPeer(transport.address as WebsocketRpcAddress);
+
+		peer.websocket.send(JSON.stringify({ type: "ordered" }));
+
+		await vi.waitFor(() => {
+			expect(errors).toContainEqual(expect.objectContaining({ code: "rpc_transport_pending_write_limit" }));
+		});
+		await waitForWebsocketClose(peer.websocket);
+	});
+
+	test("reports an oversized WebSocket message and releases the observer", async () => {
+		const closed: number[] = [];
+		const transport = createRpcTransport<TestCommand, TestOutput>({
+			address: {
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: await getAvailablePort(),
+				path: "/rpc",
+			},
+			maxFrameBytes: 128,
+			dispatch: () => undefined,
+			onConnectionClose: (connection) => closed.push(connection.id),
+		});
+		transports.add(transport);
+		await transport.start();
+		const peer = await connectWebsocketPeer(transport.address as WebsocketRpcAddress);
+		peer.websocket.send(JSON.stringify({ type: "echo", value: "x".repeat(200) }));
+
+		expect(await peer.nextRecord()).toMatchObject({
+			type: "error",
+			error: { code: "rpc_transport_frame_too_large" },
+		});
+		await waitForWebsocketClose(peer.websocket);
+		await vi.waitFor(() => expect(closed).toEqual([1]));
+		expect(transport.activeConnection).toBeUndefined();
+	});
+});
+
 async function makeTransport(
 	dispatch: (command: TestCommand, sink: RpcTransportSink<TestOutput>) => void | Promise<void>,
 	options: {
@@ -240,4 +508,63 @@ function writeRecord(socket: Socket, value: unknown): Promise<void> {
 			reject(error instanceof Error ? error : new Error(String(error)));
 		}
 	});
+}
+
+function attachPeer(socket: Socket): Peer {
+	const records: unknown[] = [];
+	const waiters: Array<(record: unknown) => void> = [];
+	attachJsonlLineReader(socket, (line) => {
+		const record = JSON.parse(line) as unknown;
+		const waiter = waiters.shift();
+		if (waiter) waiter(record);
+		else records.push(record);
+	});
+	const peer: Peer = {
+		socket,
+		records,
+		nextRecord: () => {
+			const record = records.shift();
+			if (record !== undefined) return Promise.resolve(record);
+			return new Promise((resolve) => waiters.push(resolve));
+		},
+	};
+	peers.add(peer);
+	return peer;
+}
+
+interface WebsocketPeer {
+	readonly websocket: WebSocket;
+	readonly nextRecord: () => Promise<unknown>;
+}
+
+async function connectWebsocketPeer(address: WebsocketRpcAddress, bearerToken?: string): Promise<WebsocketPeer> {
+	const websocket = new WebSocket(`ws://${address.host}:${address.port}${address.path}`, {
+		...(bearerToken === undefined ? {} : { headers: { Authorization: `Bearer ${bearerToken}` } }),
+	});
+	websockets.add(websocket);
+	await new Promise<void>((resolve, reject) => {
+		websocket.addEventListener("open", () => resolve(), { once: true });
+		websocket.addEventListener("error", () => reject(new Error("WebSocket connection failed")), { once: true });
+	});
+	const records: unknown[] = [];
+	const waiters: Array<(record: unknown) => void> = [];
+	websocket.addEventListener("message", (event) => {
+		if (typeof event.data !== "string") return;
+		const record = JSON.parse(event.data) as unknown;
+		const waiter = waiters.shift();
+		if (waiter) waiter(record);
+		else records.push(record);
+	});
+	return {
+		websocket,
+		nextRecord: () => {
+			const record = records.shift();
+			return record === undefined ? new Promise((resolve) => waiters.push(resolve)) : Promise.resolve(record);
+		},
+	};
+}
+
+function waitForWebsocketClose(websocket: WebSocket): Promise<void> {
+	if (websocket.readyState === WebSocket.CLOSED) return Promise.resolve();
+	return new Promise((resolve) => websocket.addEventListener("close", () => resolve(), { once: true }));
 }

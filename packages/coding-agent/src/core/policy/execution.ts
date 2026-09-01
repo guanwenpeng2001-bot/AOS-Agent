@@ -88,6 +88,7 @@ export const POLICY_REQUEST_PREFIX = "policy-request:";
 
 export type PolicyAction = "allow" | "ask" | "deny";
 export type PolicyEnforcement = "legacy" | "host" | "sandbox";
+export type DlpPolicyAction = "warn" | "redact" | "deny";
 export type PolicyResource =
 	| "capability.invoke"
 	| "filesystem.read"
@@ -314,6 +315,14 @@ export interface CredentialPolicy {
 	readonly allowNames: ReadonlyArray<string>;
 }
 
+/** Content-level secret handling at durable-write and public-projection boundaries. */
+export interface DlpPolicy {
+	readonly enabled: boolean;
+	readonly action: DlpPolicyAction;
+}
+
+export const DEFAULT_DLP_POLICY: DlpPolicy = Object.freeze({ enabled: true, action: "redact" });
+
 export interface ApprovalPolicy {
 	readonly writeOutsideWorkspace: PolicyAction;
 	readonly network: PolicyAction;
@@ -354,6 +363,7 @@ export interface ExecutionPolicyProfile {
 	readonly process: ProcessPolicy;
 	readonly network: NetworkPolicy;
 	readonly credentials: CredentialPolicy;
+	readonly dlp?: DlpPolicy;
 	readonly approvals: ApprovalPolicy;
 	readonly protectedPaths?: ProtectedPathPolicy;
 	readonly rules?: ReadonlyArray<PolicyRule>;
@@ -372,6 +382,7 @@ export interface PolicyProfileNarrowing {
 	readonly process?: Partial<ProcessPolicy>;
 	readonly network?: Partial<NetworkPolicy>;
 	readonly credentials?: Partial<CredentialPolicy>;
+	readonly dlp?: Partial<DlpPolicy>;
 	readonly approvals?: Partial<ApprovalPolicy>;
 	readonly protectedPaths?: ProtectedPathPolicy;
 	readonly rules?: ReadonlyArray<PolicyRule>;
@@ -677,6 +688,7 @@ export const LEGACY_PROFILE: ExecutionPolicyProfile = deepFreeze({
 	process: { action: "allow", inheritEnvironment: true, allowEnvironment: [] },
 	network: { action: "allow", allowDestinations: [] },
 	credentials: { action: "allow", allowNames: [] },
+	dlp: DEFAULT_DLP_POLICY,
 	approvals: { writeOutsideWorkspace: "allow", network: "allow", process: "allow" },
 });
 
@@ -697,6 +709,32 @@ function isAction(value: unknown): value is PolicyAction {
 
 function isEnforcement(value: unknown): value is PolicyEnforcement {
 	return typeof value === "string" && (value === "legacy" || value === "host" || value === "sandbox");
+}
+
+function isDlpAction(value: unknown): value is DlpPolicyAction {
+	return value === "warn" || value === "redact" || value === "deny";
+}
+
+function parseDlpPolicy(value: unknown, partial: boolean): DlpPolicy | Partial<DlpPolicy> | undefined {
+	if (value === undefined) return partial ? {} : DEFAULT_DLP_POLICY;
+	if (!isRecord(value) || Object.keys(value).some((key) => key !== "enabled" && key !== "action")) return undefined;
+	if (value.enabled !== undefined && typeof value.enabled !== "boolean") return undefined;
+	if (value.action !== undefined && !isDlpAction(value.action)) return undefined;
+	if (!partial) {
+		return {
+			enabled: value.enabled ?? DEFAULT_DLP_POLICY.enabled,
+			action: value.action ?? DEFAULT_DLP_POLICY.action,
+		};
+	}
+	return {
+		...(value.enabled === undefined ? {} : { enabled: value.enabled }),
+		...(value.action === undefined ? {} : { action: value.action }),
+	};
+}
+
+/** Resolve the effective DLP policy for profiles created before this field existed. */
+export function resolveDlpPolicy(policy: DlpPolicy | undefined): DlpPolicy {
+	return policy ?? DEFAULT_DLP_POLICY;
 }
 
 function isResource(value: unknown): value is PolicyResource {
@@ -858,6 +896,7 @@ function cloneProfile(profile: ExecutionPolicyProfile): ExecutionPolicyProfile {
 		},
 		network: { action: profile.network.action, allowDestinations: [...profile.network.allowDestinations] },
 		credentials: { action: profile.credentials.action, allowNames: [...profile.credentials.allowNames] },
+		dlp: { ...resolveDlpPolicy(profile.dlp) },
 		approvals: { ...profile.approvals },
 		...(profile.protectedPaths === undefined ? {} : { protectedPaths: cloneProtectedPathPolicy(profile.protectedPaths) }),
 		...(profile.rules === undefined ? {} : { rules: profile.rules.map((rule) => ({ ...rule })) }),
@@ -876,6 +915,7 @@ function parseProfile(value: unknown, expectedId?: string): ExecutionPolicyProfi
 		"process",
 		"network",
 		"credentials",
+		"dlp",
 		"approvals",
 		"protectedPaths",
 		"rules",
@@ -925,6 +965,8 @@ function parseProfile(value: unknown, expectedId?: string): ExecutionPolicyProfi
 	const approvals = parseApprovals(value.approvals, false);
 	if (approvals === undefined) return undefined;
 	const completeApprovals = approvals as ApprovalPolicy;
+	const dlp = parseDlpPolicy(value.dlp, false);
+	if (dlp === undefined) return undefined;
 	const rules = parseRules(value.rules);
 	if (rules === undefined) return undefined;
 	const protectedPaths = value.protectedPaths === undefined ? undefined : parseProtectedPathPolicy(value.protectedPaths);
@@ -945,6 +987,7 @@ function parseProfile(value: unknown, expectedId?: string): ExecutionPolicyProfi
 		},
 		network: { action: networkAction, allowDestinations: networkDestinations },
 		credentials: { action: credentialsAction, allowNames: credentialNames },
+		dlp: dlp as DlpPolicy,
 		approvals: completeApprovals,
 		...(protectedPaths === undefined ? {} : { protectedPaths }),
 		...(rules.length > 0 ? { rules } : {}),
@@ -953,7 +996,7 @@ function parseProfile(value: unknown, expectedId?: string): ExecutionPolicyProfi
 
 function parseNarrowing(value: unknown): PolicyProfileNarrowing | undefined {
 	if (!isRecord(value)) return undefined;
-	const allowed = ["id", "revision", "enforcement", "sandboxProvider", "defaultAction", "workspace", "process", "network", "credentials", "approvals", "protectedPaths", "rules"];
+	const allowed = ["id", "revision", "enforcement", "sandboxProvider", "defaultAction", "workspace", "process", "network", "credentials", "dlp", "approvals", "protectedPaths", "rules"];
 	if (Object.keys(value).some((key) => !allowed.includes(key))) return undefined;
 	if (value.id !== undefined && !isSafeOpaqueId(value.id)) return undefined;
 	if (value.revision !== undefined && !isSafeOpaqueId(value.revision)) return undefined;
@@ -1049,6 +1092,8 @@ function parseNarrowing(value: unknown): PolicyProfileNarrowing | undefined {
 			credentials.allowNames = names;
 		}
 	}
+	const dlp = parseDlpPolicy(value.dlp, true);
+	if (dlp === undefined) return undefined;
 	const approvals = value.approvals === undefined ? undefined : parseApprovals(value.approvals, true);
 	if (value.approvals !== undefined && approvals === undefined) return undefined;
 	const protectedPaths = value.protectedPaths === undefined ? undefined : parseProtectedPathPolicy(value.protectedPaths);
@@ -1065,6 +1110,7 @@ function parseNarrowing(value: unknown): PolicyProfileNarrowing | undefined {
 		...(Object.keys(process).length === 0 ? {} : { process }),
 		...(Object.keys(network).length === 0 ? {} : { network }),
 		...(Object.keys(credentials).length === 0 ? {} : { credentials }),
+		...(Object.keys(dlp).length === 0 ? {} : { dlp }),
 		...(approvals === undefined ? {} : { approvals }),
 		...(protectedPaths === undefined ? {} : { protectedPaths }),
 		...(rules === undefined ? {} : { rules }),
@@ -1154,6 +1200,17 @@ function mergeNarrowing(
 	if (
 		narrowing.credentials?.action !== undefined &&
 		ACTION_RANK[narrowing.credentials.action] < ACTION_RANK[base.credentials.action]
+	) {
+		return { ok: false, error: policyError("policy_profile_untrusted") };
+	}
+	const baseDlp = resolveDlpPolicy(base.dlp);
+	const DLP_ACTION_RANK: Readonly<Record<DlpPolicyAction, number>> = { warn: 0, redact: 1, deny: 2 };
+	if (narrowing.dlp?.enabled === false && baseDlp.enabled) {
+		return { ok: false, error: policyError("policy_profile_untrusted") };
+	}
+	if (
+		narrowing.dlp?.action !== undefined &&
+		DLP_ACTION_RANK[narrowing.dlp.action] < DLP_ACTION_RANK[baseDlp.action]
 	) {
 		return { ok: false, error: policyError("policy_profile_untrusted") };
 	}
@@ -1264,6 +1321,12 @@ function mergeNarrowing(
 		action: strictest(base.credentials.action, narrowing.credentials?.action ?? base.credentials.action),
 		allowNames: narrowing.credentials?.allowNames ?? base.credentials.allowNames,
 	};
+	const dlp: DlpPolicy = {
+		enabled: baseDlp.enabled || narrowing.dlp?.enabled === true,
+		action: narrowing.dlp?.action === undefined || DLP_ACTION_RANK[baseDlp.action] >= DLP_ACTION_RANK[narrowing.dlp.action]
+			? baseDlp.action
+			: narrowing.dlp.action,
+	};
 	const baseApprovals = base.approvals;
 	const requestedApprovals = narrowing.approvals ?? {};
 	const approvals: ApprovalPolicy = {
@@ -1310,6 +1373,7 @@ function mergeNarrowing(
 			process,
 			network,
 			credentials,
+			dlp,
 			approvals,
 			...(protectedPaths === undefined ? {} : { protectedPaths }),
 			...(base.rules === undefined ? {} : { rules: base.rules }),

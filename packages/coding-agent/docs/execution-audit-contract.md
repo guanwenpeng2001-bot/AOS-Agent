@@ -555,8 +555,32 @@ interface AuditQueryResult {
   events: AuditEvent[];
   nextCursor?: string;
   warnings: AuditWarning[];
+  integrity: AuditIntegrityResult;
 }
 ```
+
+Every newly persisted physical Session entry carries a SHA-256 chain seal over
+the canonical entry, Session ID, and previous digest. `integrity.status` is
+`verified` when all entries are chained, `legacy` when readable historical
+entries without seals remain, and `invalid` when a seal, link, or digest does
+not verify. An invalid chain is reported without projecting the damaged source.
+The RPC Host injects `audit.cursorSecret` from trusted settings when configured;
+otherwise it creates a random process secret. The historical fixed secret is
+used only by direct compatibility callers and is reported as
+`cursorProtection: "legacy-fallback"`.
+
+`audit.export` accepts the query filters except `cursor` and `limit`. It returns
+`application/x-ndjson` data containing one header, safe `audit.event` lines,
+and a final SHA-256 proof line with the event count, event-set digest, and the
+same per-Session integrity proofs. It exports only the existing allowlisted
+event view, never raw Session payloads.
+
+Foundation retention writes the policy record first, archives every prunable
+physical wrapper to a revision-specific sidecar, then replaces sensitive fact
+or intent payloads with digest checkpoints while preserving sequence and object
+revision metadata needed for deterministic recovery. A failed archive or
+rewrite leaves the source records intact. Repeating the same retention request
+is idempotent and resumes an archived-but-not-yet-rewritten operation.
 
 Scope rules are fixed:
 

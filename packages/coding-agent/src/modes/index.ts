@@ -20,7 +20,9 @@ export {
 	RpcClient,
 	type RpcClientOptions,
 	type RpcClientTcpOptions,
+	type RpcClientTlsOptions,
 	type RpcClientTransportOptions,
+	type RpcClientWebsocketOptions,
 	type RpcEventListener,
 	type RpcRunEventListener,
 	type RpcRunStreamEvent,
@@ -29,14 +31,18 @@ export {
 	RPC_TRANSPORT_LOOPBACK_HOST,
 	RPC_TRANSPORT_PORT_MAX,
 	RPC_TRANSPORT_PORT_MIN,
+	RPC_WEBSOCKET_DEFAULT_PATH,
 	RpcTransportAddressError,
 	formatRpcTransportAddress,
 	parseRpcTransportAddress,
 	validateRpcTransportAddress,
 	type RpcTransportAddress,
+	type RpcTransportAuthConfig,
 	type RpcTransportAddressErrorCode,
 	type RpcTransportAddressParseResult,
 	type TcpRpcAddress,
+	type RpcTransportTlsConfig,
+	type WebsocketRpcAddress,
 } from "./rpc/rpc-transport-address.ts";
 export {
 	RpcTransport,
@@ -51,6 +57,7 @@ export {
 	type RpcTransportSink,
 } from "./rpc/rpc-transport.ts";
 export { runRpcMode, type RpcModeOptions } from "./rpc/rpc-mode.ts";
+export { runWebMode, type WebModeOptions } from "./web/web-mode.ts";
 export {
 	createRpcHostController,
 	RpcHostController,
@@ -106,6 +113,8 @@ export type {
 	RpcSchedulerCommandType,
 	RpcSchedulerResponse,
 	RpcSessionState,
+	RpcSessionInfo,
+	RpcSessionSearchOptions,
 	RpcTaskCredentialCommandType,
 	RpcTaskGateCommandType,
 	RpcTaskGraphCommandType,

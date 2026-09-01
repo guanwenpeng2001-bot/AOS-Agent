@@ -81,7 +81,21 @@ For VS Code, include `--wait` so AOS Agent resumes after the editor exits:
 
 `enableInstallTelemetry` only controls optional anonymous install/update telemetry. Install/update telemetry and product version-check services are not used by default in this distribution.
 
-Set `AOS_AGENT_SKIP_VERSION_CHECK=1` to disable version update checks when a checker is configured. Use `--offline` or `AOS_AGENT_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, and install/update telemetry.
+Product traces and basic metrics use the separate `telemetry` object and are disabled by default:
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "endpoint": "http://127.0.0.1:4318",
+    "sampleRate": 1
+  }
+}
+```
+
+`telemetry.endpoint` defaults to `http://localhost:4318`. A base endpoint receives OTLP/HTTP JSON at `/v1/traces` and `/v1/metrics`; either full signal path is also accepted. `telemetry.sampleRate` is a number from `0` to `1` and defaults to `1`. Export uses a bounded queue, drops the oldest completed span on overflow, and does not fail agent work when the collector is unavailable.
+
+Set `AOS_AGENT_SKIP_VERSION_CHECK=1` to disable version update checks when a checker is configured. Use `--offline` or `AOS_AGENT_OFFLINE=1` to disable all startup network operations described here, including update checks, package update checks, install/update telemetry, and product OTLP export.
 
 ### Network
 

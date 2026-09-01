@@ -6,8 +6,10 @@ import {
 	type SessionLedgerWriter,
 	type AttemptReceipt,
 	type Attempt,
+	type ArtifactRef,
 	type CanonicalRunResult,
 	type TaskEnvelope,
+	type ValidationResult,
 } from "../../../agent/src/internal.ts";
 import type { RunHandle, RunStreamEvent } from "../../src/core/session/run-lifecycle.ts";
 import { createSessionManagerStorage } from "../../src/core/session/manager-storage.ts";
@@ -26,6 +28,14 @@ export interface CanonicalTerminalOptions {
 		readonly output: number;
 		readonly total: number;
 	};
+	/** Omit for the default TaskResult, or use false to finalize without one. */
+	readonly taskResult?:
+		| false
+		| {
+				readonly summary?: string;
+				readonly artifacts?: readonly ArtifactRef[];
+				readonly tests?: readonly ValidationResult[];
+		  };
 }
 
 export interface ObservedCanonicalTerminal {
@@ -181,29 +191,31 @@ export async function writeCanonicalRunResult(
 
 	const settlement = new LayeredResultSettlement(session, { ownerId, writer: options.writer });
 	try {
-		const taskResult = await settlement.settle({
-			taskResultId,
-			task,
-			sourceAttemptReceiptIds: [attemptReceiptId],
-			summary: "canonical Automation Run terminal",
-			artifacts: [],
-			tests: [],
-			evidence: [],
-			producer: {
-				producerKind: "host",
-				providerId: "canonical-run-test",
-				producedAt: completedAt,
-				correlation: {
-					sessionId,
-					laneId: "main",
-					taskId,
-					taskResultId,
-					attemptReceiptId,
-					revision: 1,
+		if (options.taskResult !== false) {
+			const taskResult = await settlement.settle({
+				taskResultId,
+				task,
+				sourceAttemptReceiptIds: [attemptReceiptId],
+				summary: options.taskResult?.summary ?? "canonical Automation Run terminal",
+				artifacts: options.taskResult?.artifacts ?? [],
+				tests: options.taskResult?.tests ?? [],
+				evidence: [],
+				producer: {
+					producerKind: "host",
+					providerId: "canonical-run-test",
+					producedAt: completedAt,
+					correlation: {
+						sessionId,
+						laneId: "main",
+						taskId,
+						taskResultId,
+						attemptReceiptId,
+						revision: 1,
+					},
 				},
-			},
-		});
-		if (!taskResult.ok) throw taskResult.error;
+			});
+			if (!taskResult.ok) throw taskResult.error;
+		}
 		const usage = options.usage ?? { input: 0, output: 0, total: 0 };
 		const finalized = await settlement.finalize({
 			runReceiptId: `run-receipt-${suffix}`,
@@ -211,7 +223,7 @@ export async function writeCanonicalRunResult(
 			terminalStatus: options.outcome,
 			authority: createHostTerminalGateAuthority("canonical-run-test"),
 			attemptReceiptIds: [attemptReceiptId],
-			taskResultId,
+			...(options.taskResult === false ? {} : { taskResultId }),
 			usage: {
 				inputTokens: usage.input,
 				outputTokens: usage.output,

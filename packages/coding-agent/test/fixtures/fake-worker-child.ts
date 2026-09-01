@@ -11,6 +11,7 @@ let binding: WorkerBinding | undefined;
 let activeExecute: Extract<OperationWorkerRequestFrame, { type: "execute" }> | undefined;
 let inputBuffer = "";
 let heartbeatSequence = 0;
+let pendingHeartbeatTimer: NodeJS.Timeout | undefined;
 let heartbeatTimer: NodeJS.Timeout | undefined;
 let keepAliveTimer: NodeJS.Timeout | undefined;
 
@@ -27,6 +28,8 @@ function now(): string {
 }
 
 function stopHeartbeat(): void {
+	if (pendingHeartbeatTimer !== undefined) clearTimeout(pendingHeartbeatTimer);
+	pendingHeartbeatTimer = undefined;
 	if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
 	heartbeatTimer = undefined;
 }
@@ -37,7 +40,11 @@ function startHeartbeat(oneShot = false): void {
 		heartbeatSequence += 1;
 		emit({ type: "heartbeat", workerId: binding!.workerId, sequence: heartbeatSequence, at: now() });
 	};
-	setTimeout(send, 10).unref();
+	pendingHeartbeatTimer = setTimeout(() => {
+		pendingHeartbeatTimer = undefined;
+		send();
+	}, 10);
+	pendingHeartbeatTimer.unref();
 	if (!oneShot) {
 		heartbeatTimer = setInterval(send, 20);
 	}
@@ -205,7 +212,7 @@ function handleExecute(frame: Extract<OperationWorkerRequestFrame, { type: "exec
 		process.stdin.destroy();
 		return;
 	}
-	if (profile === "cancel_success" || profile === "cancel_timeout") return;
+	if (profile === "cancel_success" || profile === "cancel_timeout" || profile === "heartbeat_stall") return;
 	if (profile === "deadline_late") {
 		setTimeout(() => complete(frame, "succeeded"), 2_000);
 		return;

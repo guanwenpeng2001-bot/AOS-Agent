@@ -36,11 +36,13 @@ import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "../policy/sandbox.ts";
-import { SessionManager } from "../session/manager.ts";
+import { resolveDlpPolicy } from "../policy/execution.ts";
+import { SessionManager, type SessionListOptions } from "../session/manager.ts";
 import { createSessionManagerForOptions, type SessionCreationOptions } from "../session/creation.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import { time } from "./timings.ts";
+import { createProductTelemetry } from "./telemetry.ts";
 import {
 	createBashTool,
 	createAllTools,
@@ -181,6 +183,14 @@ export interface CreateAgentSessionResult {
 	modelFallbackMessage?: string;
 }
 
+function sandboxProviderIds(
+	providers: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider> | undefined,
+): string[] {
+	if (providers === undefined) return [];
+	if (Array.isArray(providers)) return (providers as ReadonlyArray<SandboxProvider>).map((provider) => provider.id);
+	return [...(providers as ReadonlyMap<string, SandboxProvider>).keys()];
+}
+
 // Re-exports
 
 export * from "../session/runtime.ts";
@@ -257,13 +267,19 @@ function getDefaultAgentDir(): string {
 }
 
 /** List persisted sessions without exposing the physical SessionManager writer. */
-export function listSessions(cwd: string = process.cwd(), sessionDirectory?: string) {
-	return SessionManager.list(cwd, sessionDirectory);
+export function listSessions(
+	cwd: string = process.cwd(),
+	sessionDirectory?: string,
+	options: SessionListOptions = {},
+) {
+	return SessionManager.list(cwd, sessionDirectory, options);
 }
 
 /** List persisted sessions across project directories. */
-export function listAllSessions(sessionDirectory?: string) {
-	return sessionDirectory === undefined ? SessionManager.listAll() : SessionManager.listAll(sessionDirectory);
+export function listAllSessions(sessionDirectory?: string, options: SessionListOptions = {}) {
+	return sessionDirectory === undefined
+		? SessionManager.listAll(options)
+		: SessionManager.listAll(sessionDirectory, options);
 }
 
 /**
@@ -350,6 +366,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
 	const mcpAuthManagerOptions =
 		options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
+	const registeredSandboxProviderIds = sandboxProviderIds(options.sandboxProviders);
+	const dlpPolicy = settingsManager.getExecutionPolicySettings({
+		policyProfile: options.policyProfile,
+		registeredProviderIds: ["legacy-host", "host-policy", ...registeredSandboxProviderIds],
+	}).selectedProfile.dlp;
+	let dlpCredentialMaterials: readonly string[] = [];
+	if (resolveDlpPolicy(dlpPolicy).enabled) {
+		try {
+			dlpCredentialMaterials = await modelRuntime.getDlpCredentialMaterials();
+		} catch {
+			// Conservative pattern scanning remains available when the store cannot be read.
+		}
+	}
 
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
@@ -602,33 +631,43 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const capabilityRegistry =
 		options.capabilityRegistry ?? new CapabilityRegistry(await CapabilityPublicIdentity.load(agentDir));
 
-	const session = createAgentSessionWithRuntimeComposition({
-		agent,
-		sessionManager,
-		settingsManager,
-		agentDir,
-		cwd,
-		scopedModels: options.scopedModels,
-		resourceLoader,
-		customTools: options.customTools,
-		modelRuntime,
-		modelBroker,
-		modelBrokerConfigRevision: options.modelBrokerConfigRevision ?? modelBrokerSettings.configRevision,
-		initialModelSelection: explicitModelSelection ? "manual" : "default",
-		initialActiveToolNames,
-		allowedToolNames,
-		excludedToolNames,
-		baseToolsOverride,
-		extensionRunnerRef,
-		sessionStartEvent: options.sessionStartEvent,
-		capabilityRegistry,
-		mcpTransportFactory: options.mcpTransportFactory,
-		mcpAuthProvider: options.mcpAuthProvider,
-		mcpAuthManagerOptions,
-		sandboxProviders: options.sandboxProviders,
-		policyProfile: options.policyProfile,
-		noTools: options.noTools,
-	}, runtimeComposition);
+	const productTelemetry = createProductTelemetry(settingsManager);
+	let session: AgentSession;
+	try {
+		session = createAgentSessionWithRuntimeComposition({
+			agent,
+			sessionManager,
+			settingsManager,
+			telemetryContext: productTelemetry.context,
+			telemetryShutdown: productTelemetry.shutdown,
+			agentDir,
+			cwd,
+			scopedModels: options.scopedModels,
+			resourceLoader,
+			customTools: options.customTools,
+			modelRuntime,
+			modelBroker,
+			modelBrokerConfigRevision: options.modelBrokerConfigRevision ?? modelBrokerSettings.configRevision,
+			initialModelSelection: explicitModelSelection ? "manual" : "default",
+			initialActiveToolNames,
+			allowedToolNames,
+			excludedToolNames,
+			baseToolsOverride,
+			extensionRunnerRef,
+			sessionStartEvent: options.sessionStartEvent,
+			capabilityRegistry,
+			mcpTransportFactory: options.mcpTransportFactory,
+			mcpAuthProvider: options.mcpAuthProvider,
+			mcpAuthManagerOptions,
+			sandboxProviders: options.sandboxProviders,
+			policyProfile: options.policyProfile,
+			dlpCredentialMaterials,
+			noTools: options.noTools,
+		}, runtimeComposition);
+	} catch (error) {
+		await productTelemetry.shutdown();
+		throw error;
+	}
 	try {
 		sessionForToolEnvironment = session;
 		if (!hasExistingSession || !hasThinkingEntry) {

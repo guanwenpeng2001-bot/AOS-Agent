@@ -731,7 +731,7 @@ describe("task credential automation host rpc", () => {
 			expect(data.host).toBe("automation-host");
 			expect(data.protocolVersion).toBe(1);
 			expect(data.runCommands).toEqual(["run.start", "run.get", "run.cancel", "run.resume"]);
-			expect(data.auditCommands).toEqual(["audit.query", "audit.replay"]);
+			expect(data.auditCommands).toEqual(["audit.query", "audit.replay", "audit.export"]);
 			expect(data.taskGateCommands).toEqual([
 				"task.gate.request",
 				"task.gate.get",

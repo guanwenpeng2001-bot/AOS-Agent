@@ -2,6 +2,7 @@ import {
 	canonicalFoundationJson,
 	type AgentHarness,
 	type AgentHarnessFoundationExecution,
+	aggregateTaskResultProducers,
 	createAgentInstance,
 	createHostTerminalGateAuthority,
 	LayeredResultSettlement,
@@ -9,10 +10,13 @@ import {
 	createTaskEnvelope,
 	fingerprintFoundationValue,
 	type FoundationError,
+	loadDurableFinalAssistantText,
 	persistTaskEnvelopeBeforeResolver,
 	resolveAgentBinding,
 	resolveMcpSelection,
 	SessionLedger,
+	loadDurableTaskResultToolRecords,
+	writeTaskResultArtifact,
 	validateDispatch,
 	validateAgentInstance,
 	validateProviderJson,
@@ -134,10 +138,10 @@ export interface PromptTaskIdentity {
 
 export interface PromptTaskSettlement {
 	readonly summary?: string;
-	readonly artifacts: readonly ArtifactRef[];
+	readonly artifacts?: readonly ArtifactRef[];
 	readonly diff?: ArtifactRef;
-	readonly tests: readonly ValidationResult[];
-	readonly evidence: readonly AcceptanceFact[];
+	readonly tests?: readonly ValidationResult[];
+	readonly evidence?: readonly AcceptanceFact[];
 }
 
 export interface PromptTaskInput {
@@ -149,7 +153,7 @@ export interface PromptTaskInput {
 	readonly roleRevision: RoleRevision;
 	readonly modelProfile: ModelProfile;
 	readonly identity: PromptTaskIdentity;
-	readonly settlement: PromptTaskSettlement;
+	readonly settlement?: PromptTaskSettlement;
 	readonly signal?: AbortSignal;
 	readonly deadlineMs?: number;
 	readonly now?: () => string;
@@ -235,30 +239,13 @@ function requireNonempty(value: unknown, field: string): asserts value is string
 }
 
 function validateSettlementPrerequisites(input: PromptTaskInput): void {
-	const settlement = input.settlement as PromptTaskSettlement | undefined;
-	if (settlement === undefined || !Array.isArray(settlement.artifacts) || !Array.isArray(settlement.tests) || !Array.isArray(settlement.evidence)) {
-		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task settlement artifacts, tests, and evidence are required before provider execution");
-	}
-	const requiredTests = settlement.tests.filter((test) => test.required);
-	const requiresAcceptanceProof = input.task.expectedOutputs.length > 0 || input.task.acceptanceCriteria.some((criterion) => criterion.required);
+	const settlement = input.settlement;
+	if (settlement === undefined) return;
 	if (
-		requiredTests.some((test) => test.status !== "passed") ||
-		(requiresAcceptanceProof && !requiredTests.some((test) => test.status === "passed"))
-	) {
-		throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task settlement requires at least one passed required test and no unmet required test");
-	}
-	for (const expected of input.task.expectedOutputs) {
-		if (!settlement.artifacts.some((artifact) => artifact.artifactId === expected.artifactId && artifact.digest === expected.digest)) {
-			throw new PromptTaskCompositionError("prompt_task_input_invalid", `Prompt Task settlement is missing expected output ${expected.artifactId}`);
-		}
-	}
-	for (const criterion of input.task.acceptanceCriteria) {
-		if (!criterion.required) continue;
-		const evidence = settlement.evidence.find((fact) => fact.criterionId === criterion.criterionId && fact.outcome === "satisfied");
-		if (evidence?.evidenceRefs === undefined || evidence.evidenceRefs.length === 0) {
-			throw new PromptTaskCompositionError("prompt_task_input_invalid", `Prompt Task settlement is missing evidence for ${criterion.criterionId}`);
-		}
-	}
+		(settlement.artifacts !== undefined && !Array.isArray(settlement.artifacts)) ||
+		(settlement.tests !== undefined && !Array.isArray(settlement.tests)) ||
+		(settlement.evidence !== undefined && !Array.isArray(settlement.evidence))
+	) throw new PromptTaskCompositionError("prompt_task_input_invalid", "Prompt Task settlement inputs must be arrays when supplied");
 }
 
 function containsSecretBearingField(value: FoundationJsonValue): boolean {
@@ -737,17 +724,34 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 					if (new Set(sourceAttemptReceiptIds).size !== sourceAttemptReceiptIds.length) {
 						throw new PromptTaskCompositionError("prompt_task_receipt_missing", "Parent and accepted Child AttemptReceipt ids must be unique");
 					}
+					const durableTools = await loadDurableTaskResultToolRecords(options.harness.session, {
+						laneId: settlementCorrelation.laneId,
+						runId: run.value.runId,
+						correlation: settlementCorrelation,
+					});
+					const produced = await aggregateTaskResultProducers({
+						...(input.settlement?.summary === undefined ? {} : { summary: input.settlement.summary }),
+						finalAssistantText: await loadDurableFinalAssistantText(options.harness.session, {
+							laneId: settlementCorrelation.laneId,
+							runId: run.value.runId,
+						}),
+						artifacts: [...attemptReceipt.artifacts, ...(input.settlement?.artifacts ?? [])],
+						tests: input.settlement?.tests,
+						durableTools,
+						attemptReceipt,
+						writeArtifact: (artifact) => writeTaskResultArtifact(created.harness.artifacts, artifact),
+					});
 					const taskResultId = `task_result_${run.value.runId}`;
 					const settled = await settlement.settle({
 						taskResultId,
 						task: persistedTask.value,
 						sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId],
 						...(childAttemptReceiptIds.length === 0 ? {} : { provenanceAttemptReceiptIds: childAttemptReceiptIds }),
-						summary: input.settlement.summary ?? (run.value.kind === "completed" ? "Agent run completed" : "Agent run did not complete successfully"),
-						artifacts: input.settlement.artifacts,
-						...(input.settlement.diff === undefined ? {} : { diff: input.settlement.diff }),
-						tests: input.settlement.tests,
-						evidence: input.settlement.evidence,
+						summary: produced.summary,
+						artifacts: produced.artifacts,
+						...(produced.diff === undefined ? {} : { diff: produced.diff }),
+						tests: produced.tests,
+						evidence: input.settlement?.evidence ?? [],
 						producer: {
 							producerKind: "host",
 							providerId: resolved.gate.reference.id,

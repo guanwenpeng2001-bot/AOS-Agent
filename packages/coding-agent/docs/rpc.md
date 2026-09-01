@@ -14,6 +14,7 @@ Common options:
 - `--provider <name>`: Set the LLM provider (anthropic, openai, google, etc.)
 - `--model <pattern>`: Model pattern or ID (supports `provider/id` and optional `:<thinking>`)
 - `--name <name>` / `-n <name>`: Set the session display name at startup
+- `--from-pr <number|url>`: Associate a new session with a pull request
 - `--no-session`: Disable session persistence
 - `--session-dir <path>`: Custom session storage directory
 
@@ -255,6 +256,11 @@ With optional parent session tracking:
 {"type": "new_session", "parentSession": "/path/to/parent-session.jsonl"}
 ```
 
+With optional pull request metadata:
+```json
+{"type": "new_session", "fromPr": "https://github.com/example/repo/pull/42"}
+```
+
 Response:
 ```json
 {"type": "response", "command": "new_session", "success": true, "data": {"cancelled": false}}
@@ -291,6 +297,9 @@ Response:
     "sessionFile": "/path/to/session.jsonl",
     "sessionId": "abc123",
     "sessionName": "my-feature-work",
+    "fromPr": "https://github.com/example/repo/pull/42",
+    "ephemeral": false,
+    "archived": false,
     "autoCompactionEnabled": true,
     "messageCount": 5,
     "pendingMessageCount": 0
@@ -298,7 +307,7 @@ Response:
 }
 ```
 
-The `model` field is a full [Model](#model) object or `null`. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
+The `model` field is a full [Model](#model) object or `null`. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set. `fromPr` is the immutable pull request association supplied when the session was created, or omitted when none was supplied.
 
 #### get_messages
 
@@ -770,6 +779,68 @@ Response:
 If an extension cancelled the switch:
 ```json
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": true}}
+```
+
+#### list_sessions
+
+List sessions in the current project. Archived sessions are excluded unless `includeArchived` is true. Set `all` to list across project directories.
+
+```json
+{"type": "list_sessions", "includeArchived": true}
+```
+
+Response timestamps are ISO 8601 strings:
+
+```json
+{
+  "type": "response",
+  "command": "list_sessions",
+  "success": true,
+  "data": {
+    "sessions": [
+      {
+        "path": "/path/to/session.jsonl",
+        "id": "session-id",
+        "cwd": "/workspace",
+        "fromPr": "https://github.com/example/repo/pull/42",
+        "ephemeral": false,
+        "archived": true,
+        "archivedAt": "2026-09-01T12:00:00.000Z",
+        "created": "2026-09-01T10:00:00.000Z",
+        "modified": "2026-09-01T11:00:00.000Z",
+        "messageCount": 2,
+        "firstMessage": "Implement the feature",
+        "allMessagesText": "Implement the feature Done"
+      }
+    ]
+  }
+}
+```
+
+#### search_sessions
+
+Search sessions on the server by id, name, message text, cwd, or `fromPr`, using the same fuzzy token, quoted phrase, `re:` regex, named-session filter, and relevance ordering as the interactive session selector. Scope and archive filtering match `list_sessions`; `sort` may be `relevance` (default) or `recent`, and `limit` bounds the result count.
+
+```json
+{"type": "search_sessions", "query": "\"authentication failure\"", "all": true, "includeArchived": true, "sort": "relevance", "nameFilter": "named", "limit": 20}
+```
+
+The response has the same `{ "sessions": [...] }` shape as `list_sessions`. Persisted results include `"ephemeral": false`.
+
+#### archive_session / unarchive_session
+
+Archive or unarchive a persisted session. Archiving is idempotent and preserves the first archive timestamp.
+
+```json
+{"type": "archive_session", "sessionPath": "/path/to/session.jsonl"}
+{"type": "unarchive_session", "sessionPath": "/path/to/session.jsonl"}
+```
+
+Responses:
+
+```json
+{"type": "response", "command": "archive_session", "success": true, "data": {"archived": true, "archivedAt": "2026-09-01T12:00:00.000Z"}}
+{"type": "response", "command": "unarchive_session", "success": true, "data": {"archived": false}}
 ```
 
 #### fork

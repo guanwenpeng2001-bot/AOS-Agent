@@ -4,6 +4,7 @@ import { type AuthResolutionOverrides, ModelsError, resolveProviderAuth } from "
 import type { AuthContext, AuthResult, CredentialStore, ProviderAuth } from "./auth/types.ts";
 import type { CreateModelsOptions } from "./models.ts";
 import type { AssistantImages, ImagesApi, ImagesContext, ImagesModel, ImagesOptions, ProviderImages } from "./types.ts";
+import { traceAiOperation } from "./telemetry.ts";
 
 /**
  * An image-generation provider: the image-side counterpart of `Provider`.
@@ -270,6 +271,9 @@ export function createImagesProvider(input: CreateImagesProviderOptions): Images
 					return inflightRefresh;
 				}
 			: undefined,
-		generateImages: (model, context, options) => input.api.generateImages(model, context, options),
+		generateImages: (model, context, options) =>
+			traceAiOperation(options?.telemetryContext, model, "generate_images", (telemetryContext) =>
+				input.api.generateImages(model, context, { ...options, telemetryContext }),
+			),
 	};
 }

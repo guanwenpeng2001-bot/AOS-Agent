@@ -5,7 +5,13 @@
  * Responses and events are emitted as JSON lines on stdout.
  */
 
-import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
+import type {
+	AgentMessage,
+	EndpointSecurityVerdict,
+	ProtocolCapabilities,
+	ProtocolNegotiation,
+	ThinkingLevel,
+} from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/session/agent-session.ts";
 import type { BashResult } from "../../core/runtime/bash-executor.ts";
@@ -14,6 +20,8 @@ import type { CapabilityCatalogView } from "../../core/policy/capability-registr
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { ConnectorRuntimeStatus } from "../../core/connector/runtime-status.ts";
 import type {
+	AuditExportQuery,
+	AuditExportResult,
 	AuditQuery,
 	AuditQueryResult,
 	AuditReplayQuery,
@@ -78,13 +86,24 @@ export type RpcAuditQueryCommand = { id?: string; type: "audit.query" } & AuditQ
 /** Flattened Automation Host request for a single-run audit replay. */
 export type RpcAuditReplayCommand = { id?: string; type: "audit.replay" } & AuditReplayQuery;
 
+export interface RpcSessionSearchOptions {
+	all?: boolean;
+	includeArchived?: boolean;
+	sort?: "recent" | "relevance";
+	nameFilter?: "all" | "named";
+	limit?: number;
+}
+
+/** Flattened read-only JSONL export request. */
+export type RpcAuditExportCommand = { id?: string; type: "audit.export" } & AuditExportQuery;
+
 export type RpcCommand =
 	// Prompting
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort" }
-	| { id?: string; type: "new_session"; parentSession?: string }
+	| { id?: string; type: "new_session"; parentSession?: string; fromPr?: string }
 
 	// State
 	| { id?: string; type: "get_state" }
@@ -126,6 +145,10 @@ export type RpcCommand =
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
+	| { id?: string; type: "list_sessions"; all?: boolean; includeArchived?: boolean }
+	| ({ id?: string; type: "search_sessions"; query: string } & RpcSessionSearchOptions)
+	| { id?: string; type: "archive_session"; sessionPath: string }
+	| { id?: string; type: "unarchive_session"; sessionPath: string }
 
 	// Messages
 	| { id?: string; type: "get_messages" }
@@ -185,7 +208,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_model_routes" }
 
 	// Automation Host (protocolVersion 1)
-	| { id?: string; type: "initialize"; protocolVersion: number }
+	| { id?: string; type: "initialize"; protocolVersion: number; client?: ProtocolCapabilities }
 	| {
 			id?: string;
 			type: "run.start";
@@ -227,6 +250,7 @@ export type RpcCommand =
 	  }
 	| RpcAuditQueryCommand
 	| RpcAuditReplayCommand
+	| RpcAuditExportCommand
 	// Task Gate control-plane commands (write commands require clientRequestId)
 	| {
 			id?: string;
@@ -423,6 +447,10 @@ export interface RpcSessionState {
 	followUpMode: "all" | "one-at-a-time";
 	sessionId: string;
 	sessionName?: string;
+	fromPr?: string;
+	ephemeral: boolean;
+	archived: boolean;
+	archivedAt?: string;
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
@@ -430,6 +458,23 @@ export interface RpcSessionState {
 
 /** Session statistics safe for public RPC output. Internal sessionFile is omitted. */
 export type RpcSessionStats = Omit<SessionStats, "sessionFile">;
+
+export interface RpcSessionInfo {
+	path: string;
+	id: string;
+	cwd: string;
+	name?: string;
+	parentSessionPath?: string;
+	fromPr?: string;
+	ephemeral: false;
+	archived: boolean;
+	archivedAt?: string;
+	created: string;
+	modified: string;
+	messageCount: number;
+	firstMessage: string;
+	allMessagesText: string;
+}
 
 // ============================================================================
 // RPC Responses (stdout)
@@ -547,6 +592,27 @@ export type RpcResponse =
 			data: { text: string | null };
 	  }
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "list_sessions";
+			success: true;
+			data: { sessions: RpcSessionInfo[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "search_sessions";
+			success: true;
+			data: { sessions: RpcSessionInfo[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "archive_session" | "unarchive_session";
+			success: true;
+			data: { archived: boolean; archivedAt?: string };
+	  }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
@@ -943,7 +1009,7 @@ export type RpcCommandType = RpcCommand["type"];
 export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.resume";
 
 /** Automation Host audit commands. */
-export type RpcAuditCommandType = "audit.query" | "audit.replay";
+export type RpcAuditCommandType = "audit.query" | "audit.replay" | "audit.export";
 
 /** Task Gate control-plane commands. Write commands require `clientRequestId`. */
 export type RpcTaskGateCommandType =
@@ -995,6 +1061,12 @@ export interface InitializeData {
 	protocolVersion: 1;
 	sessionId: string;
 	runCommands: RpcRunCommandType[];
+	/** Foundation negotiation details for framed network transports. */
+	protocol?: {
+		server: ProtocolCapabilities;
+		negotiated: ProtocolNegotiation;
+		endpoint: EndpointSecurityVerdict;
+	};
 	/** Additive audit command list. */
 	auditCommands?: RpcAuditCommandType[];
 	/** Additive Task Gate control-plane command list. */
@@ -1060,6 +1132,9 @@ export type AuditQueryData = AuditQueryResult;
 
 /** Data returned by a successful `audit.replay`. */
 export type AuditReplayData = AuditReplayResult;
+
+/** Data returned by a successful `audit.export`. */
+export type AuditExportData = AuditExportResult;
 
 /** Data returned by a successful `task.gate.request` / approve / reject / cancel. */
 export interface TaskGateMutationData {
@@ -1275,6 +1350,7 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "run.cancel"; success: true; data: RunCancelData }
 	| { id?: string; type: "response"; command: "audit.query"; success: true; data: AuditQueryData }
 	| { id?: string; type: "response"; command: "audit.replay"; success: true; data: AuditReplayData }
+	| { id?: string; type: "response"; command: "audit.export"; success: true; data: AuditExportData }
 	| { id?: string; type: "response"; command: "task.gate.request"; success: true; data: TaskGateMutationData }
 	| { id?: string; type: "response"; command: "task.gate.get"; success: true; data: TaskGateGetData }
 	| { id?: string; type: "response"; command: "task.gate.list"; success: true; data: TaskGateListData }
@@ -1312,6 +1388,8 @@ export type { CapabilityBindingView } from "../../core/policy/capability-registr
 export type {
 	AuditEvent,
 	AuditEventType,
+	AuditExportQuery,
+	AuditExportResult,
 	AuditQuery,
 	AuditQueryResult,
 	AuditReplayQuery,

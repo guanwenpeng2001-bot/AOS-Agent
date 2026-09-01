@@ -1,5 +1,12 @@
 export { agentLoop, agentLoopContinue } from "./agent-loop.ts";
 export { Agent } from "./agent.ts";
+export type {
+	OtlpHttpTelemetryDiagnostic,
+	OtlpHttpTelemetryOptions,
+	OtlpHttpTelemetryStats,
+	TelemetryContext,
+} from "@aos-agent/telemetry";
+export { NOOP_TELEMETRY_CONTEXT, OtlpHttpTelemetryContext } from "@aos-agent/telemetry";
 export { AgentHarness } from "./harness/agent-harness.ts";
 export type {
 	AgentHarnessFoundationExecution,
@@ -121,6 +128,19 @@ export { FoundationObserver } from "./harness/foundation/observer.ts";
 export type { ObserverCursor } from "./harness/foundation/observer.ts";
 export type { PluginContract } from "./harness/foundation/plugin.ts";
 export type { ProfileContract } from "./harness/foundation/profile.ts";
+export {
+	PROTOCOL_VERSION,
+	authenticateConnection,
+	negotiateProtocol,
+	validateEndpointSecurity,
+} from "./harness/foundation/protocol.ts";
+export type {
+	EndpointKind,
+	EndpointSecurityVerdict,
+	ProtocolCapabilities,
+	ProtocolFeature,
+	ProtocolNegotiation,
+} from "./harness/foundation/protocol.ts";
 export {
 	createConnectorCapabilitySnapshot,
 	validateChildSpawnRequest,
@@ -258,6 +278,20 @@ export {
 export { formatPromptTemplateInvocation, parseCommandArgs } from "./harness/prompt-templates.ts";
 export { Result } from "./harness/result.ts";
 export type { ResultValue } from "./harness/result.ts";
+export {
+	TASK_RESULT_SUMMARY_MAX_LENGTH,
+	aggregateTaskResultProducers,
+	isValidationCommand,
+	loadDurableFinalAssistantText,
+	loadDurableTaskResultToolRecords,
+	writeTaskResultArtifact,
+} from "./harness/result-producers.ts";
+export type {
+	DurableTaskResultToolRecord,
+	FileChangeArtifactWrite,
+	TaskResultProducerInput,
+	TaskResultProducerOutput,
+} from "./harness/result-producers.ts";
 export { parseFoundationMutation } from "./harness/session/durable/codec.ts";
 export { DurableLedgerError, invalidDurableRecord } from "./harness/session/durable/errors.ts";
 export { FoundationLedgerState } from "./harness/session/durable/state.ts";

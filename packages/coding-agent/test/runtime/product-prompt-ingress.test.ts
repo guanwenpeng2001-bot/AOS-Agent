@@ -422,6 +422,8 @@ describe("ProductPromptIngress", () => {
 			expect(second.run.runId).toBe("product-run-2");
 			expect(first.attemptReceipt.workerReceiptRefs).toEqual([]);
 			expect(second.attemptReceipt.workerReceiptRefs).toEqual([]);
+			expect(first.taskResult.diff).toBeUndefined();
+			expect(second.taskResult.diff).toBeUndefined();
 			expect(replay).toEqual(first);
 			expect(contexts[0]?.messages[0]?.role).toBe("user");
 			expect(contexts[0]?.messages[0]?.content).toEqual([
