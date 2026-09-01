@@ -101,11 +101,18 @@ import {
 import {
 	acquireWriterLease,
 	deleteWriterLease,
+	readWriterLease,
 	releaseWriterLease,
 	renewWriterLease,
 	takeOverWriterLease,
 	type WriterLease,
 } from "./storage/writer-leases.ts";
+import {
+	appendWriterTakeover,
+	deleteWriterTakeovers,
+	readWriterTakeovers,
+	type SqliteWriterTakeoverAuditRecord,
+} from "./storage/writer-takeovers.ts";
 import type {
 	SqliteDatabase,
 	SqliteDatabaseFactory,
@@ -126,6 +133,8 @@ export interface SqliteSessionRepositoryOptions {
 	env: SqliteSessionRepositoryEnv;
 	sqlite: SqliteDatabaseFactory;
 	databasePath: string;
+	/** Stable, non-secret Host identity recorded in writer take-over audit rows. Defaults to a process-local UUID. */
+	hostId?: string;
 	writerLease?: SqliteWriterLeaseOptions;
 }
 
@@ -159,18 +168,30 @@ function lostWriterError(sessionId: string): SessionError {
 	return new SessionError("storage", `SQLite session ${sessionId} writer lease was lost`);
 }
 
+function expiredWriterError(sessionId: string): SessionError {
+	return new SessionError("storage", `SQLite session ${sessionId} has an expired writer lease; explicit take-over is required`);
+}
+
 function claimWriterLease(
 	db: SqliteDatabase,
 	sessionId: string,
+	ownerId: string,
 	options: ResolvedWriterLeaseOptions,
 	takeOver = false,
 ): WriterLease {
 	const now = Date.now();
-	const ownerId = uuidv7();
+	const previous = takeOver ? readWriterLease(db, sessionId) : undefined;
 	const lease = takeOver
 		? takeOverWriterLease(db, sessionId, ownerId, now + options.ttlMs)
-		: acquireWriterLease(db, sessionId, ownerId, now, now + options.ttlMs);
-	if (!lease) throw activeWriterError(sessionId);
+		: acquireWriterLease(db, sessionId, ownerId, now + options.ttlMs);
+	if (!lease) {
+		const current = readWriterLease(db, sessionId);
+		if (current !== undefined && current.expiresAtMs > 0 && current.expiresAtMs <= now) {
+			throw expiredWriterError(sessionId);
+		}
+		throw activeWriterError(sessionId);
+	}
+	if (takeOver) appendWriterTakeover(db, sessionId, previous, lease, now);
 	return lease;
 }
 
@@ -419,7 +440,11 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata>, Dur
 			const lease = this.lease;
 			if (lease === undefined) return;
 			await this.operations.enqueue(() =>
-				this.db.transaction(() => releaseWriterLease(this.db, this.metadata.id, lease)),
+				this.db.transaction(() => {
+					if (releaseWriterLease(this.db, this.metadata.id, lease)) {
+						expireFoundationWriterLease(this.db, this.metadata.id);
+					}
+				}),
 			);
 		} finally {
 			this.onRelease();
@@ -804,13 +829,14 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata>, Dur
 function claimStorage(
 	db: SqliteDatabase,
 	metadata: SqliteSessionMetadata,
+	ownerId: string,
 	leaseOptions: ResolvedWriterLeaseOptions,
 	onRelease: () => void,
 	takeOver = false,
 ): SqliteSessionStorage {
 	requireSessionRow(db, metadata.id);
 	const claimed = db.transaction(() => {
-		const lease = claimWriterLease(db, metadata.id, leaseOptions, takeOver);
+		const lease = claimWriterLease(db, metadata.id, ownerId, leaseOptions, takeOver);
 		if (takeOver) expireFoundationWriterLease(db, metadata.id);
 		const row = requireSessionRow(db, metadata.id);
 		readLanes(db, metadata.id);
@@ -837,10 +863,15 @@ export class SqliteSessionRepository
 	private readonly activeStorages = new Set<SqliteSessionStorage>();
 	private readonly options: SqliteSessionRepositoryOptions;
 	private readonly leaseOptions: ResolvedWriterLeaseOptions;
+	private readonly ownerId: string;
 
 	constructor(options: SqliteSessionRepositoryOptions) {
 		this.options = options;
 		this.leaseOptions = resolveWriterLeaseOptions(options.writerLease);
+		if (options.hostId !== undefined && options.hostId.length === 0) {
+			throw new RangeError("hostId must be a non-empty string");
+		}
+		this.ownerId = options.hostId ?? uuidv7();
 	}
 
 	private async releaseStoragesForSession(sessionId: string): Promise<void> {
@@ -869,7 +900,7 @@ export class SqliteSessionRepository
 			return new Session(active);
 		}
 		let storage: SqliteSessionStorage;
-		storage = claimStorage(db, metadata, this.leaseOptions, () => {
+		storage = claimStorage(db, metadata, this.ownerId, this.leaseOptions, () => {
 			this.activeStorages.delete(storage);
 		});
 		this.activeStorages.add(storage);
@@ -885,10 +916,8 @@ export class SqliteSessionRepository
 	}
 
 	private takeOverSession(db: SqliteDatabase, metadata: SqliteSessionMetadata): Session<SqliteSessionMetadata> {
-		const active = [...this.activeStorages].find((storage) => storage.isForSession(metadata.id));
-		if (active) return new Session(active);
 		let storage: SqliteSessionStorage;
-		storage = claimStorage(db, metadata, this.leaseOptions, () => {
+		storage = claimStorage(db, metadata, this.ownerId, this.leaseOptions, () => {
 			this.activeStorages.delete(storage);
 		}, true);
 		this.activeStorages.add(storage);
@@ -913,7 +942,7 @@ export class SqliteSessionRepository
 				createSequence(db, id);
 				createStats(db, id);
 				createInitialLane(db, id);
-				return claimWriterLease(db, id, this.leaseOptions);
+				return claimWriterLease(db, id, this.ownerId, this.leaseOptions);
 			});
 			const row = requireSessionRow(db, id);
 			return this.sessionFromLease(db, decodeSessionMetadata(row, path), lease);
@@ -928,6 +957,7 @@ export class SqliteSessionRepository
 			throw new TypeError("A read-only SQLite session cannot take over writer ownership");
 		}
 		return this.operations.enqueue(async () => {
+			if (options.takeOver === true) await this.releaseStoragesForSession(metadata.id);
 			const db = await this.getDatabase();
 			if (options.mode === "readOnly") return this.readOnlySession(db, metadata);
 			return options.takeOver === true ? this.takeOverSession(db, metadata) : this.claimSession(db, metadata);
@@ -942,13 +972,22 @@ export class SqliteSessionRepository
 		return this.open(metadata, { takeOver: true });
 	}
 
+	/** Reads immutable writer take-over audit rows without acquiring a writer lease. */
+	async getWriterTakeoverAudit(metadata: SqliteSessionMetadata): Promise<SqliteWriterTakeoverAuditRecord[]> {
+		return this.operations.enqueue(async () => {
+			const db = await this.getDatabase();
+			requireSessionRow(db, metadata.id);
+			return readWriterTakeovers(db, metadata.id);
+		});
+	}
+
 	/** Rebuilds this session's private branch-read cache from canonical entry parent links. */
 	async repairBranchCache(metadata: SqliteSessionMetadata): Promise<void> {
 		return this.operations.enqueue(async () => {
 			await this.releaseStoragesForSession(metadata.id);
 			const db = await this.getDatabase();
 			db.transaction(() => {
-				const lease = claimWriterLease(db, metadata.id, this.leaseOptions);
+				const lease = claimWriterLease(db, metadata.id, this.ownerId, this.leaseOptions);
 				requireSessionRow(db, metadata.id);
 				rebuildBranchCache(db, metadata.id);
 				releaseWriterLease(db, metadata.id, lease);
@@ -973,12 +1012,14 @@ export class SqliteSessionRepository
 			const db = await this.getDatabase();
 			db.transaction(() => {
 				if (!sessionExists(db, metadata.id)) {
+					deleteWriterTakeovers(db, metadata.id);
 					deleteWriterLease(db, metadata.id);
 					return;
 				}
-				claimWriterLease(db, metadata.id, this.leaseOptions);
+				claimWriterLease(db, metadata.id, this.ownerId, this.leaseOptions);
 				deleteFoundationRecords(db, metadata.id);
 				deleteFoundationWriterLease(db, metadata.id);
+				deleteWriterTakeovers(db, metadata.id);
 				deleteBranchCache(db, metadata.id);
 				deleteFactRows(db, metadata.id);
 				deleteLaneRows(db, metadata.id);
@@ -1090,7 +1131,7 @@ export class SqliteSessionRepository
 
 					setNextSequence(db, id, nextSeq);
 					for (const tip of branchTips) buildCachedBranch(db, id, tip);
-					return claimWriterLease(db, id, this.leaseOptions);
+					return claimWriterLease(db, id, this.ownerId, this.leaseOptions);
 				});
 			} catch (error) {
 				if (error instanceof SessionError) throw error;

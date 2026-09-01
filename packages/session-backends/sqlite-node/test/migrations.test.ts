@@ -12,7 +12,11 @@ describe("SQLite migrations", () => {
 			await applyMigrations(db);
 
 			const rows = db.prepare("SELECT id FROM migrations ORDER BY id").all<{ id: string }>();
-			expect(rows.map((row) => row.id)).toEqual(["001_initial.sql", "002_foundation_ledger.sql"]);
+			expect(rows.map((row) => row.id)).toEqual([
+				"001_initial.sql",
+				"002_foundation_ledger.sql",
+				"003_writer_takeovers.sql",
+			]);
 			const tables = db
 				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
 				.all<{ name: string }>();
@@ -32,6 +36,7 @@ describe("SQLite migrations", () => {
 					"writer_leases",
 					"foundation_records",
 					"foundation_writer_leases",
+					"writer_takeovers",
 				]),
 			);
 			const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all<{ name: string }>();

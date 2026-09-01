@@ -14,6 +14,7 @@ import {
 	SqliteSessionRepository,
 	type SqliteSessionMetadata,
 	type SqliteWriterLeaseOptions,
+	type SqliteWriterTakeoverAuditRecord,
 } from "@aos-agent/session-backend-sqlite-node";
 import { SessionManager } from "./core/session/manager.ts";
 import {
@@ -26,6 +27,8 @@ export type SharedSessionAccess = "writer" | "follower";
 export interface SqliteSharedSessionLedgerOptions {
 	databasePath: string;
 	cwd?: string;
+	/** Stable, non-secret identity used for writer ownership and take-over audit records. */
+	hostId?: string;
 	writerLease?: SqliteWriterLeaseOptions;
 }
 
@@ -128,6 +131,7 @@ export class SqliteSharedSessionLedger implements AsyncDisposable {
 			env: new NodeExecutionEnv({ cwd }),
 			sqlite: createNodeSqliteFactory(),
 			databasePath: options.databasePath,
+			...(options.hostId === undefined ? {} : { hostId: options.hostId }),
 			...(options.writerLease === undefined ? {} : { writerLease: options.writerLease }),
 		});
 	}
@@ -150,6 +154,12 @@ export class SqliteSharedSessionLedger implements AsyncDisposable {
 			mode: options.access === "follower" ? "readOnly" : "writer",
 			...(options.takeOver === true ? { takeOver: true } : {}),
 		});
+	}
+
+	async getWriterTakeoverAudit(sessionId: string): Promise<SqliteWriterTakeoverAuditRecord[]> {
+		const metadata = (await this.repository.list()).find((candidate) => candidate.id === sessionId);
+		if (metadata === undefined) throw new Error(`SQLite session not found: ${sessionId}`);
+		return this.repository.getWriterTakeoverAudit(metadata);
 	}
 
 	async importJsonl(path: string): Promise<SqliteSessionMetadata> {

@@ -32,12 +32,14 @@ import { SqliteSharedSessionLedger } from "aos-agent/sqlite-session";
 
 await using ledger = new SqliteSharedSessionLedger({
   databasePath: "/shared/aos/sessions.sqlite",
+  hostId: "build-host-1",
   writerLease: { ttlMs: 30_000, heartbeatIntervalMs: 10_000 },
 });
 
 const writer = await ledger.open("session-id");
 const follower = await ledger.open("session-id", { access: "follower" });
 const replacement = await ledger.open("session-id", { takeOver: true });
+const takeovers = await ledger.getWriterTakeoverAudit("session-id");
 ```
 
 Only a writer may mutate the Session. A follower does not acquire a writer
@@ -45,6 +47,20 @@ lease, and every write through it fails. `takeOver: true` is an explicit
 ownership transfer: it advances the database fence immediately, so the old
 Host's next write fails even if its previous lease has not expired. The local
 processing lease remains a separate same-Host guard.
+
+Fence generations remain monotonic across clean Host handoffs and explicit
+take-overs. A clean close marks its lease released, so the next writer may open
+normally and advances the generation. A crashed Host leaves a positive lease
+deadline; after that deadline passes, ordinary `open()` still fails until a new
+Host explicitly requests `takeOver: true`. This prevents an availability probe
+from becoming automatic failover.
+
+Each explicit take-over commits one immutable database audit row in the same
+transaction as the new fence. `getWriterTakeoverAudit()` returns the Session,
+old and new non-secret Host ids, old and new fence generations, old deadline,
+take-over timestamp, and whether the old lease was active (`forced`) or expired
+(`expired`). Configure a stable `hostId` when those records must identify a
+deployment Host; otherwise the ledger creates a process-local UUID.
 
 A follower reads the latest state available in its local SQLite view. With one
 shared database this normally means committed state. If another system copies

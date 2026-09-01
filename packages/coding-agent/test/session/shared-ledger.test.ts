@@ -21,6 +21,31 @@ afterEach(() => {
 });
 
 describe("coding-agent SQLite shared ledger", () => {
+	it("requires explicit cross-Host take-over and exposes its audit record", async () => {
+		const root = temporaryRoot();
+		const databasePath = join(root, "shared.sqlite");
+		await using firstHost = new SqliteSharedSessionLedger({ databasePath, cwd: root, hostId: "host-a" });
+		await using secondHost = new SqliteSharedSessionLedger({ databasePath, cwd: root, hostId: "host-b" });
+		const firstWriter = await firstHost.create({ cwd: root, id: "shared-session" });
+
+		await expect(secondHost.open("shared-session")).rejects.toThrow("already has an active writer");
+		const secondWriter = await secondHost.open("shared-session", { takeOver: true });
+		await expect(firstWriter.appendCustomEntry("stale-host.write")).rejects.toThrow("writer lease was lost");
+		await secondWriter.appendCustomEntry("replacement-host.write");
+		expect(await secondHost.getWriterTakeoverAudit("shared-session")).toEqual([
+			{
+				sessionId: "shared-session",
+				fence: 2,
+				previousOwnerId: "host-a",
+				ownerId: "host-b",
+				previousFence: 1,
+				previousExpiresAtMs: expect.any(Number),
+				takenOverAtMs: expect.any(Number),
+				reason: "forced",
+			},
+		]);
+	});
+
 	it("round-trips a branched JSONL session through SQLite", async () => {
 		const root = temporaryRoot();
 		const sourceManager = SessionManager.create(root, join(root, "source"), { id: "shared-session" });

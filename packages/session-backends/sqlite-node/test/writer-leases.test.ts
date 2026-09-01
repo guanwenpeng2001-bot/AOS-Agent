@@ -4,11 +4,17 @@ import { describe, expect, it, vi } from "vitest";
 import { createNodeSqliteFactory, type SqliteSessionMetadata, SqliteSessionRepository } from "../src/index.ts";
 import { createTempDir, createUserMessage } from "./test-utils.ts";
 
-function createRepository(root: string, databasePath: string, lease?: { ttlMs: number; heartbeatIntervalMs: number }) {
+function createRepository(
+	root: string,
+	databasePath: string,
+	lease?: { ttlMs: number; heartbeatIntervalMs: number },
+	hostId?: string,
+) {
 	const repository = new SqliteSessionRepository({
 		env: new NodeExecutionEnv({ cwd: root }),
 		sqlite: createNodeSqliteFactory(),
 		databasePath,
+		...(hostId === undefined ? {} : { hostId }),
 		writerLease: lease,
 	});
 	return repository;
@@ -113,6 +119,7 @@ describe("SQLite session writer leases", () => {
 		await using secondRepository = createRepository(root, databasePath);
 		const first = await firstRepository.create({ cwd: root, id: "session-1" });
 		const metadata = await first.getMetadata();
+		const firstFoundationLease = await first.acquireWriterLease({ ownerId: "first-host" });
 
 		await expect(secondRepository.open(metadata)).rejects.toMatchObject({
 			code: "storage",
@@ -121,18 +128,30 @@ describe("SQLite session writer leases", () => {
 
 		await firstRepository.close();
 		const second = await secondRepository.open(metadata);
+		const secondFoundationLease = await second.acquireWriterLease({ ownerId: "second-host" });
+		expect(secondFoundationLease.leaseRevision).toBeGreaterThan(firstFoundationLease.leaseRevision);
 		await expect(second.appendMessage(createUserMessage("new owner"))).resolves.toBeTypeOf("string");
+
+		const inspection = await createNodeSqliteFactory().open(databasePath);
+		try {
+			expect(
+				inspection.prepare("SELECT fence FROM writer_leases WHERE session_id = ?").get<{ fence: number }>(metadata.id),
+			).toEqual({ fence: 2 });
+		} finally {
+			inspection.close();
+		}
 	});
 
 	it("keeps followers read-only and fences the previous host on explicit take-over", async () => {
 		const root = createTempDir();
 		const databasePath = join(root, "sessions.sqlite");
-		await using firstHost = createRepository(root, databasePath);
-		await using secondHost = createRepository(root, databasePath);
+		await using firstHost = createRepository(root, databasePath, undefined, "host-a");
+		await using secondHost = createRepository(root, databasePath, undefined, "host-b");
 		await using followerHost = createRepository(root, databasePath);
 		const firstWriter = await firstHost.create({ cwd: root, id: "shared-session" });
 		const metadata = await firstWriter.getMetadata();
 		const follower = await followerHost.openReadOnly(metadata);
+		const firstFoundationLease = await firstWriter.acquireWriterLease({ ownerId: "host-a" });
 
 		await firstWriter.appendMessage(createUserMessage("replicated before take-over"));
 		expect((await follower.findEntries()).map((entry) => entry.type)).toEqual(["message"]);
@@ -147,7 +166,22 @@ describe("SQLite session writer leases", () => {
 			message: expect.stringContaining("writer lease was lost"),
 		});
 		await secondWriter.appendMessage(createUserMessage("new writer"));
+		const secondFoundationLease = await secondWriter.acquireWriterLease({ ownerId: "host-b" });
+		expect(secondFoundationLease.leaseRevision).toBeGreaterThan(firstFoundationLease.leaseRevision);
+		expect(secondFoundationLease.fencingToken).not.toBe(firstFoundationLease.fencingToken);
 		expect(await follower.findEntries({ order: "oldestFirst" })).toHaveLength(2);
+		expect(await secondHost.getWriterTakeoverAudit(metadata)).toEqual([
+			{
+				sessionId: metadata.id,
+				fence: 2,
+				previousOwnerId: "host-a",
+				ownerId: "host-b",
+				previousFence: 1,
+				previousExpiresAtMs: expect.any(Number),
+				takenOverAtMs: expect.any(Number),
+				reason: "forced",
+			},
+		]);
 
 		const inspection = await createNodeSqliteFactory().open(databasePath);
 		try {
@@ -164,19 +198,24 @@ describe("SQLite session writer leases", () => {
 		const root = createTempDir();
 		const databasePath = join(root, "sessions.sqlite");
 		const lease = { ttlMs: 120_000, heartbeatIntervalMs: 60_000 };
-		await using firstRepository = createRepository(root, databasePath, lease);
-		await using secondRepository = createRepository(root, databasePath, lease);
+		await using firstRepository = createRepository(root, databasePath, lease, "crashed-host");
+		await using secondRepository = createRepository(root, databasePath, lease, "recovery-host");
 		const first = await firstRepository.create({ cwd: root, id: "session-1" });
 		const metadata = await first.getMetadata();
 		const sqlite = createNodeSqliteFactory();
 		const db = await sqlite.open(databasePath);
+		const expiredAt = Date.now() - 1;
 		try {
-			await db.prepare("UPDATE writer_leases SET expires_at_ms = 0 WHERE session_id = ?").run(metadata.id);
+			await db.prepare("UPDATE writer_leases SET expires_at_ms = ? WHERE session_id = ?").run(expiredAt, metadata.id);
 		} finally {
 			await db.close();
 		}
 
-		const second = await secondRepository.open(metadata);
+		await expect(secondRepository.open(metadata)).rejects.toMatchObject({
+			code: "storage",
+			message: expect.stringContaining("explicit take-over is required"),
+		});
+		const second = await secondRepository.takeOver(metadata);
 		await expect(first.appendMessage(createUserMessage("stale owner"))).rejects.toMatchObject({
 			code: "storage",
 			message: expect.stringContaining("writer lease was lost"),
@@ -193,6 +232,18 @@ describe("SQLite session writer leases", () => {
 		} finally {
 			await inspection.close();
 		}
+		expect(await secondRepository.getWriterTakeoverAudit(metadata)).toEqual([
+			{
+				sessionId: metadata.id,
+				fence: 2,
+				previousOwnerId: "crashed-host",
+				ownerId: "recovery-host",
+				previousFence: 1,
+				previousExpiresAtMs: expiredAt,
+				takenOverAtMs: expect.any(Number),
+				reason: "expired",
+			},
+		]);
 
 		await firstRepository.close();
 		const afterStaleClose = await sqlite.open(databasePath);

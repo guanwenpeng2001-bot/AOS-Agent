@@ -5,6 +5,10 @@ export {
 	type SqliteSessionRepositoryOptions,
 	type SqliteWriterLeaseOptions,
 } from "./repo.ts";
+export type {
+	SqliteWriterTakeoverAuditRecord,
+	SqliteWriterTakeoverReason,
+} from "./storage/writer-takeovers.ts";
 export * from "./search-backend.ts";
 export * from "./sql.ts";
 export type {
