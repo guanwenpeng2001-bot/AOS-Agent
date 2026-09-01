@@ -15,7 +15,7 @@ import type { ModelRuntime } from "../../src/core/runtime/model-runtime.ts";
 import type { ResourceLoader } from "../../src/core/runtime/resource-loader.ts";
 import { SessionManager } from "../../src/core/session/manager.ts";
 import { SettingsManager } from "../../src/core/runtime/settings-manager.ts";
-import type { WorkerLifecycleStatus, WorkerRecord } from "../../src/core/worker/lifecycle.ts";
+import type { WorkerLifecycleStatus, WorkerPoolBinding, WorkerRecord } from "../../src/core/worker/lifecycle.ts";
 import {
 	createAgentRuntimeCompositionFactory,
 	createAgentSession,
@@ -202,6 +202,7 @@ function workerRecord(input: {
 	status?: WorkerLifecycleStatus;
 	runId?: string;
 	createdAt?: string;
+	pool?: WorkerPoolBinding;
 }): WorkerRecord {
 	const status = input.status ?? "lost";
 	const createdAt = input.createdAt ?? "2026-08-21T00:00:00.000Z";
@@ -216,6 +217,7 @@ function workerRecord(input: {
 		...(input.runId === undefined ? {} : { runId: input.runId }),
 		profileId: "local-worker",
 		createdAt,
+		...(input.pool === undefined ? {} : { pool: input.pool }),
 	};
 	switch (status) {
 		case "new":
@@ -604,7 +606,19 @@ describe("RpcHostController Worker management", () => {
 		const harness = await createHarness(resolver);
 		try {
 			currentSessionId = harness.runtimeHost.session.sessionId;
-			records.set("owned", workerRecord({ workerId: "owned", sessionId: currentSessionId, status: "completed" }));
+			records.set("owned", workerRecord({
+				workerId: "owned",
+				sessionId: currentSessionId,
+				status: "completed",
+				pool: {
+					schemaVersion: 1,
+					poolId: "self-hosted",
+					workerId: "pool-local-1",
+					machineId: "machine-local",
+					locality: "local",
+					maxConcurrency: 2,
+				},
+			}));
 			records.set("foreign", workerRecord({ workerId: "foreign", sessionId: "other-session" }));
 			await harness.controller.dispatch({ type: "initialize", protocolVersion: 1 });
 			const listed = asWorkerResponse(await harness.controller.dispatch({ type: "worker.list" }));
@@ -620,6 +634,7 @@ describe("RpcHostController Worker management", () => {
 					"createdAt",
 					"endedAt",
 					"laneId",
+					"pool",
 					"profileId",
 					"providerId",
 					"readyAt",
@@ -630,6 +645,14 @@ describe("RpcHostController Worker management", () => {
 					"workerId",
 				].sort(),
 			);
+			expect(worker.pool).toEqual({
+				schemaVersion: 1,
+				poolId: "self-hosted",
+				workerId: "pool-local-1",
+				machineId: "machine-local",
+				locality: "local",
+				maxConcurrency: 2,
+			});
 			expectSafeWorker(worker);
 			expect(await harness.controller.dispatch({ type: "worker.get", workerId: "foreign" })).toMatchObject({
 				success: false,
