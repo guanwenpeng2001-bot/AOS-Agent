@@ -55,6 +55,7 @@ describe("execution policy settings", () => {
 		expect(legacy.selectedProfile.enforcement).toBe("legacy");
 		expect(Object.isFrozen(legacy)).toBe(true);
 		expect(Object.isFrozen(legacy.selectedProfile)).toBe(true);
+		expect(legacy.selectedProfile.dlp).toEqual({ enabled: true, action: "redact" });
 
 		const selected = buildExecutionPolicySettings({
 			global: globalSettings(),
@@ -64,6 +65,57 @@ describe("execution policy settings", () => {
 		expect(selected.defaultProfile).toBe("host-safe");
 		expect(selected.selectedProfileId).toBe("workspace-safe");
 		expect(selected.selectedProfile.enforcement).toBe("sandbox");
+	});
+
+	it("parses DLP actions and only permits stricter project narrowing", () => {
+		const global = {
+			executionPolicy: {
+				defaultProfile: "host-safe",
+				profiles: {
+					"host-safe": { ...hostProfile, dlp: { enabled: true, action: "warn" } },
+					"workspace-safe": sandboxProfile,
+				},
+			},
+		};
+		const narrowed = buildExecutionPolicySettings({
+			global,
+			projectTrusted: false,
+			registeredProviderIds: ["fake-sandbox"],
+			project: { executionPolicy: { profiles: { "host-safe": { dlp: { action: "deny" } } } } },
+		});
+		expect(narrowed.selectedProfile.dlp).toEqual({ enabled: true, action: "deny" });
+
+		expectPolicyError(
+			() => buildExecutionPolicySettings({
+				global,
+				projectTrusted: false,
+				registeredProviderIds: ["fake-sandbox"],
+				project: { executionPolicy: { profiles: { "host-safe": { dlp: { enabled: false } } } } },
+			}),
+			"policy_profile_untrusted",
+		);
+	});
+
+	it("fills omitted DLP fields from the secure defaults", () => {
+		const disabled = buildExecutionPolicySettings({
+			global: {
+				executionPolicy: {
+					defaultProfile: "disabled",
+					profiles: { disabled: { ...hostProfile, id: "disabled", dlp: { enabled: false } } },
+				},
+			},
+		});
+		const denied = buildExecutionPolicySettings({
+			global: {
+				executionPolicy: {
+					defaultProfile: "denied",
+					profiles: { denied: { ...hostProfile, id: "denied", dlp: { action: "deny" } } },
+				},
+			},
+		});
+
+		expect(disabled.selectedProfile.dlp).toEqual({ enabled: false, action: "redact" });
+		expect(denied.selectedProfile.dlp).toEqual({ enabled: true, action: "deny" });
 	});
 
 	it("merges system defaults, global profiles, and a trusted project narrowing", () => {

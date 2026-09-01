@@ -36,6 +36,7 @@ import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "../policy/sandbox.ts";
+import { resolveDlpPolicy } from "../policy/execution.ts";
 import { SessionManager, type SessionListOptions } from "../session/manager.ts";
 import { createSessionManagerForOptions, type SessionCreationOptions } from "../session/creation.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -180,6 +181,14 @@ export interface CreateAgentSessionResult {
 	extensionsResult: LoadExtensionsResult;
 	/** Warning if session was restored with a different model than saved */
 	modelFallbackMessage?: string;
+}
+
+function sandboxProviderIds(
+	providers: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider> | undefined,
+): string[] {
+	if (providers === undefined) return [];
+	if (Array.isArray(providers)) return (providers as ReadonlyArray<SandboxProvider>).map((provider) => provider.id);
+	return [...(providers as ReadonlyMap<string, SandboxProvider>).keys()];
 }
 
 // Re-exports
@@ -357,6 +366,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const modelBroker = options.modelBroker ?? createModelBroker(modelRuntime, modelBrokerSettings);
 	const mcpAuthManagerOptions =
 		options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
+	const registeredSandboxProviderIds = sandboxProviderIds(options.sandboxProviders);
+	const dlpPolicy = settingsManager.getExecutionPolicySettings({
+		policyProfile: options.policyProfile,
+		registeredProviderIds: ["legacy-host", "host-policy", ...registeredSandboxProviderIds],
+	}).selectedProfile.dlp;
+	let dlpCredentialMaterials: readonly string[] = [];
+	if (resolveDlpPolicy(dlpPolicy).enabled) {
+		try {
+			dlpCredentialMaterials = await modelRuntime.getDlpCredentialMaterials();
+		} catch {
+			// Conservative pattern scanning remains available when the store cannot be read.
+		}
+	}
 
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
@@ -639,6 +661,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			mcpAuthManagerOptions,
 			sandboxProviders: options.sandboxProviders,
 			policyProfile: options.policyProfile,
+			dlpCredentialMaterials,
 			noTools: options.noTools,
 		}, runtimeComposition);
 	} catch (error) {

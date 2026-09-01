@@ -33,6 +33,7 @@
 - Public Automation Host Run receipts now expose validated TaskResult summary, artifact references, and test results through RPC, SDK, terminal events, and replay.
 - Optional OTLP/HTTP JSON span export and derived run, model-call, and tool metrics through the default-off `telemetry` settings section, with bounded batching and failure containment.
 - Added tamper-evident audit hash chains, configurable cursor secrets, physical Foundation retention, and proof-bearing `audit.export` JSONL.
+- DLP scanning for tool results at durable persistence and display/RPC projection boundaries, with exact credential matching, conservative secret patterns, and configurable `warn`, `redact`, or `deny` policy actions.
 - Claude connector artifact input and exact Bedrock `aos_gateway` model projection support, with verified native image/PDF/text blocks and material-free lease correlation.
 - Codex connectors now accept trusted workspace file and image artifact input and support exact `aos_gateway` provider, model, effort, and service-tier projection with material-free credential leases; unsupported artifact sources and media fail closed.
 - Trusted External Connector targets can now be registered in settings for standard CLI, RPC, and SDK Sessions; project and Role selections require project trust and can only narrow global targets.
