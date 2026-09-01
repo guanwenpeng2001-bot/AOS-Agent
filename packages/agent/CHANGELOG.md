@@ -37,6 +37,7 @@
 
 ### Fixed
 
+- Side-effect-free tool failures now remain model-visible error results and no longer force a recovered agent turn to fail.
 - Windows process-tree cleanup now waits for `taskkill` to finish so `NodeExecutionEnv.cleanup()` actually terminates active shells.
 - Made local plugin activation truly durable across process restarts, including recovery cleanup and rollback-point preservation after cleanup failure.
 - Removed the compatibility-only Foundation contract barrel and legacy `FoundationContractError` tag; Foundation errors now expose only the canonical `FoundationError` shape.

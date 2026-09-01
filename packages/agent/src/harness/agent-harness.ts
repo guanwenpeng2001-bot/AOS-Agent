@@ -1093,11 +1093,13 @@ function rawSha256(value: Uint8Array): string {
 
 class HarnessToolPipelineError extends Error {
 	readonly sideEffectState: SideEffectState;
+	readonly sideEffect: "none" | "unknown";
 
 	constructor(message: string, sideEffectState: SideEffectState) {
 		super(message);
 		this.name = "HarnessToolPipelineError";
 		this.sideEffectState = sideEffectState;
+		this.sideEffect = sideEffectState === "none" ? "none" : "unknown";
 	}
 }
 
@@ -2401,10 +2403,7 @@ export class AgentHarness implements AgentLane {
 					failed = true;
 					mergeSideEffectState("side_effect_unknown");
 					recordError({ code: "side_effect_unknown", message: "Durable tool result payload is missing" });
-				} else if (
-					(receipt.outcome !== "succeeded" || receipt.sideEffectState !== "none") &&
-					!(receipt.outcome === "blocked" && receipt.sideEffectState === "none")
-				) {
+				} else if (receipt.sideEffectState !== "none") {
 					failed = true;
 					recordError({ code: receipt.error?.code ?? (receipt.sideEffectState === "side_effect_unknown" ? "side_effect_unknown" : "tool_execution_failed"), message: receipt.error?.message ?? `Tool ${start.toolName} did not complete successfully` });
 				}
@@ -3031,7 +3030,14 @@ export class AgentHarness implements AgentLane {
 						};
 					}
 				}
-				if (execution.ok && execution.value.sideEffectState === "side_effect_unknown") this.terminalToolFailureOperations.add(operationId);
+				if (execution.ok && execution.value.sideEffectState === "none") {
+					this.foundationToolHookResults.set(this.foundationToolHookKey(operationId, toolCallId), {
+						content: [{ type: "text", text: execution.value.error?.message ?? `Tool execution ${execution.value.outcome}` }],
+						isError: true,
+					});
+				} else if (execution.ok && execution.value.sideEffectState === "side_effect_unknown") {
+					this.terminalToolFailureOperations.add(operationId);
+				}
 				throw new HarnessToolPipelineError(
 					execution.ok ? execution.value.error?.message ?? `Tool execution ${execution.value.outcome}` : execution.error.message,
 					execution.ok && execution.value.sideEffectState === "none" ? "none" : "side_effect_unknown",
