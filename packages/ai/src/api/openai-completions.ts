@@ -237,6 +237,28 @@ function parseLegacyEncryptedReasoningDetail(signature: string | undefined): Ope
 	}
 }
 
+function fillMissingCommonReasoningDetailFields(target: OpenAIReasoningDetailBase, source: OpenAIReasoningDetail): void {
+	target.id ??= source.id;
+	target.format ||= source.format;
+	target.index ??= source.index;
+}
+
+function appendOpenAIReasoningDetail(details: OpenAIReasoningDetail[], detail: OpenAIReasoningDetail): void {
+	const lastDetail = details[details.length - 1];
+	if (detail.type === "reasoning.text" && lastDetail?.type === "reasoning.text") {
+		lastDetail.text += detail.text;
+		lastDetail.signature ||= detail.signature;
+		fillMissingCommonReasoningDetailFields(lastDetail, detail);
+		return;
+	}
+	if (detail.type === "reasoning.summary" && lastDetail?.type === "reasoning.summary") {
+		lastDetail.summary += detail.summary;
+		fillMissingCommonReasoningDetailFields(lastDetail, detail);
+		return;
+	}
+	details.push({ ...detail });
+}
+
 const OPENAI_COMPLETIONS_REASONING_FIELDS = ["reasoning", "reasoning_content", "reasoning_text"] as const;
 type OpenAICompletionsReasoningField = (typeof OPENAI_COMPLETIONS_REASONING_FIELDS)[number];
 
@@ -612,7 +634,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 							if (!isOpenAIReasoningDetail(detail)) continue;
 							const block = ensureThinkingBlock("");
 							const preservedDetails = parseOpenAIReasoningDetails(block.thinkingSignature) ?? [];
-							preservedDetails.push(detail);
+							appendOpenAIReasoningDetail(preservedDetails, detail);
 							block.thinkingSignature = JSON.stringify(preservedDetails);
 						}
 					}

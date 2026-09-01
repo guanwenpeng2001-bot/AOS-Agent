@@ -120,4 +120,31 @@ describe("openai-completions reasoning_details streaming", () => {
 
 		expect(getAssistantPayload(mockState.payloads[1])?.reasoning_details).toEqual([reasoningDetail]);
 	});
+
+	it("merges consecutive text and summary deltas before replay", async () => {
+		const details = [
+			{ type: "reasoning.text", text: "The", index: 0 },
+			{ type: "reasoning.text", text: " answer", signature: "signed", format: "v1", index: 0 },
+			{ type: "reasoning.summary", summary: "Looked", index: 0 },
+			{ type: "reasoning.summary", summary: " up.", format: "v1", index: 0 },
+			reasoningDetail,
+		];
+		const expected = [
+			{ type: "reasoning.text", text: "The answer", signature: "signed", format: "v1", index: 0 },
+			{ type: "reasoning.summary", summary: "Looked up.", format: "v1", index: 0 },
+			reasoningDetail,
+		];
+		mockState.chunkSets = [
+			[...details.map((detail) => chunk({ reasoning_details: [detail] })), toolCallChunk(), chunk({}, "tool_calls")],
+			[chunk({ content: "ok" }), chunk({}, "stop")],
+		];
+
+		const assistantMessage = await runOpenAICompletionsStream();
+		const thinking = assistantMessage.content.find((block) => block.type === "thinking");
+		expect(thinking?.type === "thinking" ? JSON.parse(thinking.thinkingSignature ?? "[]") : []).toEqual(expected);
+
+		await runOpenAICompletionsStream([assistantMessage]);
+
+		expect(getAssistantPayload(mockState.payloads[1])?.reasoning_details).toEqual(expected);
+	});
 });
