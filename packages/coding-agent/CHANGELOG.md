@@ -52,6 +52,7 @@
 ### Changed
 
 - Product prompts and external connectors now populate task-result summaries, tests, and artifacts from durable execution records.
+- Product prompts, harness settlement, and external connectors now share durable workspace-diff aggregation for `TaskResult.diff`.
 - Windows full-load regression coverage now bounds and terminates a stalled invalid-session source child and makes reftable watcher changes observable without weakening behavior assertions.
 - The built-in Radius provider points at the upstream-hosted gateway by default, so `/login radius` and its model catalog work out of the box; custom gateways in `models.json` are unchanged.
 - Default workspace `build`, CI, and release hydrate the ignored model wrappers from the tracked AI test-fixture snapshot instead of fetching live catalogs.

@@ -749,7 +749,7 @@ export function createPromptTaskAdapter(options: PromptTaskCompositionRootOption
 						...(childAttemptReceiptIds.length === 0 ? {} : { provenanceAttemptReceiptIds: childAttemptReceiptIds }),
 						summary: produced.summary,
 						artifacts: produced.artifacts,
-						...(input.settlement?.diff === undefined ? {} : { diff: input.settlement.diff }),
+						...(produced.diff === undefined ? {} : { diff: produced.diff }),
 						tests: produced.tests,
 						evidence: input.settlement?.evidence ?? [],
 						producer: {

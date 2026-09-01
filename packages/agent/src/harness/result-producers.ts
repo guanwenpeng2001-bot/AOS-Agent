@@ -1,5 +1,6 @@
 import {
 	canonicalFoundationJson,
+	fingerprintFoundationValue,
 	sha256HexValue,
 	type ExecutionCorrelation,
 } from "./foundation/identity.ts";
@@ -41,7 +42,7 @@ export interface DurableTaskResultToolRecord {
 	readonly outcome: ToolReceiptOutcome;
 	readonly sideEffectState: SideEffectState;
 	readonly artifacts: readonly ArtifactRef[];
-	readonly result?: ToolReceipt["result"];
+	readonly result?: unknown;
 	readonly source: DurableTaskResultToolSource;
 }
 
@@ -59,15 +60,32 @@ export interface TaskResultProducerInput {
 	readonly artifacts?: readonly ArtifactRef[];
 	readonly tests?: readonly ValidationResult[];
 	readonly durableTools?: readonly DurableTaskResultToolRecord[];
-	readonly attemptReceipt?: Pick<AttemptReceipt, "providerId" | "status" | "artifacts" | "error">;
+	readonly attemptReceipt?: Pick<AttemptReceipt, "attemptReceiptId" | "providerId" | "status" | "artifacts" | "error" | "sideEffectState">;
 	readonly writeArtifact?: (input: FileChangeArtifactWrite) => Promise<ArtifactRef>;
 }
 
 export interface TaskResultProducerOutput {
 	readonly summary: string;
 	readonly artifacts: readonly ArtifactRef[];
+	readonly diff?: ArtifactRef;
 	readonly tests: readonly ValidationResult[];
 }
+
+interface DurableDiffEvidence {
+	readonly artifact: ArtifactRef;
+	readonly source: DurableTaskResultToolSource;
+	readonly path?: string;
+	readonly toolCallId?: string;
+	readonly toolName?: string;
+}
+
+const DIFF_MEDIA_TYPES = new Set([
+	"application/vnd.github.v3.diff",
+	"application/vnd.github.v3.patch",
+	"text/x-diff",
+	"text/x-patch",
+]);
+const WORKSPACE_DIFF_COMMAND_PATTERN = /(?:^|(?:&&|\|\||;|\n)\s*)git\s+(?:-[^\s]+\s+)*diff\b/i;
 
 function boundedRedactedText(value: string, maxLength: number): string {
 	const redacted = redactText(value).trim();
@@ -79,6 +97,10 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
 		? value as Record<string, unknown>
 		: undefined;
+}
+
+function toolNameLeaf(value: string): string {
+	return value.split(/[.:/]/u).at(-1) ?? value;
 }
 
 export function isValidationCommand(value: unknown): value is string {
@@ -95,16 +117,58 @@ function addArtifact(target: Map<string, ArtifactRef>, artifact: ArtifactRef): v
 	target.set(checked.value.artifactId, checked.value);
 }
 
+function contentAddressedArtifact(artifact: ArtifactRef): ArtifactRef | undefined {
+	const checked = validateArtifactRef(artifact);
+	if (!checked.ok) return undefined;
+	const digestId = checked.value.digest.slice("sha256:".length).toLowerCase();
+	return checked.value.artifactId.toLowerCase() === digestId ? checked.value : undefined;
+}
+
+function addDiffEvidence(target: Map<string, DurableDiffEvidence>, evidence: DurableDiffEvidence): void {
+	const artifact = contentAddressedArtifact(evidence.artifact);
+	if (artifact === undefined) return;
+	const prior = target.get(artifact.artifactId);
+	if (prior !== undefined && canonicalFoundationJson(prior.artifact) !== canonicalFoundationJson(artifact)) {
+		throw new FoundationError("session_ledger_conflict", "Durable diff producers disagree about one artifact identity");
+	}
+	target.set(artifact.artifactId, prior ?? { ...evidence, artifact });
+}
+
+function resultText(record: DurableTaskResultToolRecord): string | undefined {
+	const content = recordValue(record.result)?.content;
+	if (!Array.isArray(content)) return undefined;
+	const text = content.flatMap((item) => {
+		const value = recordValue(item);
+		return value?.type === "text" && typeof value.text === "string" ? [value.text] : [];
+	}).join("\n");
+	return text.length === 0 ? undefined : text;
+}
+
+function fileChangePath(record: DurableTaskResultToolRecord): string | undefined {
+	const path = recordValue(record.arguments)?.path;
+	return typeof path === "string" ? path : undefined;
+}
+
 function fileChangeContent(record: DurableTaskResultToolRecord): { readonly bytes: Uint8Array; readonly mediaType: string } | undefined {
 	const args = recordValue(record.arguments);
-	if (record.toolName === "write") {
+	const toolName = toolNameLeaf(record.toolName);
+	if (toolName === "write") {
 		const content = args?.content;
 		return typeof content === "string"
 			? { bytes: new TextEncoder().encode(content), mediaType: "text/plain" }
 			: undefined;
 	}
-	if (record.toolName !== "edit") return undefined;
-	const details = recordValue(record.result?.details);
+	if (toolName === "bash" && isValidationCommand(args?.command)) return undefined;
+	if (
+		toolName === "diff" ||
+		toolName === "workspace_diff" ||
+		(toolName === "bash" && typeof args?.command === "string" && WORKSPACE_DIFF_COMMAND_PATTERN.test(args.command))
+	) {
+		const diff = resultText(record);
+		return diff === undefined ? undefined : { bytes: new TextEncoder().encode(diff), mediaType: "text/x-diff" };
+	}
+	if (toolName !== "edit") return undefined;
+	const details = recordValue(recordValue(record.result)?.details);
 	const patch = details?.patch;
 	return typeof patch === "string" && patch.length > 0
 		? { bytes: new TextEncoder().encode(patch), mediaType: "text/x-diff" }
@@ -112,7 +176,7 @@ function fileChangeContent(record: DurableTaskResultToolRecord): { readonly byte
 }
 
 function validationResult(record: DurableTaskResultToolRecord): ValidationResult | undefined {
-	if (record.toolName !== "bash") return undefined;
+	if (toolNameLeaf(record.toolName) !== "bash") return undefined;
 	const command = recordValue(record.arguments)?.command;
 	if (!isValidationCommand(command)) return undefined;
 	const sourceCommand = boundedRedactedText(command, VALIDATION_COMMAND_MAX_LENGTH);
@@ -153,9 +217,25 @@ async function validationEvidence(
 	if (writeArtifact === undefined) return undefined;
 	const command = recordValue(record.arguments)?.command;
 	if (typeof command !== "string") return undefined;
-	const result = record.result?.content.map((item) => item.type === "text"
-		? { type: "text", text: boundedRedactedText(item.text, 8_192) }
-		: { type: "artifact", artifactId: item.artifact.artifactId, digest: item.artifact.digest });
+	const durableContent = recordValue(record.result)?.content;
+	const projectedResult: Array<
+		| { readonly type: "text"; readonly text: string }
+		| { readonly type: "artifact"; readonly artifactId: string; readonly digest: string }
+	> = [];
+	if (Array.isArray(durableContent)) {
+		for (const item of durableContent) {
+			const value = recordValue(item);
+			if (value?.type === "text" && typeof value.text === "string") {
+				projectedResult.push({ type: "text", text: boundedRedactedText(value.text, 8_192) });
+				continue;
+			}
+			const artifact = value?.type === "image" ? recordValue(value.artifact) : undefined;
+			if (typeof artifact?.artifactId === "string" && typeof artifact.digest === "string") {
+				projectedResult.push({ type: "artifact", artifactId: artifact.artifactId, digest: artifact.digest });
+			}
+		}
+	}
+	const result = Array.isArray(durableContent) ? projectedResult : undefined;
 	const content = canonicalFoundationJson({
 		schemaVersion: 1,
 		toolReceiptId: record.source.objectId,
@@ -174,12 +254,78 @@ async function validationEvidence(
 	});
 }
 
+async function producedDiff(
+	evidenceByArtifact: ReadonlyMap<string, DurableDiffEvidence>,
+	writeArtifact: TaskResultProducerInput["writeArtifact"],
+): Promise<ArtifactRef | undefined> {
+	const evidence = [...evidenceByArtifact.values()];
+	if (evidence.length === 0) return undefined;
+	if (evidence.length === 1 && DIFF_MEDIA_TYPES.has(evidence[0]!.artifact.mediaType.toLowerCase())) {
+		return evidence[0]!.artifact;
+	}
+	if (writeArtifact === undefined) return evidence[0]!.artifact;
+	const content = new TextEncoder().encode(canonicalFoundationJson({
+		schemaVersion: 1,
+		type: "workspace_diff",
+		changes: evidence.map((item) => ({
+			artifact: item.artifact,
+			source: item.source,
+			...(item.path === undefined ? {} : { path: item.path }),
+			...(item.toolCallId === undefined ? {} : { toolCallId: item.toolCallId }),
+			...(item.toolName === undefined ? {} : { toolName: item.toolName }),
+		})),
+	}));
+	const expectedId = sha256HexValue(content);
+	const stored = await writeArtifact({
+		content,
+		name: "workspace-diff.json",
+		mediaType: "application/json",
+		producer: "task-result-producer:durable-workspace-diff",
+		clientRequestId: `task-result-workspace-diff:${expectedId}`,
+	});
+	const checked = contentAddressedArtifact(stored);
+	if (
+		checked === undefined ||
+		checked.artifactId !== expectedId ||
+		(checked.sizeBytes !== undefined && checked.sizeBytes !== content.byteLength)
+	) {
+		throw new FoundationError("task_result_validation_failed", "Workspace diff artifact failed digest verification");
+	}
+	return checked;
+}
+
 export async function aggregateTaskResultProducers(input: TaskResultProducerInput): Promise<TaskResultProducerOutput> {
 	const artifacts = new Map<string, ArtifactRef>();
+	const diffEvidence = new Map<string, DurableDiffEvidence>();
 	for (const artifact of input.artifacts ?? []) addArtifact(artifacts, artifact);
+	if (input.attemptReceipt !== undefined) {
+		const source: DurableTaskResultToolSource = {
+			objectType: "attempt_receipt",
+			objectId: input.attemptReceipt.attemptReceiptId,
+			revision: 1,
+			digest: fingerprintFoundationValue(input.attemptReceipt).value,
+		};
+		for (const artifact of input.attemptReceipt.artifacts) {
+			if (DIFF_MEDIA_TYPES.has(artifact.mediaType.toLowerCase())) {
+				addDiffEvidence(diffEvidence, { artifact, source });
+			}
+		}
+	}
 	const tests = [...(input.tests ?? [])];
 	for (const record of input.durableTools ?? []) {
-		for (const artifact of record.artifacts) addArtifact(artifacts, artifact);
+		const path = fileChangePath(record);
+		for (const artifact of record.artifacts) {
+			addArtifact(artifacts, artifact);
+			if (DIFF_MEDIA_TYPES.has(artifact.mediaType.toLowerCase())) {
+				addDiffEvidence(diffEvidence, {
+					artifact,
+					source: record.source,
+					...(path === undefined ? {} : { path }),
+					toolCallId: record.toolCallId,
+					toolName: record.toolName,
+				});
+			}
+		}
 		const validation = validationResult(record);
 		if (validation !== undefined) {
 			const evidence = await validationEvidence(record, input.writeArtifact);
@@ -215,10 +361,20 @@ export async function aggregateTaskResultProducers(input: TaskResultProducerInpu
 			throw new FoundationError("task_result_validation_failed", "File-change artifact failed digest verification");
 		}
 		addArtifact(artifacts, checked.value);
+		addDiffEvidence(diffEvidence, {
+			artifact: checked.value,
+			source: record.source,
+			...(path === undefined ? {} : { path }),
+			toolCallId: record.toolCallId,
+			toolName: record.toolName,
+		});
 	}
+	const diff = await producedDiff(diffEvidence, input.writeArtifact);
+	if (diff !== undefined) addArtifact(artifacts, diff);
 	return {
 		summary: producedSummary(input, artifacts.size, tests.length),
 		artifacts: [...artifacts.values()],
+		...(diff === undefined ? {} : { diff }),
 		tests,
 	};
 }
