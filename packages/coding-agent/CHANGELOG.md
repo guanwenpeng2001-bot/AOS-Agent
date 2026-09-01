@@ -20,6 +20,7 @@
 
 ### Added
 
+- Local short-lived credential projections now reuse Task Credential lease and target lifecycle semantics with opaque references, terminal TTL expiry, immediate revocation, restart-safe metadata, and atomic `auth.json` dual-credential rotation windows.
 - Remote-neutral operation binding for remote Workers, including bounded WorkerReceipt projection, lease renewal after cross-host ping/pong liveness proof, and fail-closed reclaim when transport loss makes remote termination unprovable.
 - Remote Operation Workers can connect through the shared bearer/mTLS WebSocket transport configuration, carrying the existing bounded stdio frame contract over WS/TLS without changing Worker protocol records.
 - RPC TCP and WebSocket listeners now support bearer authentication, TLS termination, mTLS client certificates, secured non-loopback binding, and matching `RpcClient` credentials.

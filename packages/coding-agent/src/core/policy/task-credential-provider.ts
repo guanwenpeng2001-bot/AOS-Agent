@@ -61,6 +61,10 @@ import {
 	type TaskCredentialScope,
 	type TaskExecutionBinding,
 } from "./task-credential-lease.ts";
+import {
+	CredentialVaultError,
+	type LocalCredentialVault,
+} from "./credential-vault.ts";
 
 /** Material payload size cap: one credential material value. Module-private. */
 const TASK_CREDENTIAL_PROVIDER_MATERIAL_MAX_LENGTH = 8192;
@@ -214,6 +218,21 @@ interface TaskCredentialTargetProjectRequest {
 	readonly projectedAt: string;
 }
 
+/**
+ * Reference-only projection delivered by the local credential vault. The
+ * execution target receives opaque, short-lived references and never the
+ * long-lived credential stored in auth.json.
+ */
+export interface TaskCredentialReferenceProjectRequest {
+	readonly schemaVersion: typeof TASK_CREDENTIAL_SCHEMA_VERSION;
+	readonly leaseId: string;
+	readonly grantId: string;
+	readonly bindingId: string;
+	readonly targetId?: string;
+	readonly references: Readonly<Record<string, string>>;
+	readonly projectedAt: string;
+}
+
 /** Issuer capability: issue, renew, and revoke; requests and results are material-free. */
 export interface TaskCredentialIssuer {
 	issue(request: TaskCredentialProviderIssueRequest): TaskCredentialProviderReceipt;
@@ -244,6 +263,14 @@ export interface TaskCredentialTarget {
 interface TaskCredentialMaterialTarget {
 	getCapabilities(request: TaskCredentialTargetCapabilitiesRequest): TaskCredentialTargetCapabilities;
 	project(request: TaskCredentialTargetProjectRequest): TaskCredentialDeliveryReceipt;
+	renew(request: TaskCredentialTargetRenewRequest): TaskCredentialProviderReceipt;
+	revoke(request: TaskCredentialTargetRevokeRequest): TaskCredentialProviderReceipt;
+}
+
+/** Existing target lifecycle channel specialized for reference-only projection. */
+export interface TaskCredentialReferenceTarget {
+	getCapabilities(request: TaskCredentialTargetCapabilitiesRequest): TaskCredentialTargetCapabilities;
+	project(request: TaskCredentialReferenceProjectRequest): TaskCredentialDeliveryReceipt;
 	renew(request: TaskCredentialTargetRenewRequest): TaskCredentialProviderReceipt;
 	revoke(request: TaskCredentialTargetRevokeRequest): TaskCredentialProviderReceipt;
 }
@@ -310,6 +337,15 @@ const TARGET_PROJECT_KEYS = new Set([
 	"targetId",
 	"scopes",
 	"material",
+	"projectedAt",
+]);
+const REFERENCE_PROJECT_KEYS = new Set([
+	"schemaVersion",
+	"leaseId",
+	"grantId",
+	"bindingId",
+	"targetId",
+	"references",
 	"projectedAt",
 ]);
 const RECEIPT_KEYS = new Set([
@@ -532,6 +568,40 @@ function isMaterialMap(value: unknown): value is Readonly<Record<string, string>
 	return true;
 }
 
+function isReferenceMap(value: unknown): value is Readonly<Record<string, string>> {
+	if (!isRecord(value)) return false;
+	const names = Object.keys(value);
+	if (names.length === 0 || names.length > TASK_CREDENTIAL_MAX_SCOPES) return false;
+	return names.every((name) => {
+		const reference = value[name];
+		return (
+			isBoundedIdentifier(name, TASK_CREDENTIAL_IDENTIFIER_MAX_LENGTH) &&
+			typeof reference === "string" &&
+			reference.length > 0 &&
+			reference.length <= TASK_CREDENTIAL_PROVIDER_MATERIAL_MAX_LENGTH
+		);
+	});
+}
+
+/** Structural guard for the reference-only target projection request. */
+export function isTaskCredentialReferenceProjectRequest(
+	value: unknown,
+): value is TaskCredentialReferenceProjectRequest {
+	if (!isRecord(value) || !hasOnlyKeys(value, REFERENCE_PROJECT_KEYS)) return false;
+	if (value.schemaVersion !== TASK_CREDENTIAL_SCHEMA_VERSION) return false;
+	if (
+		!isBoundedIdentifier(value.leaseId, TASK_CREDENTIAL_IDENTIFIER_MAX_LENGTH) ||
+		!isBoundedIdentifier(value.grantId, TASK_CREDENTIAL_IDENTIFIER_MAX_LENGTH) ||
+		!isBoundedIdentifier(value.bindingId, TASK_CREDENTIAL_IDENTIFIER_MAX_LENGTH)
+	) {
+		return false;
+	}
+	if (value.targetId !== undefined && !isBoundedIdentifier(value.targetId, TASK_CREDENTIAL_IDENTIFIER_MAX_LENGTH)) {
+		return false;
+	}
+	return isReferenceMap(value.references) && hasRequestTimestamp(value, "projectedAt");
+}
+
 /**
  * Module-private structural guard for the provider-to-target projection
  * request, the only contract that carries material. The request is still
@@ -677,6 +747,235 @@ function createFailClosedMaterialTarget(nowFn: () => string): TaskCredentialMate
 		},
 		renew: (request: TaskCredentialTargetRenewRequest) => failClosedRenew(request, nowFn),
 		revoke: (request: TaskCredentialTargetRevokeRequest) => failClosedRevoke(request, nowFn),
+	};
+}
+
+function createFailClosedReferenceTarget(nowFn: () => string): TaskCredentialReferenceTarget {
+	return {
+		getCapabilities: failClosedGetCapabilities,
+		project(request: TaskCredentialReferenceProjectRequest): TaskCredentialDeliveryReceipt {
+			if (!isTaskCredentialReferenceProjectRequest(request)) {
+				throw new TaskCredentialError("task_credential_invalid");
+			}
+			return failClosedReceipt(request, nowFn);
+		},
+		renew: (request: TaskCredentialTargetRenewRequest) => failClosedRenew(request, nowFn),
+		revoke: (request: TaskCredentialTargetRevokeRequest) => failClosedRevoke(request, nowFn),
+	};
+}
+
+export interface TaskCredentialLocalVaultProviderOptions {
+	readonly vault: LocalCredentialVault;
+	readonly target?: TaskCredentialReferenceTarget;
+	readonly now?: () => string;
+}
+
+function throwTaskCredentialVaultError(error: unknown, unavailableCode: TaskCredentialError["code"]): never {
+	if (!(error instanceof CredentialVaultError)) throw new TaskCredentialError(unavailableCode);
+	switch (error.code) {
+		case "credential_projection_invalid":
+			throw new TaskCredentialError("task_credential_invalid");
+		case "credential_projection_not_found":
+			throw new TaskCredentialError("task_credential_not_found");
+		case "credential_projection_expired":
+			throw new TaskCredentialError("task_lease_expired");
+		case "credential_projection_conflict":
+		case "credential_projection_revoked":
+			throw new TaskCredentialError("task_credential_conflict");
+		case "credential_revision_unavailable":
+			throw new TaskCredentialError(unavailableCode);
+	}
+}
+
+function validateMatchingProviderReceipt(
+	receipt: TaskCredentialProviderReceipt,
+	request: { readonly leaseId: string; readonly grantId: string; readonly bindingId: string },
+): TaskCredentialProviderReceipt {
+	const parsed = parseTaskCredentialProviderReceipt(receipt);
+	if (
+		parsed === undefined ||
+		parsed.leaseId !== request.leaseId ||
+		parsed.grantId !== request.grantId ||
+		parsed.bindingId !== request.bindingId
+	) {
+		throw new TaskCredentialError("task_credential_delivery_failed");
+	}
+	return parsed;
+}
+
+/**
+ * Local production provider backed by opaque short-lived vault references.
+ * The provider reuses Task Credential issue/renew/revoke semantics and the
+ * configured target lifecycle channel, but reference projection never hands
+ * auth.json material to the execution target.
+ */
+export function createTaskCredentialLocalVaultProvider(
+	options: TaskCredentialLocalVaultProviderOptions,
+): TaskCredentialProvider {
+	const nowFn = options.now ?? (() => new Date().toISOString());
+	const target = options.target ?? createFailClosedReferenceTarget(nowFn);
+	return {
+		issuer: {
+			issue(request: TaskCredentialProviderIssueRequest): TaskCredentialProviderReceipt {
+				if (!isTaskCredentialProviderIssueRequest(request)) {
+					throw new TaskCredentialError("task_credential_invalid");
+				}
+				const credentialNames = [...new Set(request.scopes.map((scope) => scope.credentialName))];
+				try {
+					options.vault.issue({
+						leaseId: request.leaseId,
+						grantId: request.grantId,
+						bindingId: request.binding.bindingId,
+						credentialNames,
+						requestedTtlMs: request.requestedTtlMs,
+						issuedAtMs: Date.parse(request.requestedAt),
+					});
+				} catch (error) {
+					throwTaskCredentialVaultError(error, "task_credential_scope_denied");
+				}
+				return {
+					schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
+					leaseId: request.leaseId,
+					grantId: request.grantId,
+					bindingId: request.binding.bindingId,
+					status: "issued",
+					recordedAt: nowFn(),
+				};
+			},
+			renew(request: TaskCredentialProviderRenewRequest): TaskCredentialProviderReceipt {
+				if (!isTaskCredentialProviderRenewRequest(request)) {
+					throw new TaskCredentialError("task_credential_invalid");
+				}
+				try {
+					options.vault.renew({
+						leaseId: request.leaseId,
+						grantId: request.grantId,
+						bindingId: request.bindingId,
+						requestedTtlMs: request.requestedTtlMs,
+						renewedAtMs: Date.parse(request.requestedAt),
+					});
+				} catch (error) {
+					throwTaskCredentialVaultError(error, "task_credential_delivery_failed");
+				}
+				return {
+					schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
+					leaseId: request.leaseId,
+					grantId: request.grantId,
+					bindingId: request.bindingId,
+					status: "renewed",
+					recordedAt: nowFn(),
+				};
+			},
+			revoke(request: TaskCredentialProviderRevokeRequest): TaskCredentialProviderReceipt {
+				if (!isTaskCredentialProviderRevokeRequest(request)) {
+					throw new TaskCredentialError("task_credential_invalid");
+				}
+				try {
+					options.vault.revoke({
+						leaseId: request.leaseId,
+						grantId: request.grantId,
+						bindingId: request.bindingId,
+						revokedAtMs: Date.parse(request.requestedAt),
+					});
+				} catch (error) {
+					throwTaskCredentialVaultError(error, "task_credential_delivery_failed");
+				}
+				return {
+					schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
+					leaseId: request.leaseId,
+					grantId: request.grantId,
+					bindingId: request.bindingId,
+					status: "revoked",
+					recordedAt: nowFn(),
+					...(request.reasonCode === undefined ? {} : { reasonCode: request.reasonCode }),
+				};
+			},
+		},
+		target: {
+			getCapabilities(request: TaskCredentialTargetCapabilitiesRequest): TaskCredentialTargetCapabilities {
+				if (!isTaskCredentialTargetCapabilitiesRequest(request)) {
+					throw new TaskCredentialError("task_credential_invalid");
+				}
+				const capabilities = parseTaskCredentialTargetCapabilities(target.getCapabilities(request));
+				if (
+					capabilities === undefined ||
+					capabilities.targetId !== request.targetId ||
+					capabilities.targetKind !== request.targetKind ||
+					capabilities.bindingId !== request.bindingId
+				) {
+					throw new TaskCredentialError("task_credential_delivery_failed");
+				}
+				return capabilities;
+			},
+			project(request: TaskCredentialProviderProjectRequest): TaskCredentialDeliveryReceipt {
+				if (!isTaskCredentialProviderProjectRequest(request)) {
+					throw new TaskCredentialError("task_credential_invalid");
+				}
+				let references: Readonly<Record<string, string>>;
+				try {
+					references = options.vault.getLeaseReferences(
+						request.leaseId,
+						request.grantId,
+						request.bindingId,
+						Date.parse(request.requestedAt),
+					);
+				} catch (error) {
+					throwTaskCredentialVaultError(error, "task_credential_delivery_failed");
+				}
+				const projection: TaskCredentialReferenceProjectRequest = {
+					schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
+					leaseId: request.leaseId,
+					grantId: request.grantId,
+					bindingId: request.bindingId,
+					references,
+					projectedAt: request.requestedAt,
+					...(request.targetId === undefined ? {} : { targetId: request.targetId }),
+				};
+				const parsed = parseTaskCredentialDeliveryReceipt(target.project(projection));
+				if (
+					parsed === undefined ||
+					parsed.leaseId !== request.leaseId ||
+					parsed.grantId !== request.grantId ||
+					parsed.bindingId !== request.bindingId
+				) {
+					throw new TaskCredentialError("task_credential_delivery_failed");
+				}
+				return parsed;
+			},
+			renew(request: TaskCredentialTargetRenewRequest): TaskCredentialProviderReceipt {
+				if (!isTaskCredentialTargetRenewRequest(request)) {
+					throw new TaskCredentialError("task_credential_invalid");
+				}
+				try {
+					options.vault.renew({
+						leaseId: request.leaseId,
+						grantId: request.grantId,
+						bindingId: request.bindingId,
+						requestedTtlMs: request.requestedTtlMs,
+						renewedAtMs: Date.parse(request.requestedAt),
+					});
+				} catch (error) {
+					throwTaskCredentialVaultError(error, "task_credential_delivery_failed");
+				}
+				return validateMatchingProviderReceipt(target.renew(request), request);
+			},
+			revoke(request: TaskCredentialTargetRevokeRequest): TaskCredentialProviderReceipt {
+				if (!isTaskCredentialTargetRevokeRequest(request)) {
+					throw new TaskCredentialError("task_credential_invalid");
+				}
+				try {
+					options.vault.revoke({
+						leaseId: request.leaseId,
+						grantId: request.grantId,
+						bindingId: request.bindingId,
+						revokedAtMs: Date.parse(request.requestedAt),
+					});
+				} catch (error) {
+					throwTaskCredentialVaultError(error, "task_credential_delivery_failed");
+				}
+				return validateMatchingProviderReceipt(target.revoke(request), request);
+			},
+		},
 	};
 }
 

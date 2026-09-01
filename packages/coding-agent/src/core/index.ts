@@ -214,8 +214,24 @@ export {
 	type TaskExecutionBinding,
 } from "./policy/task-credential-lease.ts";
 export {
+	CREDENTIAL_VAULT_ERROR_CODES,
+	CREDENTIAL_VAULT_SCHEMA_VERSION,
+	CredentialVaultError,
+	LocalCredentialVault,
+	type CredentialProjectionIssueRequest,
+	type CredentialProjectionRecord,
+	type CredentialProjectionRenewRequest,
+	type CredentialProjectionRevokeRequest,
+	type CredentialProjectionStatus,
+	type CredentialVaultErrorCode,
+	type LocalCredentialVaultOptions,
+} from "./policy/credential-vault.ts";
+export {
 	createTaskCredentialNullTarget,
+	createTaskCredentialLocalVaultProvider,
+	isTaskCredentialReferenceProjectRequest,
 	type TaskCredentialIssuer,
+	type TaskCredentialLocalVaultProviderOptions,
 	type TaskCredentialProvider,
 	type TaskCredentialProviderAvailability,
 	type TaskCredentialProviderIssueRequest,
@@ -227,6 +243,8 @@ export {
 	type TaskCredentialTarget,
 	type TaskCredentialTargetCapabilities,
 	type TaskCredentialTargetCapabilitiesRequest,
+	type TaskCredentialReferenceProjectRequest,
+	type TaskCredentialReferenceTarget,
 	type TaskCredentialTargetRenewRequest,
 	type TaskCredentialTargetRevokeRequest,
 } from "./policy/task-credential-provider.ts";
