@@ -1,15 +1,19 @@
 import { request } from "node:http";
 import { fingerprintFoundationValue } from "@aos-agent/agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AutomationRpcError } from "../src/modes/rpc/rpc-client.ts";
 import type {
 	AuditQueryResult,
 	RunGetData,
 	SubagentListData,
+	TaskGateListData,
+	TaskGateMutationData,
 	TaskGraphGetData,
 	TaskGraphListData,
 	WorkerListData,
 } from "../src/modes/rpc/rpc-types.ts";
 import type { WebReadOnlyRpcClient } from "../src/modes/web/read-only-rpc.ts";
+import type { WebOperationRpcClient } from "../src/modes/web/operations-rpc.ts";
 import {
 	startWebSurfaceServer,
 	type WebSurfaceServer,
@@ -37,6 +41,18 @@ const AUDIT: AuditQueryResult = {
 	scope: "current-session",
 	events: [],
 	warnings: [],
+};
+
+const PENDING_GATE: TaskGateListData["gates"][number] = {
+	schemaVersion: 1,
+	sessionId: "session-1",
+	gateId: "gate-1",
+	taskId: "task-1",
+	stageId: "stage-1",
+	stageRevision: 1,
+	status: "pending",
+	revision: 0,
+	requestedAt: "2026-09-01T00:00:00.000Z",
 };
 
 const GRAPH = {
@@ -108,7 +124,7 @@ const SUBAGENTS: SubagentListData = {
 	truncated: false,
 };
 
-describe("read-only web surface", () => {
+describe("web operations surface", () => {
 	let surface: WebSurfaceServer | undefined;
 
 	afterEach(async () => {
@@ -136,18 +152,25 @@ describe("read-only web surface", () => {
 		expect(html.body).toContain("AOS Agent Web Surface");
 		expect(html.body).toContain("Task graph board");
 		expect(html.body).toContain('src="/app.js"');
+		expect(html.body).toContain("Pending gates");
 		expect(script.body).toContain("createElementNS(SVG_NS");
 		expect(script.body).toContain("Parent / Child tree");
+		expect(script.body).toContain("window.confirm(confirmation)");
+		expect(script.body).toContain('callApi("/api/ops"');
+		for (const method of ["task.gate.approve", "task.gate.reject", "run.cancel", "run.resume"]) {
+			expect(script.body).toContain(`"${method}"`);
+		}
 		const resources = `${html.body}\n${css.body}\n${script.body}`.replace("http://www.w3.org/2000/svg", "");
 		expect(resources).not.toMatch(/https?:\/\/|(?:src|href)=["']\/\//u);
 	});
 
-	it("forwards only the six allowlisted read methods", async () => {
+	it("forwards only the seven allowlisted read methods", async () => {
 		const fake = createFakeClient();
 		surface = await startWebSurfaceServer(fake.client);
 
 		const run = await postRpc(surface, "run.get", { runId: "run-1" });
 		const audit = await postRpc(surface, "audit.query", { scope: "current-session", limit: 25 });
+		const gates = await postRpc(surface, "task.gate.list", { status: "pending", limit: 10 });
 		const graph = await postRpc(surface, "task.graph.get", { taskId: "task-1", graphRevision: 1 });
 		const graphs = await postRpc(surface, "task.graph.list", { status: "active", limit: 10 });
 		const workers = await postRpc(surface, "worker.list", { runId: "run-1", status: "running", limit: 10 });
@@ -158,16 +181,18 @@ describe("read-only web surface", () => {
 			limit: 10,
 		});
 
-		expect([run.statusCode, audit.statusCode, graph.statusCode, graphs.statusCode, workers.statusCode, subagents.statusCode]).toEqual([
-			200,
-			200,
-			200,
-			200,
-			200,
-			200,
-		]);
+		expect([
+			run.statusCode,
+			audit.statusCode,
+			gates.statusCode,
+			graph.statusCode,
+			graphs.statusCode,
+			workers.statusCode,
+			subagents.statusCode,
+		]).toEqual([200, 200, 200, 200, 200, 200, 200]);
 		expect(fake.getRun).toHaveBeenCalledWith("run-1");
 		expect(fake.auditQuery).toHaveBeenCalledWith({ scope: "current-session", limit: 25 });
+		expect(fake.listTaskGates).toHaveBeenCalledWith({ status: "pending", limit: 10 });
 		expect(fake.getTaskGraph).toHaveBeenCalledWith("task-1", 1);
 		expect(fake.listTaskGraphs).toHaveBeenCalledWith({ status: "active", limit: 10 });
 		expect(fake.listWorkers).toHaveBeenCalledWith({ runId: "run-1", status: "running", limit: 10 });
@@ -200,34 +225,111 @@ describe("read-only web surface", () => {
 		expect(fake.listSubagents).toHaveBeenCalledWith("run-1", { limit: 100 });
 	});
 
-	it("rejects write methods before reaching RpcClient", async () => {
+	it("constructs exactly the four allowlisted write commands", async () => {
 		const fake = createFakeClient();
 		surface = await startWebSurfaceServer(fake.client);
 
-		for (const method of [
-			"run.start",
-			"run.cancel",
-			"task.graph.create",
-			"task.graph.node.settle",
-			"worker.reclaim",
-			"subagent.cancel",
-		]) {
-			const result = await postRpc(surface, method, { runId: "run-1" });
+		const approve = await postOperation(surface, "task.gate.approve", {
+			gateId: "gate-1",
+			clientRequestId: "approve-1",
+			confirmed: true,
+		});
+		const reject = await postOperation(surface, "task.gate.reject", {
+			gateId: "gate-2",
+			clientRequestId: "reject-1",
+			confirmed: true,
+		});
+		const cancel = await postOperation(surface, "run.cancel", { runId: "run-1", confirmed: true });
+		const resume = await postOperation(surface, "run.resume", {
+			sessionPath: "sessions/session-1.jsonl",
+			sourceRunId: "run-1",
+			message: "continue after review",
+			clientRequestId: "resume-1",
+			confirmed: true,
+		});
+
+		expect([approve.statusCode, reject.statusCode, cancel.statusCode, resume.statusCode]).toEqual([
+			200, 200, 200, 200,
+		]);
+		expect(fake.approveTaskGate).toHaveBeenCalledWith("gate-1", "approve-1", "web-operator");
+		expect(fake.rejectTaskGate).toHaveBeenCalledWith("gate-2", "reject-1", "web-operator", "operator_rejected");
+		expect(fake.cancelRun).toHaveBeenCalledWith("run-1");
+		expect(fake.resumeRun).toHaveBeenCalledWith(
+			"sessions/session-1.jsonl",
+			"run-1",
+			"continue after review",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			"resume-1",
+		);
+	});
+
+	it("rejects every unlisted write method before reaching RpcClient", async () => {
+		const fake = createFakeClient();
+		surface = await startWebSurfaceServer(fake.client);
+
+		for (const method of ["run.start", "task.gate.cancel", "task.graph.create", "task.graph.node.settle"]) {
+			const result = await postOperation(surface, method, { confirmed: true });
 			expect(result.statusCode).toBe(403);
 			expect(JSON.parse(result.body)).toEqual({
 				error: {
 					code: "method_not_allowed",
-					message: "RPC method is not available on the read-only web surface.",
+					message: "RPC method is not available on the web operations surface.",
 				},
 			});
 		}
+		expect((await postRpc(surface, "run.cancel", { runId: "run-1", confirmed: true })).statusCode).toBe(403);
 
+		expect(fake.approveTaskGate).not.toHaveBeenCalled();
+		expect(fake.rejectTaskGate).not.toHaveBeenCalled();
+		expect(fake.cancelRun).not.toHaveBeenCalled();
+		expect(fake.resumeRun).not.toHaveBeenCalled();
 		expect(fake.getRun).not.toHaveBeenCalled();
 		expect(fake.auditQuery).not.toHaveBeenCalled();
 		expect(fake.getTaskGraph).not.toHaveBeenCalled();
 		expect(fake.listTaskGraphs).not.toHaveBeenCalled();
 		expect(fake.listWorkers).not.toHaveBeenCalled();
 		expect(fake.listSubagents).not.toHaveBeenCalled();
+	});
+
+	it("requires explicit confirmation and exact write parameters", async () => {
+		const fake = createFakeClient();
+		surface = await startWebSurfaceServer(fake.client);
+
+		expect((await postOperation(surface, "run.cancel", { runId: "run-1" })).statusCode).toBe(400);
+		expect(
+			(await postOperation(surface, "run.cancel", { runId: "run-1", confirmed: true, extra: "blocked" })).statusCode,
+		).toBe(400);
+		expect(fake.cancelRun).not.toHaveBeenCalled();
+	});
+
+	it("maps Host errors to readable messages without exposing internal details", async () => {
+		const fake = createFakeClient();
+		fake.rejectTaskGate.mockRejectedValueOnce(
+			new AutomationRpcError({
+				code: "task_gate_not_pending",
+				message: "internal path C:/secret/session.jsonl",
+				retryable: false,
+			}),
+		);
+		surface = await startWebSurfaceServer(fake.client);
+
+		const result = await postOperation(surface, "task.gate.reject", {
+			gateId: "gate-1",
+			clientRequestId: "reject-1",
+			confirmed: true,
+		});
+		expect(result.statusCode).toBe(409);
+		expect(JSON.parse(result.body)).toEqual({
+			error: {
+				code: "gate_already_decided",
+				message: "This gate was already decided or changed. Refresh and try again.",
+			},
+		});
+		expect(result.body).not.toContain("C:/secret");
 	});
 
 	it("rejects malformed read requests and non-POST API access", async () => {
@@ -239,14 +341,20 @@ describe("read-only web surface", () => {
 		expect((await postRpc(surface, "worker.list", { status: "unknown" })).statusCode).toBe(400);
 		expect((await postRpc(surface, "subagent.list", { limit: 10 })).statusCode).toBe(400);
 		expect((await requestSurface(surface, "/api/rpc")).statusCode).toBe(405);
+		expect((await requestSurface(surface, "/api/ops")).statusCode).toBe(405);
 		expect((await requestSurface(surface, "/missing")).statusCode).toBe(404);
 	});
 });
 
 function createFakeClient(): {
-	readonly client: WebReadOnlyRpcClient;
+	readonly client: WebReadOnlyRpcClient & WebOperationRpcClient;
 	readonly getRun: ReturnType<typeof vi.fn>;
 	readonly auditQuery: ReturnType<typeof vi.fn>;
+	readonly listTaskGates: ReturnType<typeof vi.fn>;
+	readonly approveTaskGate: ReturnType<typeof vi.fn>;
+	readonly rejectTaskGate: ReturnType<typeof vi.fn>;
+	readonly cancelRun: ReturnType<typeof vi.fn>;
+	readonly resumeRun: ReturnType<typeof vi.fn>;
 	readonly getTaskGraph: ReturnType<typeof vi.fn>;
 	readonly listTaskGraphs: ReturnType<typeof vi.fn>;
 	readonly listWorkers: ReturnType<typeof vi.fn>;
@@ -254,14 +362,51 @@ function createFakeClient(): {
 } {
 	const getRun = vi.fn(async (): Promise<RunGetData> => RUN);
 	const auditQuery = vi.fn(async (): Promise<AuditQueryResult> => AUDIT);
+	const listTaskGates = vi.fn(async (): Promise<TaskGateListData> => ({ gates: [PENDING_GATE], truncated: false }));
+	const approveTaskGate = vi.fn(
+		async (): Promise<TaskGateMutationData> => ({
+			gate: { ...PENDING_GATE, status: "approved", revision: 1 },
+			idempotent: false,
+		}),
+	);
+	const rejectTaskGate = vi.fn(
+		async (): Promise<TaskGateMutationData> => ({
+			gate: { ...PENDING_GATE, status: "rejected", revision: 1 },
+			idempotent: false,
+		}),
+	);
+	const cancelRun = vi.fn(async () => ({ runId: "run-1", status: "running" as const }));
+	const resumeRun = vi.fn(async () => ({
+		runId: "run-2",
+		sessionId: "session-1",
+		attempt: 2,
+		status: "accepted" as const,
+	}));
 	const getTaskGraph = vi.fn(async (): Promise<TaskGraphGetData> => ({ graph: GRAPH }));
 	const listTaskGraphs = vi.fn(async (): Promise<TaskGraphListData> => ({ graphs: [GRAPH], truncated: false }));
 	const listWorkers = vi.fn(async (): Promise<WorkerListData> => WORKERS);
 	const listSubagents = vi.fn(async (): Promise<SubagentListData> => SUBAGENTS);
 	return {
-		client: { getRun, auditQuery, getTaskGraph, listTaskGraphs, listWorkers, listSubagents },
+		client: {
+			getRun,
+			auditQuery,
+			listTaskGates,
+			approveTaskGate,
+			rejectTaskGate,
+			cancelRun,
+			resumeRun,
+			getTaskGraph,
+			listTaskGraphs,
+			listWorkers,
+			listSubagents,
+		},
 		getRun,
 		auditQuery,
+		listTaskGates,
+		approveTaskGate,
+		rejectTaskGate,
+		cancelRun,
+		resumeRun,
 		getTaskGraph,
 		listTaskGraphs,
 		listWorkers,
@@ -271,6 +416,14 @@ function createFakeClient(): {
 
 function postRpc(surface: WebSurfaceServer, method: string, params: unknown): Promise<HttpResult> {
 	return requestSurface(surface, "/api/rpc", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ method, params }),
+	});
+}
+
+function postOperation(surface: WebSurfaceServer, method: string, params: unknown): Promise<HttpResult> {
+	return requestSurface(surface, "/api/ops", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ method, params }),

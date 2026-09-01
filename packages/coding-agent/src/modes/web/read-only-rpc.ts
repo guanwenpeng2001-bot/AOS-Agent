@@ -3,6 +3,8 @@ import type {
 	AuditQueryResult,
 	RunGetData,
 	SubagentListData,
+	TaskGateListData,
+	TaskGateStatus,
 	TaskGraphGetData,
 	TaskGraphListData,
 	TaskGraphStatus,
@@ -12,6 +14,7 @@ import type {
 export const WEB_READ_ONLY_RPC_METHODS = [
 	"run.get",
 	"audit.query",
+	"task.gate.list",
 	"task.graph.get",
 	"task.graph.list",
 	"worker.list",
@@ -23,6 +26,12 @@ export type WebReadOnlyRpcMethod = (typeof WEB_READ_ONLY_RPC_METHODS)[number];
 export interface WebReadOnlyRpcClient {
 	getRun(runId: string): Promise<RunGetData>;
 	auditQuery(query: AuditQuery): Promise<AuditQueryResult>;
+	listTaskGates(filter?: {
+		taskId?: string;
+		stageId?: string;
+		status?: TaskGateStatus;
+		limit?: number;
+	}): Promise<TaskGateListData>;
 	getTaskGraph(taskId: string, graphRevision: number): Promise<TaskGraphGetData>;
 	listTaskGraphs(filter?: {
 		taskId?: string;
@@ -70,6 +79,8 @@ export async function invokeWebReadOnlyRpc(
 		}
 		case "audit.query":
 			return client.auditQuery(parseAuditQuery(params));
+		case "task.gate.list":
+			return client.listTaskGates(parseTaskGateFilter(params));
 		case "task.graph.get": {
 			const record = requireRecord(params);
 			return client.getTaskGraph(requireString(record, "taskId"), requirePositiveInteger(record, "graphRevision"));
@@ -127,6 +138,24 @@ function parseSubagentFilter(record: Record<string, unknown>): {
 	if (record.limit !== undefined) filter.limit = requirePositiveInteger(record, "limit");
 	if (record.status !== undefined) {
 		if (!isSubagentStatus(record.status)) throw invalidRequest("status is invalid");
+		filter.status = record.status;
+	}
+	return filter;
+}
+
+function parseTaskGateFilter(value: unknown): {
+	taskId?: string;
+	stageId?: string;
+	status?: TaskGateStatus;
+	limit?: number;
+} {
+	const record = value === undefined ? {} : requireRecord(value);
+	const filter: { taskId?: string; stageId?: string; status?: TaskGateStatus; limit?: number } = {};
+	if (record.taskId !== undefined) filter.taskId = requireString(record, "taskId");
+	if (record.stageId !== undefined) filter.stageId = requireString(record, "stageId");
+	if (record.limit !== undefined) filter.limit = requirePositiveInteger(record, "limit");
+	if (record.status !== undefined) {
+		if (!isTaskGateStatus(record.status)) throw invalidRequest("status is invalid");
 		filter.status = record.status;
 	}
 	return filter;
@@ -235,6 +264,10 @@ function isSubagentStatus(value: unknown): value is SubagentListData["subagents"
 		"lost",
 		"closed",
 	].includes(value as string);
+}
+
+function isTaskGateStatus(value: unknown): value is TaskGateStatus {
+	return value === "pending" || value === "approved" || value === "rejected" || value === "cancelled";
 }
 
 function invalidRequest(message: string): WebRpcRequestError {
