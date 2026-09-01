@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Kimi Coding requests now use the service-compatible pi runtime user agent while Codex requests retain AOS branding.
 - DeepSeek-compatible base URLs are now detected case-insensitively.
 - Google Generative AI and Vertex now honor model-specific `thinkingLevelMap` values.
 - Google adapters now preserve length and error stops even when a response also contains tool calls.
