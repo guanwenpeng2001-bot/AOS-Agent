@@ -21,6 +21,50 @@ For the JSONL file format and SessionManager API, see [Session Format](session-f
 
 Context Engine freezes **metadata-only** `context.snapshot` custom entries before real model calls. Those entries never enter LLM context via `buildSessionContext`. See [Context Engine](context.md).
 
+## Optional Shared SQLite Ledger
+
+Node integrations can opt into the `aos-agent/sqlite-session` entry point. This
+keeps the default CLI on JSONL while allowing a user or small team to put one
+Session ledger in a SQLite database on storage that every Host can access.
+
+```ts
+import { SqliteSharedSessionLedger } from "aos-agent/sqlite-session";
+
+await using ledger = new SqliteSharedSessionLedger({
+  databasePath: "/shared/aos/sessions.sqlite",
+  writerLease: { ttlMs: 30_000, heartbeatIntervalMs: 10_000 },
+});
+
+const writer = await ledger.open("session-id");
+const follower = await ledger.open("session-id", { access: "follower" });
+const replacement = await ledger.open("session-id", { takeOver: true });
+```
+
+Only a writer may mutate the Session. A follower does not acquire a writer
+lease, and every write through it fails. `takeOver: true` is an explicit
+ownership transfer: it advances the database fence immediately, so the old
+Host's next write fails even if its previous lease has not expired. The local
+processing lease remains a separate same-Host guard.
+
+A follower reads the latest state available in its local SQLite view. With one
+shared database this normally means committed state. If another system copies
+the database to a follower, that projection may lag until the copy is updated;
+the copied projection must remain read-only and must never be promoted by
+writing both replicas. The filesystem that hosts a shared writable database
+must provide coherent SQLite file locks and WAL behavior.
+
+JSONL migration is explicit and refuses to overwrite an existing target:
+
+```ts
+await ledger.importJsonl("./session.jsonl");
+await ledger.exportJsonl("session-id", "./roundtrip.jsonl");
+```
+
+Migration preserves Session ids, tree parent links, lane tips, operation
+records, names, labels, and durable Foundation objects. Physical JSONL wrapper
+ids, sequence numbers, timestamps, and historical fencing tokens are
+backend-local and are reassigned.
+
 ## Session Commands
 
 | Command | Description |

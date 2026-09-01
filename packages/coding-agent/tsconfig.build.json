@@ -7,6 +7,7 @@
 			"@aos-agent/agent-core/*": ["../agent/dist/*.d.ts"],
 			"@aos-agent/ai": ["../ai/dist/index.d.ts"],
 			"@aos-agent/ai/*": ["../ai/dist/*.d.ts", "../ai/dist/providers/*.d.ts"],
+			"@aos-agent/session-backend-sqlite-node": ["../session-backends/sqlite-node/dist/index.d.ts"],
 			"@aos-agent/client": ["../client/dist/index.d.ts"],
 			"@aos-agent/protocol": ["../protocol/dist/index.d.ts"],
 			"@aos-agent/tui": ["../tui/dist/index.d.ts"],

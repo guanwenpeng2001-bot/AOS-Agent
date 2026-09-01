@@ -30,6 +30,10 @@
 		"./external-connector/testing": {
 			"types": "./dist/external-connector-testing.d.ts",
 			"import": "./dist/external-connector-testing.js"
+		},
+		"./sqlite-session": {
+			"types": "./dist/sqlite-session.d.ts",
+			"import": "./dist/sqlite-session.js"
 		}
 	},
 	"files": [
@@ -82,6 +86,7 @@
 		}
 	},
 	"optionalDependencies": {
+		"@aos-agent/session-backend-sqlite-node": "^0.84.3",
 		"@anthropic-ai/claude-agent-sdk": "0.3.246",
 		"@anthropic-ai/sdk": "0.120.0",
 		"@mariozechner/clipboard": "0.3.9",

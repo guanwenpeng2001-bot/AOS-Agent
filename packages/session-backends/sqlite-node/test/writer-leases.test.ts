@@ -124,6 +124,42 @@ describe("SQLite session writer leases", () => {
 		await expect(second.appendMessage(createUserMessage("new owner"))).resolves.toBeTypeOf("string");
 	});
 
+	it("keeps followers read-only and fences the previous host on explicit take-over", async () => {
+		const root = createTempDir();
+		const databasePath = join(root, "sessions.sqlite");
+		await using firstHost = createRepository(root, databasePath);
+		await using secondHost = createRepository(root, databasePath);
+		await using followerHost = createRepository(root, databasePath);
+		const firstWriter = await firstHost.create({ cwd: root, id: "shared-session" });
+		const metadata = await firstWriter.getMetadata();
+		const follower = await followerHost.openReadOnly(metadata);
+
+		await firstWriter.appendMessage(createUserMessage("replicated before take-over"));
+		expect((await follower.findEntries()).map((entry) => entry.type)).toEqual(["message"]);
+		await expect(follower.appendMessage(createUserMessage("follower write"))).rejects.toMatchObject({
+			code: "storage",
+			message: expect.stringContaining("read-only projection"),
+		});
+
+		const secondWriter = await secondHost.takeOver(metadata);
+		await expect(firstWriter.appendMessage(createUserMessage("stale writer"))).rejects.toMatchObject({
+			code: "storage",
+			message: expect.stringContaining("writer lease was lost"),
+		});
+		await secondWriter.appendMessage(createUserMessage("new writer"));
+		expect(await follower.findEntries({ order: "oldestFirst" })).toHaveLength(2);
+
+		const inspection = await createNodeSqliteFactory().open(databasePath);
+		try {
+			const lease = inspection
+				.prepare("SELECT fence FROM writer_leases WHERE session_id = ?")
+				.get<{ fence: number }>(metadata.id);
+			expect(lease?.fence).toBe(2);
+		} finally {
+			inspection.close();
+		}
+	});
+
 	it("fences a stale owner after an expired lease is acquired by another writer", async () => {
 		const root = createTempDir();
 		const databasePath = join(root, "sessions.sqlite");

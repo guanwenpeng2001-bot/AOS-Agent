@@ -1,18 +1,31 @@
 import type { FileError, Result } from "@aos-agent/agent-core";
 import {
+	type AcquireWriterLeaseOptions,
+	type AppendFoundationRecordResult,
 	type BranchBounds,
+	type DurableLedgerApi,
 	type Entry,
 	type EntryQuery,
+	type FoundationObjectResult,
+	type FoundationRecord,
+	type FoundationRecordQuery,
+	type FoundationRetentionPolicy,
+	FoundationLedgerState,
 	type ForkOptions,
 	type LaneRecord,
+	type LedgerWriterLease,
 	type LogItem,
 	type LogOptions,
 	type NewRecord,
 	type OperationStartedRecord,
+	type ProvisionedFoundationRecord,
 	type ProvisionedEntry,
 	type RecordQuery,
+	type ReleaseWriterLeaseOptions,
+	type RenewWriterLeaseOptions,
 	Session,
 	SessionError,
+	type SetRetentionPolicyOptions,
 	type SessionRepo as SessionRepository,
 	type SessionStats,
 	type SessionStorage,
@@ -33,6 +46,15 @@ import {
 	readEntryRows,
 } from "./storage/entries.ts";
 import { appendFact, deleteFactRows, readFactRows, readLatestFact, readLatestLabelFacts } from "./storage/facts.ts";
+import {
+	deleteFoundationRecords,
+	deleteFoundationWriterLease,
+	expireFoundationWriterLease,
+	insertFoundationRecord,
+	readFoundationRecords,
+	readFoundationWriterLease,
+	writeFoundationWriterLease,
+} from "./storage/foundation.ts";
 import {
 	createInitialLane,
 	deleteLaneRows,
@@ -81,6 +103,7 @@ import {
 	deleteWriterLease,
 	releaseWriterLease,
 	renewWriterLease,
+	takeOverWriterLease,
 	type WriterLease,
 } from "./storage/writer-leases.ts";
 import type {
@@ -106,6 +129,13 @@ export interface SqliteSessionRepositoryOptions {
 	writerLease?: SqliteWriterLeaseOptions;
 }
 
+export interface SqliteSessionOpenOptions {
+	/** Read-only followers never acquire or renew the writer lease. */
+	mode?: "writer" | "readOnly";
+	/** Explicitly replace the current writer and advance the fencing generation. */
+	takeOver?: boolean;
+}
+
 interface ResolvedWriterLeaseOptions {
 	ttlMs: number;
 	heartbeatIntervalMs: number;
@@ -129,9 +159,17 @@ function lostWriterError(sessionId: string): SessionError {
 	return new SessionError("storage", `SQLite session ${sessionId} writer lease was lost`);
 }
 
-function claimWriterLease(db: SqliteDatabase, sessionId: string, options: ResolvedWriterLeaseOptions): WriterLease {
+function claimWriterLease(
+	db: SqliteDatabase,
+	sessionId: string,
+	options: ResolvedWriterLeaseOptions,
+	takeOver = false,
+): WriterLease {
 	const now = Date.now();
-	const lease = acquireWriterLease(db, sessionId, uuidv7(), now, now + options.ttlMs);
+	const ownerId = uuidv7();
+	const lease = takeOver
+		? takeOverWriterLease(db, sessionId, ownerId, now + options.ttlMs)
+		: acquireWriterLease(db, sessionId, ownerId, now, now + options.ttlMs);
 	if (!lease) throw activeWriterError(sessionId);
 	return lease;
 }
@@ -342,10 +380,10 @@ function requireSessionRow(db: SqliteDatabase, sessionId: string): SessionRow {
 	return row;
 }
 
-class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
+class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata>, DurableLedgerApi {
 	private readonly db: SqliteDatabase;
 	private readonly metadata: SqliteSessionMetadata;
-	private readonly lease: WriterLease;
+	private readonly lease: WriterLease | undefined;
 	private readonly leaseOptions: ResolvedWriterLeaseOptions;
 	private readonly onRelease: () => void;
 	private readonly operations = new SerialOperationQueue();
@@ -357,7 +395,7 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 	constructor(
 		db: SqliteDatabase,
 		metadata: SqliteSessionMetadata,
-		lease: WriterLease,
+		lease: WriterLease | undefined,
 		leaseOptions: ResolvedWriterLeaseOptions,
 		onRelease: () => void,
 	) {
@@ -378,8 +416,10 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 		this.closing = true;
 		if (this.heartbeatTimer !== undefined) clearTimeout(this.heartbeatTimer);
 		try {
+			const lease = this.lease;
+			if (lease === undefined) return;
 			await this.operations.enqueue(() =>
-				this.db.transaction(() => releaseWriterLease(this.db, this.metadata.id, this.lease)),
+				this.db.transaction(() => releaseWriterLease(this.db, this.metadata.id, lease)),
 			);
 		} finally {
 			this.onRelease();
@@ -389,11 +429,15 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 	private enqueueWrite<T>(operation: () => T): Promise<T> {
 		if (this.closing)
 			return Promise.reject(new SessionError("storage", `SQLite session ${this.metadata.id} is closed`));
+		const lease = this.lease;
+		if (lease === undefined) {
+			return Promise.reject(new SessionError("storage", `SQLite session ${this.metadata.id} is a read-only projection`));
+		}
 		return this.operations.enqueue(() => {
 			if (this.leaseError) throw this.leaseError;
 			return this.db.transaction(() => {
 				const now = Date.now();
-				if (!renewWriterLease(this.db, this.metadata.id, this.lease, now, now + this.leaseOptions.ttlMs)) {
+				if (!renewWriterLease(this.db, this.metadata.id, lease, now, now + this.leaseOptions.ttlMs)) {
 					this.leaseError = lostWriterError(this.metadata.id);
 					if (this.heartbeatTimer !== undefined) clearTimeout(this.heartbeatTimer);
 					throw this.leaseError;
@@ -404,7 +448,8 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 	}
 
 	private scheduleHeartbeat(): void {
-		if (this.closing || this.leaseError) return;
+		const lease = this.lease;
+		if (this.closing || this.leaseError || lease === undefined) return;
 		this.heartbeatTimer = setTimeout(async () => {
 			this.heartbeatTimer = undefined;
 			try {
@@ -412,7 +457,7 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 					if (this.closing || this.leaseError) return;
 					this.db.transaction(() => {
 						const now = Date.now();
-						if (!renewWriterLease(this.db, this.metadata.id, this.lease, now, now + this.leaseOptions.ttlMs)) {
+						if (!renewWriterLease(this.db, this.metadata.id, lease, now, now + this.leaseOptions.ttlMs)) {
 							this.leaseError = lostWriterError(this.metadata.id);
 						}
 					});
@@ -654,6 +699,106 @@ class SqliteSessionStorage implements SessionStorage<SqliteSessionMetadata> {
 	async getStats(): Promise<SessionStats> {
 		return readStats(this.db, this.metadata.id);
 	}
+
+	private foundationState(): FoundationLedgerState {
+		const state = new FoundationLedgerState({ sessionId: this.metadata.id });
+		const records = readFoundationRecords(this.db, this.metadata.id);
+		const ledgerRevision = getNextSequence(this.db, this.metadata.id) - 1;
+		for (const record of records) {
+			while (state.nextSequence < record.seq) state.observeExternalSequence(state.nextSequence);
+			state.applyPersistedRecord(record);
+		}
+		while (state.nextSequence <= ledgerRevision) state.observeExternalSequence(state.nextSequence);
+		const storedLease = readFoundationWriterLease(this.db, this.metadata.id);
+		if (storedLease !== undefined) state.restoreLease(storedLease.lease, storedLease.leaseRevision);
+		return state;
+	}
+
+	acquireWriterLease(options: AcquireWriterLeaseOptions): Promise<LedgerWriterLease> {
+		return this.enqueueWrite(() => {
+			const state = this.foundationState();
+			const lease = state.acquireWriterLease(options);
+			writeFoundationWriterLease(this.db, this.metadata.id, lease);
+			return lease;
+		});
+	}
+
+	renewWriterLease(options: RenewWriterLeaseOptions): Promise<LedgerWriterLease> {
+		return this.enqueueWrite(() => {
+			const state = this.foundationState();
+			const lease = state.renewWriterLease(options);
+			writeFoundationWriterLease(this.db, this.metadata.id, lease);
+			return lease;
+		});
+	}
+
+	releaseWriterLease(options: ReleaseWriterLeaseOptions): Promise<void> {
+		return this.enqueueWrite(() => {
+			const state = this.foundationState();
+			state.releaseWriterLease(options);
+			const lease = state.getStoredWriterLease();
+			if (lease !== null) writeFoundationWriterLease(this.db, this.metadata.id, lease);
+		});
+	}
+
+	async getWriterLease(): Promise<LedgerWriterLease | null> {
+		return this.foundationState().getWriterLease();
+	}
+
+	async getLedgerRevision(): Promise<number> {
+		return this.foundationState().getLedgerRevision();
+	}
+
+	appendFoundationRecord(record: ProvisionedFoundationRecord): Promise<AppendFoundationRecordResult> {
+		return this.enqueueWrite(() => {
+			const state = this.foundationState();
+			const result = state.appendFoundationRecord(record);
+			if (!result.replayed) {
+				insertFoundationRecord(this.db, this.metadata.id, result.record);
+				advanceSequence(this.db, this.metadata.id, result.record.seq);
+			}
+			return result;
+		});
+	}
+
+	setRetentionPolicy(
+		policy: FoundationRetentionPolicy,
+		options: SetRetentionPolicyOptions,
+	): Promise<AppendFoundationRecordResult> {
+		return this.enqueueWrite(() => {
+			const state = this.foundationState();
+			const result = state.setRetentionPolicy(policy, options);
+			if (!result.replayed) {
+				insertFoundationRecord(this.db, this.metadata.id, result.record);
+				advanceSequence(this.db, this.metadata.id, result.record.seq);
+			}
+			return result;
+		});
+	}
+
+	async findFoundationRecords(query?: FoundationRecordQuery): Promise<FoundationRecord[]> {
+		return this.foundationState().findFoundationRecords(query);
+	}
+
+	async getFoundationObject(objectType: string, objectId: string): Promise<FoundationObjectResult | undefined> {
+		return this.foundationState().getFoundationObject(objectType, objectId);
+	}
+
+	async getFoundationRevision(objectType: string, objectId: string): Promise<number> {
+		return this.foundationState().getFoundationRevision(objectType, objectId);
+	}
+
+	async isObjectTombstoned(objectType: string, objectId: string): Promise<boolean> {
+		return this.foundationState().isObjectTombstoned(objectType, objectId);
+	}
+
+	async getRetentionPolicy(): Promise<FoundationRetentionPolicy | undefined> {
+		return this.foundationState().getRetentionPolicy();
+	}
+
+	async prunableFoundationRecords(): Promise<readonly FoundationRecord[]> {
+		return this.foundationState().prunableFoundationRecords();
+	}
 }
 
 function claimStorage(
@@ -661,10 +806,12 @@ function claimStorage(
 	metadata: SqliteSessionMetadata,
 	leaseOptions: ResolvedWriterLeaseOptions,
 	onRelease: () => void,
+	takeOver = false,
 ): SqliteSessionStorage {
 	requireSessionRow(db, metadata.id);
 	const claimed = db.transaction(() => {
-		const lease = claimWriterLease(db, metadata.id, leaseOptions);
+		const lease = claimWriterLease(db, metadata.id, leaseOptions, takeOver);
+		if (takeOver) expireFoundationWriterLease(db, metadata.id);
 		const row = requireSessionRow(db, metadata.id);
 		readLanes(db, metadata.id);
 		return { lease, row };
@@ -729,6 +876,25 @@ export class SqliteSessionRepository
 		return new Session(storage);
 	}
 
+	private readOnlySession(db: SqliteDatabase, metadata: SqliteSessionMetadata): Session<SqliteSessionMetadata> {
+		const row = requireSessionRow(db, metadata.id);
+		readLanes(db, metadata.id);
+		return new Session(
+			new SqliteSessionStorage(db, decodeSessionMetadata(row, metadata.path), undefined, this.leaseOptions, () => undefined),
+		);
+	}
+
+	private takeOverSession(db: SqliteDatabase, metadata: SqliteSessionMetadata): Session<SqliteSessionMetadata> {
+		const active = [...this.activeStorages].find((storage) => storage.isForSession(metadata.id));
+		if (active) return new Session(active);
+		let storage: SqliteSessionStorage;
+		storage = claimStorage(db, metadata, this.leaseOptions, () => {
+			this.activeStorages.delete(storage);
+		}, true);
+		this.activeStorages.add(storage);
+		return new Session(storage);
+	}
+
 	async create(options: SqliteSessionCreateOptions): Promise<Session<SqliteSessionMetadata>> {
 		return this.operations.enqueue(async () => {
 			const db = await this.getDatabase();
@@ -754,8 +920,26 @@ export class SqliteSessionRepository
 		});
 	}
 
-	async open(metadata: SqliteSessionMetadata): Promise<Session<SqliteSessionMetadata>> {
-		return this.operations.enqueue(async () => this.claimSession(await this.getDatabase(), metadata));
+	async open(
+		metadata: SqliteSessionMetadata,
+		options: SqliteSessionOpenOptions = {},
+	): Promise<Session<SqliteSessionMetadata>> {
+		if (options.mode === "readOnly" && options.takeOver === true) {
+			throw new TypeError("A read-only SQLite session cannot take over writer ownership");
+		}
+		return this.operations.enqueue(async () => {
+			const db = await this.getDatabase();
+			if (options.mode === "readOnly") return this.readOnlySession(db, metadata);
+			return options.takeOver === true ? this.takeOverSession(db, metadata) : this.claimSession(db, metadata);
+		});
+	}
+
+	openReadOnly(metadata: SqliteSessionMetadata): Promise<Session<SqliteSessionMetadata>> {
+		return this.open(metadata, { mode: "readOnly" });
+	}
+
+	takeOver(metadata: SqliteSessionMetadata): Promise<Session<SqliteSessionMetadata>> {
+		return this.open(metadata, { takeOver: true });
 	}
 
 	/** Rebuilds this session's private branch-read cache from canonical entry parent links. */
@@ -793,6 +977,8 @@ export class SqliteSessionRepository
 					return;
 				}
 				claimWriterLease(db, metadata.id, this.leaseOptions);
+				deleteFoundationRecords(db, metadata.id);
+				deleteFoundationWriterLease(db, metadata.id);
 				deleteBranchCache(db, metadata.id);
 				deleteFactRows(db, metadata.id);
 				deleteLaneRows(db, metadata.id);
