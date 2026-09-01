@@ -229,7 +229,7 @@ export function createGrepToolDefinition(
 
 						const rgPath =
 							authorization.sandbox === undefined || policy?.profile.enforcement !== "sandbox"
-								? await ensureTool("rg", true)
+								? await ensureTool("rg")
 								: "rg";
 						if (!rgPath) {
 							settle(() => reject(new Error("ripgrep (rg) is not available and could not be downloaded")));
@@ -330,7 +330,6 @@ export function createGrepToolDefinition(
 								args,
 								cwd: searchPath,
 								env: authorized.env,
-								timeoutMs: policy?.profile.process.timeoutMs,
 								path: searchPath,
 								pattern,
 								...(glob === undefined ? {} : { glob }),

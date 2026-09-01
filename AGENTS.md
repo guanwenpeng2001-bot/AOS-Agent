@@ -26,6 +26,12 @@
 - Never hardcode key checks (e.g. `matchesKey(keyData, "ctrl+x")`). Add defaults to `DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS` so they stay configurable.
 - Never modify generated model catalog output in `packages/ai/src/` directly; update `packages/ai/scripts/generate-models.ts` instead, then regenerate. Including the resulting generated catalog diff is always OK, even if regeneration includes unrelated upstream model metadata changes.
 
+## Environment and Side-Effect Contracts
+
+- New read-only or idempotent tools and Tool Gateway routes must declare side-effect metadata. Timeout and cancellation settlement must branch on that metadata: proven side-effect-free operations settle as failed with no side effects; write-capable or unknown operations remain side-effect-unknown.
+- New providers that depend on an external executable, credential helper, or local service must return an actionable missing-dependency error. State what is missing, how to install it, and where the authoritative installation instructions live.
+- Code that probes the host environment, including CLIs, the Windows registry, Keychain, filesystem scale, or network state, must have faux fixture tests. Cover absence, delay or timeout, malformed output where relevant, and large fake inputs without using real services, user credentials, or mutable host configuration.
+
 ## Commands
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
@@ -122,6 +128,12 @@ Attribution:
 
 - Internal (from issues): `Fixed foo bar ([#123](UPSTREAM.md))`
 - External contributions: `Added feature X ([#456](UPSTREAM.md) by [@username](https://github.com/username))`
+
+## Upstream Fix Triage
+
+- Before each release and at least once per release cycle, compare new pi fixes against AOS Agent using [the upstream fix triage procedure](docs/upstream-fix-triage.md).
+- Record the exact AOS and pi ranges, reconstruct the fix set from production paths, inspect each production diff, and classify every commit with concrete AOS evidence. Do not infer coverage from matching subjects alone.
+- Use the table columns `SHA | pi fix summary | disposition | AOS evidence | proposed ticket`. Allowed dispositions are `port`, `covered`, `not applicable`, and `needs investigation`; `needs investigation` must be resolved before release.
 
 ## Releasing
 

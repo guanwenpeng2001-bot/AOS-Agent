@@ -154,16 +154,14 @@ class T4FoundationProvider implements TaskExecutorProvider {
 	async runAttempt(attempt: Attempt, options?: FoundationProviderExecutionOptions) {
 		if (options?.correlation === undefined) return Result.err(new FoundationError("invalid_correlation", "provider requires provider execution correlation"));
 		const toolReceipts = await this.session.findFoundationRecords({ kind: "fact", objectType: "tool_receipt", order: "oldestFirst" });
-		let failed = false;
 		let sideEffectState: "none" | "side_effect_unknown" = "none";
 		for (const record of toolReceipts) {
 			if (record.kind !== "fact" || record.correlation.runId !== options.correlation.runId || record.payload === null || typeof record.payload !== "object" || Array.isArray(record.payload)) continue;
 			const payload = record.payload as Record<string, unknown>;
-			if (payload.outcome !== "succeeded") failed = true;
 			if (payload.sideEffectState === "side_effect_unknown") sideEffectState = "side_effect_unknown";
 		}
 		const correlation = { ...options.correlation, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, bindingId: attempt.bindingId, bindingEpochId: attempt.bindingEpochIds[0], attemptReceiptId: `attempt_receipt_${options.correlation.runId ?? attempt.attemptId}` };
-		return Result.ok<AttemptReceipt>({ schemaVersion: 1, attemptReceiptId: correlation.attemptReceiptId!, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, agentInstanceId: attempt.agentInstanceId, bindingId: attempt.bindingId, bindingEpochIds: [...attempt.bindingEpochIds], status: failed || sideEffectState !== "none" ? "failed" : "succeeded", workerReceiptRefs: [], artifacts: [], provenance: { producerKind: "agent_executor", providerId: this.providerId, producedAt: T4_NOW, correlation }, sideEffectState, ...(failed || sideEffectState !== "none" ? { error: { code: sideEffectState === "none" ? "tool_execution_failed" : "side_effect_unknown", message: sideEffectState === "none" ? "Tool execution failed" : "Tool side effect did not converge", retryable: false } } : {}) });
+		return Result.ok<AttemptReceipt>({ schemaVersion: 1, attemptReceiptId: correlation.attemptReceiptId!, taskId: attempt.taskId, dispatchId: attempt.dispatchId, attemptId: attempt.attemptId, providerId: this.providerId, agentInstanceId: attempt.agentInstanceId, bindingId: attempt.bindingId, bindingEpochIds: [...attempt.bindingEpochIds], status: sideEffectState !== "none" ? "failed" : "succeeded", workerReceiptRefs: [], artifacts: [], provenance: { producerKind: "agent_executor", providerId: this.providerId, producedAt: T4_NOW, correlation }, sideEffectState, ...(sideEffectState !== "none" ? { error: { code: "side_effect_unknown", message: "Tool side effect did not converge", retryable: false } } : {}) });
 	}
 
 	async cancelAttempt(_attemptId: string) { return Result.ok(undefined); }
@@ -734,13 +732,13 @@ describe("public AgentHarness tool consumer", () => {
 		const cases = [
 			{ name: "known no side effect", sideEffectState: "none" as const, throws: false, expectedOutcome: "succeeded", expectedStatus: "succeeded", expectedRunStatus: "completed", usage: true },
 			{ name: "unknown side effect", sideEffectState: undefined, throws: false, expectedOutcome: "side_effect_unknown", expectedStatus: "failed", expectedRunStatus: "failed", usage: false },
-			{ name: "underlying failure with known no side effect", sideEffectState: "none" as const, throws: true, expectedOutcome: "failed", expectedStatus: "failed", expectedRunStatus: "failed", usage: false },
+			{ name: "underlying failure with known no side effect", sideEffectState: "none" as const, throws: true, expectedOutcome: "failed", expectedStatus: "succeeded", expectedRunStatus: "completed", usage: false },
 			{ name: "underlying throw with non-none side effect", sideEffectState: "unknown" as const, throws: true, expectedOutcome: "side_effect_unknown", expectedStatus: "failed", expectedRunStatus: "failed", usage: false },
 			{ name: "underlying throw with unknown side effect", sideEffectState: undefined, throws: true, expectedOutcome: "side_effect_unknown", expectedStatus: "failed", expectedRunStatus: "failed", usage: false },
 		] as const;
 		for (const current of cases) {
 			const session = new Session(new InMemorySessionStorage({ id: `consumer-${current.name}`, createdAt: 1 }));
-			const { model, models } = consumerModels("consumer-tool");
+			const { model, models, requests, contexts } = consumerModels("consumer-tool");
 			const foundation = { ...execution(), settlement: { tests: [{ name: "consumer receipt", required: true, status: "passed" as const }], evidence: [] } };
 			let calls = 0;
 			const tool: HarnessTool = {
@@ -784,6 +782,14 @@ describe("public AgentHarness tool consumer", () => {
 				expect(error?.code).toBe("tool_execution_failed");
 				expect(error?.retryable).toBe(false);
 				expect(error?.category).toBe(current.sideEffectState === "none" ? undefined : "side_effect_unknown");
+				if (current.sideEffectState === "none") {
+					expect(requests()).toBe(2);
+					const errorResult = contexts().at(-1)?.messages.find((message) => message.role === "toolResult");
+					expect(errorResult).toMatchObject({ role: "toolResult", isError: true });
+					expect(JSON.stringify(errorResult)).toContain(`${current.name} failed`);
+				} else {
+					expect(requests()).toBe(1);
+				}
 			}
 			await harness.close();
 		}

@@ -460,6 +460,7 @@ export interface HarnessCompactionResult {
 export interface HarnessCompactionHooks {
 	before?: (input: HarnessCompactionHookInput) => HarnessCompactionHookResult | undefined | Promise<HarnessCompactionHookResult | undefined>;
 	after?: (input: { entry: CompactionEntry; result: HarnessCompactionResult; reason: "manual" | "threshold" | "overflow"; willRetry: boolean }) => void | Promise<void>;
+	failed?: (input: { reason: "manual" | "threshold" | "overflow"; errorMessage?: string; aborted: boolean; willRetry: boolean; fromExtension: boolean }) => void | Promise<void>;
 }
 export interface HarnessNavigationHooks {
 	before?: (input: { preparation: { targetId: string | null; oldLeafId: string | null; commonAncestorId: string | null; entriesToSummarize: Entry[]; userWantsSummary: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }; signal: AbortSignal }) => HarnessNavigationHookResult | undefined | Promise<HarnessNavigationHookResult | undefined>;
@@ -1093,11 +1094,13 @@ function rawSha256(value: Uint8Array): string {
 
 class HarnessToolPipelineError extends Error {
 	readonly sideEffectState: SideEffectState;
+	readonly sideEffect: "none" | "unknown";
 
 	constructor(message: string, sideEffectState: SideEffectState) {
 		super(message);
 		this.name = "HarnessToolPipelineError";
 		this.sideEffectState = sideEffectState;
+		this.sideEffect = sideEffectState === "none" ? "none" : "unknown";
 	}
 }
 
@@ -1171,6 +1174,7 @@ export class AgentHarness implements AgentLane {
 	private readonly laneReductions = new Map<string, LaneReductionResult>();
 	private readonly mutationTails = new Map<string, Promise<void>>();
 	private readonly compatibilityTasks = new Set<Promise<unknown>>();
+	private readonly pendingCompatibilityMessages: AgentMessage[] = [];
 	private readonly pendingExternalMessageTasks = new Set<Promise<void>>();
 	private readonly laneSnapshots = new Map<string, LaneSnapshot>();
 	private readonly pendingQueueMutations = new Map<string, PendingQueueMutation>();
@@ -1193,6 +1197,8 @@ export class AgentHarness implements AgentLane {
 	private readonly retryCancelledOperations = new Set<string>();
 	private readonly pendingPromptEvents = new Set<string>();
 	private overflowRecoveryAttempted = false;
+	private productPostToolCompactionEnabled = false;
+	private postToolCompactionRequested = false;
 
 	private constructor(options: AgentHarnessOptions) {
 		this.durableSession = options.session;
@@ -1429,6 +1435,15 @@ export class AgentHarness implements AgentLane {
 	recordCompatibilityMessage(message: AgentMessage): Promise<void> {
 		this.ensureOpen();
 		if (this.compatibilityWriter === undefined) throw new HarnessFault("No compatibility writer is bound", undefined);
+		if (this.currentOperationKind === "run") {
+			this.pendingCompatibilityMessages.push(structuredClone(message));
+			return Promise.resolve();
+		}
+		return this.writeCompatibilityMessage(message);
+	}
+
+	private writeCompatibilityMessage(message: AgentMessage): Promise<void> {
+		if (this.compatibilityWriter === undefined) throw new HarnessFault("No compatibility writer is bound", undefined);
 		const snapshot = structuredClone(message);
 		const written = this.compatibilityWriter.recordMessage(snapshot);
 		const task = Promise.resolve(written).then(() => {
@@ -1437,6 +1452,11 @@ export class AgentHarness implements AgentLane {
 		});
 		this.trackCompatibilityTask(task);
 		return task;
+	}
+
+	private async flushPendingCompatibilityMessages(): Promise<void> {
+		const pending = this.pendingCompatibilityMessages.splice(0);
+		for (const message of pending) await this.writeCompatibilityMessage(message);
 	}
 
 	emitBashExecutionUpdate(id: string | undefined, delta: string): void {
@@ -1486,6 +1506,18 @@ export class AgentHarness implements AgentLane {
 
 	beginPromptCompactionCycle(): void {
 		this.overflowRecoveryAttempted = false;
+		this.postToolCompactionRequested = false;
+	}
+
+	/** Enable product-facade stop/compact/continue composition for post-tool turns. */
+	enableProductPostToolCompaction(): void {
+		this.productPostToolCompactionEnabled = true;
+	}
+
+	consumePostToolCompactionRequest(): boolean {
+		const requested = this.postToolCompactionRequested;
+		this.postToolCompactionRequested = false;
+		return requested;
 	}
 
 	private async runWithPreflight(
@@ -2401,10 +2433,7 @@ export class AgentHarness implements AgentLane {
 					failed = true;
 					mergeSideEffectState("side_effect_unknown");
 					recordError({ code: "side_effect_unknown", message: "Durable tool result payload is missing" });
-				} else if (
-					(receipt.outcome !== "succeeded" || receipt.sideEffectState !== "none") &&
-					!(receipt.outcome === "blocked" && receipt.sideEffectState === "none")
-				) {
+				} else if (receipt.sideEffectState !== "none") {
 					failed = true;
 					recordError({ code: receipt.error?.code ?? (receipt.sideEffectState === "side_effect_unknown" ? "side_effect_unknown" : "tool_execution_failed"), message: receipt.error?.message ?? `Tool ${start.toolName} did not complete successfully` });
 				}
@@ -3031,7 +3060,14 @@ export class AgentHarness implements AgentLane {
 						};
 					}
 				}
-				if (execution.ok && execution.value.sideEffectState === "side_effect_unknown") this.terminalToolFailureOperations.add(operationId);
+				if (execution.ok && execution.value.sideEffectState === "none") {
+					this.foundationToolHookResults.set(this.foundationToolHookKey(operationId, toolCallId), {
+						content: [{ type: "text", text: execution.value.error?.message ?? `Tool execution ${execution.value.outcome}` }],
+						isError: true,
+					});
+				} else if (execution.ok && execution.value.sideEffectState === "side_effect_unknown") {
+					this.terminalToolFailureOperations.add(operationId);
+				}
 				throw new HarnessToolPipelineError(
 					execution.ok ? execution.value.error?.message ?? `Tool execution ${execution.value.outcome}` : execution.error.message,
 					execution.ok && execution.value.sideEffectState === "none" ? "none" : "side_effect_unknown",
@@ -3179,7 +3215,24 @@ export class AgentHarness implements AgentLane {
 					this.foundationToolHookResults.delete(key);
 					return result;
 				},
-			shouldStopAfterTurn: async (messages) => this.terminalToolFailureOperations.has(operationId) || (await this.shouldStopAfterTurn?.(messages)) === true,
+			shouldStopAfterTurn: async (turn) => {
+				if (this.terminalToolFailureOperations.has(operationId)) return true;
+				if (
+					this.productPostToolCompactionEnabled
+					&& turn.willContinue
+					&& this.compactionSettings.enabled
+					&& this.modelAvailable
+					&& shouldCompact(
+						estimateContextTokens(turn.context.messages).tokens,
+						this.currentModel.contextWindow,
+						this.compactionSettings,
+					)
+				) {
+					this.postToolCompactionRequested = true;
+					return true;
+				}
+				return (await this.shouldStopAfterTurn?.(turn)) === true;
+			},
 			prepareNextTurn: this.prepareNextTurn,
 			...(signal ? { signal } : {}),
 			...(context ? {} : {}),
@@ -3686,6 +3739,9 @@ export class AgentHarness implements AgentLane {
 			case "tool_execution_start":
 				await this.appendToolStarted(lane, runId, event);
 				break;
+			case "turn_end":
+				await this.flushPendingCompatibilityMessages();
+				break;
 			case "agent_end": {
 				const finalMessage = [...event.messages].reverse().find((message): message is AssistantMessage => message.role === "assistant");
 				if (!finalMessage || finalMessage.stopReason === "deferred") break;
@@ -3738,6 +3794,7 @@ export class AgentHarness implements AgentLane {
 		this.operationContextInputs.delete(runId);
 		try {
 			await this.refreshSnapshots();
+			if (activeOperation?.kind === "run") await this.flushPendingCompatibilityMessages();
 			if (this.agentSettlementPending && this.activeOperations.size === 0 && this.sessionSnapshot.lanes.every((lane) => lane.operation === null)) {
 				this.agentSettlementPending = false;
 				this.eventBus.emit({ type: "agent_settled" });
@@ -3871,6 +3928,7 @@ export class AgentHarness implements AgentLane {
 		const preparation = preparationResult.value;
 		const reason = intent.reason ?? "manual";
 		const willRetry = intent.willRetry ?? false;
+		let fromExtension = false;
 		const step = await this.ensureStep(lane, reduction, "compaction", reason);
 		this.startActiveOperation(
 			lane,
@@ -3886,9 +3944,11 @@ export class AgentHarness implements AgentLane {
 				});
 				if (hookResult?.cancel === true) {
 					await this.enqueue(lane, () => this.finishOperation(lane, operation.id, "aborted", USER_ABORT_ERROR));
+					await this.compactionHooks?.failed?.({ reason, aborted: true, willRetry, fromExtension: false });
 					return;
 				}
 				const extensionCompaction = hookResult?.compaction;
+				fromExtension = extensionCompaction !== undefined;
 				let result: {
 					summary: string;
 					firstKeptEntryId: string;
@@ -3935,9 +3995,16 @@ export class AgentHarness implements AgentLane {
 						},
 					);
 					if (!generated.ok) {
+						const aborted = generated.error.code === "aborted";
 						await this.enqueue(lane, async () => {
-							const aborted = generated.error.code === "aborted";
 							await this.finishOperation(lane, operation.id, aborted && signal.aborted ? "aborted" : "failed", aborted ? (signal.aborted ? USER_ABORT_ERROR : providerAbortError(generated.error.message)) : operationError(generated.error));
+						});
+						await this.compactionHooks?.failed?.({
+							reason,
+							...(aborted ? {} : { errorMessage: generated.error.message }),
+							aborted,
+							willRetry,
+							fromExtension: false,
 						});
 						return;
 					}
@@ -3993,7 +4060,16 @@ export class AgentHarness implements AgentLane {
 					}
 				});
 			},
-			async (error, signal) => this.finishOperation(lane, operation.id, signal.aborted ? "aborted" : "failed", signal.aborted ? USER_ABORT_ERROR : operationError(error)),
+			async (error, signal) => {
+				await this.finishOperation(lane, operation.id, signal.aborted ? "aborted" : "failed", signal.aborted ? USER_ABORT_ERROR : operationError(error));
+				await this.compactionHooks?.failed?.({
+					reason,
+					...(signal.aborted ? {} : { errorMessage: toError(error).message }),
+					aborted: signal.aborted,
+					willRetry,
+					fromExtension,
+				});
+			},
 		);
 	}
 
@@ -4530,16 +4606,28 @@ export class AgentHarness implements AgentLane {
 		const entries = await this.getLaneEntries("main");
 		const latestCompaction = [...entries].reverse().find((entry): entry is CompactionEntry => entry.type === "compaction");
 		if (latestCompaction !== undefined && assistantMessage.timestamp <= latestCompaction.timestamp) return false;
-		if (isContextOverflow(assistantMessage, model.contextWindow) || isRecoverableLength(assistantMessage, model.maxTokens)) {
+		const contextOverflow = isContextOverflow(assistantMessage, model.contextWindow);
+		const recoverableLength = isRecoverableLength(assistantMessage, model.maxTokens);
+		if (contextOverflow || recoverableLength) {
 			const willRetry = assistantMessage.stopReason !== "stop";
 			if (!willRetry) return autoCompaction("overflow", false);
 			if (this.overflowRecoveryAttempted) {
+				const errorMessage = contextOverflow
+					? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
+					: "Truncated response recovery failed after one compact-and-retry attempt.";
 				this.eventBus.emit({
 					type: "compaction_end",
 					reason: "overflow",
 					aborted: false,
 					willRetry: false,
-					errorMessage: "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+					errorMessage,
+				});
+				await this.compactionHooks?.failed?.({
+					reason: "overflow",
+					errorMessage,
+					aborted: false,
+					willRetry: false,
+					fromExtension: false,
 				});
 				return false;
 			}
@@ -4551,13 +4639,14 @@ export class AgentHarness implements AgentLane {
 		if (assistantMessage.stopReason === "error" || directContextTokens === 0) {
 			const messages = await this.getMessages();
 			const estimate = estimateContextTokens(messages);
-			if (estimate.lastUsageIndex === null) return false;
-			const usageMessage = messages[estimate.lastUsageIndex];
-			if (
-				latestCompaction !== undefined &&
-				usageMessage?.role === "assistant" &&
-				usageMessage.timestamp <= latestCompaction.timestamp
-			) return false;
+			if (estimate.lastUsageIndex !== null) {
+				const usageMessage = messages[estimate.lastUsageIndex];
+				if (
+					latestCompaction !== undefined &&
+					usageMessage?.role === "assistant" &&
+					usageMessage.timestamp <= latestCompaction.timestamp
+				) return false;
+			}
 			contextTokens = estimate.tokens;
 		}
 		return shouldCompact(contextTokens, model.contextWindow, this.compactionSettings)

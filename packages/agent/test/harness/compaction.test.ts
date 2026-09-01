@@ -4,6 +4,7 @@ import {
 	createModels,
 	type FakeProviderHandle,
 	fakeAssistantMessage,
+	fakeToolCall,
 	fakeProvider,
 	type Message,
 	type Model,
@@ -544,6 +545,30 @@ describe("harness compaction", () => {
 		expect(abortedResult).toMatchObject({ ok: false, error: { code: "aborted", message: "stopped" } });
 	});
 
+	it("rejects tool calls returned by summary generation", async () => {
+		const messages: AgentMessage[] = [createUserMessage("Summarize this.")];
+		const { fake, model } = createFakeModel(false);
+		fake.setResponses([
+			fakeAssistantMessage(fakeToolCall("read", { path: "README.md" }), { stopReason: "toolUse" }),
+		]);
+
+		expect(await generateSummary(messages, models, model, 2000)).toMatchObject({
+			ok: false,
+			error: { code: "summarization_failed", message: "Summarization attempted to call a tool" },
+		});
+	});
+
+	it("rejects length-limited summary generation", async () => {
+		const messages: AgentMessage[] = [createUserMessage("Summarize this.")];
+		const { fake, model } = createFakeModel(false);
+		fake.setResponses([fakeAssistantMessage("partial", { stopReason: "length" })]);
+
+		expect(await generateSummary(messages, models, model, 2000)).toMatchObject({
+			ok: false,
+			error: { code: "summarization_failed", message: expect.stringContaining("token cap") },
+		});
+	});
+
 	it("clamps compaction summary maxTokens to the model output cap", async () => {
 		const messages: AgentMessage[] = [createUserMessage("Summarize this.")];
 		const seenOptions: Array<Record<string, unknown> | undefined> = [];
@@ -668,6 +693,48 @@ describe("harness compaction", () => {
 		expect(await compact(preparation, models, abortedModel)).toMatchObject({
 			ok: false,
 			error: { code: "aborted", message: "prefix stopped" },
+		});
+	});
+
+	it("rejects tool calls returned by split-turn summary generation", async () => {
+		const messages: AgentMessage[] = [createUserMessage("Summarize this.")];
+		const preparation: CompactionPreparation = {
+			messagesToSummarize: [],
+			turnPrefixMessages: messages,
+			retainedTail: messages,
+			isSplitTurn: true,
+			tokensBefore: 100,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
+		};
+		const { fake, model } = createFakeModel(false);
+		fake.setResponses([
+			fakeAssistantMessage(fakeToolCall("read", { path: "README.md" }), { stopReason: "toolUse" }),
+		]);
+
+		expect(await compact(preparation, models, model)).toMatchObject({
+			ok: false,
+			error: { code: "summarization_failed", message: "Turn prefix summarization attempted to call a tool" },
+		});
+	});
+
+	it("rejects length-limited split-turn summary generation", async () => {
+		const messages: AgentMessage[] = [createUserMessage("Summarize this.")];
+		const preparation: CompactionPreparation = {
+			messagesToSummarize: [],
+			turnPrefixMessages: messages,
+			retainedTail: messages,
+			isSplitTurn: true,
+			tokensBefore: 100,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 2000, keepRecentTokens: 20 },
+		};
+		const { fake, model } = createFakeModel(false);
+		fake.setResponses([fakeAssistantMessage("partial", { stopReason: "length" })]);
+
+		expect(await compact(preparation, models, model)).toMatchObject({
+			ok: false,
+			error: { code: "summarization_failed", message: expect.stringContaining("token cap") },
 		});
 	});
 

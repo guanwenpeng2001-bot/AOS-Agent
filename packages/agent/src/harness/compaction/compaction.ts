@@ -589,6 +589,17 @@ export async function generateSummaryWithUsage(
 			),
 		);
 	}
+	if (response.stopReason === "length") {
+		return err(
+			new CompactionError(
+				"summarization_failed",
+				"Summarization failed: generation hit the token cap and the summary is incomplete",
+			),
+		);
+	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		return err(new CompactionError("summarization_failed", "Summarization attempted to call a tool"));
+	}
 
 	const textContent = contentText(response.content);
 
@@ -842,6 +853,17 @@ async function generateTurnPrefixSummary(
 				`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`,
 			),
 		);
+	}
+	if (response.stopReason === "length") {
+		return err(
+			new CompactionError(
+				"summarization_failed",
+				"Turn prefix summarization failed: generation hit the token cap and the summary is incomplete",
+			),
+		);
+	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		return err(new CompactionError("summarization_failed", "Turn prefix summarization attempted to call a tool"));
 	}
 
 	return ok({

@@ -51,6 +51,7 @@
 
 ### Changed
 
+- Windows full-load regression coverage now bounds and terminates a stalled invalid-session source child and makes reftable watcher changes observable without weakening behavior assertions.
 - The built-in Radius provider points at the upstream-hosted gateway by default, so `/login radius` and its model catalog work out of the box; custom gateways in `models.json` are unchanged.
 - Default workspace `build`, CI, and release hydrate the ignored model wrappers from the tracked AI test-fixture snapshot instead of fetching live catalogs.
 - LICENSE copyright is now AOS Agent. Security reports go through GitHub Security Advisories. Config and session environment variables are `AOS_AGENT_DIR` and `AOS_AGENT_SESSION_DIR`; the previous `AOS_AGENT_CODING_AGENT*` names remain read-only aliases for one release.
@@ -75,6 +76,52 @@
 
 ### Fixed
 
+- Read-only control-plane readers no longer reject otherwise valid `auth.json` / `models-store.json` files whose mode is not owner-only `0600`.
+- Operation Worker watchdog expiry inside a binding deadline window stays `worker_deadline_exceeded`, and a late success receipt cannot rewrite that terminal outcome.
+- System prompts now terminate the current-working-directory line with a newline.
+- Fallback extension tool output now collapses long results and honors expansion.
+- Fullscreen selection copy now uses the host clipboard and reports verified success or failure.
+- Edit tools now normalize a single edit object into a one-entry edit array.
+- Root Markdown documentation is no longer treated as a skill unless it declares skill frontmatter.
+- Managed fd and ripgrep setup now starts after TUI mounting and reports progress in the transcript.
+- Interactive startup diagnostics now render inside the TUI transcript instead of being lost before initialization.
+- Settings diagnostics now include concrete file paths and deduplicate repeated warnings.
+- Decoded text inputs now consistently strip a leading UTF-8 BOM before parsing or model inclusion.
+- Package manifest expansion now uses deterministic native Node globbing and no longer requires the external `glob` runtime dependency.
+- Package update checks no longer treat older registry versions as available updates.
+- Failed extension factories now discard staged flags, providers, and event subscriptions and disable their captured API.
+- Node SEA binaries now load extensions through bundled virtual modules.
+- Extension flags now reject defaults whose runtime type does not match the declaration.
+- Default keybindings now avoid Windows and WSL terminal conflicts while remaining configurable.
+- Model selectors now sort the current model first and the configured default second.
+- Model selector searches now match prefixes of `default`, and settings labels allow wider alignment.
+- Persisting a default model now adds it to an existing non-empty model scope.
+- Model and thinking changes now remain session-scoped unless explicitly persisted as defaults.
+- llama.cpp login now directs empty catalogs to `/llama` before `/model`.
+- The Cerebras default now references the current `gpt-oss-120b` catalog model.
+- Z.AI Coding Plan defaults now reference the current GLM model IDs.
+- `models.json` now accepts the documented `compat.supportsFinishReason` override.
+- JSON and RPC `toolcall_start` updates now include the tool-call ID and name without cumulative snapshots.
+- JSON and RPC streaming updates now retain cumulative usage while omitting cumulative message snapshots.
+- Toggling thinking visibility no longer clears partial output from running Bash tools.
+- Context-only custom messages arriving during tool execution are now persisted after that turn's tool results.
+- Repeated truncated-response recovery now reports truncation instead of mislabeling it as context overflow.
+- Extensions now receive `session_compact_failed` when compaction fails or is aborted.
+- Compaction and branch summarization now reject token-capped partial summaries instead of persisting them as checkpoints.
+- Compaction and branch summarization now reject provider responses that attempt tool calls.
+- Long tool results now trigger threshold compaction before the next provider request, while terminating tools still stop without compacting.
+- Threshold auto-compaction now falls back to message-size estimates when a provider omits usage data.
+- Branch summaries now record the leaf being left in `fromId` instead of the navigation destination.
+- Resumed sessions now repair a valid final JSONL record that lacks a trailing newline before appending new entries.
+- Print-mode prompts now continue after recoverable tool failures and settle successfully when a later model or tool step recovers.
+- Fixed session selector discovery and marker search for canonical sessions in explicit session directories.
+- Resuming a persisted session after its host process is killed now reclaims the stale processing lease and finishes the interrupted turn, while a live holder still blocks concurrent prompts.
+- Fixed the npm CLI launcher on Windows long working directories by routing the bin through a JavaScript bootstrap that uses the extended path form before loading the product entrypoint.
+- Made metadata-only `--list-models` load persisted dynamic catalogs through strictly read-only state stores, so Cursor models remain visible after login without creating locks or backup files.
+- Corrupt or truncated session JSONL now exits with a content-safe diagnostic after preserving the verified prefix and quarantining the corrupt remainder.
+- Made Cursor login and logout report the committed credential state, explain empty model catalogs, and provide `/reload` or `/model` recovery paths after local synchronization or CLI probe failures.
+- 只读搜索超时不再误报未知副作用.
+- Fixed overlapping model-catalog refreshes dropping persisted provider caches, and retried hung catalog HTTP attempts within the refresh deadline.
 - Packaged-runtime smoke now prints execution and per-runtime probe failures, and the Node-only unit test skips Bun compile probes when Bun is not installed.
 - Offline packaged-runtime install uses workspace package overrides and the candidate shrinkwrap cache instead of fetching packuments.
 - Packaged-runtime smoke can warm the npm cache with one online install of the same package set before the offline install, and CI writes the run log into the evidence artifact.

@@ -1,3 +1,4 @@
+import { arch, platform, release } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { ANTHROPIC_AUTH_TOKEN_ENV, ANTHROPIC_OAUTH_TOKEN_ENV } from "../src/env-api-keys.ts";
@@ -8,6 +9,7 @@ import type { Context, Model } from "../src/types.ts";
 const mockState = vi.hoisted(() => ({
 	constructorOpts: undefined as Record<string, unknown> | undefined,
 	createParams: undefined as Record<string, unknown> | undefined,
+	responseModel: "claude-test",
 }));
 
 vi.mock("@anthropic-ai/sdk", () => {
@@ -17,6 +19,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 				type: "message_start",
 				message: {
 					id: "msg_test",
+					model: mockState.responseModel,
 					usage: { input_tokens: 1, output_tokens: 0 },
 				},
 			})}\n`,
@@ -71,9 +74,18 @@ const anthropicModel: Model<"anthropic-messages"> = {
 	maxTokens: 4096,
 };
 
+const kimiModel: Model<"anthropic-messages"> = {
+	...anthropicModel,
+	id: "kimi-for-coding",
+	name: "Kimi For Coding",
+	provider: "kimi-coding",
+	baseUrl: "https://api.kimi.com/coding",
+};
+
 afterEach(() => {
 	mockState.constructorOpts = undefined;
 	mockState.createParams = undefined;
+	mockState.responseModel = "claude-test";
 });
 
 describe("Anthropic auth token env", () => {
@@ -183,5 +195,49 @@ describe("Anthropic auth token env", () => {
 
 		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
 		expect(headers.Authorization).toBe("Bearer explicit-token");
+	});
+});
+
+describe("Anthropic-compatible user agents", () => {
+	it("enforces the service-compatible runtime user agent for Kimi Coding", async () => {
+		await streamAnthropic(kimiModel, context, {
+			apiKey: "kimi-key",
+			headers: { "user-agent": "custom-client" },
+		}).result();
+
+		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
+		const userAgentHeaders = Object.entries(headers).filter(([name]) => name.toLowerCase() === "user-agent");
+		expect(userAgentHeaders).toEqual([["User-Agent", `pi (${platform()} ${release()}; ${arch()})`]]);
+	});
+
+	it("does not force a runtime user agent for Anthropic", async () => {
+		await streamAnthropic(anthropicModel, context, { apiKey: "anthropic-key" }).result();
+		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
+		expect(Object.keys(headers).some((name) => name.toLowerCase() === "user-agent")).toBe(false);
+	});
+});
+
+describe("Anthropic refusal fallback", () => {
+	it("sends allowlisted fallback targets and prices the selected model", async () => {
+		const primary: Model<"anthropic-messages"> = {
+			...anthropicModel,
+			id: "primary-model",
+			compat: {
+				allowedFallbackModels: [{
+					provider: "anthropic",
+					model: "fallback-model",
+					cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+				}],
+			},
+		};
+		mockState.responseModel = "fallback-model";
+
+		const message = await streamAnthropic(primary, context, { apiKey: "anthropic-key" }).result();
+
+		expect(mockState.createParams?.fallbacks).toEqual([{ model: "fallback-model" }]);
+		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
+		expect(headers["anthropic-beta"]).toContain("server-side-fallback-2026-07-01");
+		expect(message.model).toBe("fallback-model");
+		expect(message.usage.cost.total).toBeCloseTo(0.000003);
 	});
 });

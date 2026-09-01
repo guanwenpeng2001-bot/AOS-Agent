@@ -885,9 +885,21 @@ export function createSandboxOperationToolGatewayProvider(
 			gatewayOptions: { signal?: AbortSignal } = {},
 		): Promise<ResultValue<ToolExecutionResult, FoundationError>> {
 			if (disposed) return Result.err(new FoundationError("invalid_identifier", "sandbox Tool Gateway provider is disposed"));
+			const route = lookupToolGatewayRouteSafely(options.routes, request.toolName, request.namespace);
+			if (!route.ok) return route;
+			if (
+				route.value.kind !== "sandbox" ||
+				route.value.providerId !== options.providerId ||
+				route.value.revision !== revision
+			) {
+				return Result.err(new FoundationError("tool_gateway_catalog_invalid", "Sandbox Tool Gateway route identity is invalid"));
+			}
 			const translated = translator.translate(request);
 			if (!translated.ok) return translated;
-			const operation = translated.value;
+			const operation: SandboxOperationRequest = {
+				...translated.value,
+				sideEffect: route.value.operation.effects.every((effect) => effect === "read") ? "none" : "writes",
+			};
 			if (!isSandboxOperationRequestValid(operation)) {
 				return Result.err(new FoundationError("foundation_schema_invalid_shape", "sandbox operation request failed exact-shape validation"));
 			}

@@ -18,13 +18,19 @@ function completedStatus(stdout: string): CursorCliCaptureResult {
 	return { status: "completed", code: 0, stdout, stderr: "" };
 }
 
-function createFakeCli(handlers: { statusStdout: string | (() => string); loginResult?: CursorCliResult }): CursorCli {
+function createFakeCli(handlers: {
+	statusStdout?: string | (() => string);
+	statusResult?: CursorCliCaptureResult;
+	loginResult?: CursorCliResult;
+}): CursorCli {
 	return {
 		id: "cursor",
 		name: "Cursor",
 		login: async () => handlers.loginResult ?? { status: "completed", code: 0 },
 		logout: async () => ({ status: "completed", code: 0 }),
 		status: async () => {
+			if (handlers.statusResult) return handlers.statusResult;
+			if (handlers.statusStdout === undefined) throw new Error("status fixture is missing");
 			const stdout = typeof handlers.statusStdout === "function" ? handlers.statusStdout() : handlers.statusStdout;
 			return completedStatus(stdout);
 		},
@@ -34,6 +40,28 @@ function createFakeCli(handlers: { statusStdout: string | (() => string); loginR
 }
 
 describe("Cursor OAuth (private credential import)", () => {
+	it("reports missing CLI and status timeout with different actionable guidance", async () => {
+		for (const [statusResult, expected] of [
+			[
+				{ status: "not_installed", message: "missing", stdout: "", stderr: "" } as const,
+				/install.*cursor.*cli/i,
+			],
+			[
+				{ status: "timed_out", message: "slow", stdout: "", stderr: "" } as const,
+				/timed out.*cursor-agent status/i,
+			],
+		] as const) {
+			const oauth = createCursorOAuth({ cli: createFakeCli({ statusResult }) });
+			await expect(
+				oauth.login({
+					signal: neverAbortedSignal,
+					prompt: async () => "unused",
+					notify: () => {},
+				}),
+			).rejects.toThrow(expected);
+		}
+	});
+
 	it("derives expires from JWT exp claim", () => {
 		const exp = 1_800_000_000;
 		expect(expiresFromAccessToken(jwtWithExp(exp))).toBe(exp * 1000);
@@ -183,6 +211,31 @@ describe("Cursor OAuth (private credential import)", () => {
 				},
 				notify: () => {},
 			}),
-		).rejects.toThrow(/private credentials/i);
+		).rejects.toThrow(/credentials are missing.*cursor-agent logout.*cursor-agent login/i);
+	});
+
+	it("rejects expired private credentials before they can be committed", async () => {
+		const cli = createFakeCli({
+			statusStdout: JSON.stringify({
+				isAuthenticated: true,
+				hasAccessToken: true,
+				hasRefreshToken: true,
+			}),
+		});
+		const oauth = createCursorOAuth({
+			cli,
+			readPrivateCredentials: async () => ({
+				tokens: { accessToken: jwtWithExp(1), refreshToken: "expired-refresh" },
+				source: { label: "auth.json" },
+			}),
+		});
+
+		await expect(
+			oauth.login({
+				signal: neverAbortedSignal,
+				prompt: async () => "unused",
+				notify: () => {},
+			}),
+		).rejects.toThrow(/credentials have expired.*cursor-agent logout.*cursor-agent login/i);
 	});
 });

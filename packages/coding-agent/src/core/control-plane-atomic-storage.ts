@@ -91,13 +91,23 @@ function syncDirectoryBestEffort(path: string): void {
 	}
 }
 
-function verifyFile(path: string, content: string, options: ControlPlaneStorageOptions): void {
+function verifyFile(
+	path: string,
+	content: string,
+	options: ControlPlaneStorageOptions,
+	enforceMode = true,
+): void {
 	const stat = lstatSync(path);
 	if (!stat.isFile() || stat.isSymbolicLink()) {
 		throw new Error("Control-plane state must be a regular file");
 	}
 	options.validate(content);
-	if (options.mode !== undefined && process.platform !== "win32" && (stat.mode & 0o777) !== options.mode) {
+	if (
+		enforceMode &&
+		options.mode !== undefined &&
+		process.platform !== "win32" &&
+		(stat.mode & 0o777) !== options.mode
+	) {
 		throw new Error("Control-plane state permissions are invalid");
 	}
 }
@@ -120,6 +130,23 @@ function readAndVerify(path: string, options: ControlPlaneStorageOptions): strin
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
+	}
+}
+
+/** Validate current state without repairing, quarantining, changing modes, or creating a backup. */
+export function readControlPlaneStateReadOnly(
+	path: string,
+	options: ControlPlaneStorageOptions,
+): string | undefined {
+	try {
+		const content = readFileSync(path, "utf-8");
+		// Owner-only mode is a write-time contract. Metadata-only readers must
+		// still accept an otherwise valid file that a user or test created as 0644.
+		verifyFile(path, content, options, false);
+		return content;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw new ControlPlaneStorageError("control_state_corrupt", error);
 	}
 }
 

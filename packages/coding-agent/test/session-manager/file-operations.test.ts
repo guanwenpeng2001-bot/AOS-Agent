@@ -3,7 +3,12 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, w
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { findMostRecentSession, loadEntriesFromFile, SessionManager } from "../../src/core/session/manager.ts";
+import {
+	findMostRecentSession,
+	loadEntriesFromFile,
+	SessionFileCorruptionError,
+	SessionManager,
+} from "../../src/core/session/manager.ts";
 
 const HEADER_SCAN_LIMIT_BYTES = 1024 * 1024;
 
@@ -52,7 +57,7 @@ describe("loadEntriesFromFile", () => {
 	it("returns empty array for malformed JSON", () => {
 		const file = join(tempDir, "malformed.jsonl");
 		writeFileSync(file, "not json\n");
-		expect(loadEntriesFromFile(file)).toEqual([]);
+		expect(() => loadEntriesFromFile(file)).toThrow(SessionFileCorruptionError);
 	});
 
 	it("loads valid session file", () => {
@@ -66,9 +71,26 @@ describe("loadEntriesFromFile", () => {
 		expect(entries).toHaveLength(2);
 		expect(entries[0].type).toBe("session");
 		expect(entries[1].type).toBe("message");
+		expect(readFileSync(file, "utf8")).toBe(
+			'{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
+		);
 	});
 
-	it("skips malformed lines but keeps valid ones", () => {
+	it("repairs a valid session whose final record has no newline when opening it", () => {
+		const file = join(tempDir, "unterminated.jsonl");
+		const content =
+			'{"type":"session","version":3,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"message","id":"12345678","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}';
+		writeFileSync(file, content);
+
+		const manager = SessionManager.open(file, tempDir);
+
+		expect(manager.getEntries()).toHaveLength(1);
+		expect(readFileSync(file, "utf8")).toBe(`${content}\n`);
+	});
+
+	it("rejects malformed lines instead of silently keeping valid suffix entries", () => {
 		const file = join(tempDir, "mixed.jsonl");
 		writeFileSync(
 			file,
@@ -76,13 +98,11 @@ describe("loadEntriesFromFile", () => {
 				"not valid json\n" +
 				'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
-		const entries = loadEntriesFromFile(file);
-		expect(entries).toHaveLength(2);
+		expect(() => loadEntriesFromFile(file)).toThrow(SessionFileCorruptionError);
 	});
 
 	it.each([
 		["leading blank lines", "\n  \n", "leading-blank"],
-		["leading malformed lines", "not json\n{broken json\n", "leading-malformed"],
 		["a multi-buffer header", "", "a".repeat(8192)],
 	])("reads cwd from a session with %s", (_description, prefix, sessionId) => {
 		const file = join(tempDir, "header.jsonl");
@@ -97,14 +117,7 @@ describe("loadEntriesFromFile", () => {
 	it("opens compatible sessions beyond the discovery scan limit", () => {
 		const storedCwd = join(tempDir, "stored-project");
 		const overrideCwd = join(tempDir, "override-project");
-		const cases = [
-			{ name: "large-header", id: "a".repeat(HEADER_SCAN_LIMIT_BYTES + 1), prefix: "" },
-			{
-				name: "large-prefix",
-				id: "large-prefix",
-				prefix: `${"x".repeat(HEADER_SCAN_LIMIT_BYTES + 1)}\n`,
-			},
-		];
+		const cases = [{ name: "large-header", id: "a".repeat(HEADER_SCAN_LIMIT_BYTES + 1), prefix: "" }];
 
 		for (const { name, id, prefix } of cases) {
 			const file = join(tempDir, `${name}.jsonl`);
@@ -117,7 +130,7 @@ describe("loadEntriesFromFile", () => {
 		}
 	});
 
-	it("opens session files larger than Node's max string length", () => {
+	it("rejects invalid sparse content in files larger than Node's max string length", () => {
 		const file = join(tempDir, "large.jsonl");
 		writeFileSync(
 			file,
@@ -140,10 +153,7 @@ describe("loadEntriesFromFile", () => {
 			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}\n',
 		);
 
-		const sessionManager = SessionManager.open(file, tempDir);
-		expect(sessionManager.getSessionId()).toBe("abc");
-		expect(sessionManager.getEntries()).toHaveLength(1);
-		expect(sessionManager.buildSessionContext().messages).toEqual([{ role: "user", content: "hi", timestamp: 1 }]);
+		expect(() => loadEntriesFromFile(file)).toThrow(SessionFileCorruptionError);
 	});
 });
 

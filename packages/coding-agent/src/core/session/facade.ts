@@ -40,6 +40,7 @@ import {
 	type AssistantMessageEventStream,
 	type ImageContent,
 	type Model,
+	modelsAreEqual,
 	type ThinkingLevel as AiThinkingLevel,
 	type Usage,
 } from "@aos-agent/ai";
@@ -184,6 +185,7 @@ import {
 	createAgentSessionReadProjection,
 	type AgentSessionReadProjection,
 } from "./read-projection.ts";
+import { acquireSessionProcessingLease } from "./processing-lease.ts";
 
 /**
  * Construction inputs for the compatibility facade. The canonical Session and
@@ -642,6 +644,7 @@ export class CanonicalAgentSessionServices {
 			: createCanonicalOptionsFromLegacy(options);
 		const storage = canonical.canonicalStorage ?? new SessionManagerStorage(canonical.sessionManager);
 		this.harness = canonical.harness;
+		this.harness.enableProductPostToolCompaction();
 		this.canonicalSession = canonical.canonicalSession;
 		this.storage = storage;
 		this.sessionManager = canonical.sessionManager;
@@ -884,6 +887,10 @@ export class CanonicalAgentSessionServices {
 					reason,
 					willRetry,
 				});
+			},
+			failed: async (event) => {
+				if (!this._extensionRunner.hasHandlers("session_compact_failed")) return;
+				await this._extensionRunner.emit({ type: "session_compact_failed", ...event });
 			},
 		});
 		this.harness.setNavigationHooks({
@@ -2333,7 +2340,7 @@ export class CanonicalAgentSessionServices {
 			options.preflightResult?.(false);
 			throw new Error("Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.");
 		}
-		if (this.isStreaming) {
+		if (this.promptPreflightPending || this.harness.currentSignal !== undefined) {
 			if (options.streamingBehavior === "steer") {
 				await this.steer(text, images);
 				options.preflightResult?.(true);
@@ -2346,6 +2353,40 @@ export class CanonicalAgentSessionServices {
 			}
 			throw new Error("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.");
 		}
+		const processingLease = this.sessionFile === undefined
+			? undefined
+			: acquireSessionProcessingLease(this.sessionFile);
+		try {
+			await this.recoverInterruptedOperation();
+			await this.executePreparedPrompt(text, images, options);
+		} finally {
+			processingLease?.release();
+		}
+	}
+
+	private async recoverInterruptedOperation(): Promise<void> {
+		const aborted = await this.harness.abort();
+		const abortError = resultError(aborted);
+		if (abortError !== undefined) {
+			if (/No active operation/.test(abortError.message)) return;
+			throw abortError;
+		}
+		const resumed = await this.harness.resume();
+		const resumeError = resultError(resumed);
+		if (
+			resumeError !== undefined &&
+			!("code" in resumeError && resumeError.code === "suspended" && !this.harness.isRunning)
+		) {
+			throw resumeError;
+		}
+		await this.refreshCompatibilityMessages();
+	}
+
+	private async executePreparedPrompt(
+		text: string,
+		images: ImageContent[] | undefined,
+		options: PromptOptions,
+	): Promise<void> {
 		const runId = options.runId ?? randomUUID();
 		const deadlineSignal = options.deadlineMs === undefined ? undefined : AbortSignal.timeout(options.deadlineMs);
 		const signal = options.signal === undefined
@@ -2389,12 +2430,15 @@ export class CanonicalAgentSessionServices {
 		}
 		const assistant = [...this.messages].reverse().find((message): message is AssistantMessage => message.role === "assistant");
 		if (assistant === undefined) return;
+		const postToolCompactionRequested = this.harness.consumePostToolCompactionRequest();
 		const model = this.model;
 		const overflowNeedsContinuation = model !== undefined && assistant.stopReason !== "stop" && (
 			isContextOverflow(assistant, model.contextWindow) || isRecoverableLength(assistant, model.maxTokens)
 		);
-		const compacted = await this._checkCompaction(assistant);
-		if (!compacted || !overflowNeedsContinuation) return;
+		const compacted = postToolCompactionRequested
+			? await this._runAutoCompaction("threshold", false)
+			: await this._checkCompaction(assistant);
+		if (!compacted || (!overflowNeedsContinuation && !postToolCompactionRequested)) return;
 		execution = await this.productPromptIngress.execute({
 			prompt: text,
 			surface: options.surface ?? this.promptSurface,
@@ -2672,14 +2716,15 @@ export class CanonicalAgentSessionServices {
 			|| isRecoverableLength(assistantMessage, model.maxTokens)
 		) return false;
 		const estimate = estimateContextTokens(this.agent.state.messages);
-		if (estimate.lastUsageIndex === null) return false;
-		const usageMessage = this.agent.state.messages[estimate.lastUsageIndex];
 		const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
-		if (
-			latestCompaction !== null
-			&& usageMessage?.role === "assistant"
-			&& usageMessage.timestamp <= Date.parse(latestCompaction.timestamp)
-		) return false;
+		if (estimate.lastUsageIndex !== null) {
+			const usageMessage = this.agent.state.messages[estimate.lastUsageIndex];
+			if (
+				latestCompaction !== null
+				&& usageMessage?.role === "assistant"
+				&& usageMessage.timestamp <= Date.parse(latestCompaction.timestamp)
+			) return false;
+		}
 		const settings = this.settingsManager.getCompactionSettings();
 		return shouldCompact(estimate.tokens, model.contextWindow, settings)
 			? (autoCompaction ?? ((reason, willRetry) => this._runAutoCompaction(reason, willRetry)))("threshold", false)
@@ -2737,8 +2782,8 @@ export class CanonicalAgentSessionServices {
 		};
 	}
 
-	async setModel(model: Model<Api>): Promise<void> {
-		await this.setModelInternal(model, "set");
+	async setModel(model: Model<Api>, options: { persist?: boolean } = {}): Promise<void> {
+		await this.setModelInternal(model, "set", options.persist === true);
 	}
 
 	/** @internal Persist SDK bootstrap facts through the canonical Session. */
@@ -2759,12 +2804,19 @@ export class CanonicalAgentSessionServices {
 		);
 	}
 
-	private async setModelInternal(model: Model<Api>, source: "set" | "cycle" | "restore"): Promise<void> {
+	private async setModelInternal(
+		model: Model<Api>,
+		source: "set" | "cycle" | "restore",
+		persist = false,
+	): Promise<void> {
 		const auth = await this._modelRuntime.checkAuth(model.provider);
 		if (auth === undefined) throw new Error(`No API key for ${model.provider}/${model.id}`);
 		const previousModel = this.model;
 		await this.harness.setModel(model);
-		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		if (persist) {
+			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+			this.addPersistedDefaultToNonEmptyScope(model);
+		}
 		const effectiveThinkingLevel = clampThinkingLevel(model, this.thinkingLevel) as ThinkingLevel;
 		this.applyThinkingLevel(effectiveThinkingLevel);
 		await this._extensionRunner.emit({
@@ -2775,11 +2827,20 @@ export class CanonicalAgentSessionServices {
 		});
 	}
 
+	private addPersistedDefaultToNonEmptyScope(model: Model<Api>): void {
+		if (this._scopedModels.length === 0 || this._scopedModels.some((item) => modelsAreEqual(item.model, model))) return;
+		this._scopedModels = [...this._scopedModels, { model }];
+		const enabledModels = this.settingsManager.getEnabledModels();
+		if (!enabledModels?.length) return;
+		const reference = `${model.provider}/${model.id}`;
+		if (enabledModels.some((pattern) => pattern.toLowerCase() === reference.toLowerCase())) return;
+		this.settingsManager.setEnabledModels([...enabledModels, reference]);
+	}
+
 	private applyThinkingLevel(level: ThinkingLevel): void {
 		const previousLevel = this.thinkingLevel;
 		if (previousLevel === level) return;
 		void this.harness.setThinkingLevel(level);
-		this.settingsManager.setDefaultThinkingLevel(level);
 		for (const listener of this.sessionInfoSubscribers) listener({ type: "thinking_level_changed", level });
 		void this._extensionRunner.emit({ type: "thinking_level_select", level, previousLevel });
 	}

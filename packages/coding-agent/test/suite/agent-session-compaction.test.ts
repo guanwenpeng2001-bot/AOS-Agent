@@ -283,6 +283,42 @@ describe("AgentSession compaction characterization", () => {
 		expect(getStreamCallCount()).toBe(1);
 	});
 
+	it("notifies extensions when auto-compaction fails", async () => {
+		const failedEvents: Array<{
+			reason: "manual" | "threshold" | "overflow";
+			errorMessage?: string;
+			aborted: boolean;
+			willRetry: boolean;
+			fromExtension: boolean;
+		}> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_compact_failed", (event) => {
+						failedEvents.push(event);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		harness.setResponses([fakeAssistantMessage("partial", { stopReason: "length" })]);
+		const internals = harness.session as unknown as SessionWithCompactionInternals;
+
+		await expect(internals._runAutoCompaction("threshold", false)).resolves.toBe(false);
+
+		expect(failedEvents).toEqual([
+			expect.objectContaining({
+				type: "session_compact_failed",
+				reason: "threshold",
+				aborted: false,
+				willRetry: false,
+				fromExtension: false,
+				errorMessage: expect.stringContaining("token cap"),
+			}),
+		]);
+	});
+
 	it("compacts and resumes after a length stop below the desired output limit when Context Engine is disabled", async () => {
 		const harness = await createHarness({
 			models: [{ id: "fake-1", contextWindow: 1000, maxTokens: 100 }],
@@ -361,7 +397,7 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.fake.state.callCount).toBe(2);
 		expect(harness.eventsOfType("compaction_start").filter((event) => event.reason === "overflow")).toHaveLength(1);
 		expect(harness.eventsOfType("compaction_end").at(-1)?.errorMessage).toBe(
-			"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+			"Truncated response recovery failed after one compact-and-retry attempt.",
 		);
 	});
 
@@ -551,7 +587,7 @@ describe("AgentSession compaction characterization", () => {
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 	});
 
-	it("does not trigger threshold compaction for error messages when no prior usage exists", async () => {
+	it("does not trigger threshold compaction when a no-usage estimate stays below the threshold", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;

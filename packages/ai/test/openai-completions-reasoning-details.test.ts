@@ -95,24 +95,71 @@ describe("openai-completions reasoning_details streaming", () => {
 		mockState.payloads = [];
 	});
 
-	it("preserves reasoning_details that arrive before their matching tool call", async () => {
+	it("preserves reasoning_details in the thinking signature", async () => {
 		mockState.chunkSets = [
 			[chunk({ reasoning_details: [reasoningDetail] }), toolCallChunk(), chunk({}, "tool_calls")],
 			[chunk({ content: "ok" }), chunk({}, "stop")],
 		];
 
 		const assistantMessage = await runOpenAICompletionsStream();
+		const thinking = assistantMessage.content.find((block) => block.type === "thinking");
+		expect(thinking).toEqual({
+			type: "thinking",
+			thinking: "",
+			thinkingSignature: JSON.stringify([reasoningDetail]),
+		});
 		const toolCall = assistantMessage.content.find((block) => block.type === "toolCall");
-		expect(toolCall).toMatchObject({
+		expect(toolCall).toEqual({
 			type: "toolCall",
 			id: "call_1",
 			name: "read",
 			arguments: { path: "README.md" },
-			thoughtSignature: JSON.stringify(reasoningDetail),
 		});
 
 		await runOpenAICompletionsStream([assistantMessage]);
 
 		expect(getAssistantPayload(mockState.payloads[1])?.reasoning_details).toEqual([reasoningDetail]);
+	});
+
+	it("merges consecutive text and summary deltas before replay", async () => {
+		const details = [
+			{ type: "reasoning.text", text: "The", index: 0 },
+			{ type: "reasoning.text", text: " answer", signature: "signed", format: "v1", index: 0 },
+			{ type: "reasoning.summary", summary: "Looked", index: 0 },
+			{ type: "reasoning.summary", summary: " up.", format: "v1", index: 0 },
+			reasoningDetail,
+		];
+		const expected = [
+			{ type: "reasoning.text", text: "The answer", signature: "signed", format: "v1", index: 0 },
+			{ type: "reasoning.summary", summary: "Looked up.", format: "v1", index: 0 },
+			reasoningDetail,
+		];
+		mockState.chunkSets = [
+			[...details.map((detail) => chunk({ reasoning_details: [detail] })), toolCallChunk(), chunk({}, "tool_calls")],
+			[chunk({ content: "ok" }), chunk({}, "stop")],
+		];
+
+		const assistantMessage = await runOpenAICompletionsStream();
+		const thinking = assistantMessage.content.find((block) => block.type === "thinking");
+		expect(thinking?.type === "thinking" ? JSON.parse(thinking.thinkingSignature ?? "[]") : []).toEqual(expected);
+
+		await runOpenAICompletionsStream([assistantMessage]);
+
+		expect(getAssistantPayload(mockState.payloads[1])?.reasoning_details).toEqual(expected);
+	});
+
+	it("counts Kimi top-level cached_tokens as cache reads", async () => {
+		mockState.chunkSets = [[
+			{
+				id: "chatcmpl-test",
+				model: "google/gemini-test",
+				choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }],
+				usage: { prompt_tokens: 10, completion_tokens: 2, cached_tokens: 4 },
+			},
+		]];
+
+		const message = await runOpenAICompletionsStream();
+
+		expect(message.usage).toMatchObject({ input: 6, output: 2, cacheRead: 4, totalTokens: 12 });
 	});
 });

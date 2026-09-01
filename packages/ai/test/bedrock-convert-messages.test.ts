@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const bedrockMock = vi.hoisted(() => ({
 	constructorCalls: [] as Array<Record<string, unknown>>,
+	streamEvents: undefined as unknown[] | undefined,
 }));
 
 vi.mock("@aws-sdk/client-bedrock-runtime", () => {
@@ -13,7 +14,16 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 			bedrockMock.constructorCalls.push(config);
 		}
 
-		send(): Promise<never> {
+		send(): Promise<unknown> {
+			if (bedrockMock.streamEvents) {
+				const events = bedrockMock.streamEvents;
+				return Promise.resolve({
+					$metadata: { httpStatusCode: 200 },
+					stream: (async function* () {
+						yield* events;
+					})(),
+				});
+			}
 			return Promise.reject(new Error("mock send"));
 		}
 	}
@@ -92,6 +102,45 @@ describe("Bedrock constrained sampling", () => {
 			}
 		).toolConfig;
 		expect(novaToolConfig.tools[0].toolSpec.strict).toBeUndefined();
+	});
+});
+
+describe("Bedrock redacted reasoning", () => {
+	it("persists streamed bytes and replays them as redactedContent", async () => {
+		const encrypted = new Uint8Array([1, 2, 3, 4]);
+		bedrockMock.streamEvents = [
+			{ messageStart: { role: "assistant" } },
+			{
+				contentBlockDelta: {
+					contentBlockIndex: 0,
+					delta: { reasoningContent: { redactedContent: encrypted } },
+				},
+			},
+			{ contentBlockStop: { contentBlockIndex: 0 } },
+			{ messageStop: { stopReason: "end_turn" } },
+		];
+		try {
+			const message = await streamBedrock(
+				baseModel,
+				{ messages: [{ role: "user", content: "think", timestamp: Date.now() }] },
+				{ cacheRetention: "none" },
+			).result();
+			const thinking = message.content.find((block) => block.type === "thinking");
+			expect(thinking).toMatchObject({
+				type: "thinking",
+				thinking: "[Reasoning redacted]",
+				thinkingSignature: "AQIDBA==",
+				redacted: true,
+			});
+
+			const payload = await capturePayload({ messages: [message, { role: "user", content: "continue", timestamp: Date.now() }] });
+			const replay = (payload as {
+				messages: Array<{ content: Array<{ reasoningContent?: { redactedContent?: Uint8Array } }> }>;
+			}).messages[0].content[0].reasoningContent?.redactedContent;
+			expect(replay).toEqual(encrypted);
+		} finally {
+			bedrockMock.streamEvents = undefined;
+		}
 	});
 });
 
@@ -270,5 +319,46 @@ describe("bedrock convertMessages skips unknown content types", () => {
 		expect(payload).toBeDefined();
 		const p = payload as { messages: Array<{ role: string; content: unknown[] }> };
 		expect(p.messages).toHaveLength(0);
+	});
+
+	it("removes empty keys from replayed tool arguments without mutating history", async () => {
+		const argumentsWithEmptyKey = {
+			path: "/workspace/file.js",
+			edits: [{ oldText: "before", newText: "after", "": "" }],
+		};
+		const messages: Message[] = [
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "tool-1", name: "edit", arguments: argumentsWithEmptyKey }],
+				api: "bedrock-converse-stream",
+				provider: "amazon-bedrock",
+				model: baseModel.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+			},
+			{
+				role: "toolResult",
+				toolCallId: "tool-1",
+				toolName: "edit",
+				content: [{ type: "text", text: "done" }],
+				isError: false,
+				timestamp: Date.now(),
+			},
+		];
+
+		const payload = await capturePayload({ messages });
+		const input = (payload as {
+			messages: Array<{ content: Array<{ toolUse?: { input: unknown } }> }>;
+		}).messages[0].content[0].toolUse?.input;
+		expect(input).toEqual({ path: "/workspace/file.js", edits: [{ oldText: "before", newText: "after" }] });
+		expect(argumentsWithEmptyKey.edits[0]).toEqual({ oldText: "before", newText: "after", "": "" });
 	});
 });

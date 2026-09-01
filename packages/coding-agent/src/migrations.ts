@@ -6,6 +6,7 @@ import chalk from "chalk";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "fs";
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentDir, getBinDir } from "./config.ts";
+import { stripBom } from "./utils/text.ts";
 import {
 	readControlPlaneState,
 	writeControlPlaneState,
@@ -18,7 +19,7 @@ const EXTENSIONS_DOC_URL =
 	"(see package docs)";
 
 function validateJsonObject(content: string): void {
-	const parsed: unknown = JSON.parse(content);
+	const parsed: unknown = JSON.parse(stripBom(content));
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error("Expected a JSON object");
 	}
@@ -54,7 +55,7 @@ export function migrateAuthToAuthJson(): string[] {
 	// Migrate oauth.json
 	if (existsSync(oauthPath)) {
 		try {
-			const oauth = JSON.parse(readFileSync(oauthPath, "utf-8"));
+			const oauth = JSON.parse(stripBom(readFileSync(oauthPath, "utf-8")));
 			for (const [provider, cred] of Object.entries(oauth)) {
 				migrated[provider] = { type: "oauth", ...(cred as object) };
 				providers.push(provider);
@@ -70,7 +71,7 @@ export function migrateAuthToAuthJson(): string[] {
 		try {
 			const content = readControlPlaneState(settingsPath, MIGRATION_STORAGE_OPTIONS);
 			if (content !== undefined) {
-				const settings = JSON.parse(content);
+				const settings = JSON.parse(stripBom(content));
 				if (settings.apiKeys && typeof settings.apiKeys === "object") {
 					for (const [provider, key] of Object.entries(settings.apiKeys)) {
 						if (!migrated[provider] && typeof key === "string") {
@@ -184,7 +185,7 @@ function migrateKeybindingsConfigFile(): void {
 	try {
 		const content = readControlPlaneState(configPath, MIGRATION_STORAGE_OPTIONS);
 		if (content === undefined) return;
-		const parsed = JSON.parse(content) as unknown;
+		const parsed = JSON.parse(stripBom(content)) as unknown;
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 			return;
 		}

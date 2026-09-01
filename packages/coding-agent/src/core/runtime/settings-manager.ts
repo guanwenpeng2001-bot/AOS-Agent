@@ -7,6 +7,7 @@ import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
+import { stripBom } from "../../utils/text.ts";
 import {
 	buildCapabilitySettings,
 	type CapabilitiesSettingsConfig,
@@ -238,15 +239,17 @@ export interface SettingsManagerCreateOptions {
 
 export interface SettingsStorage {
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
+	getPath?(scope: SettingsScope): string | undefined;
 }
 
 export interface SettingsError {
 	scope: SettingsScope;
+	path?: string;
 	error: Error;
 }
 
 function validateSettingsState(content: string): void {
-	const parsed: unknown = JSON.parse(content);
+	const parsed: unknown = JSON.parse(stripBom(content));
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error("Invalid settings state: expected an object");
 	}
@@ -263,6 +266,10 @@ export class FileSettingsStorage implements SettingsStorage {
 		const resolvedAgentDir = resolvePath(agentDir);
 		this.globalSettingsPath = join(resolvedAgentDir, "settings.json");
 		this.projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "settings.json");
+	}
+
+	getPath(scope: SettingsScope): string {
+		return scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -400,10 +407,10 @@ export class SettingsManager {
 		const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project", projectTrusted);
 		const initialErrors: SettingsError[] = [];
 		if (globalLoad.error) {
-			initialErrors.push({ scope: "global", error: globalLoad.error });
+			initialErrors.push({ scope: "global", path: storage.getPath?.("global"), error: globalLoad.error });
 		}
 		if (projectLoad.error) {
-			initialErrors.push({ scope: "project", error: projectLoad.error });
+			initialErrors.push({ scope: "project", path: storage.getPath?.("project"), error: projectLoad.error });
 		}
 
 		// Keep the raw project capability config when the project is untrusted so
@@ -458,7 +465,7 @@ export class SettingsManager {
 		if (!content) {
 			return {};
 		}
-		const settings = JSON.parse(content);
+		const settings = JSON.parse(stripBom(content));
 		return SettingsManager.migrateSettings(settings);
 	}
 
@@ -788,7 +795,7 @@ export class SettingsManager {
 
 	private recordError(scope: SettingsScope, error: unknown): void {
 		const normalizedError = error instanceof Error ? error : new Error(String(error));
-		this.errors.push({ scope, error: normalizedError });
+		this.errors.push({ scope, path: this.storage.getPath?.(scope), error: normalizedError });
 	}
 
 	private clearModifiedScope(scope: SettingsScope): void {
@@ -832,7 +839,7 @@ export class SettingsManager {
 	): void {
 		this.storage.withLock(scope, (current) => {
 			const currentFileSettings = current
-				? SettingsManager.migrateSettings(JSON.parse(current) as Record<string, unknown>)
+				? SettingsManager.migrateSettings(JSON.parse(stripBom(current)) as Record<string, unknown>)
 				: {};
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {

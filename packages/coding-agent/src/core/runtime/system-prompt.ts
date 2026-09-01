@@ -78,7 +78,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			prompt += formatSkillsForPrompt(skills);
 		}
 
-		prompt += `\nCurrent working directory: ${promptCwd}`;
+		prompt += `\nCurrent working directory: ${promptCwd}\n`;
 
 		return prompt;
 	}
@@ -160,7 +160,7 @@ AOS Agent documentation (read only when the user asks about AOS Agent itself, it
 		prompt += formatSkillsForPrompt(skills);
 	}
 
-	prompt += `\nCurrent working directory: ${promptCwd}`;
+	prompt += `\nCurrent working directory: ${promptCwd}\n`;
 
 	return prompt;
 }

@@ -432,7 +432,7 @@ describe("ModelRegistry", () => {
 			}
 		});
 
-		test("model schema accepts thinkingLevelMap and compat schema accepts supportsStrictMode and cacheControlFormat", async () => {
+		test("model schema accepts thinkingLevelMap and documented compatibility overrides", async () => {
 			writeRawModelsJson({
 				demo: {
 					baseUrl: "https://example.com/v1",
@@ -452,6 +452,7 @@ describe("ModelRegistry", () => {
 							},
 							compat: {
 								supportsStrictMode: false,
+								supportsFinishReason: false,
 								cacheControlFormat: "anthropic",
 							},
 						},
@@ -466,6 +467,7 @@ describe("ModelRegistry", () => {
 			expect(registry.getError()).toBeUndefined();
 			expect(model?.thinkingLevelMap).toEqual({ minimal: null, high: "max" });
 			expect(compat?.supportsStrictMode).toBe(false);
+			expect(compat?.supportsFinishReason).toBe(false);
 			expect(compat?.cacheControlFormat).toBe("anthropic");
 		});
 

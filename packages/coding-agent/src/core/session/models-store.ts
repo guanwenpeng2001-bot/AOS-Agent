@@ -2,8 +2,9 @@ import { join } from "node:path";
 import type { ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions } from "@aos-agent/ai";
 import { getAgentDir } from "../../config.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
+import { stripBom } from "../../utils/text.ts";
 import { getFileRevision, normalizePath } from "../../utils/paths.ts";
-import { LockedAtomicFileStorage } from "../control-plane-atomic-storage.ts";
+import { LockedAtomicFileStorage, readControlPlaneStateReadOnly } from "../control-plane-atomic-storage.ts";
 
 type StoredModels = Record<string, ModelsStoreEntry>;
 
@@ -281,7 +282,7 @@ function isValidModelsStoreEntry(value: unknown): value is ModelsStoreEntry {
 }
 
 function parseStoredModels(content: string): StoredModels {
-	const parsed: unknown = JSON.parse(content);
+	const parsed: unknown = JSON.parse(stripBom(content));
 	if (!isRecord(parsed)) {
 		throw new Error("Invalid models store: expected an object");
 	}
@@ -329,6 +330,42 @@ export class InMemoryCodingAgentModelsStore implements ModelsStore {
 	async delete(providerId: string, options?: ModelsStoreOperationOptions): Promise<void> {
 		options?.signal?.throwIfAborted();
 		this.entries.delete(providerId);
+	}
+}
+
+/** Read a persisted dynamic catalog without creating locks, backups, or cache files. */
+export class ReadOnlyModelsStore implements ModelsStore {
+	private readonly path: string;
+	private data: StoredModels | undefined;
+
+	constructor(path: string = join(getAgentDir(), "models-store.json")) {
+		this.path = normalizePath(path);
+	}
+
+	private load(): StoredModels {
+		if (this.data) return this.data;
+		const content = readControlPlaneStateReadOnly(this.path, MODELS_STORAGE_OPTIONS);
+		this.data = content === undefined ? {} : parseStoredModels(content);
+		return this.data;
+	}
+
+	async read(providerId: string, options?: ModelsStoreOperationOptions): Promise<ModelsStoreEntry | undefined> {
+		options?.signal?.throwIfAborted();
+		const entry = this.load()[providerId];
+		options?.signal?.throwIfAborted();
+		return entry ? structuredClone(entry) : undefined;
+	}
+
+	async write(
+		_providerId: string,
+		_entry: ModelsStoreEntry,
+		_options?: ModelsStoreOperationOptions,
+	): Promise<void> {
+		throw new Error("Read-only model storage cannot modify models-store.json");
+	}
+
+	async delete(_providerId: string, _options?: ModelsStoreOperationOptions): Promise<void> {
+		throw new Error("Read-only model storage cannot modify models-store.json");
 	}
 }
 

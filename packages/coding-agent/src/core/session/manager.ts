@@ -6,17 +6,21 @@ import {
 	closeSync,
 	createReadStream,
 	existsSync,
+	fsyncSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
 	readFileSync,
 	readSync,
+	renameSync,
+	rmSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
+	writeSync,
 } from "fs";
 import { readdir, stat } from "fs/promises";
-import { join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { createInterface } from "readline";
 import { StringDecoder } from "string_decoder";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../../config.ts";
@@ -479,19 +483,49 @@ export function migrateSessionEntries(entries: FileEntry[]): void {
 	migrateToCurrentVersion(entries);
 }
 
+type SessionFileCorruptionDisposition = "unrepaired" | "repaired" | "repair_failed";
+
+/** Safe diagnostic for invalid JSONL. Raw session content is intentionally omitted. */
+export class SessionFileCorruptionError extends Error {
+	readonly lineNumber: number;
+	readonly byteOffset: number;
+	readonly disposition: SessionFileCorruptionDisposition;
+
+	constructor(lineNumber: number, byteOffset: number, disposition: SessionFileCorruptionDisposition = "unrepaired") {
+		const message =
+			disposition === "repaired"
+				? `Session file corruption detected at line ${lineNumber}. The valid prefix was preserved and the corrupt remainder was quarantined. Restart to continue from the repaired session.`
+				: disposition === "repair_failed"
+					? `Session file corruption detected at line ${lineNumber}. The session was not opened because the corrupt remainder could not be safely isolated.`
+					: `Session file contains invalid JSONL at line ${lineNumber}.`;
+		super(message);
+		this.name = "SessionFileCorruptionError";
+		this.lineNumber = lineNumber;
+		this.byteOffset = byteOffset;
+		this.disposition = disposition;
+	}
+}
+
 /** Exported for compaction.test.ts */
 export function parseSessionEntries(content: string): FileEntry[] {
 	const entries: FileEntry[] = [];
-	const lines = content.trim().split("\n");
+	const lines = content.split("\n");
+	let byteOffset = 0;
 
-	for (const line of lines) {
-		if (!line.trim()) continue;
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index]!;
+		const nextByteOffset = byteOffset + Buffer.byteLength(line, "utf8") + (index < lines.length - 1 ? 1 : 0);
+		if (!line.trim()) {
+			byteOffset = nextByteOffset;
+			continue;
+		}
 		try {
 			const entry = JSON.parse(line) as FileEntry;
 			entries.push(entry);
 		} catch {
-			// Skip malformed lines
+			throw new SessionFileCorruptionError(index + 1, byteOffset);
 		}
+		byteOffset = nextByteOffset;
 	}
 
 	return entries;
@@ -684,13 +718,12 @@ class SessionHeaderScanLimitError extends Error {
 	}
 }
 
-function parseSessionEntryLine(line: string): FileEntry | null {
+function parseSessionEntryLine(line: string, lineNumber: number, byteOffset: number): FileEntry | null {
 	if (!line.trim()) return null;
 	try {
 		return JSON.parse(line) as FileEntry;
 	} catch {
-		// Skip malformed lines
-		return null;
+		throw new SessionFileCorruptionError(lineNumber, byteOffset);
 	}
 }
 
@@ -702,29 +735,37 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	const entries: FileEntry[] = [];
 	const fd = openSync(resolvedFilePath, "r");
 	try {
-		const decoder = new StringDecoder("utf8");
 		const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
-		let pending = "";
+		let pending = Buffer.alloc(0);
+		let lineNumber = 1;
+		let byteOffset = 0;
 
 		while (true) {
 			const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
 			if (bytesRead === 0) break;
 
-			pending += decoder.write(buffer.subarray(0, bytesRead));
-			let lineStart = 0;
-			let newlineIndex = pending.indexOf("\n", lineStart);
+			const chunk = Buffer.from(buffer.subarray(0, bytesRead));
+			pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+			let newlineIndex = pending.indexOf(0x0a);
 			while (newlineIndex !== -1) {
-				const entry = parseSessionEntryLine(pending.slice(lineStart, newlineIndex));
+				const entry = parseSessionEntryLine(
+					pending.subarray(0, newlineIndex).toString("utf8"),
+					lineNumber,
+					byteOffset,
+				);
 				if (entry) entries.push(entry);
-				lineStart = newlineIndex + 1;
-				newlineIndex = pending.indexOf("\n", lineStart);
+				const consumedBytes = newlineIndex + 1;
+				byteOffset += consumedBytes;
+				lineNumber += 1;
+				pending = Buffer.from(pending.subarray(consumedBytes));
+				newlineIndex = pending.indexOf(0x0a);
 			}
-			pending = pending.slice(lineStart);
 		}
 
-		pending += decoder.end();
-		const finalEntry = parseSessionEntryLine(pending);
-		if (finalEntry) entries.push(finalEntry);
+		if (pending.length > 0) {
+			const finalEntry = parseSessionEntryLine(pending.toString("utf8"), lineNumber, byteOffset);
+			if (finalEntry) entries.push(finalEntry);
+		}
 	} finally {
 		closeSync(fd);
 	}
@@ -739,14 +780,132 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 	return entries;
 }
 
+function copyFileRange(source: number, target: number, start: number, end: number): void {
+	const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
+	let position = start;
+	while (position < end) {
+		const requested = Math.min(buffer.length, end - position);
+		const bytesRead = readSync(source, buffer, 0, requested, position);
+		if (bytesRead === 0) throw new Error("Session repair source ended unexpectedly");
+		let written = 0;
+		while (written < bytesRead) {
+			const bytesWritten = writeSync(target, buffer, written, bytesRead - written);
+			if (bytesWritten === 0) throw new Error("Session repair write made no progress");
+			written += bytesWritten;
+		}
+		position += bytesRead;
+	}
+}
+
+function repairCorruptSessionFile(filePath: string, corruption: SessionFileCorruptionError): void {
+	const stats = statSync(filePath);
+	if (corruption.byteOffset < 0 || corruption.byteOffset >= stats.size) {
+		throw new Error("Session corruption offset is outside the source file");
+	}
+
+	const directory = dirname(filePath);
+	const fileName = basename(filePath);
+	const suffix = randomUUID().replaceAll("-", "");
+	const repairedTempPath = join(directory, `.${fileName}.repair.${suffix}.tmp`);
+	const quarantineTempPath = join(directory, `.${fileName}.corrupt.${suffix}.tmp`);
+	const quarantinePath = join(directory, `.${fileName}.corrupt.${suffix}`);
+	let source: number | undefined;
+	let repaired: number | undefined;
+	let quarantine: number | undefined;
+	try {
+		source = openSync(filePath, "r");
+		const mode = stats.mode & 0o777;
+		repaired = openSync(repairedTempPath, "wx", mode);
+		quarantine = openSync(quarantineTempPath, "wx", mode);
+		copyFileRange(source, repaired, 0, corruption.byteOffset);
+		copyFileRange(source, quarantine, corruption.byteOffset, stats.size);
+		fsyncSync(repaired);
+		fsyncSync(quarantine);
+		closeSync(repaired);
+		repaired = undefined;
+		closeSync(quarantine);
+		quarantine = undefined;
+		closeSync(source);
+		source = undefined;
+		renameSync(quarantineTempPath, quarantinePath);
+		renameSync(repairedTempPath, filePath);
+	} finally {
+		if (source !== undefined) closeSync(source);
+		if (repaired !== undefined) closeSync(repaired);
+		if (quarantine !== undefined) closeSync(quarantine);
+		rmSync(repairedTempPath, { force: true });
+		rmSync(quarantineTempPath, { force: true });
+	}
+}
+
+function loadSessionEntriesForOpen(filePath: string, sessionDir: string): FileEntry[] {
+	try {
+		const entries = loadEntriesFromFile(filePath);
+		const size = statSync(filePath).size;
+		if (entries.length === 0 || size === 0) return entries;
+
+		const finalByte = Buffer.allocUnsafe(1);
+		const fd = openSync(filePath, "r");
+		try {
+			readSync(fd, finalByte, 0, 1, size - 1);
+		} finally {
+			closeSync(fd);
+		}
+		if (finalByte[0] === 0x0a) return entries;
+
+		return new SessionWriteCoordinator(filePath, sessionDir).withWriteLock(() => {
+			const lockedEntries = loadEntriesFromFile(filePath);
+			if (lockedEntries.length === 0) return lockedEntries;
+			const lockedSize = statSync(filePath).size;
+			const lockedFinalByte = Buffer.allocUnsafe(1);
+			const lockedFd = openSync(filePath, "r");
+			try {
+				readSync(lockedFd, lockedFinalByte, 0, 1, lockedSize - 1);
+			} finally {
+				closeSync(lockedFd);
+			}
+			if (lockedFinalByte[0] !== 0x0a) appendFileSync(filePath, "\n");
+			return lockedEntries;
+		});
+	} catch (initialError) {
+		if (!(initialError instanceof SessionFileCorruptionError)) throw initialError;
+		return new SessionWriteCoordinator(filePath, sessionDir).withWriteLock(() => {
+			try {
+				// An append may have been observed between writes. Re-read after acquiring
+				// the writer lock so a completed line is never quarantined as a torn tail.
+				return loadEntriesFromFile(filePath);
+			} catch (lockedError) {
+				if (!(lockedError instanceof SessionFileCorruptionError)) throw lockedError;
+				try {
+					repairCorruptSessionFile(filePath, lockedError);
+				} catch {
+					throw new SessionFileCorruptionError(
+						lockedError.lineNumber,
+						lockedError.byteOffset,
+						"repair_failed",
+					);
+				}
+				throw new SessionFileCorruptionError(lockedError.lineNumber, lockedError.byteOffset, "repaired");
+			}
+		});
+	}
+}
+
 /**
  * Inspect a physical line while searching for the first parsed session entry.
- * Blank and malformed lines are skipped to match loadEntriesFromFile().
+ * Blank lines and malformed pre-header lines are skipped for bounded discovery only.
+ * The authoritative full load rejects and repairs malformed lines before opening.
  * Returns undefined to keep scanning, null for a parsed non-header entry, or the header.
  */
 function parseSessionHeaderCandidate(line: string): SessionHeader | null | undefined {
 	if (!line.trim()) return undefined;
-	const entry = parseSessionEntryLine(line);
+	let entry: FileEntry | null;
+	try {
+		entry = parseSessionEntryLine(line, 1, 0);
+	} catch (error) {
+		if (error instanceof SessionFileCorruptionError) return undefined;
+		throw error;
+	}
 	if (!entry) return undefined;
 	if (entry.type !== "session" || typeof (entry as { id?: unknown }).id !== "string") return null;
 	return entry;
@@ -854,7 +1013,86 @@ function extractTextContent(message: Message): string {
 		.join(" ");
 }
 
-function getMessageActivityTime(entry: SessionMessageEntry): number | undefined {
+const FOUNDATION_ENTRY_CUSTOM_TYPE = "__aos.foundation.entry.v1";
+const FOUNDATION_FACT_CUSTOM_TYPE = "__aos.foundation.fact.v1";
+const FOUNDATION_SCHEMA_VERSION = 1;
+
+interface SessionInfoMessageEntry {
+	type: "message";
+	message: AgentMessage;
+	timestamp: string | number;
+}
+
+type SessionInfoScanEntry = FileEntry | SessionInfoMessageEntry;
+
+interface SessionInfoScanResult {
+	entry: SessionInfoScanEntry | null;
+	nameFact: boolean;
+	name?: string;
+}
+
+/**
+ * Decode the logical message/name entries stored by the canonical Foundation
+ * writer. Legacy sessions store these entries directly, while canonical
+ * sessions wrap them in reserved custom entries in the same JSONL file.
+ */
+function parseSessionInfoLine(line: string, lineNumber: number): SessionInfoScanResult | null {
+	const physicalEntry = parseSessionEntryLine(line, lineNumber, 0);
+	if (!physicalEntry) return null;
+	if (physicalEntry.type !== "custom") {
+		return { entry: physicalEntry, nameFact: false };
+	}
+
+	const data = physicalEntry.data;
+	if (!isRecord(data) || data.schemaVersion !== FOUNDATION_SCHEMA_VERSION) {
+		return { entry: physicalEntry, nameFact: false };
+	}
+
+	if (
+		physicalEntry.customType === FOUNDATION_ENTRY_CUSTOM_TYPE &&
+		data.kind === "entry" &&
+		isRecord(data.entry)
+	) {
+		const canonicalEntry = data.entry;
+		if (
+			canonicalEntry.type !== "message" ||
+			!isRecord(canonicalEntry.message) ||
+			typeof canonicalEntry.message.role !== "string" ||
+			!("content" in canonicalEntry.message)
+		) {
+			return { entry: null, nameFact: false };
+		}
+
+		const timestamp =
+			typeof canonicalEntry.timestamp === "number" || typeof canonicalEntry.timestamp === "string"
+				? canonicalEntry.timestamp
+				: physicalEntry.timestamp;
+		return {
+			entry: {
+				type: "message",
+				message: canonicalEntry.message as unknown as AgentMessage,
+				timestamp,
+			},
+			nameFact: false,
+		};
+	}
+
+	if (
+		physicalEntry.customType === FOUNDATION_FACT_CUSTOM_TYPE &&
+		data.kind === "name" &&
+		(data.name === undefined || typeof data.name === "string")
+	) {
+		return {
+			entry: null,
+			nameFact: true,
+			name: typeof data.name === "string" ? data.name.trim() || undefined : undefined,
+		};
+	}
+
+	return { entry: physicalEntry, nameFact: false };
+}
+
+function getMessageActivityTime(entry: { message: AgentMessage; timestamp: string | number }): number | undefined {
 	const message = entry.message;
 	if (!isMessageWithContent(message)) return undefined;
 	if (message.role !== "user" && message.role !== "assistant") return undefined;
@@ -877,6 +1115,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		const allMessages: string[] = [];
 		let name: string | undefined;
 		let lastActivityTime: number | undefined;
+		let lineNumber = 0;
 
 		const rl = createInterface({
 			input: createReadStream(filePath, { encoding: "utf8" }),
@@ -884,7 +1123,13 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		});
 
 		for await (const line of rl) {
-			const entry = parseSessionEntryLine(line);
+			lineNumber += 1;
+			const scanned = parseSessionInfoLine(line, lineNumber);
+			if (!scanned) continue;
+			if (scanned.nameFact) {
+				name = scanned.name;
+			}
+			const entry = scanned.entry;
 			if (!entry) continue;
 
 			if (!header) {
@@ -1104,7 +1349,8 @@ export class SessionManager {
 	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
 		this.sessionFile = resolvePath(sessionFile);
 		if (existsSync(this.sessionFile)) {
-			this.fileEntries = preloadedFileEntries ?? loadEntriesFromFile(this.sessionFile);
+			this.fileEntries =
+				preloadedFileEntries ?? loadSessionEntriesForOpen(this.sessionFile, this.sessionDir);
 
 			// If file was empty, initialize it with a valid session header. If it was
 			// non-empty but did not parse as an AOS Agent session, fail without modifying it.
@@ -1709,12 +1955,13 @@ export class SessionManager {
 		if (branchFromId !== null && !this.byId.has(branchFromId)) {
 			throw new Error(`Entry ${branchFromId} not found`);
 		}
+		const fromId = this.leafId ?? "root";
 		const entry: BranchSummaryEntry = {
 			type: "branch_summary",
 			id: generateId(this.byId),
 			parentId: branchFromId,
 			timestamp: new Date().toISOString(),
-			fromId: branchFromId ?? "root",
+			fromId,
 			summary,
 			details,
 			usage,
@@ -1867,7 +2114,7 @@ export class SessionManager {
 				if (!(error instanceof SessionHeaderScanLimitError)) throw error;
 				// The bounded scan is only a discovery optimization. A full load remains
 				// authoritative for legacy files with very large headers or prefixes.
-				preloadedFileEntries = loadEntriesFromFile(resolvedPath);
+				preloadedFileEntries = loadSessionEntriesForOpen(resolvedPath, resolve(resolvedPath, ".."));
 				const firstEntry = preloadedFileEntries[0];
 				header = firstEntry?.type === "session" ? firstEntry : null;
 			}

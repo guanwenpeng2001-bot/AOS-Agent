@@ -16,6 +16,25 @@
 
 ### Fixed
 
+- Anthropic refusal fallbacks now use generated allowlisted targets and charge usage at the selected fallback model's rates.
+- GitHub Copilot login now catalogs first, enables only eligible models sequentially, and retries bounded 429 responses.
+- Kimi Coding requests now use the service-compatible pi runtime user agent while Codex requests retain AOS branding.
+- DeepSeek-compatible base URLs are now detected case-insensitively.
+- Google Generative AI and Vertex now honor model-specific `thinkingLevelMap` values.
+- Google adapters now preserve length and error stops even when a response also contains tool calls.
+- Azure OpenAI Responses now forwards provider-specific `toolChoice` settings.
+- Bedrock `onResponse` now exposes raw Smithy response headers, including custom gateway metadata.
+- Bedrock redacted reasoning now round-trips through persisted thinking signatures.
+- Bedrock replay now removes empty tool-argument keys without mutating stored history.
+- Cloudflare AI Gateway provider typing now includes every registered API, and its generated catalog mirrors Workers AI passthroughs.
+- Kimi top-level `cached_tokens` usage now counts as cache reads instead of uncached input.
+- OpenAI-compatible requests now omit `tool_choice` when no tools are present.
+- OpenAI-compatible thinking signatures are now serialized once after reasoning-detail streaming completes.
+- OpenAI-compatible text and summary reasoning-detail deltas now concatenate before replay.
+- OpenAI-compatible reasoning details now persist in thinking signatures and replay in their original order.
+- Fragmented Mistral tool calls now merge by stream index when continuation chunks omit the call ID.
+- Assigned conservative nonzero context and output limits to Cursor's dynamic models so requests are not rejected before reaching the Cursor CLI.
+- Made Cursor login check for the CLI before saving credentials, distinguish missing, timed-out, expired, and token-missing states, and explain empty or unsupported model catalogs.
 - Made clean and offline checkouts use reproducible tracked model catalogs generated from the canonical catalog scripts.
 - Made the Anthropic OAuth callback flow fall back to manual code entry when a local callback listener is unavailable.
 

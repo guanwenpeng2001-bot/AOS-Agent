@@ -2,6 +2,11 @@ import { describe, expect, test } from "vitest";
 import { buildSystemPrompt } from "../../src/core/runtime/system-prompt.ts";
 
 describe("buildSystemPrompt", () => {
+	test("ends the current working directory line with a newline", () => {
+		const cwd = process.cwd();
+		expect(buildSystemPrompt({ skills: [], cwd })).toMatch(new RegExp(`Current working directory: ${cwd.replace(/\\/g, "/")}\\n$`));
+	});
+
 	describe("empty tools", () => {
 		test("shows (none) for empty tools list", () => {
 			const prompt = buildSystemPrompt({

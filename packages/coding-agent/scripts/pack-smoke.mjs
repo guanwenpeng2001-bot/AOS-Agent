@@ -43,6 +43,7 @@ const INTERNAL_PACKAGE_DIRECTORIES = Object.freeze([
 ]);
 const REQUIRED_PACKAGE_FILES = Object.freeze([
 	"package/dist/cli.js",
+	"package/dist/launcher.js",
 	"package/dist/external-connector.js",
 	"package/dist/external-connector.d.ts",
 	"package/dist/external-connector-testing.js",
@@ -74,9 +75,17 @@ function commandDiagnostic(result) {
 	return [result.error?.message, result.stdout, result.stderr].filter(Boolean).join("\n").slice(0, 2_000);
 }
 
+export function normalizeWindowsWorkingDirectory(cwd) {
+	if (process.platform !== "win32" || cwd === undefined || cwd.startsWith("\\\\?\\") || cwd.length < 260) {
+		return cwd;
+	}
+	if (cwd.startsWith("\\\\")) return `\\\\?\\UNC\\${cwd.slice(2)}`;
+	return `\\\\?\\${cwd}`;
+}
+
 function runCommand(command, args, options = {}) {
 	const result = spawn.sync(command, args, {
-		cwd: options.cwd,
+		cwd: normalizeWindowsWorkingDirectory(options.cwd),
 		encoding: "utf8",
 		env: options.env,
 		stdio: options.capture === false ? "inherit" : ["ignore", "pipe", "pipe"],
@@ -600,7 +609,7 @@ export function assertPackageSmokeResult(value, options = {}) {
 function validateDryRunInputs(repoRoot) {
 	const packageJson = JSON.parse(readFileSync(join(repoRoot, "packages", "coding-agent", "package.json"), "utf8"));
 	if (
-		packageJson.bin?.aos !== "dist/cli.js" ||
+		packageJson.bin?.aos !== "dist/launcher.js" ||
 		packageJson.exports?.["."]?.import !== "./dist/index.js"
 	) {
 		throw new Error("Package metadata does not expose the CLI and SDK boot entrypoints");

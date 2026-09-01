@@ -264,6 +264,17 @@ export async function generateBranchSummary(
 			),
 		);
 	}
+	if (response.stopReason === "length") {
+		return err(
+			new BranchSummaryError(
+				"summarization_failed",
+				"Branch summarization failed: generation hit the token cap and the summary is incomplete",
+			),
+		);
+	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		return err(new BranchSummaryError("summarization_failed", "Branch summarization attempted to call a tool"));
+	}
 
 	let summary = contentText(response.content);
 	summary = BRANCH_SUMMARY_PREAMBLE + summary;

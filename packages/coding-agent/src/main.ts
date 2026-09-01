@@ -52,7 +52,7 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/runtime/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/runtime/model-resolver.ts";
 import { ModelRuntime } from "./core/runtime/model-runtime.ts";
-import { InMemoryCodingAgentModelsStore } from "./core/session/models-store.ts";
+import { ReadOnlyModelsStore } from "./core/session/models-store.ts";
 import { restoreStdout, takeOverStdout } from "./core/runtime/output-guard.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/policy/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/runtime/sdk.ts";
@@ -65,6 +65,7 @@ import {
 import { assertValidSessionId, SessionManager } from "./core/session/manager.ts";
 import { createSessionManagerStorage } from "./core/session/manager-storage.ts";
 import { SettingsManager } from "./core/runtime/settings-manager.ts";
+import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/runtime/settings-diagnostics.ts";
 import { printTimings, resetTimings, time } from "./core/runtime/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/policy/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
@@ -98,16 +99,6 @@ async function readPipedStdin(): Promise<string | undefined> {
 		});
 		process.stdin.resume();
 	});
-}
-
-function collectSettingsDiagnostics(
-	settingsManager: SettingsManager,
-	context: string,
-): AgentSessionRuntimeDiagnostic[] {
-	return settingsManager.drainErrors().map(({ scope, error }) => ({
-		type: "warning",
-		message: `(${context}, ${scope} settings) ${error.message}`,
-	}));
 }
 
 function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]): void {
@@ -345,14 +336,18 @@ function validateSessionIdFlags(parsed: Args): void {
 	}
 }
 
-function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
+function createSessionManagerOrExit(create: () => SessionManager): SessionManager {
 	try {
-		return SessionManager.open(path, sessionDir);
+		return create();
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
 		process.exit(1);
 	}
+}
+
+function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
+	return createSessionManagerOrExit(() => SessionManager.open(path, sessionDir));
 }
 
 async function forkSessionOrExit(
@@ -456,14 +451,14 @@ async function createSessionManager(
 				console.log(chalk.dim("No session selected"));
 				process.exit(0);
 			}
-			return SessionManager.open(selectedPath, sessionDir);
+			return openSessionOrExit(selectedPath, sessionDir);
 		} finally {
 			stopThemeWatcher();
 		}
 	}
 
 	if (parsed.continue) {
-		return SessionManager.continueRecent(cwd, sessionDir);
+		return createSessionManagerOrExit(() => SessionManager.continueRecent(cwd, sessionDir));
 	}
 
 	if (parsed.sessionId) {
@@ -657,7 +652,7 @@ async function handleRuntimeMetadataCommand(parsed: Args, agentDir: string): Pro
 		const modelRuntime = await ModelRuntime.create({
 			credentials: new ReadOnlyAuthStorage(join(agentDir, "auth.json")),
 			modelsPath: join(agentDir, "models.json"),
-			modelsStore: new InMemoryCodingAgentModelsStore(),
+			modelsStore: new ReadOnlyModelsStore(join(agentDir, "models-store.json")),
 			allowModelNetwork: false,
 			signal: AbortSignal.timeout(15_000),
 		});
@@ -747,7 +742,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("runMigrations");
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
-	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
+	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager);
 
 	// Experimental first-time setup: theme choice and analytics opt-in.
 	// Runs before any runtime services are created so the chosen settings apply everywhere.
@@ -879,7 +874,7 @@ export async function main(args: string[], options?: MainOptions) {
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 			...projectTrustDiagnostics,
 			...services.diagnostics,
-			...collectSettingsDiagnostics(settingsManager, "runtime creation"),
+			...collectSettingsDiagnostics(settingsManager),
 			...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
 				type: "error" as const,
 				message: `Failed to load extension "${path}": ${error}`,
@@ -980,8 +975,10 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	time("resolveModelScope");
-	reportDiagnostics(runtime.diagnostics);
-	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
+	if (appMode !== "interactive" || hasRuntimeErrors) reportDiagnostics(startupDiagnostics);
+	if (hasRuntimeErrors) {
 		if (runtime.diagnostics.some((diagnostic) => diagnostic.message.includes("Failed to load extension"))) {
 			console.error(chalk.yellow(EXTENSION_LOAD_FAILURE_HINT));
 		}
@@ -1016,6 +1013,7 @@ export async function main(args: string[], options?: MainOptions) {
 	} else if (appMode === "interactive") {
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
+			startupDiagnostics,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
 			initialMessage,

@@ -284,6 +284,19 @@ describe("Coding Agent Tools", () => {
 			expect(applyPatch(originalContent, result.details.patch)).toBe("Hello, testing!");
 		});
 
+		it("normalizes a single edit object into a one-entry array", async () => {
+			const testFile = join(testDir, "edit-single.txt");
+			writeFileSync(testFile, "before");
+
+			const input = editTool.prepareArguments?.({
+				path: testFile,
+				edits: { oldText: "before", newText: "after" },
+			});
+			await editTool.execute("test-call-single", input as Parameters<typeof editTool.execute>[1]);
+
+			expect(readFileSync(testFile, "utf-8")).toBe("after");
+		});
+
 		it("should fail if text not found", async () => {
 			const testFile = join(testDir, "edit-test.txt");
 			const originalContent = "Hello, world!";

@@ -71,6 +71,13 @@ function requiredWorkerCapability(operation: SandboxOperationRequest): string {
 	return "filesystem.read";
 }
 
+function isTimeoutFailure(error: unknown): boolean {
+	return error instanceof Error && (
+		error.name === "TimeoutError" ||
+		/\b(?:timed out|timeout)\b/iu.test(error.message)
+	);
+}
+
 function freezeSandboxJson(value: FoundationJsonValue): FoundationJsonValue {
 	if (Array.isArray(value)) {
 		const items = value.map((item) => freezeSandboxJson(item));
@@ -324,6 +331,7 @@ export function createSandboxHandleOperationProvider(
 					const completedAt = now();
 					const workerReceiptId = receiptId?.(request.value.operationId) ?? `worker-receipt:${randomUUID()}`;
 					const cancelledWithoutProof = controller.signal.aborted;
+					const sideEffectState = request.value.sideEffect === "none" ? "none" : "side_effect_unknown";
 					receipt = {
 					schemaVersion: 1,
 					workerReceiptId,
@@ -333,10 +341,16 @@ export function createSandboxHandleOperationProvider(
 					...(request.value.dispatchId === undefined ? {} : { dispatchId: request.value.dispatchId }),
 					...(request.value.attemptId === undefined ? {} : { attemptId: request.value.attemptId }),
 					status: cancelledWithoutProof ? "failed" : "succeeded",
-					sideEffectState: cancelledWithoutProof ? "side_effect_unknown" : "none",
+					sideEffectState: cancelledWithoutProof ? sideEffectState : "none",
 					...(artifacts.length === 0 ? {} : { artifacts }),
 					...(cancelledWithoutProof
-						? { error: { code: "worker_cancel_failed", message: "Cancellation did not prove side effects closed", retryable: false } }
+						? { error: {
+							code: "worker_cancel_failed",
+							message: sideEffectState === "none"
+								? "Read-only operation was cancelled"
+								: "Cancellation did not prove side effects closed",
+							retryable: false,
+						} }
 						: {}),
 					provenance: {
 						producerKind: "operation_worker",
@@ -347,7 +361,7 @@ export function createSandboxHandleOperationProvider(
 					startedAt,
 					completedAt,
 					};
-				} catch {
+				} catch (error) {
 					let completedAt: string;
 					let workerReceiptId: string;
 					try {
@@ -356,6 +370,8 @@ export function createSandboxHandleOperationProvider(
 					} catch {
 						return Result.err(new FoundationError("worker_operation_invalid", "Operation Worker receipt callback failed"));
 					}
+					const readOnly = request.value.sideEffect === "none";
+					const timedOut = readOnly && isTimeoutFailure(error);
 					receipt = {
 					schemaVersion: 1,
 					workerReceiptId,
@@ -363,12 +379,24 @@ export function createSandboxHandleOperationProvider(
 					operationId: request.value.operationId,
 					...(request.value.taskId === undefined ? {} : { taskId: request.value.taskId }),
 					...(request.value.dispatchId === undefined ? {} : { dispatchId: request.value.dispatchId }),
-						...(request.value.attemptId === undefined ? {} : { attemptId: request.value.attemptId }),
-						status: "failed",
-						sideEffectState: "side_effect_unknown",
-						error: controller.signal.aborted
-							? { code: "worker_cancel_failed", message: "Operation failed while cancellation was requested", retryable: false }
-							: { code: "worker_operation_invalid", message: "Operation failed", retryable: false },
+					...(request.value.attemptId === undefined ? {} : { attemptId: request.value.attemptId }),
+					status: "failed",
+					sideEffectState: readOnly ? "none" : "side_effect_unknown",
+					error: controller.signal.aborted
+						? {
+							code: "worker_cancel_failed",
+							message: readOnly
+								? "Read-only operation was cancelled"
+								: "Operation failed while cancellation was requested",
+							retryable: false,
+						}
+						: timedOut
+							? { code: "worker_deadline_exceeded", message: "Read-only operation timed out", retryable: false }
+							: {
+								code: "worker_operation_invalid",
+								message: readOnly ? "Read-only operation failed" : "Operation failed",
+								retryable: false,
+							},
 					provenance: {
 						producerKind: "operation_worker",
 						providerId,

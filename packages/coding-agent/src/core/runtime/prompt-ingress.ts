@@ -376,13 +376,13 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			const checked = validateAndVerifyToolReceipt(record.payload);
 			return checked.ok ? [checked.value] : [];
 		});
-		const toolsSucceeded = toolStarts.every((start) => {
+		const toolsSettled = toolStarts.every((start) => {
 			const matching = toolReceipts.filter((receipt) => receipt.toolCallId === start.toolCallId);
-			return matching.length === 1 && matching[0]?.outcome === "succeeded" && matching[0].sideEffectState === "none";
+			return matching.length === 1 && matching[0]?.sideEffectState === "none";
 		});
 		const artifacts = toolReceipts.flatMap((receipt) => receipt.artifacts ?? []);
 		const uniqueArtifacts = [...new Map(artifacts.map((artifact) => [artifact.artifactId, artifact])).values()];
-		const sideEffectUnknown = !modelSucceeded && !modelCancellationSettled || !toolsSucceeded || toolReceiptRecords.length !== toolReceipts.length;
+		const sideEffectUnknown = !modelSucceeded && !modelCancellationSettled || !toolsSettled || toolReceiptRecords.length !== toolReceipts.length;
 		const status = sideEffectUnknown || promptAbort === "deadline" || assistant.stopReason === "error"
 			? "failed" as const
 			: promptAbort === "cancelled"

@@ -221,6 +221,7 @@ export class OperationWorkerSupervisor {
 	private recoveredWithoutProcess = false;
 	private quarantinedValue = false;
 	private reclaimPromise?: Promise<ResultValue<WorkerRecord, FoundationError>>;
+	private activeSideEffect: "none" | "writes" = "writes";
 
 	constructor(config: WorkerSupervisorConfig) {
 		this.config = Object.freeze({ ...config, capabilities: Object.freeze([...config.capabilities]) });
@@ -384,6 +385,7 @@ export class OperationWorkerSupervisor {
 		}
 		this.receiptWaiter = deferred();
 		this.terminalWaiter = deferred();
+		this.activeSideEffect = request.sideEffect ?? "writes";
 		const frame: OperationWorkerRequestFrame = {
 			type: "execute",
 			requestId: this.nextRequestId("execute"),
@@ -391,7 +393,16 @@ export class OperationWorkerSupervisor {
 			operationId: request.operationId,
 			request,
 		};
+		// Recast the watchdog against the current clock before sendFrame. A
+		// jumped `now()` can leave a stale heartbeat timer that would otherwise
+		// fire inside the deadline window and be misclassified as worker_lost.
+		this.armWatchdog();
 		const sent = await this.sendFrame(frame);
+		if (this.receiptWaiter.settled()) {
+			const outcome = await this.receiptWaiter.promise;
+			if (!outcome.ok && this.snapshot.record?.status === "lost") await this.ensureProcessStoppedAndCleaned();
+			return outcome;
+		}
 		if (!sent.ok) {
 			this.markLost("worker_operation_invalid");
 			await this.ensureProcessStoppedAndCleaned();
@@ -466,7 +477,7 @@ export class OperationWorkerSupervisor {
 			this.config.cancelTimeoutMs ?? DEFAULT_CANCEL_TIMEOUT_MS,
 		);
 		if (!settled.timedOut && settled.value) return Result.ok(undefined);
-		this.markLost("worker_cancel_failed");
+		this.markLost("worker_cancel_failed", "Operation Worker cancellation timed out");
 		await this.reclaim();
 		return Result.err(stableError("worker_cancel_failed", "Operation Worker cancellation timed out"));
 	}
@@ -720,6 +731,13 @@ export class OperationWorkerSupervisor {
 		}
 		if (frame.type === "heartbeat") {
 			if (this.lifecycle === undefined || isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) return;
+			if (this.deadlineElapsed()) {
+				this.protocolFailure(
+					"worker_deadline_exceeded",
+					"Operation Worker deadline timed out",
+				);
+				return;
+			}
 			const heartbeatAt = [
 				frame.at,
 				this.lifecycle.transitions.at(-1)?.at ?? this.lifecycle.record.createdAt,
@@ -794,6 +812,13 @@ export class OperationWorkerSupervisor {
 		}
 
 		if (receiptFrame === undefined) return;
+		if (this.deadlineElapsed()) {
+			this.protocolFailure(
+				"worker_deadline_exceeded",
+				"Operation Worker deadline timed out",
+			);
+			return;
+		}
 		const receipt = receiptFrame.receipt;
 		const status: WorkerLifecycleStatus | undefined =
 			receipt.status === "succeeded"
@@ -904,22 +929,26 @@ export class OperationWorkerSupervisor {
 		return Result.ok(applied.value.record);
 	}
 
-	private markLost(code: SupervisorErrorCode): FoundationError {
-		const error = stableError(code, "Operation Worker lost a trusted terminal outcome");
+	private markLost(
+		code: SupervisorErrorCode,
+		message = "Operation Worker lost a trusted terminal outcome",
+	): FoundationError {
+		const error = stableError(code, message);
 		this.clearWatchdog();
 		this.discardPendingFrameCommits();
 		const status = this.lifecycle?.record.status;
+		const readOnlyFailure = this.receiptWaiter !== undefined && this.activeSideEffect === "none";
 		if (
 			status === "starting" ||
 			status === "ready" ||
 			status === "running" ||
 			status === "cancelling"
 		) {
-			this.transition("lost", {
+			this.transition(readOnlyFailure ? "failed" : "lost", {
 				...(this.lifecycle?.record.activeOperationId === undefined
 					? {}
 					: { activeOperationId: this.lifecycle.record.activeOperationId }),
-				sideEffectState: "side_effect_unknown",
+				sideEffectState: readOnlyFailure ? "none" : "side_effect_unknown",
 			});
 		}
 		this.readyWaiter?.resolve(Result.err(error));
@@ -928,8 +957,8 @@ export class OperationWorkerSupervisor {
 		return error;
 	}
 
-	private protocolFailure(code: SupervisorErrorCode): void {
-		this.markLost(code);
+	private protocolFailure(code: SupervisorErrorCode, message?: string): void {
+		this.markLost(code, message);
 		void this.ensureProcessStoppedAndCleaned();
 	}
 
@@ -941,12 +970,31 @@ export class OperationWorkerSupervisor {
 			this.remainingDeadlineMs(this.lifecycle.binding),
 		);
 		this.watchdogTimer = setTimeout(() => {
-			const deadlineElapsed =
-				this.lifecycle?.binding.deadlineAt !== undefined &&
-				this.lifecycle.binding.deadlineAt <= this.now().getTime();
-			this.protocolFailure(deadlineElapsed ? "worker_deadline_exceeded" : "worker_lost");
+			if (this.hasTrustedExecutionTerminal()) return;
+			const deadlineFailure = this.deadlineOwnsWatchdogExpiry();
+			this.protocolFailure(
+				deadlineFailure ? "worker_deadline_exceeded" : "worker_lost",
+				deadlineFailure
+					? "Operation Worker deadline timed out"
+					: "Operation Worker heartbeat timed out",
+			);
 		}, timeoutMs);
 		this.watchdogTimer.unref();
+	}
+
+	private deadlineElapsed(): boolean {
+		const deadlineAt = this.lifecycle?.binding.deadlineAt;
+		return deadlineAt !== undefined && deadlineAt <= this.now().getTime();
+	}
+
+	private deadlineOwnsWatchdogExpiry(): boolean {
+		const deadlineAt = this.lifecycle?.binding.deadlineAt;
+		if (deadlineAt === undefined) return false;
+		const heartbeatTimeoutMs = this.config.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
+		// armWatchdog uses min(heartbeat, remaining deadline). If a stale
+		// heartbeat-length timer fires while that remaining window is already
+		// shorter than the heartbeat bound, expiry is a deadline failure.
+		return this.now().getTime() + heartbeatTimeoutMs >= deadlineAt;
 	}
 
 	private clearWatchdog(): void {

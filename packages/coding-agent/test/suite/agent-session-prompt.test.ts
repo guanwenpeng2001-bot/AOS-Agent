@@ -77,6 +77,50 @@ describe("AgentSession prompt characterization", () => {
 		expect(harness.session.messages[3]?.role).toBe("assistant");
 	});
 
+	it("feeds a side-effect-free tool failure back to the model on the print surface", async () => {
+		let toolRuns = 0;
+		let sawFailureResult = false;
+		let sawRecoveryResult = false;
+		const recoveringTool: AgentTool & { sideEffectState: "none" } = {
+			name: "recovering-read",
+			label: "Recovering read",
+			description: "Fails once, then succeeds",
+			parameters: Type.Object({}),
+			sideEffectState: "none",
+			execute: async () => {
+				toolRuns += 1;
+				if (toolRuns === 1) {
+					const error = new Error("ENOENT: missing fixture") as Error & { code: string };
+					error.code = "ENOENT";
+					throw error;
+				}
+				return { content: [{ type: "text", text: "recovered file" }], details: {} };
+			},
+		};
+		const harness = await createHarness({ tools: [recoveringTool] });
+		harnesses.push(harness);
+		harness.setResponses([
+			fakeAssistantMessage(fakeToolCall("recovering-read", {}), { stopReason: "toolUse" }),
+			(context) => {
+				const result = context.messages.filter((message) => message.role === "toolResult").at(-1);
+				sawFailureResult = result?.role === "toolResult" && result.isError === true && getMessageText(result).includes("ENOENT");
+				return fakeAssistantMessage(fakeToolCall("recovering-read", {}), { stopReason: "toolUse" });
+			},
+			(context) => {
+				const result = context.messages.filter((message) => message.role === "toolResult").at(-1);
+				sawRecoveryResult = result?.role === "toolResult" && result.isError !== true && getMessageText(result) === "recovered file";
+				return fakeAssistantMessage("recovered");
+			},
+		]);
+
+		await harness.session.prompt("recover after failure", { surface: "print" });
+
+		expect(toolRuns).toBe(2);
+		expect(sawFailureResult).toBe(true);
+		expect(sawRecoveryResult).toBe(true);
+		expect(getMessageText(harness.session.messages.at(-1))).toBe("recovered");
+	});
+
 	it("executes multiple tool calls from one response and continues with a single follow-up response", async () => {
 		const toolRuns: string[] = [];
 		const makeTool = (name: string, delayMs: number): AgentTool => ({

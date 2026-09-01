@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { Session, type AgentMessage, type ThinkingLevel } from "@aos-agent/agent-core";
 import type { AuthEvent, AuthPrompt } from "@aos-agent/ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@aos-agent/ai/compat";
+import { checkCursorCliStatus } from "@aos-agent/ai/providers/cursor";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -62,6 +63,7 @@ import {
 	parseSkillBlock,
 } from "../../core/session/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/session/runtime.ts";
+import type { AgentSessionRuntimeDiagnostic } from "../../core/session/services.ts";
 import type { PreparedSessionScopeRebind } from "../../core/session/current-scope.ts";
 import {
 	CACHE_TTL_MS,
@@ -113,7 +115,7 @@ import { parseGitUrl } from "../../utils/git.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
-import { ensureTool } from "../../utils/tools-manager.ts";
+import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
 import { checkForNewAosVersion, type LatestAosRelease } from "../../utils/version-check.ts";
 import {
 	formatCapabilitiesError,
@@ -252,6 +254,20 @@ function isDeadTerminalError(error: unknown): boolean {
 const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
 	"Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage. Disable this warning in /settings.";
 
+const CURSOR_PROVIDER_ID = "cursor";
+const CURSOR_OPERATION_TIMEOUT_MS = 30_000;
+
+export function formatCursorCredentialSynchronizationFailure(operation: "login" | "logout"): string {
+	return operation === "login"
+		? "Cursor credentials were saved, but local model state could not be refreshed. Run /reload to retry the local refresh; you do not need to enter the credentials again."
+		: "Stored Cursor credentials were removed from AOS Agent, but local model state could not be refreshed. Run /reload to retry the local refresh. Cursor CLI login is unchanged.";
+}
+
+export function formatCursorCatalogUnavailable(reason?: string): string {
+	const detail = reason?.trim() || "Cursor CLI returned no models for this account.";
+	return `Cursor credentials were saved, but its model catalog is unavailable: ${detail} Run /model to retry after fixing the Cursor CLI issue.`;
+}
+
 function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
 	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
 }
@@ -296,6 +312,12 @@ export function formatResumeCommand(sessionManager: AgentSessionReadProjection):
 
 function hasDefaultModelProvider(providerId: string): providerId is keyof typeof defaultModelPerProvider {
 	return providerId in defaultModelPerProvider;
+}
+
+export function llamaCppPostLoginGuidance(actionLabel: string, loadedModelCount: number): string {
+	return loadedModelCount === 0
+		? `${actionLabel}. No llama.cpp models are loaded. Use /llama to load a model, then /model to select it.`
+		: `${actionLabel}. Use /model to select a loaded llama.cpp model, or /llama to manage models.`;
 }
 
 type LoginProviderCompletionOption = {
@@ -357,6 +379,8 @@ function formatLoginProviderCompletionDescription(provider: LoginProviderComplet
 export interface InteractiveModeOptions {
 	/** Providers that were migrated to auth.json (shows warning) */
 	migratedProviders?: string[];
+	/** Diagnostics collected before the TUI initialized. */
+	startupDiagnostics?: AgentSessionRuntimeDiagnostic[];
 	/** Warning message if session model couldn't be restored */
 	modelFallbackMessage?: string;
 	/** Cwd to trust after reload if it gained a .aos-agent directory during this implicitly trusted session. */
@@ -388,6 +412,14 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 		return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory, {
 			openUrl: openBrowser,
 			onRightClickPaste: options.onRightClickPaste,
+			copySelection: async (text) => {
+				try {
+					await copyToClipboard(text);
+					return true;
+				} catch {
+					return false;
+				}
+			},
 		});
 	}
 	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
@@ -472,6 +504,7 @@ export class InteractiveMode {
 	// Status line tracking (for mutating immediately-sequential status updates)
 	private lastStatusSpacer: Spacer | undefined = undefined;
 	private lastStatusText: Text | undefined = undefined;
+	private managedToolStatusStarted = false;
 
 	// Streaming message tracking
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
@@ -1030,11 +1063,6 @@ export class InteractiveMode {
 		// Load changelog (only show new entries, skip for resumed sessions)
 		this.changelogMarkdown = this.getChangelogForDisplay();
 
-		// Ensure fd and rg are available (downloads if missing, adds to PATH via getBinDir)
-		// Both are needed: fd for autocomplete, rg for grep tool and bash commands
-		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
-		this.fdPath = fdPath;
-
 		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
 			const modelList = this.session.scopedModels
 				.map((sm) => {
@@ -1088,6 +1116,12 @@ export class InteractiveMode {
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
 		this.isInitialized = true;
+
+		const [fdPath] = await Promise.all([
+			ensureTool("fd", (status) => this.showManagedToolStatus(status)),
+			ensureTool("rg", (status) => this.showManagedToolStatus(status)),
+		]);
+		this.fdPath = fdPath;
 
 		await this.themeController.applyFromSettings();
 
@@ -1235,7 +1269,13 @@ export class InteractiveMode {
 		});
 
 		// Show startup warnings
-		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
+		const { migratedProviders, startupDiagnostics, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
+
+		for (const diagnostic of startupDiagnostics ?? []) {
+			if (diagnostic.type === "error") this.showError(diagnostic.message);
+			else if (diagnostic.type === "warning") this.showWarning(diagnostic.message);
+			else this.showStatus(diagnostic.message);
+		}
 
 		if (migratedProviders && migratedProviders.length > 0) {
 			this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);
@@ -3662,6 +3702,18 @@ export class InteractiveMode {
 	 * If multiple status messages are emitted back-to-back (without anything else being added to the chat),
 	 * we update the previous status line instead of appending new ones to avoid log spam.
 	 */
+	private showManagedToolStatus(status: ToolStatus): void {
+		if (!this.managedToolStatusStarted) {
+			this.chatContainer.addChild(new Spacer(1));
+			this.managedToolStatusStarted = true;
+		}
+		const message = status.type === "warning" ? `Warning: ${status.message}` : status.message;
+		this.chatContainer.addChild(new Text(theme.fg(status.type === "warning" ? "warning" : "dim", message), 1, 0));
+		this.lastStatusSpacer = undefined;
+		this.lastStatusText = undefined;
+		this.ui.requestRender();
+	}
+
 	private showStatus(message: string): void {
 		const children = this.chatContainer.children;
 		const last = children.length > 0 ? children[children.length - 1] : undefined;
@@ -4301,21 +4353,20 @@ export class InteractiveMode {
 		this.showStatus(`Tool output: ${expanded ? "expanded" : "collapsed"}`);
 	}
 
+	/** Update rendered assistant messages without rebuilding live tool components. */
+	private updateThinkingBlockVisibility(): void {
+		for (const child of this.chatContainer.children) {
+			if (child instanceof AssistantMessageComponent) {
+				child.setHideThinkingBlock(this.hideThinkingBlock);
+			}
+		}
+		this.ui.requestRender();
+	}
+
 	private toggleThinkingBlockVisibility(): void {
 		this.hideThinkingBlock = !this.hideThinkingBlock;
 		this.settingsManager.setHideThinkingBlock(this.hideThinkingBlock);
-
-		// Rebuild chat from session messages
-		this.chatContainer.clear();
-		this.rebuildChatFromMessages();
-
-		// If streaming, re-add the streaming component with updated visibility and re-render
-		if (this.streamingComponent && this.streamingMessage) {
-			this.streamingComponent.setHideThinkingBlock(this.hideThinkingBlock);
-			this.streamingComponent.updateContent(this.streamingMessage);
-			this.chatContainer.addChild(this.streamingComponent);
-		}
-
+		this.updateThinkingBlockVisibility();
 		this.showStatus(`Thinking blocks: ${this.hideThinkingBlock ? "hidden" : "visible"}`);
 	}
 
@@ -4720,13 +4771,7 @@ export class InteractiveMode {
 					onHideThinkingBlockChange: (hidden) => {
 						this.hideThinkingBlock = hidden;
 						this.settingsManager.setHideThinkingBlock(hidden);
-						for (const child of this.chatContainer.children) {
-							if (child instanceof AssistantMessageComponent) {
-								child.setHideThinkingBlock(hidden);
-							}
-						}
-						this.chatContainer.clear();
-						this.rebuildChatFromMessages();
+						this.updateThinkingBlockVisibility();
 					},
 					onMermaidRenderingModeChange: (mode) => {
 						this.settingsManager.setMermaidRenderingMode(mode);
@@ -5756,12 +5801,19 @@ export class InteractiveMode {
 					}
 
 					try {
+						if (providerOption.id === CURSOR_PROVIDER_ID) {
+							await checkCursorCliStatus({ signal: AbortSignal.timeout(CURSOR_OPERATION_TIMEOUT_MS) });
+						}
 						await this.session.modelRuntime.logout(providerOption.id, {
-							signal: AbortSignal.timeout(15_000),
+							signal: AbortSignal.timeout(
+								providerOption.id === CURSOR_PROVIDER_ID ? CURSOR_OPERATION_TIMEOUT_MS : 15_000,
+							),
 						});
 						await this.updateAvailableProviderCount();
 						const message =
-							providerOption.authType === "oauth"
+							providerOption.id === CURSOR_PROVIDER_ID
+								? "Removed stored Cursor credentials from AOS Agent. Cursor CLI login is unchanged."
+								: providerOption.authType === "oauth"
 								? `Logged out of ${providerOption.name}`
 								: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
 						this.showStatus(message);
@@ -5769,7 +5821,9 @@ export class InteractiveMode {
 						const message = error instanceof Error ? error.message : String(error);
 						this.showError(
 							error instanceof CredentialSynchronizationError
-								? `Credentials removed for ${providerOption.name}, but local model state could not be synchronized: ${message}`
+								? providerOption.id === CURSOR_PROVIDER_ID
+									? formatCursorCredentialSynchronizationFailure("logout")
+									: `Credentials removed for ${providerOption.name}, but local model state could not be synchronized: ${message}`
 								: `Logout failed: ${message}`,
 						);
 					}
@@ -5790,13 +5844,49 @@ export class InteractiveMode {
 		previousModel: Model<any> | undefined,
 	): Promise<void> {
 		const actionLabel = authType === "oauth" ? `Logged in to ${providerName}` : `Saved API key for ${providerName}`;
+		let cursorCatalogFailure: string | undefined;
+		if (providerId === CURSOR_PROVIDER_ID) {
+			const controller = new AbortController();
+			let timedOut = false;
+			const timeout = setTimeout(() => {
+				timedOut = true;
+				controller.abort();
+			}, CURSOR_OPERATION_TIMEOUT_MS);
+			try {
+				const result = await this.session.modelRuntime.refresh({
+					providers: [providerId],
+					signal: controller.signal,
+				});
+				if (result.aborted && timedOut) {
+					cursorCatalogFailure =
+						'Cursor model discovery timed out. Run "cursor-agent status" to verify the CLI responds.';
+				} else {
+					cursorCatalogFailure = result.errors.get(providerId)?.message;
+				}
+			} catch (error) {
+				cursorCatalogFailure = timedOut
+					? 'Cursor model discovery timed out. Run "cursor-agent status" to verify the CLI responds.'
+					: error instanceof Error
+						? error.message
+						: String(error);
+			} finally {
+				clearTimeout(timeout);
+			}
+		}
 
 		let selectedModel: Model<any> | undefined;
 		let selectionError: string | undefined;
+		const availableModels = this.session.modelRuntime.getAvailableSnapshot();
+		const providerModels = availableModels.filter((model) => model.provider === providerId);
+		if (providerId === CURSOR_PROVIDER_ID && providerModels.length === 0) {
+			selectionError = formatCursorCatalogUnavailable(cursorCatalogFailure);
+		}
 		if (isUnknownModel(previousModel)) {
-			const availableModels = this.session.modelRuntime.getAvailableSnapshot();
-			const providerModels = availableModels.filter((model) => model.provider === providerId);
-			if (!hasDefaultModelProvider(providerId)) {
+			if (selectionError) {
+				// Keep the Cursor-specific catalog diagnosis produced above.
+			} else if (providerId === "llama.cpp") {
+				selectionError = llamaCppPostLoginGuidance(actionLabel, providerModels.length);
+			} else if (!hasDefaultModelProvider(providerId)) {
 				selectionError = `${actionLabel}, but no default model is configured for provider "${providerId}". Use /model to select a model.`;
 			} else if (providerModels.length === 0) {
 				selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
@@ -5835,6 +5925,8 @@ export class InteractiveMode {
 				void this.maybeWarnAboutAnthropicSubscriptionAuth();
 			}
 		}
+
+		if (providerId === CURSOR_PROVIDER_ID) return;
 
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 15_000);
@@ -5922,7 +6014,9 @@ export class InteractiveMode {
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (error instanceof CredentialSynchronizationError) {
 				this.showError(
-					`Saved API key for ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
+					providerId === CURSOR_PROVIDER_ID
+						? formatCursorCredentialSynchronizationFailure("login")
+						: `Saved API key for ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
 				);
 			} else if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to save API key for ${providerName}: ${errorMsg}`);
@@ -6036,7 +6130,9 @@ export class InteractiveMode {
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			if (error instanceof CredentialSynchronizationError) {
 				this.showError(
-					`Logged in to ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
+					providerId === CURSOR_PROVIDER_ID
+						? formatCursorCredentialSynchronizationFailure("login")
+						: `Logged in to ${providerName}, but local model state could not be synchronized: ${errorMsg}`,
 				);
 			} else if (errorMsg !== "Login cancelled") {
 				this.showError(`Failed to login to ${providerName}: ${errorMsg}`);

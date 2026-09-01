@@ -8,9 +8,11 @@ import { join } from "path";
 import { getAgentDir } from "../../config.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 import { getFileRevision, normalizePath } from "../../utils/paths.ts";
+import { stripBom } from "../../utils/text.ts";
 import {
 	LockedAtomicFileStorage,
 	readControlPlaneState,
+	readControlPlaneStateReadOnly,
 } from "../control-plane-atomic-storage.ts";
 import { isCommandConfigValue, resolveConfigValue } from "../resolve-config-value.ts";
 
@@ -37,7 +39,7 @@ type AuthFileReadState = {
 let sharedAuthFileReadState: { authPath: string; readState: AuthFileReadState } | undefined;
 
 function parseAuthStorageData(content: string): AuthStorageData {
-	const parsed: unknown = JSON.parse(content);
+	const parsed: unknown = JSON.parse(stripBom(content));
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error("Invalid auth.json: expected an object");
 	}
@@ -115,7 +117,7 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 	private load(): AuthStorageData {
 		if (this.data) return this.data;
 
-		const content = readControlPlaneState(this.authPath, AUTH_STORAGE_OPTIONS);
+		const content = readControlPlaneStateReadOnly(this.authPath, AUTH_STORAGE_OPTIONS);
 		this.data = content === undefined ? {} : parseAuthStorageData(content);
 		return this.data;
 	}

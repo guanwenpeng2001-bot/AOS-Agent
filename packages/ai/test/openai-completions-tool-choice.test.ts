@@ -150,6 +150,28 @@ describe("openai-completions tool_choice", () => {
 		expect(params.tools?.length ?? 0).toBeGreaterThan(0);
 	});
 
+	it("omits toolChoice when no tools are provided", async () => {
+		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+		const model = { ...baseModel, api: "openai-completions" } as const;
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{ messages: [{ role: "user", content: "Summarize", timestamp: Date.now() }] },
+			{
+				apiKey: "test",
+				toolChoice: "none",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			} as unknown as Parameters<typeof streamSimple>[2],
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { tool_choice?: string; tools?: unknown[] };
+		expect(params).not.toHaveProperty("tool_choice");
+		expect(params).not.toHaveProperty("tools");
+	});
+
 	it("omits strict when compat disables strict mode", async () => {
 		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
 		const model = {
@@ -1437,11 +1459,17 @@ describe("openai-completions tool_choice", () => {
 			provider: "custom-deepseek",
 			baseUrl: "https://api.deepseek.com",
 		} satisfies Model<"openai-completions">;
+		const uppercaseModel = {
+			...customModel,
+			id: "custom-uppercase-deepseek-model",
+			name: "Custom Uppercase DeepSeek Model",
+			baseUrl: "https://API.DeepSeek.COM",
+		} satisfies Model<"openai-completions">;
 		const nativeModels = [
 			getModel("deepseek", "deepseek-v4-flash")!,
 			getModel("deepseek", "deepseek-v4-pro")!,
 		] as const;
-		const cases = [...nativeModels, customModel] as const;
+		const cases = [...nativeModels, customModel, uppercaseModel] as const;
 
 		for (const model of nativeModels) {
 			expect(model.compat?.maxTokensField).toBe("max_tokens");

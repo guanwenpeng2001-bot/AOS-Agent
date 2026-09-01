@@ -372,4 +372,29 @@ describe("ModelRuntime credential synchronization", () => {
 		await expect(login).rejects.toBeInstanceOf(CredentialSynchronizationError);
 		expect(await credentials.read("broken-sync")).toEqual({ type: "api_key", key: "broken-sync-key" });
 	});
+
+	it("reports that Cursor credentials are already absent when logout synchronization fails", async () => {
+		let failCacheRefresh = false;
+		const credentials = AuthStorage.inMemory();
+		const runtime = await runtimeWithProvider(
+			provider("cursor", {
+				refreshModels: async (context) => {
+					if (!context.allowNetwork && failCacheRefresh) throw new Error("cache restore failed");
+				},
+			}),
+			credentials,
+		);
+		await runtime.login("cursor", "api_key", { prompt: async () => "unused", notify: () => {} });
+		failCacheRefresh = true;
+
+		const logout = runtime.logout("cursor");
+		await expect(logout).rejects.toMatchObject({
+			name: "CredentialSynchronizationError",
+			providerId: "cursor",
+			operation: "logout",
+			credential: undefined,
+		});
+		await expect(logout).rejects.toBeInstanceOf(CredentialSynchronizationError);
+		expect(await credentials.read("cursor")).toBeUndefined();
+	});
 });
