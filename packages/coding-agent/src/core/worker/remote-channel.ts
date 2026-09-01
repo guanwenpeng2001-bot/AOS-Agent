@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import type { ConnectionOptions as TlsConnectionOptions } from "node:tls";
 import { validateEndpointSecurity } from "@aos-agent/agent-core";
-import { Agent as UndiciAgent, type MessageEvent as UndiciMessageEvent, WebSocket } from "undici";
+import {
+	Agent as UndiciAgent,
+	type CloseEvent as UndiciCloseEvent,
+	type MessageEvent as UndiciMessageEvent,
+	WebSocket,
+} from "undici";
 import type { RpcClientTlsOptions } from "../../modes/rpc/rpc-client.ts";
 import {
 	type WebsocketRpcAddress,
@@ -28,8 +33,14 @@ interface ResolvedWorkerRemoteEndpointConfig {
 
 export interface RemoteWorkerChannelCallbacks {
 	readonly onData: (chunk: string) => void;
-	readonly onEnd: () => void;
+	readonly onEnd: (close: RemoteWorkerChannelClose) => void;
 	readonly onError: (error: Error) => void;
+}
+
+/** Bounded transport-close evidence. Raw peer reasons never cross this boundary. */
+export interface RemoteWorkerChannelClose {
+	readonly clean: boolean;
+	readonly code: number;
 }
 
 export class RemoteWorkerChannelError extends Error {
@@ -210,13 +221,13 @@ export class RemoteWorkerChannel {
 		this.callbacks.onError(new RemoteWorkerChannelError("Remote Worker connection failed"));
 	};
 
-	private readonly onClose = (): void => {
+	private readonly onClose = (event: UndiciCloseEvent): void => {
 		if (this.closedValue) return;
 		this.closedValue = true;
 		this.connected = false;
 		if (!this.endReported) {
 			this.endReported = true;
-			this.callbacks.onEnd();
+			this.callbacks.onEnd(Object.freeze({ clean: event.wasClean, code: event.code }));
 		}
 		void this.closeDispatcher();
 	};

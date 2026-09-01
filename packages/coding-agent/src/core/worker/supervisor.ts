@@ -20,6 +20,16 @@ import {
 	type WorkerReceipt,
 } from "@aos-agent/agent-core";
 import {
+	RemoteOperationError,
+	type RemoteArtifactReference,
+	type RemoteOperationExecutionContext,
+	type RemoteOperationHeartbeat,
+	type RemoteOperationInvoker,
+	type RemoteOperationLease,
+	type RemoteOperationRequest,
+	type RemoteOperationResult,
+} from "../runtime/remote-operation.ts";
+import {
 	WORKER_PROTOCOL_MAX_FRAME_BYTES,
 	OperationWorkerProtocolSession,
 	parseOperationWorkerFrame,
@@ -52,6 +62,7 @@ import {
 import {
 	RemoteWorkerChannel,
 	resolveWorkerRemoteEndpoint,
+	type RemoteWorkerChannelClose,
 	type WorkerRemoteEndpointConfig,
 } from "./remote-channel.ts";
 
@@ -121,6 +132,11 @@ interface Deferred<T> {
 	readonly promise: Promise<T>;
 	readonly resolve: (value: T) => void;
 	readonly settled: () => boolean;
+}
+
+interface WorkerPingWaiter {
+	readonly requestId: string;
+	readonly result: Deferred<ResultValue<void, FoundationError>>;
 }
 
 type TimedWait<T> =
@@ -202,6 +218,55 @@ function wait(milliseconds: number): Promise<void> {
 	});
 }
 
+function remoteArtifacts(receipt: WorkerReceipt): readonly RemoteArtifactReference[] {
+	return Object.freeze((receipt.artifacts ?? []).map((artifact) => Object.freeze({
+		id: artifact.artifactId,
+		kind: "output" as const,
+		digest: artifact.digest,
+		...(artifact.sizeBytes === undefined ? {} : { sizeBytes: artifact.sizeBytes }),
+		mediaType: artifact.mediaType,
+	})));
+}
+
+function remoteFailure(
+	code: string,
+	sideEffects: "none" | "associated" | "unknown",
+	retryable = false,
+): RemoteOperationError {
+	if (sideEffects === "unknown") return new RemoteOperationError("side-effect-unknown");
+	if (code.includes("deadline")) return new RemoteOperationError("deadline", { sideEffects });
+	if (code.includes("cancel")) return new RemoteOperationError("cancelled", { sideEffects });
+	if (code.includes("invalid") || code.includes("binding") || code.includes("conflict")) {
+		return new RemoteOperationError("invalid", { sideEffects });
+	}
+	if (retryable && sideEffects === "none") {
+		return new RemoteOperationError("transient", { retryable: true, sideEffects });
+	}
+	return new RemoteOperationError("rejected", { sideEffects });
+}
+
+function remoteReceiptFailure(
+	receipt: WorkerReceipt,
+	sideEffects: "none" | "associated" | "unknown",
+): RemoteOperationError {
+	const category = receipt.error?.category;
+	if (sideEffects === "unknown" || category === "side_effect_unknown" || category === "unknown") {
+		return new RemoteOperationError("side-effect-unknown");
+	}
+	if (receipt.status === "cancelled" || category === "cancelled") {
+		return new RemoteOperationError("cancelled", { sideEffects });
+	}
+	if (category === "deadline") return new RemoteOperationError("deadline", { sideEffects });
+	if (category === "transient") {
+		return new RemoteOperationError("transient", {
+			retryable: receipt.error?.retryable === true && sideEffects === "none",
+			sideEffects,
+		});
+	}
+	if (category === "parameter") return new RemoteOperationError("invalid", { sideEffects });
+	return new RemoteOperationError("rejected", { sideEffects });
+}
+
 export class OperationWorkerSupervisor {
 	private readonly config: WorkerSupervisorConfig;
 	private readonly environment: Readonly<Record<string, string>>;
@@ -217,6 +282,7 @@ export class OperationWorkerSupervisor {
 	private readyWaiter?: Deferred<ResultValue<WorkerRecord, FoundationError>>;
 	private receiptWaiter?: Deferred<ResultValue<WorkerReceipt, FoundationError>>;
 	private terminalWaiter?: Deferred<boolean>;
+	private pingWaiter?: WorkerPingWaiter;
 	private exitWaiter?: Deferred<void>;
 	private watchdogTimer?: NodeJS.Timeout;
 	private pendingReadyFrame?: Extract<OperationWorkerEventFrame, { type: "ready" }>;
@@ -231,6 +297,7 @@ export class OperationWorkerSupervisor {
 	private quarantinedValue = false;
 	private reclaimPromise?: Promise<ResultValue<WorkerRecord, FoundationError>>;
 	private activeSideEffect: "none" | "writes" = "writes";
+	private remoteOperationBound = false;
 
 	constructor(config: WorkerSupervisorConfig) {
 		this.config = Object.freeze({
@@ -254,6 +321,105 @@ export class OperationWorkerSupervisor {
 
 	get lifecycleState(): WorkerLifecycleState | undefined {
 		return this.lifecycle;
+	}
+
+	/**
+	 * Bind one provider-neutral operation to the already-authorized Worker
+	 * request. The existing Worker frame contract remains the only wire format.
+	 */
+	bindRemoteOperation(operation: SandboxOperationRequest): RemoteOperationInvoker {
+		if (this.remoteOperationBound) throw new RemoteOperationError("invalid");
+		this.remoteOperationBound = true;
+		const workerOperation = Object.freeze({
+			...operation,
+			...(operation.credentialTargets === undefined
+				? {}
+				: { credentialTargets: Object.freeze([...operation.credentialTargets]) }),
+		});
+		let requestValue: RemoteOperationRequest | undefined;
+		let leaseValue: RemoteOperationLease | undefined;
+		let heartbeatSequence = 0;
+
+		return Object.freeze({
+			execute: async (
+				request: RemoteOperationRequest,
+				context: RemoteOperationExecutionContext,
+			): Promise<RemoteOperationResult> => {
+				const lifecycle = this.lifecycle;
+				if (
+					lifecycle === undefined ||
+					this.config.remoteEndpoint === undefined ||
+					request.operationId !== workerOperation.operationId ||
+					context.operationId !== workerOperation.operationId ||
+					(request.sessionId !== undefined && request.sessionId !== lifecycle.binding.sessionId) ||
+					(request.runId !== undefined && request.runId !== lifecycle.binding.runId)
+				) {
+					throw new RemoteOperationError("invalid");
+				}
+				requestValue = request;
+				leaseValue = request.lease;
+				const neutralDeadline = request.deadlineAt === undefined ? undefined : Date.parse(request.deadlineAt);
+				const deadlines = [workerOperation.deadlineAt, lifecycle.binding.deadlineAt, neutralDeadline]
+					.filter((value): value is number => value !== undefined);
+				const requestDeadline = deadlines.length === 0 ? undefined : Math.min(...deadlines);
+				const outcome = await this.execute({
+					...workerOperation,
+					...(requestDeadline === undefined ? {} : { deadlineAt: requestDeadline }),
+				});
+				if (!outcome.ok) {
+					const unknown = workerOperation.sideEffect !== "none" && this.snapshot.record?.status === "lost";
+					throw remoteFailure(outcome.error.code, unknown ? "unknown" : "none", true);
+				}
+				const receipt = outcome.value;
+				const artifacts = remoteArtifacts(receipt);
+				const unknown = receipt.sideEffectState === "unknown" || receipt.sideEffectState === "side_effect_unknown";
+				const associated = workerOperation.sideEffect !== "none" || artifacts.length > 0;
+				if (associated || unknown) context.recordSideEffect(artifacts);
+				const sideEffects = unknown ? "unknown" : associated ? "associated" : "none";
+				if (receipt.status !== "succeeded") throw remoteReceiptFailure(receipt, sideEffects);
+				return Object.freeze({ artifactRefs: artifacts, sideEffects });
+			},
+			cancel: async (operationId: string): Promise<void> => {
+				if (operationId !== workerOperation.operationId) throw new RemoteOperationError("invalid");
+				const cancelled = await this.cancel("cancel", operationId);
+				if (!cancelled.ok) {
+					throw remoteFailure(
+						cancelled.error.code,
+						workerOperation.sideEffect === "none" ? "none" : "unknown",
+					);
+				}
+			},
+			heartbeat: async (heartbeat: RemoteOperationHeartbeat): Promise<RemoteOperationLease> => {
+				if (
+					requestValue === undefined ||
+					leaseValue === undefined ||
+					heartbeat.operationId !== workerOperation.operationId ||
+					heartbeat.leaseId !== leaseValue.leaseId ||
+					heartbeat.sequence !== heartbeatSequence + 1
+				) {
+					throw new RemoteOperationError("invalid");
+				}
+				const live = await this.probeLiveness(workerOperation.operationId);
+				if (!live.ok) {
+					throw remoteFailure(
+						live.error.code,
+						workerOperation.sideEffect === "none" ? "none" : "unknown",
+						true,
+					);
+				}
+				heartbeatSequence = heartbeat.sequence;
+				const base = Math.max(
+					Date.parse(heartbeat.sentAt),
+					Date.parse(leaseValue.expiresAt),
+					this.now().getTime(),
+				);
+				leaseValue = Object.freeze({
+					leaseId: leaseValue.leaseId,
+					expiresAt: new Date(base + (this.config.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS)).toISOString(),
+				});
+				return leaseValue;
+			},
+		});
 	}
 
 	preflight(input: WorkerSupervisorPreflightInput): ResultValue<WorkerActivationPlan, FoundationError> {
@@ -525,6 +691,53 @@ export class OperationWorkerSupervisor {
 		return Result.err(stableError("worker_cancel_failed", "Operation Worker cancellation timed out"));
 	}
 
+	/** Actively prove cross-host Worker responsiveness through ping/pong. */
+	async probeLiveness(operationId?: string): Promise<ResultValue<void, FoundationError>> {
+		if (
+			this.lifecycle === undefined ||
+			(this.lifecycle.record.status !== "ready" && this.lifecycle.record.status !== "running") ||
+			!this.hasLiveConnection()
+		) {
+			return Result.err(stableError("worker_lost", "Operation Worker is unavailable for liveness probe"));
+		}
+		if (
+			operationId !== undefined &&
+			this.lifecycle.record.activeOperationId !== undefined &&
+			this.lifecycle.record.activeOperationId !== operationId
+		) {
+			return Result.err(stableError("worker_conflict", "Operation Worker liveness identity conflicts"));
+		}
+		if (this.pingWaiter !== undefined) {
+			return Result.err(stableError("worker_conflict", "Operation Worker liveness probe is already active"));
+		}
+		const requestId = this.nextRequestId("ping");
+		const ping: WorkerPingWaiter = { requestId, result: deferred() };
+		this.pingWaiter = ping;
+		const sent = await this.sendFrame({
+			type: "ping",
+			requestId,
+			workerId: this.lifecycle.binding.workerId,
+		});
+		if (!sent.ok) {
+			this.pingWaiter = undefined;
+			const failure = this.markLost("worker_lost", "Operation Worker liveness probe failed");
+			await this.ensureProcessStoppedAndCleaned();
+			return Result.err(failure);
+		}
+		const settled = await this.withTimeout(
+			ping.result.promise,
+			Math.min(
+				this.config.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS,
+				this.remainingDeadlineMs(this.lifecycle.binding),
+			),
+		);
+		if (this.pingWaiter === ping) this.pingWaiter = undefined;
+		if (!settled.timedOut) return settled.value;
+		const failure = this.markLost("worker_lost", "Operation Worker liveness probe timed out");
+		await this.ensureProcessStoppedAndCleaned();
+		return Result.err(failure);
+	}
+
 	/** Request safe-ref projection; a successful write is not delivery proof. */
 	projectCredential(lease: SafeLeaseProjection): Promise<ResultValue<void, FoundationError>> {
 		return this.sendCredentialProjection("credential.project", lease);
@@ -746,7 +959,9 @@ export class OperationWorkerSupervisor {
 		if (!this.closing && !this.hasTrustedExecutionTerminal()) this.protocolFailure("worker_lost");
 	};
 
-	private readonly onRemoteEnd = (): void => {
+	private readonly onRemoteEnd = (_close: RemoteWorkerChannelClose): void => {
+		const reclaiming = this.closing && this.lifecycle?.record.status === "reclaiming";
+		if (!reclaiming) this.remoteTerminationUnconfirmed = true;
 		this.onStdoutEnd();
 		this.onProcessExit();
 	};
@@ -814,7 +1029,15 @@ export class OperationWorkerSupervisor {
 			if (!running.ok) this.protocolFailure("worker_persistence_failed");
 			return;
 		}
-		if (frame.type === "operation.data" || frame.type === "operation.completed" || frame.type === "pong") {
+		if (frame.type === "operation.data" || frame.type === "operation.completed") {
+			return;
+		}
+		if (frame.type === "pong") {
+			if (this.pingWaiter?.requestId !== frame.requestId) {
+				this.protocolFailure("worker_operation_invalid");
+				return;
+			}
+			this.pingWaiter.result.resolve(Result.ok(undefined));
 			return;
 		}
 		if (frame.type === "error") {
@@ -1021,6 +1244,7 @@ export class OperationWorkerSupervisor {
 		this.readyWaiter?.resolve(Result.err(error));
 		this.receiptWaiter?.resolve(Result.err(error));
 		this.terminalWaiter?.resolve(false);
+		this.pingWaiter?.result.resolve(Result.err(error));
 		return error;
 	}
 
@@ -1100,7 +1324,7 @@ export class OperationWorkerSupervisor {
 
 	private async stopAndCleanupProcess(): Promise<void> {
 		const child = this.child;
-		if (child === undefined) return;
+		if (child === undefined && this.remoteChannel === undefined) return;
 		await this.stopProcessTree();
 		let exited = this.exitSeen;
 		if (!exited && this.exitWaiter !== undefined) {
@@ -1109,7 +1333,7 @@ export class OperationWorkerSupervisor {
 				this.config.terminateTimeoutMs ?? DEFAULT_TERMINATE_TIMEOUT_MS,
 			)).timedOut;
 		}
-		if (!exited && child.pid !== undefined) {
+		if (!exited && child?.pid !== undefined) {
 			killProcessTree(child.pid);
 			if (this.exitWaiter !== undefined) {
 				exited = !(await this.withTimeout(
@@ -1118,7 +1342,11 @@ export class OperationWorkerSupervisor {
 				)).timedOut;
 			}
 		}
-		if (!exited && child.pid !== undefined) this.quarantinedValue = true;
+		if (!exited && child?.pid !== undefined) this.quarantinedValue = true;
+		if (!exited && this.remoteChannel !== undefined) {
+			this.remoteTerminationUnconfirmed = true;
+			this.quarantinedValue = true;
+		}
 		this.cleanupProcess();
 	}
 

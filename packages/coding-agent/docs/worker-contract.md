@@ -6,7 +6,7 @@ The Sandbox Operation Worker is a trusted child process that executes one bounde
 
 The Worker is opt-in trusted composition through `trustedWorkerSandboxFactory`. Inline sandbox execution remains the default. Configuration cannot name an executable, module path, environment overlay, or arbitrary worker command.
 
-The Host launches the packaged Worker entry and communicates over private stdio with versioned `WorkerProtocolV1` envelopes. The channel is not a public RPC surface: no listener, socket address, external authentication flow, or remote-worker claim is implied. Protocol input is bounded and validated before use, and stdout is reserved for framed protocol messages.
+The Host either launches the packaged Worker entry over private stdio or connects to a trusted remote Worker endpoint through the shared bearer/mTLS WebSocket transport. Both paths carry the same versioned Worker protocol envelopes; remote composition does not add protocol records or expose a public start/execute RPC. Protocol input is bounded and validated before use, and local Worker stdout is reserved for framed protocol messages.
 
 Preflight validates the profile, sandbox capabilities, credential target, protocol support, and launch inputs without spawning a process or projecting a credential. Activation may create those side effects only after the Host accepts the Run. A failure between preflight and activation therefore cannot leave an accepted Worker outside the Host lifecycle.
 
@@ -15,6 +15,8 @@ Preflight validates the profile, sandbox capabilities, credential target, protoc
 `workerId`, `providerId`, `sessionId`, and `laneId` identify the Worker. Optional Run/Binding/Attempt values correlate it with Host-owned execution facts. The Worker progresses through revision-fenced lifecycle and operation records; readiness and heartbeat establish process liveness, while timeout or transport loss moves the Worker to a lost/terminal path that must be reclaimed.
 
 Heartbeat liveness is not a lease. It answers whether the child is responsive. Task Credential leases control credential scope, TTL, renewal, and revocation. Session writer lease/fencing controls which Host may durably mutate Session/Run state. A fresh heartbeat cannot renew either lease or bypass fencing, and lease renewal cannot prove Worker liveness.
+
+The remote-neutral operation adapter binds one authorized Sandbox operation to the remote Worker wire. Operation lease renewal succeeds only after an active protocol `ping` receives its correlated `pong`; an ordinary Worker heartbeat still does not renew that lease. A remote channel that disappears before reclaim cannot prove that the remote process stopped, so the Host records `reclaim_unknown` and quarantines the Worker. A connection close following an accepted reclaim is the endpoint's termination confirmation.
 
 The Host alone writes the Run terminal state and `RunReceipt`. Worker cancellation/finalization returns bounded operation evidence to the Host; it never makes a Run terminal. Reclaim is revision-fenced and idempotent, including explicit `reclaim_unknown` handling when side effects cannot be proven absent.
 
