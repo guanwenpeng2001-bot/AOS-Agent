@@ -108,7 +108,14 @@ export {
 	truncateTail,
 	withFileMutationQueue,
 } from "./core/tools/index.ts";
-export type { AuditQuery, RpcSessionInfo, RunReceipt, RunRecord, TaskGateRecord } from "./modes/index.ts";
+export type {
+	AuditQuery,
+	RpcSessionInfo,
+	RpcSessionSearchOptions,
+	RunReceipt,
+	RunRecord,
+	TaskGateRecord,
+} from "./modes/index.ts";
 export {
 	InteractiveMode,
 	type JsonAgentSessionEvent,

@@ -78,6 +78,14 @@ export type RpcAuditQueryCommand = { id?: string; type: "audit.query" } & AuditQ
 /** Flattened Automation Host request for a single-run audit replay. */
 export type RpcAuditReplayCommand = { id?: string; type: "audit.replay" } & AuditReplayQuery;
 
+export interface RpcSessionSearchOptions {
+	all?: boolean;
+	includeArchived?: boolean;
+	sort?: "recent" | "relevance";
+	nameFilter?: "all" | "named";
+	limit?: number;
+}
+
 export type RpcCommand =
 	// Prompting
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
@@ -127,6 +135,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
 	| { id?: string; type: "list_sessions"; all?: boolean; includeArchived?: boolean }
+	| ({ id?: string; type: "search_sessions"; query: string } & RpcSessionSearchOptions)
 	| { id?: string; type: "archive_session"; sessionPath: string }
 	| { id?: string; type: "unarchive_session"; sessionPath: string }
 
@@ -426,6 +435,7 @@ export interface RpcSessionState {
 	followUpMode: "all" | "one-at-a-time";
 	sessionId: string;
 	sessionName?: string;
+	ephemeral: boolean;
 	archived: boolean;
 	archivedAt?: string;
 	autoCompactionEnabled: boolean;
@@ -442,6 +452,7 @@ export interface RpcSessionInfo {
 	cwd: string;
 	name?: string;
 	parentSessionPath?: string;
+	ephemeral: false;
 	archived: boolean;
 	archivedAt?: string;
 	created: string;
@@ -571,6 +582,13 @@ export type RpcResponse =
 			id?: string;
 			type: "response";
 			command: "list_sessions";
+			success: true;
+			data: { sessions: RpcSessionInfo[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "search_sessions";
 			success: true;
 			data: { sessions: RpcSessionInfo[] };
 	  }

@@ -151,6 +151,7 @@ import {
 	type WorkerRecord,
 } from "../../core/worker/lifecycle.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
+import { filterAndSortSessions } from "../interactive/components/session-selector-search.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { type JsonAgentSessionEvent, toJsonEvent } from "../json-event.ts";
 import type {
@@ -416,6 +417,7 @@ function serializeRpcSessionInfo(info: SessionInfo): RpcSessionInfo {
 		cwd: info.cwd,
 		...(info.name === undefined ? {} : { name: info.name }),
 		...(info.parentSessionPath === undefined ? {} : { parentSessionPath: info.parentSessionPath }),
+		ephemeral: false,
 		archived: info.archived,
 		...(info.archivedAt === undefined ? {} : { archivedAt: info.archivedAt.toISOString() }),
 		created: info.created.toISOString(),
@@ -424,6 +426,17 @@ function serializeRpcSessionInfo(info: SessionInfo): RpcSessionInfo {
 		firstMessage: info.firstMessage,
 		allMessagesText: info.allMessagesText,
 	};
+}
+
+async function listRpcSessionInfos(
+	session: AgentSession,
+	options: { all?: boolean; includeArchived?: boolean },
+): Promise<SessionInfo[]> {
+	const sessionDir = session.sessionFile === undefined ? undefined : dirname(session.sessionFile);
+	const listOptions = { includeArchived: options.includeArchived === true };
+	return options.all === true
+		? SessionManager.listAll(sessionDir, listOptions)
+		: SessionManager.list(session.cwd, sessionDir, listOptions);
 }
 
 function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
@@ -5745,6 +5758,7 @@ export class RpcHostController {
 						followUpMode: currentBinding.session.followUpMode,
 						sessionId: currentBinding.session.sessionId,
 						sessionName: currentBinding.session.sessionName,
+						ephemeral: currentBinding.session.sessionFile === undefined,
 						archived: metadata.archived,
 						...(metadata.archivedAt === undefined
 							? {}
@@ -5894,14 +5908,25 @@ export class RpcHostController {
 				}
 
 				case "list_sessions": {
-					const currentSessionFile = currentBinding.session.sessionFile;
-					const sessionDir = currentSessionFile === undefined ? undefined : dirname(currentSessionFile);
-					const listOptions = { includeArchived: command.includeArchived === true };
-					const sessions = command.all === true
-						? await SessionManager.listAll(sessionDir, listOptions)
-						: await SessionManager.list(currentBinding.session.cwd, sessionDir, listOptions);
+					const sessions = await listRpcSessionInfos(currentBinding.session, command);
 					return success(id, "list_sessions", {
 						sessions: sessions.map(serializeRpcSessionInfo),
+					});
+				}
+
+				case "search_sessions": {
+					const sessions = await listRpcSessionInfos(currentBinding.session, command);
+					const matches = filterAndSortSessions(
+						sessions,
+						command.query,
+						command.sort ?? "relevance",
+						command.nameFilter ?? "all",
+					);
+					const limited = command.limit === undefined
+						? matches
+						: matches.slice(0, Math.max(0, Math.trunc(command.limit)));
+					return success(id, "search_sessions", {
+						sessions: limited.map(serializeRpcSessionInfo),
 					});
 				}
 

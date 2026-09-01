@@ -160,6 +160,7 @@ function createAssistantMessage(text: string): AssistantMessage {
 
 interface RuntimeHostOptions {
 	readonly streamDelayMs?: number;
+	readonly ephemeral?: boolean;
 }
 
 const DEFAULT_MODEL: Model<"anthropic-messages"> = {
@@ -236,7 +237,7 @@ async function createRuntimeHost(
 			resourceLoader,
 		});
 
-	let currentManager = SessionManager.create(tempDir);
+	let currentManager = options.ephemeral ? SessionManager.inMemory(tempDir) : SessionManager.create(tempDir);
 	let currentSession = openSession(currentManager);
 	let prepareRebindCallback: Parameters<AgentSessionRuntime["setPrepareSessionRebind"]>[0];
 	const runtimeHost = {
@@ -1495,6 +1496,16 @@ function normalizePublicValue(
 }
 
 describe("RPC stdio/TCP public transcript parity", () => {
+	it("marks ephemeral session state", async () => {
+		const adapter = await startStdioRpcMode({ ephemeral: true });
+		try {
+			const state = await sendAutomationCommand(adapter, { id: "state", type: "get_state" });
+			expect(state).toMatchObject({ success: true, data: { ephemeral: true, archived: false } });
+		} finally {
+			await adapter.cleanup();
+		}
+	});
+
 	it("persists archive state and applies default list filtering over RPC", async () => {
 		const adapter = await startStdioRpcMode();
 		try {
@@ -1508,6 +1519,23 @@ describe("RPC stdio/TCP public transcript parity", () => {
 			}
 			const sessionPath = initial.data.sessions[0].path;
 			if (typeof sessionPath !== "string") throw new Error("list_sessions response did not include a path");
+			expect(initial.data.sessions[0]).toMatchObject({ ephemeral: false });
+
+			const matching = await sendAutomationCommand(adapter, {
+				id: "search-matching",
+				type: "search_sessions",
+				query: '"persist session"',
+			});
+			expect(matching).toMatchObject({
+				success: true,
+				data: { sessions: [{ path: sessionPath, ephemeral: false }] },
+			});
+			const missing = await sendAutomationCommand(adapter, {
+				id: "search-missing",
+				type: "search_sessions",
+				query: "missing phrase",
+			});
+			expect(missing).toMatchObject({ success: true, data: { sessions: [] } });
 
 			const archived = await sendAutomationCommand(adapter, {
 				id: "archive",
@@ -1522,7 +1550,23 @@ describe("RPC stdio/TCP public transcript parity", () => {
 			const archivedState = await sendAutomationCommand(adapter, { id: "state-archived", type: "get_state" });
 			expect(archivedState).toMatchObject({
 				success: true,
-				data: { archived: true, archivedAt },
+				data: { ephemeral: false, archived: true, archivedAt },
+			});
+			const archivedSearch = await sendAutomationCommand(adapter, {
+				id: "search-archived",
+				type: "search_sessions",
+				query: "persist",
+			});
+			expect(archivedSearch).toMatchObject({ success: true, data: { sessions: [] } });
+			const includedSearch = await sendAutomationCommand(adapter, {
+				id: "search-archived-included",
+				type: "search_sessions",
+				query: "persist",
+				includeArchived: true,
+			});
+			expect(includedSearch).toMatchObject({
+				success: true,
+				data: { sessions: [{ path: sessionPath, archived: true }] },
 			});
 
 			const filtered = await sendAutomationCommand(adapter, { id: "list-filtered", type: "list_sessions" });

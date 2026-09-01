@@ -793,6 +793,7 @@ Response timestamps are ISO 8601 strings:
         "path": "/path/to/session.jsonl",
         "id": "session-id",
         "cwd": "/workspace",
+        "ephemeral": false,
         "archived": true,
         "archivedAt": "2026-09-01T12:00:00.000Z",
         "created": "2026-09-01T10:00:00.000Z",
@@ -805,6 +806,16 @@ Response timestamps are ISO 8601 strings:
   }
 }
 ```
+
+#### search_sessions
+
+Search sessions on the server with the same fuzzy token, quoted phrase, `re:` regex, named-session filter, and relevance ordering used by the interactive session selector. Scope and archive filtering match `list_sessions`; `sort` may be `relevance` (default) or `recent`, and `limit` bounds the result count.
+
+```json
+{"type": "search_sessions", "query": "\"authentication failure\"", "all": true, "includeArchived": true, "sort": "relevance", "nameFilter": "named", "limit": 20}
+```
+
+The response has the same `{ "sessions": [...] }` shape as `list_sessions`. Persisted results include `"ephemeral": false`.
 
 #### archive_session / unarchive_session
 

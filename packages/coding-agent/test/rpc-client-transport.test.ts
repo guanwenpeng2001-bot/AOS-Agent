@@ -22,19 +22,20 @@ afterEach(async () => {
 });
 
 describe("RpcClient TCP transport", () => {
-	it("exposes session list, archive, and unarchive commands", async () => {
+	it("exposes session list, search, archive, and unarchive commands", async () => {
 		const received: RpcRecord[] = [];
 		const { server, port } = await listen((socket, request) => {
 			received.push(request);
 			const command = request.type;
 			const data =
-				command === "list_sessions"
+				command === "list_sessions" || command === "search_sessions"
 					? {
 							sessions: [
 								{
 									path: "/sessions/one.jsonl",
 									id: "one",
 									cwd: "/workspace",
+									ephemeral: false,
 									archived: true,
 									archivedAt: "2026-09-01T12:00:00.000Z",
 									created: "2026-09-01T10:00:00.000Z",
@@ -58,12 +59,16 @@ describe("RpcClient TCP transport", () => {
 		await startTcpClient(client);
 
 		await expect(client.listSessions({ all: true, includeArchived: true })).resolves.toMatchObject([
-			{ id: "one", archived: true },
+			{ id: "one", ephemeral: false, archived: true },
+		]);
+		await expect(client.searchSessions("first", { sort: "recent", nameFilter: "named", limit: 5 })).resolves.toMatchObject([
+			{ id: "one", ephemeral: false, archived: true },
 		]);
 		await expect(client.archiveSession("/sessions/one.jsonl")).resolves.toMatchObject({ archived: true });
 		await expect(client.unarchiveSession("/sessions/one.jsonl")).resolves.toEqual({ archived: false });
 		expect(received.map(({ id: _id, ...request }) => request)).toEqual([
 			{ type: "list_sessions", all: true, includeArchived: true },
+			{ type: "search_sessions", query: "first", sort: "recent", nameFilter: "named", limit: 5 },
 			{ type: "archive_session", sessionPath: "/sessions/one.jsonl" },
 			{ type: "unarchive_session", sessionPath: "/sessions/one.jsonl" },
 		]);

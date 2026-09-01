@@ -64,6 +64,7 @@ import type {
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionInfo,
+	RpcSessionSearchOptions,
 	RpcSessionState,
 	RpcSessionStats,
 	RpcSlashCommand,
@@ -691,6 +692,12 @@ export class RpcClient {
 	/** List sessions in the current project, or across all projects when requested. */
 	async listSessions(options: { all?: boolean; includeArchived?: boolean } = {}): Promise<RpcSessionInfo[]> {
 		const response = await this.send({ type: "list_sessions", ...options });
+		return this.getData<{ sessions: RpcSessionInfo[] }>(response).sessions;
+	}
+
+	/** Search sessions with the same matching and ordering semantics as the interactive selector. */
+	async searchSessions(query: string, options: RpcSessionSearchOptions = {}): Promise<RpcSessionInfo[]> {
+		const response = await this.send({ type: "search_sessions", query, ...options });
 		return this.getData<{ sessions: RpcSessionInfo[] }>(response).sessions;
 	}
 
