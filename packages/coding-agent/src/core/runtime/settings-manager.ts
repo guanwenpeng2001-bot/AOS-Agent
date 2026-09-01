@@ -7,6 +7,7 @@ import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import { normalizePath, resolvePath } from "../../utils/paths.ts";
+import { stripBom } from "../../utils/text.ts";
 import {
 	buildCapabilitySettings,
 	type CapabilitiesSettingsConfig,
@@ -246,7 +247,7 @@ export interface SettingsError {
 }
 
 function validateSettingsState(content: string): void {
-	const parsed: unknown = JSON.parse(content);
+	const parsed: unknown = JSON.parse(stripBom(content));
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error("Invalid settings state: expected an object");
 	}
@@ -458,7 +459,7 @@ export class SettingsManager {
 		if (!content) {
 			return {};
 		}
-		const settings = JSON.parse(content);
+		const settings = JSON.parse(stripBom(content));
 		return SettingsManager.migrateSettings(settings);
 	}
 
@@ -832,7 +833,7 @@ export class SettingsManager {
 	): void {
 		this.storage.withLock(scope, (current) => {
 			const currentFileSettings = current
-				? SettingsManager.migrateSettings(JSON.parse(current) as Record<string, unknown>)
+				? SettingsManager.migrateSettings(JSON.parse(stripBom(current)) as Record<string, unknown>)
 				: {};
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {

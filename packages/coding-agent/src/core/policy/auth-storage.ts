@@ -8,6 +8,7 @@ import { join } from "path";
 import { getAgentDir } from "../../config.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 import { getFileRevision, normalizePath } from "../../utils/paths.ts";
+import { stripBom } from "../../utils/text.ts";
 import {
 	LockedAtomicFileStorage,
 	readControlPlaneState,
@@ -38,7 +39,7 @@ type AuthFileReadState = {
 let sharedAuthFileReadState: { authPath: string; readState: AuthFileReadState } | undefined;
 
 function parseAuthStorageData(content: string): AuthStorageData {
-	const parsed: unknown = JSON.parse(content);
+	const parsed: unknown = JSON.parse(stripBom(content));
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error("Invalid auth.json: expected an object");
 	}

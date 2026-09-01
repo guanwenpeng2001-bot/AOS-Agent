@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../../config.ts";
 import { canonicalizePath, resolvePath } from "../../utils/paths.ts";
+import { stripBom } from "../../utils/text.ts";
 import { readControlPlaneState, writeControlPlaneState } from "../control-plane-atomic-storage.ts";
 
 export type ProjectTrustDecision = boolean | null;
@@ -104,7 +105,7 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 function parseTrustFile(content: string): TrustFile {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(content);
+		parsed = JSON.parse(stripBom(content));
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Failed to read trust store: ${message}`);

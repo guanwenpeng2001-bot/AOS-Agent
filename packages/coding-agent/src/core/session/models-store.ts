@@ -2,6 +2,7 @@ import { join } from "node:path";
 import type { ModelsStore, ModelsStoreEntry, ModelsStoreOperationOptions } from "@aos-agent/ai";
 import { getAgentDir } from "../../config.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
+import { stripBom } from "../../utils/text.ts";
 import { getFileRevision, normalizePath } from "../../utils/paths.ts";
 import { LockedAtomicFileStorage, readControlPlaneStateReadOnly } from "../control-plane-atomic-storage.ts";
 
@@ -281,7 +282,7 @@ function isValidModelsStoreEntry(value: unknown): value is ModelsStoreEntry {
 }
 
 function parseStoredModels(content: string): StoredModels {
-	const parsed: unknown = JSON.parse(content);
+	const parsed: unknown = JSON.parse(stripBom(content));
 	if (!isRecord(parsed)) {
 		throw new Error("Invalid models store: expected an object");
 	}
