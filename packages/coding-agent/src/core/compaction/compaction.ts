@@ -688,6 +688,9 @@ export async function generateSummaryWithUsage(
 	if (response.stopReason === "error") {
 		throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
 	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		throw new Error("Summarization attempted to call a tool");
+	}
 
 	const textContent = contentText(response.content);
 
@@ -969,6 +972,9 @@ async function generateTurnPrefixSummary(
 
 	if (response.stopReason === "error") {
 		throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
+	}
+	if (response.content.some((block) => block.type === "toolCall")) {
+		throw new Error("Turn prefix summarization attempted to call a tool");
 	}
 
 	return {

@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Compaction and branch summarization now reject provider responses that attempt tool calls.
 - Long tool results now trigger threshold compaction before the next provider request, while terminating tools still stop without compacting.
 - Threshold auto-compaction now falls back to message-size estimates when a provider omits usage data.
 - Branch summaries now record the leaf being left in `fromId` instead of the navigation destination.
