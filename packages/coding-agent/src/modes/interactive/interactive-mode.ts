@@ -63,6 +63,7 @@ import {
 	parseSkillBlock,
 } from "../../core/session/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/session/runtime.ts";
+import type { AgentSessionRuntimeDiagnostic } from "../../core/session/services.ts";
 import type { PreparedSessionScopeRebind } from "../../core/session/current-scope.ts";
 import {
 	CACHE_TTL_MS,
@@ -378,6 +379,8 @@ function formatLoginProviderCompletionDescription(provider: LoginProviderComplet
 export interface InteractiveModeOptions {
 	/** Providers that were migrated to auth.json (shows warning) */
 	migratedProviders?: string[];
+	/** Diagnostics collected before the TUI initialized. */
+	startupDiagnostics?: AgentSessionRuntimeDiagnostic[];
 	/** Warning message if session model couldn't be restored */
 	modelFallbackMessage?: string;
 	/** Cwd to trust after reload if it gained a .aos-agent directory during this implicitly trusted session. */
@@ -1256,7 +1259,13 @@ export class InteractiveMode {
 		});
 
 		// Show startup warnings
-		const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
+		const { migratedProviders, startupDiagnostics, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
+
+		for (const diagnostic of startupDiagnostics ?? []) {
+			if (diagnostic.type === "error") this.showError(diagnostic.message);
+			else if (diagnostic.type === "warning") this.showWarning(diagnostic.message);
+			else this.showStatus(diagnostic.message);
+		}
 
 		if (migratedProviders && migratedProviders.length > 0) {
 			this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);

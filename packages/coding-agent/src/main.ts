@@ -65,7 +65,7 @@ import {
 import { assertValidSessionId, SessionManager } from "./core/session/manager.ts";
 import { createSessionManagerStorage } from "./core/session/manager-storage.ts";
 import { SettingsManager } from "./core/runtime/settings-manager.ts";
-import { collectSettingsDiagnostics } from "./core/runtime/settings-diagnostics.ts";
+import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/runtime/settings-diagnostics.ts";
 import { printTimings, resetTimings, time } from "./core/runtime/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/policy/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
@@ -742,7 +742,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("runMigrations");
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
-	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager));
+	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager);
 
 	// Experimental first-time setup: theme choice and analytics opt-in.
 	// Runs before any runtime services are created so the chosen settings apply everywhere.
@@ -975,8 +975,10 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	time("resolveModelScope");
-	reportDiagnostics(runtime.diagnostics);
-	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
+	if (appMode !== "interactive" || hasRuntimeErrors) reportDiagnostics(startupDiagnostics);
+	if (hasRuntimeErrors) {
 		if (runtime.diagnostics.some((diagnostic) => diagnostic.message.includes("Failed to load extension"))) {
 			console.error(chalk.yellow(EXTENSION_LOAD_FAILURE_HINT));
 		}
@@ -1011,6 +1013,7 @@ export async function main(args: string[], options?: MainOptions) {
 	} else if (appMode === "interactive") {
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
+			startupDiagnostics,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
 			initialMessage,
