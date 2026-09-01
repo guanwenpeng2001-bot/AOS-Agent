@@ -11,6 +11,7 @@ import { getFileRevision, normalizePath } from "../../utils/paths.ts";
 import {
 	LockedAtomicFileStorage,
 	readControlPlaneState,
+	readControlPlaneStateReadOnly,
 } from "../control-plane-atomic-storage.ts";
 import { isCommandConfigValue, resolveConfigValue } from "../resolve-config-value.ts";
 
@@ -115,7 +116,7 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 	private load(): AuthStorageData {
 		if (this.data) return this.data;
 
-		const content = readControlPlaneState(this.authPath, AUTH_STORAGE_OPTIONS);
+		const content = readControlPlaneStateReadOnly(this.authPath, AUTH_STORAGE_OPTIONS);
 		this.data = content === undefined ? {} : parseAuthStorageData(content);
 		return this.data;
 	}

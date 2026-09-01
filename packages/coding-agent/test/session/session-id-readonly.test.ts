@@ -18,6 +18,7 @@ import { sourceProcessArgs, sourceProcessEnv } from "../cli-process.ts";
 const cliPath = resolve(__dirname, "../../src/cli.ts");
 const tempDirs: string[] = [];
 const CLI_TEST_TIMEOUT_MS = 70_000;
+const CLI_MULTI_PROCESS_TEST_TIMEOUT_MS = CLI_TEST_TIMEOUT_MS * 2;
 
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) {
@@ -62,7 +63,7 @@ interface CliDirs {
 async function runCli(
 	args: string[] | ((dirs: CliDirs) => string[]),
 	setup?: (dirs: CliDirs) => void,
-): Promise<{ code: number | null; agentDir: string; projectDir: string; stderr: string }> {
+): Promise<{ code: number | null; agentDir: string; projectDir: string; stdout: string; stderr: string }> {
 	const tempRoot = createTempDir();
 	const dirs: CliDirs = {
 		agentDir: join(tempRoot, "agent"),
@@ -76,6 +77,7 @@ async function runCli(
 	setup?.(dirs);
 	const resolvedArgs = typeof args === "function" ? args(dirs) : args;
 
+	let stdout = "";
 	let stderr = "";
 	const code = await new Promise<number | null>((resolvePromise, reject) => {
 		const child = spawn(process.execPath, sourceProcessArgs(cliPath, resolvedArgs), {
@@ -87,7 +89,10 @@ async function runCli(
 				HOME: dirs.homeDir,
 				USERPROFILE: dirs.homeDir,
 			},
-			stdio: ["ignore", "ignore", "pipe"],
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk.toString();
 		});
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk.toString();
@@ -96,7 +101,7 @@ async function runCli(
 		child.on("close", resolvePromise);
 	});
 
-	return { code, agentDir: dirs.agentDir, projectDir: dirs.projectDir, stderr };
+	return { code, agentDir: dirs.agentDir, projectDir: dirs.projectDir, stdout, stderr };
 }
 
 function installMetadataSideEffectSentinel(dirs: CliDirs): string {
@@ -156,17 +161,45 @@ describe("--session-id read-only commands", () => {
 	);
 
 	it(
-		"runs --list-models with read-only catalog stores and no extension execution",
+		"lists a cached dynamic catalog with read-only stores and no extension execution",
 		{ timeout: CLI_TEST_TIMEOUT_MS },
 		async () => {
 			let sentinel = "";
-			const result = await runCli(["--list-models"], (dirs) => {
+			const result = await runCli(["--list-models", "cursor"], (dirs) => {
 				sentinel = installMetadataSideEffectSentinel(dirs);
+				writeFileSync(
+					join(dirs.agentDir, "auth.json"),
+					JSON.stringify({ cursor: { type: "api_key", key: "fixture-key" } }),
+				);
+				writeFileSync(
+					join(dirs.agentDir, "models-store.json"),
+					JSON.stringify({
+						cursor: {
+							models: [
+								{
+									id: "auto",
+									name: "Auto (default)",
+									api: "cursor-cli",
+									provider: "cursor",
+									baseUrl: "cursor-cli://local",
+									reasoning: false,
+									input: ["text"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 128_000,
+									maxTokens: 16_384,
+								},
+							],
+							checkedAt: 1,
+						},
+					}),
+				);
 			});
 
 			expect(result.code).toBe(0);
+			expect(result.stdout).toContain("cursor");
+			expect(result.stdout).toContain("auto");
 			expect(existsSync(sentinel)).toBe(false);
-			expect(readdirSync(result.agentDir).sort()).toEqual(["settings.json"]);
+			expect(readdirSync(result.agentDir).sort()).toEqual(["auth.json", "models-store.json", "settings.json"]);
 			expect(readdirSync(result.projectDir).sort()).toEqual(["metadata-extension.mjs"]);
 		},
 	);
@@ -229,7 +262,7 @@ describe("--session-id read-only commands", () => {
 describe("--session-id validation", () => {
 	it(
 		"rejects ids invalid under SessionManager rules without stack traces",
-		{ timeout: CLI_TEST_TIMEOUT_MS },
+		{ timeout: CLI_MULTI_PROCESS_TEST_TIMEOUT_MS },
 		async () => {
 			for (const id of ["-bad", "bad id"]) {
 				const result = await runCli(["--session-id", id, "-p", "hi"]);

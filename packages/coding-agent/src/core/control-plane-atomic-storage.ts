@@ -123,6 +123,21 @@ function readAndVerify(path: string, options: ControlPlaneStorageOptions): strin
 	}
 }
 
+/** Validate current state without repairing, quarantining, changing modes, or creating a backup. */
+export function readControlPlaneStateReadOnly(
+	path: string,
+	options: ControlPlaneStorageOptions,
+): string | undefined {
+	try {
+		const content = readFileSync(path, "utf-8");
+		verifyFile(path, content, options);
+		return content;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw new ControlPlaneStorageError("control_state_corrupt", error);
+	}
+}
+
 function regularFileMode(path: string): number | undefined {
 	if (process.platform === "win32") return undefined;
 	try {
