@@ -618,6 +618,11 @@ export class ModelRuntime implements Models {
 		return this.credentials.list(options);
 	}
 
+	/** @internal Current stored/runtime secret values for exact-match DLP scanning. */
+	getDlpCredentialMaterials(options?: AuthOperationOptions): Promise<readonly string[]> {
+		return this.credentials.getDlpCredentialMaterials(options);
+	}
+
 	getProviderAuthStatus(providerId: string): AuthStatus {
 		if (this.credentials.hasRuntimeApiKey(providerId)) return { configured: true, source: "runtime" };
 		if (this.snapshot.storedProviders.has(providerId)) return { configured: true, source: "stored" };

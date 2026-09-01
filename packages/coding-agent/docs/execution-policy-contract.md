@@ -130,6 +130,10 @@ registered profile name; callers cannot submit an inline policy object.
           "action": "deny",
           "allowNames": []
         },
+        "dlp": {
+          "enabled": true,
+          "action": "redact"
+        },
         "approvals": {
           "writeOutsideWorkspace": "deny",
           "network": "ask",
@@ -173,6 +177,13 @@ interface CredentialPolicy {
   allowNames: ReadonlyArray<string>;
 }
 
+type DlpPolicyAction = "warn" | "redact" | "deny";
+
+interface DlpPolicy {
+  enabled: boolean;
+  action: DlpPolicyAction;
+}
+
 interface ApprovalPolicy {
   writeOutsideWorkspace: PolicyAction;
   network: PolicyAction;
@@ -188,9 +199,31 @@ interface ExecutionPolicyProfile {
   process: ProcessPolicy;
   network: NetworkPolicy;
   credentials: CredentialPolicy;
+  dlp?: DlpPolicy;
   approvals: ApprovalPolicy;
 }
 ```
+
+### DLP output boundary
+
+`dlp` scans tool results immediately before durable persistence and again when
+events or Session entries are projected to display/RPC consumers. It does not
+scan user prompt input. Missing `dlp` settings resolve to
+`{ "enabled": true, "action": "redact" }`.
+
+The scanner exact-matches current API-key and OAuth credential material and
+uses a conservative pattern set for long `sk-` keys, structurally valid JWTs
+with standard claims, and private-key headers/blocks. Exact credential values
+shorter than eight characters are ignored to avoid corrupting ordinary output.
+It does not perform semantic or ML classification.
+
+- `warn` keeps the durable tool result and adds a warning at projection.
+- `redact` replaces only matched ranges with `[REDACTED:dlp]` before persistence.
+- `deny` rejects the durable tool-result write and omits matches from projection.
+- `enabled: false` bypasses credential reads and content traversal.
+
+Project narrowing may enable DLP or move `warn` to `redact`/`deny`; it cannot
+disable an enabled base policy or select a weaker action.
 
 Profile IDs and provider IDs are restricted registered identifiers. A provider
 ID is not an npm package name, URL, command, or project-supplied module path.

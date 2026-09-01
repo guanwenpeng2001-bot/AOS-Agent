@@ -6,6 +6,26 @@ import type {
 	SessionManager,
 	SessionTreeNode,
 } from "./manager.ts";
+import type { DlpScanner } from "../dlp.ts";
+
+function projectEntry(entry: SessionEntry, scanner: DlpScanner | undefined): SessionEntry {
+	if (scanner === undefined || entry.type !== "message" || entry.message.role !== "toolResult") return structuredClone(entry);
+	return { ...structuredClone(entry), message: scanner.projectToolResult(entry.message) };
+}
+
+function projectTree(node: SessionTreeNode, scanner: DlpScanner | undefined): SessionTreeNode {
+	return {
+		...structuredClone(node),
+		entry: projectEntry(node.entry, scanner),
+		children: node.children.map((child) => projectTree(child, scanner)),
+	};
+}
+
+function projectContext(context: SessionContext, scanner: DlpScanner | undefined): SessionContext {
+	const copy = structuredClone(context);
+	if (scanner === undefined) return copy;
+	return { ...copy, messages: copy.messages.map((message) => scanner.projectToolResult(message)) };
+}
 
 /** Deterministic, read-only compatibility projection over a canonical Session. */
 export interface AgentSessionReadProjection {
@@ -30,7 +50,10 @@ export interface AgentSessionReadProjection {
 }
 
 /** @internal Construct a read-only projection without exposing the physical store. */
-export function createAgentSessionReadProjection(manager: SessionManager): AgentSessionReadProjection {
+export function createAgentSessionReadProjection(
+	manager: SessionManager,
+	scanner?: DlpScanner,
+): AgentSessionReadProjection {
 	return Object.freeze({
 		getCwd: () => manager.getCwd(),
 		getSessionFile: () => manager.getSessionFile(),
@@ -39,15 +62,18 @@ export function createAgentSessionReadProjection(manager: SessionManager): Agent
 		getSessionDir: () => manager.getSessionDir(),
 		usesDefaultSessionDir: () => manager.usesDefaultSessionDir(),
 		isPersisted: () => manager.isPersisted(),
-		getEntries: () => structuredClone(manager.getEntries()),
-		getBranch: () => structuredClone(manager.getBranch()),
+		getEntries: () => manager.getEntries().map((entry) => projectEntry(entry, scanner)),
+		getBranch: () => manager.getBranch().map((entry) => projectEntry(entry, scanner)),
 		getLeafId: () => manager.getLeafId(),
-		getLeafEntry: () => structuredClone(manager.getLeafEntry()),
+		getLeafEntry: () => {
+			const entry = manager.getLeafEntry();
+			return entry === undefined ? undefined : projectEntry(entry, scanner);
+		},
 		getLabel: (entryId: string) => manager.getLabel(entryId),
-		getTree: () => structuredClone(manager.getTree()),
+		getTree: () => manager.getTree().map((node) => projectTree(node, scanner)),
 		getHeader: () => structuredClone(manager.getHeader()),
-		buildSessionContext: () => structuredClone(manager.buildSessionContext()),
-		buildContextEntries: () => structuredClone(manager.buildContextEntries()),
+		buildSessionContext: () => projectContext(manager.buildSessionContext(), scanner),
+		buildContextEntries: () => manager.buildContextEntries().map((entry) => projectEntry(entry, scanner)),
 		getContextSnapshots: () => structuredClone(manager.getContextSnapshots()),
 		getContextSnapshot: (snapshotId: string) => structuredClone(manager.getContextSnapshot(snapshotId)),
 	});

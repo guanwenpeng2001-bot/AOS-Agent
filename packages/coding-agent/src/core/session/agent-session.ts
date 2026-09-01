@@ -125,6 +125,8 @@ export interface AgentSessionConfig {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	policyProfile?: string;
+	/** @internal Initial exact-match DLP material; retained in memory only. */
+	dlpCredentialMaterials?: readonly string[];
 	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
 	capabilityApprovedDescriptorIds?: ReadonlyArray<string>;
 	noTools?: "all" | "builtin";

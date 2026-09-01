@@ -44,6 +44,7 @@ import type {
 } from "./manager.ts";
 import { registerSessionReadProjectionInitializer, type SessionManager } from "./manager.ts";
 import { createCustomMessage } from "../messages.ts";
+import type { DlpScanner } from "../dlp.ts";
 
 /** Reserved custom-entry types used to store canonical Harness state in the existing JSONL file. */
 export const FOUNDATION_ENTRY_CUSTOM_TYPE = "__aos.foundation.entry.v1";
@@ -484,9 +485,11 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 	private readonly tail: { promise: Promise<void> } = { promise: Promise.resolve() };
 	private ledgerLease: LedgerWriterLease | null = null;
 	private ledgerLeaseRevision = 0;
+	private dlpScanner: DlpScanner | undefined;
 
-	constructor(manager: SessionManager) {
+	constructor(manager: SessionManager, options?: { dlpScanner?: DlpScanner }) {
 		this.manager = manager;
+		this.dlpScanner = options?.dlpScanner;
 		this.metadata = makeMetadata(manager);
 		this.snapshot();
 		this.manager.setEntriesReadProjection(
@@ -495,6 +498,14 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 			() => this.snapshot().lanes.find((lane) => lane.lane === "main")?.leafId ?? null,
 			() => new Map(this.snapshot().lanes.map((lane) => [lane.lane, lane.leafId])),
 		);
+	}
+
+	setDlpScanner(scanner: DlpScanner): void {
+		this.dlpScanner = scanner;
+	}
+
+	getDlpScanner(): DlpScanner | undefined {
+		return this.dlpScanner;
 	}
 
 	/**
@@ -889,6 +900,12 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 		return clone(assigned);
 	}
 
+	private async protectEntryForPersistence<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>): Promise<ProvisionedEntry<TEntry>> {
+		if (entry.type !== "message" || entry.message.role !== "toolResult" || this.dlpScanner === undefined) return entry;
+		const message = await this.dlpScanner.protectToolResultForPersistence(entry.message);
+		return (message === entry.message ? entry : { ...entry, message }) as ProvisionedEntry<TEntry>;
+	}
+
 	private async appendCanonicalRecord<TRecord extends LaneRecord>(record: NewRecord<TRecord>): Promise<TRecord> {
 		const snapshot = this.snapshot();
 		if (!snapshot.lanes.some((lane) => lane.lane === record.lane)) {
@@ -1033,11 +1050,14 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 	}
 
 	appendEntry<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>, lane: string): Promise<TEntry> {
-		return this.enqueue(() => this.appendCanonicalEntry(entry, lane));
+		return this.enqueue(async () => this.appendCanonicalEntry(await this.protectEntryForPersistence(entry), lane));
 	}
 
 	/** Synchronous physical commit for legacy callers whose logical writer is AgentHarness. */
 	appendHarnessEntry<TEntry extends Entry>(entry: ProvisionedEntry<TEntry>, lane: string): TEntry {
+		if (entry.type === "message" && entry.message.role === "toolResult" && this.dlpScanner !== undefined) {
+			throw new TypeError("Tool results must use the asynchronous DLP persistence boundary");
+		}
 		return this.appendCanonicalEntry(entry, lane);
 	}
 
@@ -1193,7 +1213,9 @@ export function createHarnessCompatibilityWriter(
 ): HarnessCompatibilityWriter {
 	return {
 		recordMessage: (message) => {
-			storage.appendHarnessEntry({ type: "message", id: session.idGenerator.next(), message }, "main");
+			const entry = { type: "message" as const, id: session.idGenerator.next(), message };
+			if (message.role === "toolResult") return storage.appendEntry(entry, "main").then(() => undefined);
+			storage.appendHarnessEntry(entry, "main");
 		},
 		recordCustomEntry: (customType, data) => {
 			const id = session.idGenerator.next();
