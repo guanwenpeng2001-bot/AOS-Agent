@@ -1,9 +1,11 @@
 import {
 	FoundationError,
+	InMemoryArtifactBlobStore,
 	InMemorySessionStorage,
 	LayeredResultSettlement,
 	Result,
 	Session,
+	SessionArtifactStore,
 	SessionLedger,
 	ContextLedger,
 	createConnectorCapabilitySnapshot,
@@ -1019,7 +1021,7 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 					toolName: "workspace.read",
 					providerId: "builtin.passive-readiness",
 					revision: 1,
-					operation: { resource: "filesystem.read", effects: ["read"] },
+					operation: { resource: "filesystem.write", effects: ["write"] },
 				}],
 				invoke: async (request) => {
 					toolEffects += 1;
@@ -1249,6 +1251,93 @@ describe("ExternalConnectorRegistry supervised SPI", () => {
 		await enabledRegistry.dispose();
 		await unboundRegistry.dispose();
 		await disabledRegistry.dispose();
+	});
+
+	it("derives Connector TaskResult diff from the durable Tool Gateway patch result", async () => {
+		const providerId = "builtin.zeta-diff";
+		const patch = "--- a/docs/input.txt\n+++ b/docs/input.txt\n@@ -1 +1 @@\n-before\n+after\n";
+		const toolGateway = createFoundationToolGateway({
+			gatewayId: "zeta-diff-tool-gateway",
+			providers: [createLocalToolGatewayProvider({
+				providerId,
+				revision: 1,
+				routes: [{
+					kind: "local",
+					toolName: "workspace.edit",
+					namespace: "workspace",
+					providerId,
+					revision: 1,
+					operation: { resource: "filesystem.read", effects: ["read"] },
+				}],
+				invoke: async (request) => Result.ok({
+					schemaVersion: 1,
+					toolCallId: request.toolCallId,
+					toolName: request.toolName,
+					ok: true,
+					sideEffectState: "none",
+					result: {
+						schemaVersion: 1,
+						content: [{ type: "text", text: "edited docs/input.txt" }],
+						details: { patch },
+					},
+				}),
+			})],
+		});
+		const fixture = createSupportedConnector({
+			toolGateway: true,
+			driver: new ThirdPartyZetaDriver({
+				emitToolGatewayRequest: true,
+				toolGatewayRequest: { toolName: "workspace.edit", namespace: "workspace" },
+			}),
+		});
+		const registry = createExternalConnectorRegistry({ toolGateway });
+		expect(await registry.register(registration(fixture))).toMatchObject({ ok: true });
+		const runId = "run-zeta-durable-diff";
+		const capabilityBinding: CapabilityBinding = {
+			id: `capability-binding-${runId}`,
+			profile: "external-registry-test",
+			createdAt: NOW,
+			descriptors: [{
+				id: "builtin-workspace-edit",
+				revision: "1",
+				kind: "builtin_tool",
+				name: "workspace.edit",
+				exposedToolName: "workspace.edit",
+			}],
+			decisionSummary: { allowed: 1, awaitingApproval: 0, denied: 0 },
+			toolAllowlist: ["workspace.edit"],
+		};
+		const artifactStore = new SessionArtifactStore(fixture.session, {
+			blobStore: new InMemoryArtifactBlobStore(),
+			writer: fixture.ledger.writer,
+		});
+		const diffPolicyProfile: ExecutionPolicyProfile = {
+			...EXTERNAL_POLICY_PROFILE,
+			id: "external-registry-diff-test",
+			workspace: { read: ["workspace"], write: ["workspace"], deny: ["credentials", "agent-internal"] },
+		};
+		const diffPolicy = resolveExecutionPolicyProfile({
+			profiles: { [diffPolicyProfile.id]: diffPolicyProfile },
+			defaultProfile: diffPolicyProfile.id,
+			workspaceIdentity: "workspace-zeta",
+			runId,
+			createdAt: NOW,
+			capabilityBinding: { id: capabilityBinding.id },
+		});
+		if (!diffPolicy.ok) throw diffPolicy.error;
+		const execution = await executeExternalConnectorProductRun({
+			...productInput(fixture, registry, runId, capabilityBinding),
+			artifactStore,
+			policyBinding: diffPolicy.binding,
+		});
+
+		expect(execution.toolGatewayExchanges?.[0]?.result.result).toMatchObject({ details: { patch } });
+		expect(execution.taskResult.diff).toMatchObject({ mediaType: "text/x-diff" });
+		if (execution.taskResult.diff === undefined) throw new Error("Expected Connector diff artifact");
+		expect(execution.taskResult.diff.digest).toBe(`sha256:${execution.taskResult.diff.artifactId}`);
+		expect(await artifactStore.verify(execution.taskResult.diff.artifactId)).toBe("verified");
+		expect(new TextDecoder().decode((await artifactStore.get(execution.taskResult.diff.artifactId)).content)).toBe(patch);
+		await registry.dispose();
 	});
 
 	it("does not expose a catalog route outside the durable CapabilityBinding", async () => {

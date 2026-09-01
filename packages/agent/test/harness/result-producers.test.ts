@@ -138,11 +138,20 @@ describe("durable TaskResult producers", () => {
 			expect.objectContaining({ name: "./test.sh", required: true, status: "failed" }),
 		]);
 		expect(produced.tests.every((test) => test.evidenceRefs?.length === 1)).toBe(true);
-		expect(produced.artifacts).toHaveLength(4);
+		expect(produced.diff).toMatchObject({
+			mediaType: "application/json",
+			producer: "task-result-producer:durable-workspace-diff",
+		});
+		expect(produced.artifacts).toHaveLength(5);
+		expect(produced.artifacts).toContainEqual(produced.diff);
 		for (const artifact of produced.artifacts) {
 			expect(artifact.digest).toBe(`sha256:${artifact.artifactId}`);
 			expect(await store.verify(artifact.artifactId)).toBe("verified");
 		}
+		if (produced.diff === undefined) throw new Error("Expected durable workspace diff");
+		const diff = await store.get(produced.diff.artifactId);
+		expect(new TextDecoder().decode(diff.content)).toContain('"type":"workspace_diff"');
+		expect(new TextDecoder().decode(diff.content)).toContain('"objectId":"receipt-edit-file"');
 	});
 
 	it("keeps empty truth arrays and derives a bounded redacted non-placeholder summary", async () => {
@@ -151,6 +160,7 @@ describe("durable TaskResult producers", () => {
 		});
 
 		expect(produced.artifacts).toEqual([]);
+		expect(produced.diff).toBeUndefined();
 		expect(produced.tests).toEqual([]);
 		expect(produced.summary).not.toMatch(/Agent run (completed|did not complete)/);
 		expect(produced.summary).toContain("[redacted]");

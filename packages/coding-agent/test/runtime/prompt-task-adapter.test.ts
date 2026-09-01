@@ -9,6 +9,7 @@ import {
 	SessionLedger,
 	type AgentBinding,
 	type AgentInstance,
+	type ArtifactRef,
 	type AttemptReceipt,
 	type Attempt,
 	type Dispatch,
@@ -158,6 +159,7 @@ class PromptTaskProvider implements TaskExecutorProvider {
 	receivedModelProfile: ModelProfile | undefined;
 	receiptError: PublicExecutionError | undefined;
 	sideEffectState: SideEffectState = "none";
+	diffArtifact: ArtifactRef | undefined;
 
 	async capabilities(): Promise<readonly FoundationProviderCapability[]> { return [PROVIDER_CAPABILITY]; }
 
@@ -186,7 +188,7 @@ class PromptTaskProvider implements TaskExecutorProvider {
 			bindingEpochIds: [...attempt.bindingEpochIds],
 			status: this.receiptError === undefined ? "succeeded" : "failed",
 			workerReceiptRefs: [],
-			artifacts: [OUTPUT_ARTIFACT],
+			artifacts: [OUTPUT_ARTIFACT, ...(this.diffArtifact === undefined ? [] : [this.diffArtifact])],
 			...(this.receiptError === undefined ? {} : { error: this.receiptError }),
 			provenance: {
 				producerKind: "agent_executor",
@@ -251,6 +253,13 @@ describe("Foundation Prompt Task adapter", () => {
 		const session = new Session(new InMemorySessionStorage({ id: "session-prompt-task", createdAt: 1 }));
 		const env = executionEnv();
 		const provider = new PromptTaskProvider();
+		const diffId = "b".repeat(64);
+		provider.diffArtifact = {
+			schemaVersion: 1,
+			artifactId: diffId,
+			mediaType: "text/x-diff",
+			digest: `sha256:${diffId}`,
+		};
 		const runtime = createModelsWithResponse();
 		const adapter = createPromptTaskAdapter({
 			dependencies: dependencies(calls),
@@ -268,6 +277,7 @@ describe("Foundation Prompt Task adapter", () => {
 			expect(result.binding.sourceTrace.map((source) => source.field)).toEqual(PROMPT_TASK_DEPENDENCY_NAMES);
 			expect(result.attemptReceipt.attemptId).toBe("attempt-prompt-task");
 			expect(result.taskResult.sourceAttemptReceiptIds).toEqual([result.attemptReceipt.attemptReceiptId]);
+			expect(result.taskResult.diff).toEqual(provider.diffArtifact);
 			expect(result.taskResult.provenance.providerId).toBe("gate-binding-prompt-task");
 			expect(result.runReceipt.taskResultId).toBe(result.taskResult.taskResultId);
 			expect(result.runReceipt.terminalStatus).toBe("completed");

@@ -28,6 +28,7 @@
 ### Changed
 
 - Task results now derive summaries, validation results, and file-change artifacts from durable assistant and tool records.
+- Task result diffs now reference content-addressed workspace changes derived from durable receipts and artifact-store writes.
 - Package author metadata is AOS Agent.
 - Session artifacts now use the `.context-artifacts` directory suffix for new blobs, while reads and removals fall back per blob to existing legacy artifact directories.
 - The External Agent Connector contract, architecture convergence, and product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) are implemented. Line 13 promotion evidence includes multi-OS packaged smoke, previous-release upgrade/restart, deterministic soak, pinned vendor handshake, and Codex subscription print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully certified. Lines 14 and 15 remain later work.

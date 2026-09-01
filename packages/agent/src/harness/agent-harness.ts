@@ -2374,7 +2374,7 @@ export class AgentHarness implements AgentLane {
 			attemptReceipt,
 			writeArtifact: (artifact) => writeTaskResultArtifact(this.artifacts, artifact),
 		});
-		const settled = await settlement.settle({ taskResultId, task: execution.task, sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId], summary: produced.summary, artifacts: produced.artifacts, diff: settlementInput.diff, tests: produced.tests, evidence: settlementInput.evidence ?? [], producer: { producerKind: "host", providerId: authority.authorityId, producedAt, correlation: { ...correlation, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId } } });
+		const settled = await settlement.settle({ taskResultId, task: execution.task, sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId], summary: produced.summary, artifacts: produced.artifacts, ...(produced.diff === undefined ? {} : { diff: produced.diff }), tests: produced.tests, evidence: settlementInput.evidence ?? [], producer: { producerKind: "host", providerId: authority.authorityId, producedAt, correlation: { ...correlation, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId } } });
 		if (!settled.ok) throw new HarnessFault("Host settlement rejected provider TaskResult", settled.error);
 		const finalStatus = outcome === "completed" && settled.value.status === "succeeded" ? "completed" : outcome === "aborted" ? "cancelled" : "failed";
 		const usage = await this.foundationRunUsage(lane, runId);

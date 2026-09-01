@@ -178,6 +178,8 @@ const EXTERNAL_CONNECTOR_ARTIFACT_MEDIA_TYPES = new Set([
 	"text/html",
 	"text/markdown",
 	"text/plain",
+	"text/x-diff",
+	"text/x-patch",
 ]);
 
 const EXTERNAL_CONNECTOR_TERMINAL_ERRORS = Object.freeze({
