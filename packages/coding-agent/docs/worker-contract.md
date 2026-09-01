@@ -18,6 +18,15 @@ Heartbeat liveness is not a lease. It answers whether the child is responsive. T
 
 The remote-neutral operation adapter binds one authorized Sandbox operation to the remote Worker wire. Operation lease renewal succeeds only after an active protocol `ping` receives its correlated `pong`; an ordinary Worker heartbeat still does not renew that lease. A remote channel that disappears before reclaim cannot prove that the remote process stopped, so the Host records `reclaim_unknown` and quarantines the Worker. A connection close following an accepted reclaim is the endpoint's termination confirmation.
 
+When a Worker-backed executor participates in Scheduler discovery, its Host
+publishes only the executor descriptor and liveness metadata to the shared
+Session ledger. The Scheduler heartbeat controls whether that executor can be
+selected or receive a handoff; it does not replace the Worker protocol
+heartbeat, operation lease, Task Credential lease, or Session writer lease.
+Expiry removes the executor from the local compatibility projection. Any
+in-flight Scheduler claim is reclaimed only through the existing fenced claim
+expiry and queue reconcile path.
+
 The Host alone writes the Run terminal state and `RunReceipt`. Worker cancellation/finalization returns bounded operation evidence to the Host; it never makes a Run terminal. Reclaim is revision-fenced and idempotent, including explicit `reclaim_unknown` handling when side effects cannot be proven absent.
 
 ## Lightweight self-hosted pool
