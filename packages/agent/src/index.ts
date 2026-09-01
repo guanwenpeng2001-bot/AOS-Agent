@@ -258,6 +258,20 @@ export {
 export { formatPromptTemplateInvocation, parseCommandArgs } from "./harness/prompt-templates.ts";
 export { Result } from "./harness/result.ts";
 export type { ResultValue } from "./harness/result.ts";
+export {
+	TASK_RESULT_SUMMARY_MAX_LENGTH,
+	aggregateTaskResultProducers,
+	isValidationCommand,
+	loadDurableFinalAssistantText,
+	loadDurableTaskResultToolRecords,
+	writeTaskResultArtifact,
+} from "./harness/result-producers.ts";
+export type {
+	DurableTaskResultToolRecord,
+	FileChangeArtifactWrite,
+	TaskResultProducerInput,
+	TaskResultProducerOutput,
+} from "./harness/result-producers.ts";
 export { parseFoundationMutation } from "./harness/session/durable/codec.ts";
 export { DurableLedgerError, invalidDurableRecord } from "./harness/session/durable/errors.ts";
 export { FoundationLedgerState } from "./harness/session/durable/state.ts";

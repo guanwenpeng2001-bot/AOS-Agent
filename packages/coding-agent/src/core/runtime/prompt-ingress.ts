@@ -4,6 +4,7 @@ import {
 	createAttempt,
 	fingerprintFoundationValue,
 	FoundationError,
+	isValidationCommand,
 	Result,
 	sha256HexValue,
 	validateAttemptReceiptForProvider,
@@ -380,10 +381,16 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			const matching = toolReceipts.filter((receipt) => receipt.toolCallId === start.toolCallId);
 			return matching.length === 1 && matching[0]?.sideEffectState === "none";
 		});
+		const validationFailed = toolStarts.some((start) => {
+			if (start.toolName !== "bash") return false;
+			if (!isValidationCommand(start.effectiveArgs.command)) return false;
+			const matching = toolReceipts.filter((receipt) => receipt.toolCallId === start.toolCallId);
+			return matching.length === 1 && matching[0]?.outcome !== "succeeded";
+		});
 		const artifacts = toolReceipts.flatMap((receipt) => receipt.artifacts ?? []);
 		const uniqueArtifacts = [...new Map(artifacts.map((artifact) => [artifact.artifactId, artifact])).values()];
 		const sideEffectUnknown = !modelSucceeded && !modelCancellationSettled || !toolsSettled || toolReceiptRecords.length !== toolReceipts.length;
-		const status = sideEffectUnknown || promptAbort === "deadline" || assistant.stopReason === "error"
+		const status = sideEffectUnknown || validationFailed || promptAbort === "deadline" || assistant.stopReason === "error"
 			? "failed" as const
 			: promptAbort === "cancelled"
 				? "cancelled" as const
@@ -407,8 +414,8 @@ class CodingAgentTaskExecutorProvider implements TaskExecutorProvider {
 			artifacts: uniqueArtifacts,
 			...(status === "succeeded" ? {} : {
 				error: {
-					code: sideEffectUnknown ? "side_effect_unknown" : promptAbort === "deadline" ? "run_deadline_exceeded" : promptAbort === "cancelled" ? "user_aborted" : "agent_run_failed",
-					message: assistant.errorMessage ?? (sideEffectUnknown ? "Durable model or tool execution could not prove a terminal success" : promptAbort === "deadline" ? "Run deadline was exceeded" : promptAbort === "cancelled" ? "Agent run was cancelled" : "Agent run failed"),
+					code: sideEffectUnknown ? "side_effect_unknown" : validationFailed ? "validation_command_failed" : promptAbort === "deadline" ? "run_deadline_exceeded" : promptAbort === "cancelled" ? "user_aborted" : "agent_run_failed",
+					message: assistant.errorMessage ?? (sideEffectUnknown ? "Durable model or tool execution could not prove a terminal success" : validationFailed ? "A durable validation command failed" : promptAbort === "deadline" ? "Run deadline was exceeded" : promptAbort === "cancelled" ? "Agent run was cancelled" : "Agent run failed"),
 					category: sideEffectUnknown ? "side_effect_unknown" : promptAbort === "deadline" ? "deadline" : promptAbort === "cancelled" ? "cancelled" : "unknown",
 					retryable: false,
 				},
@@ -576,7 +583,6 @@ export class ProductPromptIngress {
 					bindingEpochId: `binding_epoch_coding_agent_${token}`,
 					agentInstanceId: `agent_instance_coding_agent_${token}`,
 				},
-				settlement: { artifacts: [], tests: [], evidence: [] },
 				...(input.signal === undefined ? {} : { signal: input.signal }),
 				...(input.deadlineMs === undefined ? {} : { deadlineMs: input.deadlineMs }),
 				now: () => ingress.submittedAt,

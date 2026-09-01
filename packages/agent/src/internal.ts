@@ -123,6 +123,7 @@ export * from "./harness/prompt-templates.ts";
 // Foundation runtime contracts
 export * from "./harness/profile.ts";
 export * from "./harness/plugins.ts";
+export * from "./harness/result-producers.ts";
 export * from "./harness/runtime-services.ts";
 export * from "./harness/tool-gateway.ts";
 export * from "./harness/tool-pipeline.ts";

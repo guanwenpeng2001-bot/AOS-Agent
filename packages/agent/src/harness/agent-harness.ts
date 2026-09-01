@@ -140,6 +140,12 @@ import {
 import { ContextLedger, type ContextLedgerOptions } from "./context/ledger.ts";
 import type { SessionArtifactStore } from "./artifacts.ts";
 import type { SessionMemoryStore } from "./memory/memory.ts";
+import {
+	aggregateTaskResultProducers,
+	loadDurableFinalAssistantText,
+	loadDurableTaskResultToolRecords,
+	writeTaskResultArtifact,
+} from "./result-producers.ts";
 import { SessionLedgerBindingError } from "./session/ledger-writer.ts";
 
 export class LaneBusy extends TaggedError("LaneBusy")<{
@@ -2354,7 +2360,21 @@ export class AgentHarness implements AgentLane {
 		if (settlementInput === undefined || authority === undefined) return { attemptId: executed.value.attempt.attemptId, attemptReceipt, correlation };
 		const taskResultId = `task_result_${runId}`;
 		const producedAt = await this.foundationReceiptTimestamp(lane, runId);
-		const settled = await settlement.settle({ taskResultId, task: execution.task, sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId], summary: settlementInput.summary ?? (outcome === "completed" ? "Agent run completed" : "Agent run did not complete successfully"), artifacts: settlementInput.artifacts, diff: settlementInput.diff, tests: settlementInput.tests ?? [], evidence: settlementInput.evidence ?? [], producer: { producerKind: "host", providerId: authority.authorityId, producedAt, correlation: { ...correlation, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId } } });
+		const durableTools = await loadDurableTaskResultToolRecords(this.durableSession, {
+			laneId: lane,
+			runId,
+			correlation,
+		});
+		const produced = await aggregateTaskResultProducers({
+			...(settlementInput.summary === undefined ? {} : { summary: settlementInput.summary }),
+			finalAssistantText: await loadDurableFinalAssistantText(this.durableSession, { laneId: lane, runId }),
+			artifacts: [...attemptReceipt.artifacts, ...(settlementInput.artifacts ?? [])],
+			tests: settlementInput.tests,
+			durableTools,
+			attemptReceipt,
+			writeArtifact: (artifact) => writeTaskResultArtifact(this.artifacts, artifact),
+		});
+		const settled = await settlement.settle({ taskResultId, task: execution.task, sourceAttemptReceiptIds: [attemptReceipt.attemptReceiptId], summary: produced.summary, artifacts: produced.artifacts, diff: settlementInput.diff, tests: produced.tests, evidence: settlementInput.evidence ?? [], producer: { producerKind: "host", providerId: authority.authorityId, producedAt, correlation: { ...correlation, taskResultId, attemptReceiptId: attemptReceipt.attemptReceiptId } } });
 		if (!settled.ok) throw new HarnessFault("Host settlement rejected provider TaskResult", settled.error);
 		const finalStatus = outcome === "completed" && settled.value.status === "succeeded" ? "completed" : outcome === "aborted" ? "cancelled" : "failed";
 		const usage = await this.foundationRunUsage(lane, runId);

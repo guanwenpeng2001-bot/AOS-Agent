@@ -596,6 +596,8 @@ applications may also compose these contracts directly.
 
 **`LayeredResultSettlement`.** Validates and writes Dispatch, Attempt, TaskResult, and Run settlement through the canonical ledger; coding-agent Scheduler, Subagent, RPC, and runtime composition consume it.
 
+**Task result producers.** `aggregateTaskResultProducers`, `loadDurableTaskResultToolRecords`, `loadDurableFinalAssistantText`, `writeTaskResultArtifact`, and `isValidationCommand` derive bounded settlement inputs from durable tool receipts, assistant checkpoints, and content-addressed artifacts. `DurableTaskResultToolRecord`, `FileChangeArtifactWrite`, `TaskResultProducerInput`, and `TaskResultProducerOutput` describe that producer boundary; `TASK_RESULT_SUMMARY_MAX_LENGTH` is its summary limit.
+
 **`persistTaskEnvelopeBeforeResolver`.** Persists an immutable Task before dependency resolution or provider effects; coding-agent product-run, prompt, and Subagent composition consume it.
 
 **`CanonicalRunResult`.** Projects the canonical settled Run and receipt; coding-agent lifecycle, audit, Automation, and RPC surfaces consume it.
