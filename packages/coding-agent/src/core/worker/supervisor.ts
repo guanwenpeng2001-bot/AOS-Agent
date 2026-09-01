@@ -1,5 +1,5 @@
 /**
- * Host-side lifecycle authority for one local Operation Worker process.
+ * Host-side lifecycle authority for one local or remote Operation Worker.
  *
  * Preflight is read-only and returns an activation token. Only activate may
  * create the fixed trusted child. Process details and private protocol data
@@ -49,6 +49,11 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
+import {
+	RemoteWorkerChannel,
+	resolveWorkerRemoteEndpoint,
+	type WorkerRemoteEndpointConfig,
+} from "./remote-channel.ts";
 
 const DEFAULT_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 15_000;
@@ -77,9 +82,11 @@ type SupervisorErrorCode =
 
 export interface WorkerSupervisorConfig {
 	/** Absolute trusted executable selected by Host composition. */
-	readonly executable: string;
+	readonly executable?: string;
 	/** Absolute fixed entrypoint selected by Host composition. */
-	readonly entrypoint: string;
+	readonly entrypoint?: string;
+	/** Omit for local spawn; when set, activation connects to this remote Worker endpoint. */
+	readonly remoteEndpoint?: WorkerRemoteEndpointConfig;
 	readonly profileId: string;
 	readonly profileRevision: number;
 	readonly capabilities: readonly string[];
@@ -203,6 +210,7 @@ export class OperationWorkerSupervisor {
 	private activationPlan?: WorkerActivationPlan;
 	private activationAttempted = false;
 	private child?: ChildProcessWithoutNullStreams;
+	private remoteChannel?: RemoteWorkerChannel;
 	private lifecycle?: WorkerLifecycleState;
 	private stdoutBuffer = "";
 	private requestSequence = 0;
@@ -218,13 +226,20 @@ export class OperationWorkerSupervisor {
 	private closing = false;
 	private exitSeen = false;
 	private reclaimFailure = false;
+	private remoteTerminationUnconfirmed = false;
 	private recoveredWithoutProcess = false;
 	private quarantinedValue = false;
 	private reclaimPromise?: Promise<ResultValue<WorkerRecord, FoundationError>>;
 	private activeSideEffect: "none" | "writes" = "writes";
 
 	constructor(config: WorkerSupervisorConfig) {
-		this.config = Object.freeze({ ...config, capabilities: Object.freeze([...config.capabilities]) });
+		this.config = Object.freeze({
+			...config,
+			capabilities: Object.freeze([...config.capabilities]),
+			...(config.remoteEndpoint === undefined
+				? {}
+				: { remoteEndpoint: resolveWorkerRemoteEndpoint(config.remoteEndpoint) }),
+		});
 		this.environment = Object.freeze({ ...(config.environment ?? {}) });
 		this.now = config.now ?? (() => new Date());
 	}
@@ -232,7 +247,7 @@ export class OperationWorkerSupervisor {
 	get snapshot(): WorkerSupervisorSnapshot {
 		return Object.freeze({
 			...(this.lifecycle === undefined ? {} : { record: this.lifecycle.record }),
-			hasLiveProcess: this.child !== undefined && !this.exitSeen,
+			hasLiveProcess: this.hasLiveConnection(),
 			quarantined: this.quarantinedValue,
 		});
 	}
@@ -260,11 +275,20 @@ export class OperationWorkerSupervisor {
 		if (!sameStringSequence(input.binding.capabilitySummary, this.config.capabilities)) {
 			return Result.err(stableError("worker_unavailable", "Operation Worker capabilities are unavailable"));
 		}
-		if (
-			!pathIsTrustedFile(this.config.executable) ||
-			!pathIsTrustedFile(this.config.entrypoint) ||
-			!environmentIsSafe(this.environment)
-		) {
+		const remote = this.config.remoteEndpoint;
+		const localLauncherTrusted =
+			remote === undefined &&
+			this.config.executable !== undefined &&
+			this.config.entrypoint !== undefined &&
+			pathIsTrustedFile(this.config.executable) &&
+			pathIsTrustedFile(this.config.entrypoint) &&
+			environmentIsSafe(this.environment);
+		const remoteLauncherTrusted =
+			remote !== undefined &&
+			this.config.executable === undefined &&
+			this.config.entrypoint === undefined &&
+			Object.keys(this.environment).length === 0;
+		if (!localLauncherTrusted && !remoteLauncherTrusted) {
 			return Result.err(stableError("worker_profile_untrusted", "Operation Worker launcher is not trusted"));
 		}
 		if (
@@ -272,7 +296,8 @@ export class OperationWorkerSupervisor {
 			!isPositiveTimeout(this.config.heartbeatTimeoutMs) ||
 			!isPositiveTimeout(this.config.cancelTimeoutMs) ||
 			!isPositiveTimeout(this.config.terminateTimeoutMs) ||
-			!isPositiveTimeout(this.config.maxPendingWriteBytes)
+			!isPositiveTimeout(this.config.maxPendingWriteBytes) ||
+			(remote !== undefined && !isPositiveTimeout(remote.connectTimeoutMs))
 		) {
 			return Result.err(stableError("worker_invalid", "Operation Worker bounds are invalid"));
 		}
@@ -302,30 +327,48 @@ export class OperationWorkerSupervisor {
 		const starting = this.transition("starting");
 		if (!starting.ok) return starting;
 
-		try {
-			this.child = spawn(this.config.executable, [this.config.entrypoint], {
-				cwd: dirname(this.config.entrypoint),
-				env: { ...this.environment },
-				stdio: ["pipe", "pipe", "pipe"],
-				detached: true,
-				windowsHide: true,
-				shell: false,
-			});
-		} catch {
-			this.transition("failed", { sideEffectState: "none" });
-			return Result.err(stableError("worker_start_failed", "Operation Worker failed to start"));
-		}
-
-		const child = this.child;
 		this.readyWaiter = deferred();
 		this.exitWaiter = deferred();
-		this.attachProcessListeners(child);
-		if (child.pid === undefined) {
-			const failure = this.failStart();
-			await this.ensureProcessStoppedAndCleaned();
-			return Result.err(failure);
+		if (this.config.remoteEndpoint !== undefined) {
+			try {
+				const remoteChannel = new RemoteWorkerChannel(this.config.remoteEndpoint, {
+					onData: this.onStdoutData,
+					onEnd: this.onRemoteEnd,
+					onError: this.onProcessError,
+				});
+				this.remoteChannel = remoteChannel;
+				await remoteChannel.connect();
+			} catch {
+				const failure = this.failStart();
+				await this.ensureProcessStoppedAndCleaned();
+				return Result.err(failure);
+			}
+		} else {
+			const executable = this.config.executable!;
+			const entrypoint = this.config.entrypoint!;
+			try {
+				this.child = spawn(executable, [entrypoint], {
+					cwd: dirname(entrypoint),
+					env: { ...this.environment },
+					stdio: ["pipe", "pipe", "pipe"],
+					detached: true,
+					windowsHide: true,
+					shell: false,
+				});
+			} catch {
+				this.transition("failed", { sideEffectState: "none" });
+				return Result.err(stableError("worker_start_failed", "Operation Worker failed to start"));
+			}
+
+			const child = this.child;
+			this.attachProcessListeners(child);
+			if (child.pid === undefined) {
+				const failure = this.failStart();
+				await this.ensureProcessStoppedAndCleaned();
+				return Result.err(failure);
+			}
+			trackDetachedChildPid(child.pid);
 		}
-		trackDetachedChildPid(child.pid);
 
 		const initialize: OperationWorkerRequestFrame = {
 			type: "initialize",
@@ -351,7 +394,7 @@ export class OperationWorkerSupervisor {
 			}
 			if (
 				this.lifecycle?.record.status !== "ready" ||
-				this.child === undefined ||
+				!this.hasLiveConnection() ||
 				this.exitSeen ||
 				this.closing
 			) {
@@ -373,7 +416,7 @@ export class OperationWorkerSupervisor {
 
 	async execute(request: SandboxOperationRequest): Promise<ResultValue<WorkerReceipt, FoundationError>> {
 		if (
-			this.child === undefined ||
+			!this.hasLiveConnection() ||
 			this.lifecycle === undefined ||
 			this.lifecycle.record.status !== "ready" ||
 			this.receiptWaiter !== undefined
@@ -439,7 +482,7 @@ export class OperationWorkerSupervisor {
 			return Result.err(stableError("worker_lost", "Operation Worker lost a trusted terminal outcome"));
 		}
 		if (isWorkerExecutionTerminalStatus(this.lifecycle.record.status)) return Result.ok(undefined);
-		if (this.child === undefined) {
+		if (!this.hasLiveConnection()) {
 			return Result.err(stableError("worker_not_found", "Operation Worker was not activated"));
 		}
 		if (this.lifecycle.record.status !== "ready" && this.lifecycle.record.status !== "running" && this.lifecycle.record.status !== "cancelling") {
@@ -599,7 +642,7 @@ export class OperationWorkerSupervisor {
 		}
 
 		this.closing = true;
-		if (this.child !== undefined && !this.exitSeen && this.protocol.state.phase !== "lost") {
+		if (this.hasLiveConnection() && this.protocol.state.phase !== "lost") {
 			const sent = await this.sendFrame({
 				type: "reclaim",
 				requestId: this.nextRequestId("reclaim"),
@@ -626,7 +669,11 @@ export class OperationWorkerSupervisor {
 			}
 		}
 
-		const unknown = this.recoveredWithoutProcess || this.reclaimFailure || !exited;
+		const unknown =
+			this.recoveredWithoutProcess ||
+			this.reclaimFailure ||
+			this.remoteTerminationUnconfirmed ||
+			!exited;
 		this.quarantinedValue = unknown;
 		this.cleanupProcess();
 		const finished = this.transition(unknown ? "reclaim_unknown" : "reclaimed");
@@ -697,6 +744,11 @@ export class OperationWorkerSupervisor {
 		if (pid !== undefined) untrackDetachedChildPid(pid);
 		this.exitWaiter?.resolve();
 		if (!this.closing && !this.hasTrustedExecutionTerminal()) this.protocolFailure("worker_lost");
+	};
+
+	private readonly onRemoteEnd = (): void => {
+		this.onStdoutEnd();
+		this.onProcessExit();
 	};
 
 	private handleWorkerLine(line: string): void {
@@ -798,7 +850,7 @@ export class OperationWorkerSupervisor {
 		if (this.closing || this.lifecycle?.record.status === "lost") return;
 
 		if (readyFrame !== undefined) {
-			if (this.lifecycle?.record.status !== "starting" || this.child === undefined || this.exitSeen) {
+			if (this.lifecycle?.record.status !== "starting" || !this.hasLiveConnection() || this.exitSeen) {
 				this.protocolFailure("worker_lost");
 				return;
 			}
@@ -848,7 +900,11 @@ export class OperationWorkerSupervisor {
 
 	private async sendFrame(frame: OperationWorkerRequestFrame): Promise<ResultValue<void, FoundationError>> {
 		const child = this.child;
-		if (child === undefined || child.stdin.destroyed || !child.stdin.writable) {
+		const remoteChannel = this.remoteChannel;
+		if (
+			(child === undefined || child.stdin.destroyed || !child.stdin.writable) &&
+			(remoteChannel === undefined || remoteChannel.closed)
+		) {
 			return Result.err(stableError("worker_lost", "Operation Worker connection is unavailable"));
 		}
 		const accepted = this.protocol.receiveHostFrame(frame);
@@ -862,23 +918,34 @@ export class OperationWorkerSupervisor {
 		const bytes = Buffer.byteLength(line, "utf8");
 		if (
 			bytes > WORKER_PROTOCOL_MAX_FRAME_BYTES ||
-			child.stdin.writableLength + bytes >
+			(child?.stdin.writableLength ?? remoteChannel?.bufferedAmount ?? 0) + bytes >
 				(this.config.maxPendingWriteBytes ?? DEFAULT_MAX_PENDING_WRITE_BYTES)
 		) {
 			return Result.err(stableError("worker_operation_invalid", "Operation Worker backpressure limit was exceeded"));
 		}
+		if (remoteChannel !== undefined) {
+			try {
+				await remoteChannel.write(
+					line,
+					this.config.maxPendingWriteBytes ?? DEFAULT_MAX_PENDING_WRITE_BYTES,
+				);
+				return Result.ok(undefined);
+			} catch {
+				return Result.err(stableError("worker_lost", "Operation Worker connection is unavailable"));
+			}
+		}
 		try {
-			if (child.stdin.write(line, "utf8")) return Result.ok(undefined);
+			if (child!.stdin.write(line, "utf8")) return Result.ok(undefined);
 		} catch {
 			return Result.err(stableError("worker_lost", "Operation Worker connection is unavailable"));
 		}
 		const drained = deferred<void>();
-		child.stdin.once("drain", drained.resolve);
+		child!.stdin.once("drain", drained.resolve);
 		const result = await this.withTimeout(
 			drained.promise,
 			this.config.terminateTimeoutMs ?? DEFAULT_TERMINATE_TIMEOUT_MS,
 		);
-		child.stdin.removeListener("drain", drained.resolve);
+		child!.stdin.removeListener("drain", drained.resolve);
 		return result.timedOut
 			? Result.err(stableError("worker_lost", "Operation Worker backpressure did not drain"))
 			: Result.ok(undefined);
@@ -1010,6 +1077,14 @@ export class OperationWorkerSupervisor {
 	}
 
 	private async stopProcessTree(): Promise<void> {
+		const remoteChannel = this.remoteChannel;
+		if (remoteChannel !== undefined && !remoteChannel.closed) {
+			this.closing = true;
+			this.remoteTerminationUnconfirmed = true;
+			remoteChannel.close();
+			await wait(0);
+			return;
+		}
 		const child = this.child;
 		if (child === undefined || this.exitSeen) return;
 		this.closing = true;
@@ -1086,7 +1161,16 @@ export class OperationWorkerSupervisor {
 			child.stderr.destroy();
 		}
 		this.child = undefined;
+		this.remoteChannel?.detach();
+		this.remoteChannel = undefined;
 		this.stdoutBuffer = "";
+	}
+
+	private hasLiveConnection(): boolean {
+		return !this.exitSeen && (
+			this.child !== undefined ||
+			(this.remoteChannel !== undefined && !this.remoteChannel.closed)
+		);
 	}
 
 	private hasTrustedExecutionTerminal(): boolean {

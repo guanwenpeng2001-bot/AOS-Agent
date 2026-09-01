@@ -220,6 +220,25 @@ function snapshotProfile(profile: WorkerSandboxProfile | undefined): WorkerSandb
 		...(profile.supervisor.environment === undefined
 			? {}
 			: { environment: Object.freeze({ ...profile.supervisor.environment }) }),
+		...(profile.supervisor.remoteEndpoint === undefined
+			? {}
+			: {
+					remoteEndpoint: Object.freeze({
+						...profile.supervisor.remoteEndpoint,
+						address: Object.freeze({
+							...profile.supervisor.remoteEndpoint.address,
+							...(profile.supervisor.remoteEndpoint.address.auth === undefined
+								? {}
+								: { auth: Object.freeze({ ...profile.supervisor.remoteEndpoint.address.auth }) }),
+							...(profile.supervisor.remoteEndpoint.address.tls === undefined
+								? {}
+								: { tls: Object.freeze({ ...profile.supervisor.remoteEndpoint.address.tls }) }),
+						}),
+						...(profile.supervisor.remoteEndpoint.tls === undefined
+							? {}
+							: { tls: Object.freeze({ ...profile.supervisor.remoteEndpoint.tls }) }),
+					}),
+				}),
 	});
 	return Object.freeze({
 		profileId: profile.profileId,

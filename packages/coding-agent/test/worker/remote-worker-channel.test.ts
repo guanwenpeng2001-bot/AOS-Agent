@@ -1,0 +1,222 @@
+import {
+	type ChildProcessWithoutNullStreams,
+	spawn,
+} from "node:child_process";
+import { createServer } from "node:net";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
+import type { SandboxOperationRequest } from "../../../agent/src/internal.ts";
+import {
+	parseOperationWorkerFrame,
+	serializeWorkerFrameLine,
+	type OperationWorkerEventFrame,
+	type OperationWorkerRequestFrame,
+	validateOperationWorkerEventFrame,
+	validateOperationWorkerRequestFrame,
+} from "../../src/core/worker/protocol.ts";
+import {
+	OperationWorkerSupervisor,
+	type WorkerSupervisorConfig,
+} from "../../src/core/worker/supervisor.ts";
+import type { WorkerBinding } from "../../src/core/worker/lifecycle.ts";
+import { attachJsonlLineReader } from "../../src/modes/rpc/jsonl.ts";
+import {
+	createRpcTransport,
+	type RpcTransport,
+	type RpcTransportConnection,
+} from "../../src/modes/rpc/rpc-transport.ts";
+import type { WebsocketRpcAddress } from "../../src/modes/rpc/rpc-transport-address.ts";
+
+const LOOPBACK_HOST = "localhost";
+const CHILD_ENTRY = fileURLToPath(new URL("../fixtures/fake-worker-child.ts", import.meta.url));
+const TLS_FIXTURE_CERT = join(import.meta.dirname, "../../../../node_modules/ssh2/test/fixtures/https_cert.pem");
+const TLS_FIXTURE_KEY = join(import.meta.dirname, "../../../../node_modules/ssh2/test/fixtures/https_key.pem");
+const supervisors: OperationWorkerSupervisor[] = [];
+const transports: Array<RpcTransport<OperationWorkerRequestFrame, OperationWorkerEventFrame, WebsocketRpcAddress>> = [];
+const children = new Set<ChildProcessWithoutNullStreams>();
+
+afterEach(async () => {
+	for (const supervisor of supervisors.splice(0)) await supervisor.dispose();
+	for (const transport of transports.splice(0)) await transport.close();
+	for (const child of children) {
+		if (child.exitCode === null && child.signalCode === null) child.kill();
+	}
+	children.clear();
+});
+
+describe("remote Operation Worker channel", () => {
+	it("runs the unchanged stdio frame contract through a bearer-authenticated WSS endpoint", async () => {
+		const port = await getAvailablePort();
+		const address: WebsocketRpcAddress = {
+			transport: "websocket",
+			host: LOOPBACK_HOST,
+			port,
+			path: "/rpc",
+			auth: { scheme: "bearer", bearerToken: "remote-worker-test-token" },
+			tls: {
+				enabled: true,
+				minVersion: "1.2",
+				certRef: TLS_FIXTURE_CERT,
+				keyRef: TLS_FIXTURE_KEY,
+			},
+		};
+		let remoteSpawnCount = 0;
+		let remoteChild: ChildProcessWithoutNullStreams | undefined;
+		let detachChildOutput = (): void => undefined;
+		let relayTail = Promise.resolve();
+		const endpoint = createRpcTransport<OperationWorkerRequestFrame, OperationWorkerEventFrame>({
+			address,
+			parseCommand: (value) => {
+				if (!validateOperationWorkerRequestFrame(value)) throw new Error("invalid remote Worker request");
+				return value;
+			},
+			dispatch: (frame) => writeChildFrame(remoteChild, frame),
+			onConnection: (connection) => {
+				remoteSpawnCount += 1;
+				const child = spawn(process.execPath, [CHILD_ENTRY], {
+					env: { AOS_SAFE_TEST_MARKER: "1" },
+					stdio: ["pipe", "pipe", "pipe"],
+					windowsHide: true,
+					shell: false,
+				});
+				remoteChild = child;
+				children.add(child);
+				child.stdout.setEncoding("utf8");
+				detachChildOutput = attachJsonlLineReader(child.stdout, (line) => {
+					relayTail = relayTail.then(() => relayWorkerEvent(connection, line));
+					void relayTail.catch(() => {
+						if (child.exitCode === null && child.signalCode === null) child.kill();
+						void connection.close();
+					});
+				});
+				child.stderr.resume();
+				child.once("error", () => void connection.close());
+				child.once("exit", () => {
+					children.delete(child);
+					detachChildOutput();
+					void relayTail.finally(() => connection.close());
+				});
+			},
+			onConnectionClose: () => {
+				detachChildOutput();
+				if (remoteChild !== undefined && remoteChild.exitCode === null && remoteChild.signalCode === null) {
+					remoteChild.stdin.end();
+				}
+			},
+		});
+		transports.push(endpoint);
+		await endpoint.start();
+
+		const supervisorConfig: WorkerSupervisorConfig = {
+			remoteEndpoint: {
+				address,
+				connectTimeoutMs: 2_000,
+				tls: { caPath: TLS_FIXTURE_CERT },
+			},
+			profileId: "remote-success",
+			profileRevision: 1,
+			capabilities: ["filesystem.read", "process.spawn"],
+			readyTimeoutMs: 5_000,
+			heartbeatTimeoutMs: 2_000,
+			cancelTimeoutMs: 200,
+			terminateTimeoutMs: 1_000,
+		};
+		const supervisor = new OperationWorkerSupervisor(supervisorConfig);
+		supervisors.push(supervisor);
+		const workerBinding = binding();
+		const plan = supervisor.preflight({ binding: workerBinding, runAccepted: true });
+		expect(plan.ok).toBe(true);
+		expect(remoteSpawnCount).toBe(0);
+		if (!plan.ok) throw plan.error;
+
+		await expect(supervisor.activate(plan.value)).resolves.toMatchObject({
+			ok: true,
+			value: { status: "ready" },
+		});
+		expect(remoteSpawnCount).toBe(1);
+		expect(supervisor.snapshot.hasLiveProcess).toBe(true);
+		await expect(supervisor.execute(request(workerBinding))).resolves.toMatchObject({
+			ok: true,
+			value: { status: "succeeded", sideEffectState: "none" },
+		});
+		await expect(supervisor.reclaim()).resolves.toMatchObject({
+			ok: true,
+			value: { status: "reclaimed" },
+		});
+		expect(supervisor.snapshot).toMatchObject({ hasLiveProcess: false, quarantined: false });
+	});
+});
+
+function binding(): WorkerBinding {
+	return {
+		schemaVersion: 1,
+		workerId: "worker-remote-success",
+		providerId: "sandbox-worker",
+		sessionId: "session-1",
+		laneId: "main",
+		runId: "run-1",
+		bindingId: "binding-1",
+		bindingEpochId: "epoch-1",
+		attemptId: "attempt-1",
+		profileId: "remote-success",
+		profileRevision: 1,
+		capabilitySummary: ["filesystem.read", "process.spawn"],
+		deadlineAt: Date.now() + 10_000,
+		credentialTargetRefs: [],
+		requestFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	};
+}
+
+function request(workerBinding: WorkerBinding): SandboxOperationRequest {
+	return {
+		schemaVersion: 1,
+		operationId: "operation-remote-1",
+		providerId: workerBinding.providerId,
+		bindingId: workerBinding.bindingId,
+		bindingEpochId: workerBinding.bindingEpochId,
+		attemptId: workerBinding.attemptId,
+		taskId: "task-1",
+		dispatchId: "dispatch-1",
+		payload: { action: "read" },
+	};
+}
+
+function writeChildFrame(
+	child: ChildProcessWithoutNullStreams | undefined,
+	frame: OperationWorkerRequestFrame,
+): Promise<void> {
+	if (child === undefined || child.stdin.destroyed || !child.stdin.writable) {
+		return Promise.reject(new Error("remote Worker process is unavailable"));
+	}
+	const line = serializeWorkerFrameLine(frame);
+	return new Promise<void>((resolve, reject) => {
+		child.stdin.write(line, "utf8", (error?: Error | null) => {
+			if (error === undefined || error === null) resolve();
+			else reject(error);
+		});
+	});
+}
+
+async function relayWorkerEvent(
+	connection: RpcTransportConnection<OperationWorkerRequestFrame, OperationWorkerEventFrame>,
+	line: string,
+): Promise<void> {
+	const parsed = parseOperationWorkerFrame(line);
+	if (!parsed.ok || !validateOperationWorkerEventFrame(parsed.value)) {
+		throw new Error("invalid remote Worker event");
+	}
+	await connection.send(parsed.value);
+}
+
+async function getAvailablePort(): Promise<number> {
+	const server = createServer();
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	const address = server.address();
+	if (address === null || typeof address === "string") throw new Error("Test listener did not expose a TCP port");
+	await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+	return address.port;
+}
