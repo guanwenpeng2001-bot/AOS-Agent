@@ -31,6 +31,24 @@ export function acquireWriterLease(
 	return row === undefined ? undefined : { ownerId: row.owner_id, fence: row.fence, expiresAtMs: row.expires_at_ms };
 }
 
+/** Explicitly replaces the current writer and increments its fencing generation. */
+export function takeOverWriterLease(
+	db: SqliteDatabase,
+	sessionId: string,
+	ownerId: string,
+	expiresAtMs: number,
+): WriterLease {
+	const row = sql`INSERT INTO writer_leases (session_id, owner_id, fence, expires_at_ms)
+		VALUES (${sessionId}, ${ownerId}, 1, ${expiresAtMs})
+		ON CONFLICT(session_id) DO UPDATE SET
+			owner_id = excluded.owner_id,
+			fence = writer_leases.fence + 1,
+			expires_at_ms = excluded.expires_at_ms
+		RETURNING owner_id, fence, expires_at_ms`.get<WriterLeaseRow>(db);
+	if (row === undefined) throw new Error(`Failed to take over SQLite writer lease for ${sessionId}`);
+	return { ownerId: row.owner_id, fence: row.fence, expiresAtMs: row.expires_at_ms };
+}
+
 export function renewWriterLease(
 	db: SqliteDatabase,
 	sessionId: string,

@@ -20,6 +20,7 @@
 
 ### Added
 
+- Optional Node SQLite Session ledger with cross-Host writer fencing, explicit take-over, read-only followers, and JSONL migration.
 - Remote-neutral operation binding for remote Workers, including bounded WorkerReceipt projection, lease renewal after cross-host ping/pong liveness proof, and fail-closed reclaim when transport loss makes remote termination unprovable.
 - Remote Operation Workers can connect through the shared bearer/mTLS WebSocket transport configuration, carrying the existing bounded stdio frame contract over WS/TLS without changing Worker protocol records.
 - RPC TCP and WebSocket listeners now support bearer authentication, TLS termination, mTLS client certificates, secured non-loopback binding, and matching `RpcClient` credentials.

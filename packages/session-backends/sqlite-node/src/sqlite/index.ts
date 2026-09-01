@@ -1,6 +1,7 @@
 export * from "./migrations.ts";
 export {
 	SqliteSessionRepository,
+	type SqliteSessionOpenOptions,
 	type SqliteSessionRepositoryOptions,
 	type SqliteWriterLeaseOptions,
 } from "./repo.ts";
