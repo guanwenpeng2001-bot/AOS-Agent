@@ -15,9 +15,12 @@ import * as crypto from "node:crypto";
 import {
 	AgentOperationError,
 	type CanonicalRunResult,
+	type EndpointKind,
 	type FoundationError,
 	fingerprintFoundationValue,
 	LayeredResultSettlement,
+	negotiateProtocol,
+	type ProtocolCapabilities,
 	type ResultValue,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
@@ -249,6 +252,8 @@ export interface RpcHostOutputSink {
 export interface RpcHostControllerOptions {
 	/** Legacy constructor sink; new callers should use attach(). */
 	output?: RpcHostOutputSink | RpcOutputSink;
+	/** Active transport endpoint used for protocol feature negotiation. */
+	endpointKind?: EndpointKind;
 	/** Called after the runtime has been disposed by an internal shutdown request. */
 	onShutdown?: () => void;
 	/** Trusted Host-only authority for dereferencing canonical External Connector artifacts. */
@@ -729,6 +734,7 @@ export class RpcHostController {
 	private readonly runtimeHost: AgentSessionRuntime;
 	private outputSink: RpcHostOutputSink | undefined;
 	private readonly onShutdown?: () => void;
+	private readonly endpointKind: EndpointKind;
 	private readonly externalArtifactAuthority?: NonNullable<RpcHostControllerOptions["externalArtifactAuthority"]>;
 	private commandHandler?: (
 		command: RpcCommand,
@@ -754,6 +760,7 @@ export class RpcHostController {
 		this.runtimeHost = runtimeHost;
 		this.outputSink = options.output === undefined ? undefined : adaptOutputSink(options.output);
 		this.onShutdown = options.onShutdown;
+		this.endpointKind = options.endpointKind ?? "stdio";
 		this.externalArtifactAuthority = options.externalArtifactAuthority;
 	}
 
@@ -3788,6 +3795,36 @@ export class RpcHostController {
 							),
 						);
 					}
+					let websocketProtocol: InitializeData["protocol"] | undefined;
+					if (this.endpointKind === "websocket") {
+						const server: ProtocolCapabilities = {
+							versions: { min: 1, max: 1 },
+							features: ["transport.websocket"],
+						};
+						const client: ProtocolCapabilities = command.client ?? {
+							versions: { min: command.protocolVersion, max: command.protocolVersion },
+							features: ["transport.websocket"],
+						};
+						const negotiation = negotiateProtocol(server, client);
+						if (!negotiation.ok) {
+							return automationError(
+								id,
+								"initialize",
+								createAutomationError("unsupported_protocol_version", negotiation.error.message, false),
+							);
+						}
+						websocketProtocol = {
+							server,
+							negotiated: negotiation.value,
+							endpoint: {
+								kind: "websocket",
+								loopback: true,
+								authScheme: "none",
+								tlsEnabled: false,
+								allowRemote: false,
+							},
+						};
+					}
 					// Idempotent: a repeat initialize re-advertises the contract without
 					// recreating the coordinator or resetting run state, so an in-flight
 					// reservation/run is never lost.
@@ -3818,6 +3855,7 @@ export class RpcHostController {
 						protocolVersion: 1,
 						sessionId: currentBinding.session.sessionId,
 						runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
+						...(websocketProtocol === undefined ? {} : { protocol: websocketProtocol }),
 						auditCommands: ["audit.query", "audit.replay"],
 						taskGateCommands: [
 							"task.gate.request",

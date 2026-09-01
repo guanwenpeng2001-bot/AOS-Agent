@@ -163,6 +163,17 @@ describe("parseArgs", () => {
 			expect(result.diagnostics).toEqual([]);
 		});
 
+		test("parses a loopback WebSocket --rpc-listen address", () => {
+			const result = parseArgs(["--mode", "rpc", "--rpc-listen", "ws://127.0.0.1:4123"]);
+			expect(result.rpcListen).toEqual({
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: 4123,
+				path: "/rpc",
+			});
+			expect(result.diagnostics).toEqual([]);
+		});
+
 		test("requires --mode rpc for --rpc-listen", () => {
 			const result = parseArgs(["--rpc-listen", "tcp://127.0.0.1:4123"]);
 			expect(result.rpcListen).toBeUndefined();

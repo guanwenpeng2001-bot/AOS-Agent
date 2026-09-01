@@ -21,6 +21,7 @@ export {
 	type RpcClientOptions,
 	type RpcClientTcpOptions,
 	type RpcClientTransportOptions,
+	type RpcClientWebsocketOptions,
 	type RpcEventListener,
 	type RpcRunEventListener,
 	type RpcRunStreamEvent,
@@ -29,6 +30,7 @@ export {
 	RPC_TRANSPORT_LOOPBACK_HOST,
 	RPC_TRANSPORT_PORT_MAX,
 	RPC_TRANSPORT_PORT_MIN,
+	RPC_WEBSOCKET_DEFAULT_PATH,
 	RpcTransportAddressError,
 	formatRpcTransportAddress,
 	parseRpcTransportAddress,
@@ -37,6 +39,7 @@ export {
 	type RpcTransportAddressErrorCode,
 	type RpcTransportAddressParseResult,
 	type TcpRpcAddress,
+	type WebsocketRpcAddress,
 } from "./rpc/rpc-transport-address.ts";
 export {
 	RpcTransport,

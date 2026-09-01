@@ -16,6 +16,11 @@ import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateLis
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/policy/mcp-auth.ts";
 import type { ModelRoleSelection, ModelRouteSelection } from "../../core/runtime/model-broker.ts";
 import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/session/run-lifecycle.ts";
+import {
+	BoundedProtocolError,
+	BoundedProtocolWriter,
+	DEFAULT_BOUNDED_PROTOCOL_LIMITS,
+} from "../../core/bounded-protocol.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import {
 	attachJsonlLineReader,
@@ -27,6 +32,7 @@ import {
 } from "./jsonl.ts";
 import {
 	RPC_TRANSPORT_LOOPBACK_HOST,
+	RPC_WEBSOCKET_DEFAULT_PATH,
 	validateRpcTransportAddress,
 	RpcTransportAddressError,
 } from "./rpc-transport-address.ts";
@@ -106,8 +112,21 @@ export interface RpcClientTcpOptions {
 	connectTimeoutMs?: number;
 }
 
+/** Explicit loopback WebSocket connection settings for an RpcClient. */
+export interface RpcClientWebsocketOptions {
+	type: "websocket";
+	transport?: "websocket";
+	kind?: "websocket";
+	/** The only host accepted by the RPC client. Defaults to 127.0.0.1. */
+	host?: string;
+	port: number;
+	/** Fixed path for this transport revision. Defaults to /rpc. */
+	path?: "/rpc";
+	connectTimeoutMs?: number;
+}
+
 /** RpcClient transport selection. Stdio remains the default when omitted. */
-export type RpcClientTransportOptions = "stdio" | "tcp" | RpcClientTcpOptions;
+export type RpcClientTransportOptions = "stdio" | "tcp" | RpcClientTcpOptions | RpcClientWebsocketOptions;
 
 export interface RpcClientOptions {
 	/** Path to the CLI entry point (default: searches for dist/cli.js) */
@@ -179,6 +198,8 @@ function isRpcTransportErrorCode(value: unknown): value is RpcTransportErrorCode
 		value === "rpc_transport_bind_failed" ||
 		value === "rpc_transport_connection_busy" ||
 		value === "rpc_transport_frame_too_large" ||
+		value === "rpc_transport_pending_write_limit" ||
+		value === "rpc_transport_drain_timeout" ||
 		value === "rpc_transport_closed" ||
 		value === "rpc_transport_write_failed" ||
 		value === "rpc_transport_invalid_json" ||
@@ -280,12 +301,20 @@ export class McpContentRpcError extends Error {
 export class RpcClient {
 	private process: ChildProcess | null = null;
 	private socket: Socket | null = null;
+	private websocket: WebSocket | null = null;
 	private inputStream: Writable | null = null;
 	private tcpWriter: JsonlLineWriter | null = null;
+	private websocketWriter: RpcClientWebsocketWriter | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private tcpSocketEvents: {
 		socket: Socket;
 		onError: (error: Error) => void;
+		onClose: () => void;
+	} | null = null;
+	private websocketEvents: {
+		websocket: WebSocket;
+		onMessage: (event: MessageEvent) => void;
+		onError: () => void;
 		onClose: () => void;
 	} | null = null;
 	private eventListeners: RpcEventListener[] = [];
@@ -304,11 +333,16 @@ export class RpcClient {
 
 	/** Start the configured RPC transport. */
 	async start(): Promise<void> {
-		if (this.process || this.socket) {
+		if (this.process || this.socket || this.websocket) {
 			throw new Error("Client already started");
 		}
 
 		this.exitError = null;
+		const websocketOptions = this.resolveWebsocketOptions();
+		if (websocketOptions) {
+			await this.startWebsocket(websocketOptions);
+			return;
+		}
 		const tcpOptions = this.resolveTcpOptions();
 		if (tcpOptions) {
 			await this.startTcp(tcpOptions);
@@ -422,8 +456,36 @@ export class RpcClient {
 		}
 	}
 
+	private async startWebsocket(options: NormalizedRpcClientWebsocketOptions): Promise<void> {
+		const websocket = new WebSocket(`ws://${options.host}:${options.port}${options.path}`);
+		this.websocket = websocket;
+		this.websocketWriter = new RpcClientWebsocketWriter(websocket, (error) =>
+			this.handleWebsocketError(websocket, toRpcTransportError(error, "rpc_transport_write_failed")),
+		);
+		this.attachWebsocketEvents(websocket);
+		try {
+			await this.waitForWebsocketConnection(websocket, options.connectTimeoutMs);
+		} catch (error: unknown) {
+			const connectionError = this.exitError ?? toRpcTransportError(error, "rpc_transport_connection_failed");
+			this.exitError = connectionError;
+			this.rejectPendingRequests(connectionError);
+			this.websocketWriter.close();
+			this.websocketWriter = null;
+			this.detachWebsocketEvents(websocket);
+			this.websocket = null;
+			if (websocket.readyState === WebSocket.CONNECTING || websocket.readyState === WebSocket.OPEN) {
+				websocket.close();
+			}
+			throw connectionError;
+		}
+	}
+
 	/** Stop and close the configured RPC transport. */
 	async stop(): Promise<void> {
+		if (this.websocket) {
+			await this.stopWebsocket(this.websocket);
+			return;
+		}
 		if (this.socket) {
 			await this.stopTcp(this.socket);
 			return;
@@ -797,7 +859,18 @@ export class RpcClient {
 	 * advertised host contract.
 	 */
 	async initializeAutomationHost(): Promise<InitializeData> {
-		const response = await this.sendAutomation({ type: "initialize", protocolVersion: 1 });
+		const response = await this.sendAutomation({
+			type: "initialize",
+			protocolVersion: 1,
+			...(this.websocket === null
+				? {}
+				: {
+						client: {
+							versions: { min: 1, max: 1 },
+							features: ["transport.websocket"] as const,
+						},
+					}),
+		});
 		return this.getAutomationData<InitializeData>(response);
 	}
 
@@ -1404,6 +1477,7 @@ export class RpcClient {
 			if (isRpcTransportErrorRecord(data)) {
 				const transportError = new RpcTransportError(data.error.code, data.error.message);
 				if (this.socket !== null) this.handleTcpSocketError(this.socket, transportError);
+				else if (this.websocket !== null) this.handleWebsocketError(this.websocket, transportError);
 				else this.rejectPendingRequests(transportError);
 				return;
 			}
@@ -1413,6 +1487,7 @@ export class RpcClient {
 					"RPC transport returned an invalid error record",
 				);
 				if (this.socket !== null) this.handleTcpSocketError(this.socket, transportError);
+				else if (this.websocket !== null) this.handleWebsocketError(this.websocket, transportError);
 				else this.rejectPendingRequests(transportError);
 				return;
 			}
@@ -1455,6 +1530,11 @@ export class RpcClient {
 			// Preserve stdio's historical tolerance for incidental non-JSON output.
 			if (this.socket !== null) {
 				this.handleTcpSocketError(this.socket, toRpcTransportError(error, "rpc_transport_connection_failed"));
+			} else if (this.websocket !== null) {
+				this.handleWebsocketError(
+					this.websocket,
+					toRpcTransportError(error, "rpc_transport_connection_failed"),
+				);
 			}
 		}
 	}
@@ -1470,6 +1550,7 @@ export class RpcClient {
 			return normalizeTcpOptions(this.options.tcp);
 		}
 		if (configuredTransport === "stdio") return null;
+		if (typeof configuredTransport === "object" && configuredTransport.type === "websocket") return null;
 
 		if (configuredTransport === "tcp") {
 			if (this.options.tcp === undefined) {
@@ -1482,6 +1563,12 @@ export class RpcClient {
 		}
 
 		return normalizeTcpOptions(configuredTransport);
+	}
+
+	private resolveWebsocketOptions(): NormalizedRpcClientWebsocketOptions | null {
+		const configuredTransport = this.options.transport;
+		if (typeof configuredTransport !== "object" || configuredTransport.type !== "websocket") return null;
+		return normalizeWebsocketOptions(configuredTransport);
 	}
 
 	private attachTcpSocketEvents(socket: Socket): void {
@@ -1525,6 +1612,149 @@ export class RpcClient {
 		this.tcpWriter = null;
 		this.socket = null;
 		this.inputStream = null;
+	}
+
+	private attachWebsocketEvents(websocket: WebSocket): void {
+		const onMessage = (event: MessageEvent): void => {
+			if (this.websocket !== websocket) return;
+			if (typeof event.data !== "string") {
+				this.handleWebsocketError(
+					websocket,
+					new RpcTransportError(
+						"rpc_transport_connection_failed",
+						"RPC WebSocket transport accepts text messages only",
+					),
+				);
+				return;
+			}
+			const frameBytes = Buffer.byteLength(event.data, "utf8") + (event.data.endsWith("\n") ? 0 : 1);
+			if (frameBytes > DEFAULT_MAX_JSONL_FRAME_BYTES) {
+				this.handleWebsocketError(
+					websocket,
+					new RpcTransportError(
+						"rpc_transport_frame_too_large",
+						"RPC JSONL frame exceeds the configured maximum",
+					),
+				);
+				return;
+			}
+			let line = event.data;
+			if (line.endsWith("\n")) line = line.slice(0, -1);
+			if (line.endsWith("\r")) line = line.slice(0, -1);
+			if (line.includes("\n")) {
+				this.handleWebsocketError(
+					websocket,
+					new RpcTransportError(
+						"rpc_transport_connection_failed",
+						"RPC WebSocket message must contain exactly one JSONL frame",
+					),
+				);
+				return;
+			}
+			this.handleLine(line);
+		};
+		const onError = (): void => {
+			this.handleWebsocketError(
+				websocket,
+				new RpcTransportError("rpc_transport_connection_failed", "RPC WebSocket transport failed"),
+			);
+		};
+		const onClose = (): void => {
+			this.handleWebsocketClose(websocket);
+		};
+		this.websocketEvents = { websocket, onMessage, onError, onClose };
+		websocket.addEventListener("message", onMessage);
+		websocket.addEventListener("error", onError);
+		websocket.addEventListener("close", onClose);
+	}
+
+	private detachWebsocketEvents(websocket: WebSocket): void {
+		const events = this.websocketEvents;
+		if (!events || events.websocket !== websocket) return;
+		websocket.removeEventListener("message", events.onMessage);
+		websocket.removeEventListener("error", events.onError);
+		websocket.removeEventListener("close", events.onClose);
+		this.websocketEvents = null;
+	}
+
+	private handleWebsocketError(websocket: WebSocket, error: Error): void {
+		if (this.websocket !== websocket) return;
+		const transportError = toRpcTransportError(error, "rpc_transport_connection_failed");
+		this.exitError ??= transportError;
+		this.rejectPendingRequests(this.exitError);
+		this.websocketWriter?.close();
+		if (websocket.readyState === WebSocket.CONNECTING || websocket.readyState === WebSocket.OPEN) {
+			websocket.close();
+		}
+	}
+
+	private handleWebsocketClose(websocket: WebSocket): void {
+		if (this.websocket !== websocket) return;
+		this.exitError ??= new RpcTransportError("rpc_transport_closed", "RPC transport connection is closed");
+		this.rejectPendingRequests(this.exitError);
+		this.detachWebsocketEvents(websocket);
+		this.websocketWriter?.close();
+		this.websocketWriter = null;
+		this.websocket = null;
+	}
+
+	private async stopWebsocket(websocket: WebSocket): Promise<void> {
+		this.rejectPendingRequests(new Error("RPC client stopped"));
+		this.websocketWriter?.close();
+		this.websocketWriter = null;
+		if (websocket.readyState === WebSocket.CLOSED) {
+			this.detachWebsocketEvents(websocket);
+			if (this.websocket === websocket) this.websocket = null;
+			return;
+		}
+		await new Promise<void>((resolve) => {
+			let settled = false;
+			const finish = (): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				resolve();
+			};
+			const timeout = setTimeout(finish, 1000);
+			websocket.addEventListener("close", finish, { once: true });
+			websocket.close();
+		});
+		this.detachWebsocketEvents(websocket);
+		if (this.websocket === websocket) this.websocket = null;
+	}
+
+	private waitForWebsocketConnection(websocket: WebSocket, timeoutMs: number): Promise<void> {
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const finish = (error?: Error): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				websocket.removeEventListener("open", onOpen);
+				websocket.removeEventListener("error", onError);
+				websocket.removeEventListener("close", onClose);
+				if (error) reject(error);
+				else resolve();
+			};
+			const onOpen = (): void => finish();
+			const onError = (): void =>
+				finish(new RpcTransportError("rpc_transport_connection_failed", "RPC WebSocket connection failed"));
+			const onClose = (): void =>
+				finish(new RpcTransportError("rpc_transport_closed", "RPC transport connection is closed"));
+			const timeout = setTimeout(
+				() =>
+					finish(
+						new RpcTransportError(
+							"rpc_transport_connection_failed",
+							`Timed out connecting to RPC WebSocket transport after ${timeoutMs}ms`,
+						),
+					),
+				timeoutMs,
+			);
+			websocket.addEventListener("open", onOpen, { once: true });
+			websocket.addEventListener("error", onError, { once: true });
+			websocket.addEventListener("close", onClose, { once: true });
+		});
 	}
 
 	private async stopTcp(socket: Socket): Promise<void> {
@@ -1613,8 +1843,9 @@ export class RpcClient {
 			throw this.exitError;
 		}
 		const socket = this.socket;
+		const websocket = this.websocket;
 		const stdin = this.inputStream;
-		if ((!childProcess && !socket) || !stdin) {
+		if ((!childProcess && !socket && !websocket) || (!websocket && !stdin)) {
 			throw new Error("Client not started");
 		}
 		if (childProcess && childProcess.exitCode !== null) {
@@ -1630,14 +1861,21 @@ export class RpcClient {
 			this.handleTcpSocketError(socket, error);
 			throw error;
 		}
-		if (childProcess && (stdin.destroyed || !stdin.writable)) {
+		if (websocket && websocket.readyState !== WebSocket.OPEN) {
+			const error = new RpcTransportError("rpc_transport_closed", "RPC transport connection is closed");
+			this.handleWebsocketError(websocket, error);
+			throw error;
+		}
+		if (childProcess && (!stdin || stdin.destroyed || !stdin.writable)) {
 			const error = new Error(`Agent process stdin is not writable. Stderr: ${this.stderr}`);
 			this.exitError = error;
 			throw error;
 		}
-		const writePromise = socket
-			? this.tcpWriter?.write(record)
-			: writeStdioLine(stdin, serializeJsonLine(record));
+		const writePromise = websocket
+			? this.websocketWriter?.write(record)
+			: socket
+				? this.tcpWriter?.write(record)
+				: writeStdioLine(stdin!, serializeJsonLine(record));
 		if (writePromise === undefined) {
 			const writeError = new RpcTransportError("rpc_transport_write_failed", "RPC transport write failed");
 			throw writeError;
@@ -1645,7 +1883,7 @@ export class RpcClient {
 		try {
 			await writePromise;
 		} catch (error: unknown) {
-			const writeError = socket
+			const writeError = socket || websocket
 				? toRpcTransportError(
 						error,
 						error instanceof JsonlFrameError ? "rpc_transport_frame_too_large" : "rpc_transport_write_failed",
@@ -1654,6 +1892,7 @@ export class RpcClient {
 					? error
 					: new Error(String(error));
 			if (socket) this.handleTcpSocketError(socket, writeError);
+			else if (websocket) this.handleWebsocketError(websocket, writeError);
 			throw writeError;
 		}
 	}
@@ -1664,8 +1903,9 @@ export class RpcClient {
 			throw this.exitError;
 		}
 		const socket = this.socket;
+		const websocket = this.websocket;
 		const stdin = this.inputStream;
-		if ((!childProcess && !socket) || !stdin) {
+		if ((!childProcess && !socket && !websocket) || (!websocket && !stdin)) {
 			throw new Error("Client not started");
 		}
 		if (childProcess && childProcess.exitCode !== null) {
@@ -1681,7 +1921,12 @@ export class RpcClient {
 			this.handleTcpSocketError(socket, error);
 			throw error;
 		}
-		if (childProcess && (stdin.destroyed || !stdin.writable)) {
+		if (websocket && websocket.readyState !== WebSocket.OPEN) {
+			const error = new RpcTransportError("rpc_transport_closed", "RPC transport connection is closed");
+			this.handleWebsocketError(websocket, error);
+			throw error;
+		}
+		if (childProcess && (!stdin || stdin.destroyed || !stdin.writable)) {
 			const error = new Error(`Agent process stdin is not writable. Stderr: ${this.stderr}`);
 			this.exitError = error;
 			throw error;
@@ -1792,6 +2037,13 @@ interface NormalizedRpcClientTcpOptions {
 	connectTimeoutMs: number;
 }
 
+interface NormalizedRpcClientWebsocketOptions {
+	host: typeof RPC_TRANSPORT_LOOPBACK_HOST;
+	port: number;
+	path: typeof RPC_WEBSOCKET_DEFAULT_PATH;
+	connectTimeoutMs: number;
+}
+
 function normalizeTcpOptions(options: RpcClientTcpOptions): NormalizedRpcClientTcpOptions {
 	for (const discriminator of [options.type, options.kind, options.transport]) {
 		if (discriminator !== undefined && discriminator !== "tcp") {
@@ -1817,6 +2069,77 @@ function normalizeTcpOptions(options: RpcClientTcpOptions): NormalizedRpcClientT
 		);
 	}
 	return { host: address.host, port: address.port, connectTimeoutMs };
+}
+
+function normalizeWebsocketOptions(options: RpcClientWebsocketOptions): NormalizedRpcClientWebsocketOptions {
+	for (const discriminator of [options.type, options.kind, options.transport]) {
+		if (discriminator !== undefined && discriminator !== "websocket") {
+			throw new RpcTransportAddressError(
+				"rpc_transport_address_invalid",
+				'WebSocket transport must use the "websocket" discriminator',
+			);
+		}
+	}
+	const address = validateRpcTransportAddress({
+		transport: "websocket",
+		host: options.host ?? RPC_TRANSPORT_LOOPBACK_HOST,
+		port: options.port,
+		path: options.path ?? RPC_WEBSOCKET_DEFAULT_PATH,
+	});
+	if (address.transport !== "websocket") {
+		throw new RpcTransportAddressError("rpc_transport_address_invalid", "WebSocket transport address is invalid");
+	}
+	const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_RPC_CLIENT_CONNECT_TIMEOUT_MS;
+	if (
+		!Number.isSafeInteger(connectTimeoutMs) ||
+		connectTimeoutMs <= 0 ||
+		connectTimeoutMs > MAX_RPC_CLIENT_CONNECT_TIMEOUT_MS
+	) {
+		throw new Error(
+			`RpcClient WebSocket connectTimeoutMs must be an integer between 1 and ${MAX_RPC_CLIENT_CONNECT_TIMEOUT_MS}`,
+		);
+	}
+	return { host: address.host, port: address.port, path: address.path, connectTimeoutMs };
+}
+
+class RpcClientWebsocketWriter {
+	private readonly protocol: BoundedProtocolWriter<string>;
+
+	constructor(websocket: WebSocket, onError: (error: Error) => void) {
+		this.protocol = new BoundedProtocolWriter<string>({
+			maxPendingBytes: DEFAULT_BOUNDED_PROTOCOL_LIMITS.maxPendingBytes,
+			maxPendingEntries: DEFAULT_BOUNDED_PROTOCOL_LIMITS.maxPendingEntries,
+			drainTimeoutMs: DEFAULT_BOUNDED_PROTOCOL_LIMITS.drainTimeoutMs,
+			byteLength: (line) => Buffer.byteLength(line, "utf8"),
+			write: (line) => {
+				if (websocket.readyState !== WebSocket.OPEN) {
+					throw new BoundedProtocolError("protocol_closed", "RPC WebSocket writer is closed");
+				}
+				websocket.send(line);
+			},
+			onError,
+		});
+	}
+
+	write(value: unknown): Promise<void> {
+		let line: string;
+		try {
+			line = serializeJsonLine(value);
+		} catch (error: unknown) {
+			return Promise.reject(error);
+		}
+		const frameBytes = Buffer.byteLength(line, "utf8");
+		if (frameBytes > DEFAULT_MAX_JSONL_FRAME_BYTES) {
+			const error = new JsonlFrameError(frameBytes, DEFAULT_MAX_JSONL_FRAME_BYTES);
+			void this.protocol.close(error).catch(() => {});
+			return Promise.reject(error);
+		}
+		return this.protocol.write(line);
+	}
+
+	close(): void {
+		void this.protocol.close().catch(() => {});
+	}
 }
 
 function writeStdioLine(stream: Writable, line: string): Promise<void> {

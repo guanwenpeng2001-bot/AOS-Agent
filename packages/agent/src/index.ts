@@ -122,6 +122,18 @@ export type { ObserverCursor } from "./harness/foundation/observer.ts";
 export type { PluginContract } from "./harness/foundation/plugin.ts";
 export type { ProfileContract } from "./harness/foundation/profile.ts";
 export {
+	PROTOCOL_VERSION,
+	negotiateProtocol,
+	validateEndpointSecurity,
+} from "./harness/foundation/protocol.ts";
+export type {
+	EndpointKind,
+	EndpointSecurityVerdict,
+	ProtocolCapabilities,
+	ProtocolFeature,
+	ProtocolNegotiation,
+} from "./harness/foundation/protocol.ts";
+export {
 	createConnectorCapabilitySnapshot,
 	validateChildSpawnRequest,
 	validateConnectorCapabilitySnapshot,

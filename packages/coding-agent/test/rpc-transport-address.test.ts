@@ -5,6 +5,7 @@ import {
 	RPC_TRANSPORT_LOOPBACK_HOST,
 	RPC_TRANSPORT_PORT_MAX,
 	RPC_TRANSPORT_PORT_MIN,
+	RPC_WEBSOCKET_DEFAULT_PATH,
 	RpcTransportAddressError,
 	validateRpcTransportAddress,
 	type RpcTransportAddressErrorCode,
@@ -113,5 +114,65 @@ describe("RPC TCP transport address", () => {
 		expect(() => validateRpcTransportAddress({ transport: "tcp", host: "127.0.0.1", port })).toThrowError(
 			RpcTransportAddressError,
 		);
+	});
+});
+
+describe("RPC WebSocket transport address", () => {
+	test.each([
+		["ws://127.0.0.1:1", RPC_TRANSPORT_PORT_MIN],
+		["ws://127.0.0.1:4123", 4123],
+		["ws://127.0.0.1:65535/rpc", RPC_TRANSPORT_PORT_MAX],
+	])("accepts %s", (value, port) => {
+		expect(parseRpcTransportAddress(value)).toEqual({
+			address: {
+				transport: "websocket",
+				host: RPC_TRANSPORT_LOOPBACK_HOST,
+				port,
+				path: RPC_WEBSOCKET_DEFAULT_PATH,
+			},
+		});
+	});
+
+	test("formats the fixed WebSocket path", () => {
+		expect(
+			formatRpcTransportAddress({
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: 4123,
+				path: "/rpc",
+			}),
+		).toBe("ws://127.0.0.1:4123/rpc");
+	});
+
+	test.each([
+		"ws://localhost:4123",
+		"ws://0.0.0.0:4123",
+		"ws://192.168.1.10:4123",
+	])("rejects non-loopback host %s", (value) => {
+		expectError(value, "rpc_transport_not_loopback");
+	});
+
+	test.each([
+		"wss://127.0.0.1:4123",
+		"ws://user@127.0.0.1:4123",
+		"ws://user:secret@127.0.0.1:4123",
+		"ws://127.0.0.1:4123/",
+		"ws://127.0.0.1:4123/other",
+		"ws://127.0.0.1:4123/rpc?token=secret",
+		"ws://127.0.0.1:4123/rpc#fragment",
+	])("rejects unsupported WebSocket address %s", (value) => {
+		const error = expectError(value, "rpc_transport_address_invalid");
+		expect(error.message).not.toContain("secret");
+	});
+
+	test("validates and defaults a structured WebSocket path", () => {
+		expect(
+			validateRpcTransportAddress({ transport: "websocket", host: "127.0.0.1", port: 4123 }),
+		).toEqual({
+			transport: "websocket",
+			host: "127.0.0.1",
+			port: 4123,
+			path: "/rpc",
+		});
 	});
 });

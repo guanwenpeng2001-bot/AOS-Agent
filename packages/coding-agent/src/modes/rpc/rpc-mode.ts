@@ -1,7 +1,8 @@
 /**
- * RPC adapters for the legacy stdio mode and the loopback TCP listener.
+ * RPC adapters for stdio and loopback network listeners.
  */
 
+import { validateEndpointSecurity } from "@aos-agent/agent-core";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import type { AgentSessionRuntime } from "../../core/session/runtime.ts";
 import {
@@ -23,17 +24,17 @@ import { createRpcHostController, type RpcHostOutputRecord } from "./rpc-host.ts
 import type { RpcCommand, RpcExtensionUIResponse } from "./rpc-types.ts";
 
 export interface RpcModeOptions {
-	/** Listen for JSONL RPC commands over loopback TCP instead of process stdio. */
+	/** Listen for RPC commands over loopback TCP or WebSocket instead of process stdio. */
 	readonly listen?: RpcTransportAddress;
 }
 
-type TcpRpcCommand = RpcCommand | RpcExtensionUIResponse;
+type NetworkRpcCommand = RpcCommand | RpcExtensionUIResponse;
 
 /** Run the selected RPC transport. Stdio remains the default for compatibility. */
 export async function runRpcMode(runtimeHost: AgentSessionRuntime, options?: RpcModeOptions): Promise<never> {
 	takeOverStdout();
 	if (options?.listen === undefined) return runStdioRpcMode(runtimeHost);
-	return runTcpRpcMode(runtimeHost, options.listen);
+	return runNetworkRpcMode(runtimeHost, options.listen);
 }
 
 /** Run the legacy JSONL RPC mode over process stdio. */
@@ -127,14 +128,25 @@ async function runStdioRpcMode(runtimeHost: AgentSessionRuntime): Promise<never>
 	return new Promise<never>(() => {});
 }
 
-/** Run the RPC host over one-at-a-time loopback TCP JSONL connections. */
-async function runTcpRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTransportAddress): Promise<never> {
+/** Run the RPC host over one-at-a-time loopback network connections. */
+async function runNetworkRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTransportAddress): Promise<never> {
+	const endpointSecurity = validateEndpointSecurity({
+		kind: address.transport,
+		host: address.host,
+		port: address.port,
+		auth: { scheme: "none" },
+		allowRemote: false,
+	});
+	if (!endpointSecurity.ok) {
+		throw endpointSecurity.error;
+	}
 	let requestProcessShutdown = (): void => {};
 	let detachPromise = Promise.resolve();
 	let detachConnection = (): void => {};
 
 	const controller = createRpcHostController(runtimeHost, {
 		onShutdown: () => requestProcessShutdown(),
+		endpointKind: address.transport,
 	});
 	await controller.start();
 
@@ -142,9 +154,9 @@ async function runTcpRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTrans
 		console.error(`[rpc] ${message}`);
 	};
 
-	const transport = createRpcTransport<TcpRpcCommand, RpcHostOutputRecord>({
+	const transport = createRpcTransport<NetworkRpcCommand, RpcHostOutputRecord>({
 		address,
-		parseCommand: parseTcpRpcCommand,
+		parseCommand: parseNetworkRpcCommand,
 		dispatch: async (command) => {
 			await detachPromise;
 			if (command.type === "extension_ui_response") {
@@ -210,24 +222,24 @@ async function runTcpRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTrans
 	} catch (error: unknown) {
 		const diagnostic =
 			error instanceof RpcTransportError ? `${error.code}: ${error.message}` : toError(error).message;
-		console.error(`Error: Failed to bind RPC TCP listener at ${formatRpcTransportAddress(address)}: ${diagnostic}`);
+		console.error(`Error: Failed to bind RPC listener at ${formatRpcTransportAddress(address)}: ${diagnostic}`);
 		await shutdown(1);
 		return new Promise<never>(() => {});
 	}
 
 	const boundAddress = transport.address;
 	if (boundAddress === undefined) {
-		reportDiagnostic("listener started without a bound TCP address");
+		reportDiagnostic("listener started without a bound address");
 		await shutdown(1);
 		return new Promise<never>(() => {});
 	}
-	console.error(`RPC TCP listening on ${formatRpcTransportAddress(boundAddress)}`);
+	console.error(`RPC ${address.transport === "tcp" ? "TCP" : "WebSocket"} listening on ${formatRpcTransportAddress(boundAddress)}`);
 
-	// The listener, not stdin, owns process liveness in TCP mode.
+	// The listener, not stdin, owns process liveness in network mode.
 	return new Promise<never>(() => {});
 }
 
-function parseTcpRpcCommand(value: unknown): TcpRpcCommand {
+function parseNetworkRpcCommand(value: unknown): NetworkRpcCommand {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new TypeError("RPC command must be a JSON object");
 	}
@@ -235,7 +247,7 @@ function parseTcpRpcCommand(value: unknown): TcpRpcCommand {
 	if (typeof type !== "string" || type.length === 0) {
 		throw new TypeError("RPC command must include a string type");
 	}
-	return value as TcpRpcCommand;
+	return value as NetworkRpcCommand;
 }
 
 function toError(error: unknown): Error {

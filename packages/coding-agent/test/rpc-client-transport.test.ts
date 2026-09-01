@@ -2,12 +2,15 @@ import { createServer, type Server, type Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl.ts";
 import { AutomationRpcError, RpcClient } from "../src/modes/rpc/rpc-client.ts";
+import { createRpcTransport, type RpcTransport } from "../src/modes/rpc/rpc-transport.ts";
+import type { WebsocketRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const TRANSIENT_WINDOWS_CONNECT_CODES = new Set(["EADDRNOTAVAIL", "ECONNREFUSED", "ECONNRESET", "ENOBUFS", "ETIMEDOUT"]);
 const TCP_CONNECT_ATTEMPTS = 3;
 const clients: RpcClient[] = [];
 const servers: Server[] = [];
+const websocketTransports: Array<RpcTransport<RpcRecord, RpcRecord, WebsocketRpcAddress>> = [];
 
 type RpcRecord = Record<string, unknown>;
 type RpcRequestHandler = (socket: Socket, request: RpcRecord) => void;
@@ -18,6 +21,9 @@ afterEach(async () => {
 	}
 	for (const server of servers.splice(0)) {
 		await closeServer(server);
+	}
+	for (const transport of websocketTransports.splice(0)) {
+		await transport.close();
 	}
 });
 
@@ -291,6 +297,101 @@ describe("RpcClient TCP transport", () => {
 	});
 });
 
+describe("RpcClient WebSocket transport", () => {
+	it("runs initialize, start, get, cancel, and resume over one framed connection", async () => {
+		const port = await getAvailablePort();
+		const commands: string[] = [];
+		const transport = createRpcTransport<RpcRecord, RpcRecord>({
+			address: { transport: "websocket", host: LOOPBACK_HOST, port, path: "/rpc" },
+			parseCommand: (value) => value as RpcRecord,
+			dispatch: async (request, sink) => {
+				const command = String(request.type);
+				commands.push(command);
+				const runId = command === "run.resume" ? "run-2" : "run-1";
+				const data =
+					command === "initialize"
+						? {
+								host: "automation-host",
+								protocolVersion: 1,
+								sessionId: "session-1",
+								runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
+								protocol: {
+									server: {
+										versions: { min: 1, max: 1 },
+										features: ["transport.websocket"],
+									},
+									negotiated: {
+										version: 1,
+										features: ["transport.websocket"],
+										compatible: { min: 1, max: 1 },
+									},
+									endpoint: {
+										kind: "websocket",
+										loopback: true,
+										authScheme: "none",
+										tlsEnabled: false,
+										allowRemote: false,
+									},
+								},
+							}
+						: command === "run.get"
+							? {
+									run: {
+										id: "run-1",
+										sessionId: "session-1",
+										attempt: 1,
+										status: "running",
+										model: { provider: "p", id: "m", thinkingLevel: "low" },
+										createdAt: "2026-09-01T00:00:00.000Z",
+									},
+								}
+							: command === "run.cancel"
+								? { runId: "run-1", status: "running" }
+								: {
+										runId,
+										sessionId: "session-1",
+										attempt: command === "run.resume" ? 2 : 1,
+										status: "accepted",
+									};
+				await sink.send({
+					type: "response",
+					id: request.id,
+					command,
+					success: true,
+					data,
+				});
+			},
+		});
+		websocketTransports.push(transport);
+		await transport.start();
+		const client = new RpcClient({ transport: { type: "websocket", port } });
+		clients.push(client);
+		await client.start();
+
+		const initialized = await client.initializeAutomationHost();
+		expect(initialized.protocol).toMatchObject({
+			negotiated: { features: ["transport.websocket"] },
+			endpoint: { kind: "websocket", authScheme: "none", tlsEnabled: false },
+		});
+		const started = await client.startRun("start");
+		await expect(client.getRun(started.runId)).resolves.toMatchObject({ run: { status: "running" } });
+		await expect(client.cancelRun(started.runId)).resolves.toEqual({ runId: "run-1", status: "running" });
+		await expect(client.resumeRun("session.jsonl", started.runId, "resume")).resolves.toMatchObject({
+			runId: "run-2",
+			attempt: 2,
+		});
+		expect(commands).toEqual(["initialize", "run.start", "run.get", "run.cancel", "run.resume"]);
+	});
+
+	it("rejects non-loopback WebSocket options before connecting", async () => {
+		const client = new RpcClient({
+			transport: { type: "websocket", host: "localhost", port: 1 },
+		});
+		clients.push(client);
+		await expect(client.start()).rejects.toMatchObject({ code: "rpc_transport_not_loopback" });
+	});
+});
+
 async function listen(handler: RpcRequestHandler): Promise<{ server: Server; port: number }> {
 	const server = createServer((socket) => {
 		attachJsonlLineReader(socket, (line) => {
@@ -314,6 +415,18 @@ async function listen(handler: RpcRequestHandler): Promise<{ server: Server; por
 	const address = server.address();
 	if (address === null || typeof address === "string") throw new Error("Test listener did not expose a TCP port");
 	return { server, port: address.port };
+}
+
+async function getAvailablePort(): Promise<number> {
+	const server = createServer();
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, LOOPBACK_HOST, () => resolve());
+	});
+	const address = server.address();
+	if (address === null || typeof address === "string") throw new Error("Test listener did not expose a TCP port");
+	await closeServer(server);
+	return address.port;
 }
 
 async function startTcpClient(client: RpcClient): Promise<void> {

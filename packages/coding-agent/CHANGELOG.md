@@ -20,6 +20,7 @@
 
 ### Added
 
+- Loopback WebSocket RPC transport for Automation Host, including `ws://127.0.0.1:<port>` CLI listeners and `RpcClient` connections.
 - Claude connector artifact input and exact Bedrock `aos_gateway` model projection support, with verified native image/PDF/text blocks and material-free lease correlation.
 - Codex connectors now accept trusted workspace file and image artifact input and support exact `aos_gateway` provider, model, effort, and service-tier projection with material-free credential leases; unsupported artifact sources and media fail closed.
 - Trusted External Connector targets can now be registered in settings for standard CLI, RPC, and SDK Sessions; project and Role selections require project trust and can only narrow global targets.

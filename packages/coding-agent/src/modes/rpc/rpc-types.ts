@@ -5,7 +5,13 @@
  * Responses and events are emitted as JSON lines on stdout.
  */
 
-import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
+import type {
+	AgentMessage,
+	EndpointSecurityVerdict,
+	ProtocolCapabilities,
+	ProtocolNegotiation,
+	ThinkingLevel,
+} from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
 import type { SessionStats } from "../../core/session/agent-session.ts";
 import type { BashResult } from "../../core/runtime/bash-executor.ts";
@@ -185,7 +191,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_model_routes" }
 
 	// Automation Host (protocolVersion 1)
-	| { id?: string; type: "initialize"; protocolVersion: number }
+	| { id?: string; type: "initialize"; protocolVersion: number; client?: ProtocolCapabilities }
 	| {
 			id?: string;
 			type: "run.start";
@@ -995,6 +1001,12 @@ export interface InitializeData {
 	protocolVersion: 1;
 	sessionId: string;
 	runCommands: RpcRunCommandType[];
+	/** Foundation negotiation details for framed network transports. */
+	protocol?: {
+		server: ProtocolCapabilities;
+		negotiated: ProtocolNegotiation;
+		endpoint: EndpointSecurityVerdict;
+	};
 	/** Additive audit command list. */
 	auditCommands?: RpcAuditCommandType[];
 	/** Additive Task Gate control-plane command list. */
