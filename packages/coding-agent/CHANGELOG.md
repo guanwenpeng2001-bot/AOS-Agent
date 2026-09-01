@@ -20,6 +20,7 @@
 
 ### Added
 
+- Added a loopback Role/Mode Studio with confirmed Role and ModelProfile writes, tighten-only permission inspection, and side-effect-free resolved AgentBinding previews through the production Resolver.
 - Remote-neutral operation binding for remote Workers, including bounded WorkerReceipt projection, lease renewal after cross-host ping/pong liveness proof, and fail-closed reclaim when transport loss makes remote termination unprovable.
 - Remote Operation Workers can connect through the shared bearer/mTLS WebSocket transport configuration, carrying the existing bounded stdio frame contract over WS/TLS without changing Worker protocol records.
 - RPC TCP and WebSocket listeners now support bearer authentication, TLS termination, mTLS client certificates, secured non-loopback binding, and matching `RpcClient` credentials.

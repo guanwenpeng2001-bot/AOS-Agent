@@ -18,6 +18,8 @@ The first screen shows:
 - cancel controls for active Runs and resume controls for terminal or interrupted Runs;
 - a filtered current-Session audit query.
 
+Open `/role-studio` on the same loopback origin to manage Roles and ModelProfiles. See [Role Studio](role-studio.md) for its separate read and confirmed-write allowlists.
+
 Every write requires a browser confirmation before it is sent. Resume also requires the operator to enter the Session file path to restore and the message for the new attempt. The page reports the accepted result or a stable, user-readable error after each operation.
 
 ## Security boundary

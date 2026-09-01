@@ -20,7 +20,8 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		await client.initializeAutomationHost();
 		const surface = await startWebSurfaceServer(client, { port: options.port });
 		console.error(`AOS Agent web surface listening on ${surface.url}`);
-		console.error("Loopback only. Web writes require confirmation and are restricted to Gate decisions and Run control.");
+		console.error("Loopback only. Web writes require confirmation and are restricted to Gate/Run control and Role Studio.");
+		console.error(`Role Studio: ${surface.url}role-studio`);
 		await waitForShutdown();
 		await surface.close();
 	} finally {

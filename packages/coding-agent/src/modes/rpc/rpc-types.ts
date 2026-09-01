@@ -8,32 +8,37 @@
 import type {
 	AgentMessage,
 	EndpointSecurityVerdict,
+	ModelProfile,
 	ProtocolCapabilities,
 	ProtocolNegotiation,
+	ResourceSelector,
+	RoleDefinition,
+	RoleDefinitionPatch,
+	RoleRegistryRecord,
+	RoleResolutionPreview,
+	RoleTombstone,
 	ThinkingLevel,
 } from "@aos-agent/agent-core";
 import type { ImageContent, Model } from "@aos-agent/ai";
-import type { SessionStats } from "../../core/session/agent-session.ts";
-import type { BashResult } from "../../core/runtime/bash-executor.ts";
 import type { RunBindingAssociation } from "../../core/binding-handles.ts";
-import type { CapabilityCatalogView } from "../../core/policy/capability-registry.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { ConnectorRuntimeStatus } from "../../core/connector/runtime-status.ts";
-import type {
-	AuditExportQuery,
-	AuditExportResult,
-	AuditQuery,
-	AuditQueryResult,
-	AuditReplayQuery,
-	AuditReplayResult,
-} from "../../core/session/execution-audit-query.ts";
-import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/policy/execution.ts";
 import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
 import type {
 	ExternalConnectorDescriptor,
 	ExternalConnectorReadinessStatus,
 	ExternalConnectorSelection,
 } from "../../core/connector/registry.ts";
+import type { ConnectorRuntimeStatus } from "../../core/connector/runtime-status.ts";
+import type { CapabilityCatalogView } from "../../core/policy/capability-registry.ts";
+import type { PolicyApprovalRequest, PublicPolicySummary } from "../../core/policy/execution.ts";
+import type {
+	TaskCredentialDeliveryReceipt,
+	TaskCredentialGrant,
+	TaskCredentialScope,
+	TaskCredentialStatus,
+} from "../../core/policy/task-credential-lease.ts";
+import type { TaskGateRecord, TaskGateStatus } from "../../core/policy/task-gate.ts";
+import type { BashResult } from "../../core/runtime/bash-executor.ts";
 import type { SchedulerSafeStatus } from "../../core/runtime/foundation-control-plane.ts";
 import type { MCPContentErrorCode, MCPContentProvenance } from "../../core/runtime/mcp-content.ts";
 import type { MCPContentPublicErrorCode } from "../../core/runtime/mcp-error-codes.ts";
@@ -43,6 +48,21 @@ import type {
 	MCPResourceTemplateListResult,
 } from "../../core/runtime/mcp-types.ts";
 import type { ModelRoleSelection, ModelRouteSelection, PublicModelSummary } from "../../core/runtime/model-broker.ts";
+import type {
+	TaskGraphNodeDefinition,
+	TaskGraphNodeView,
+	TaskGraphRecord,
+	TaskGraphStatus,
+} from "../../core/scheduler/task-graph.ts";
+import type { SessionStats } from "../../core/session/agent-session.ts";
+import type {
+	AuditExportQuery,
+	AuditExportResult,
+	AuditQuery,
+	AuditQueryResult,
+	AuditReplayQuery,
+	AuditReplayResult,
+} from "../../core/session/execution-audit-query.ts";
 import type {
 	AutomationError,
 	PublicCapabilityBindingLedgerRecord,
@@ -59,21 +79,8 @@ import type {
 	RunStatus,
 } from "../../core/session/run-lifecycle.ts";
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
-import type { ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
-import type {
-	TaskCredentialDeliveryReceipt,
-	TaskCredentialGrant,
-	TaskCredentialScope,
-	TaskCredentialStatus,
-} from "../../core/policy/task-credential-lease.ts";
-import type { TaskGateRecord, TaskGateStatus } from "../../core/policy/task-gate.ts";
-import type {
-	TaskGraphNodeDefinition,
-	TaskGraphNodeView,
-	TaskGraphRecord,
-	TaskGraphStatus,
-} from "../../core/scheduler/task-graph.ts";
+import type { ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import type { WorkerLifecycleStatus } from "../../core/worker/lifecycle.ts";
 
 // ============================================================================
@@ -203,6 +210,47 @@ export type RpcCommand =
 	| { id?: string; type: "get_execution_policy" }
 	| { id?: string; type: "policy.approve"; requestId: string }
 	| { id?: string; type: "policy.reject"; requestId: string }
+
+	// Role/Mode Studio. Reads and preview are side-effect-free; writes are
+	// exposed to Web only through its separate confirmed allowlist.
+	| { id?: string; type: "role.list"; scope?: "global" | "project"; includeTombstones?: boolean }
+	| { id?: string; type: "role.get"; roleId: string; scope?: "global" | "project"; includeTombstone?: boolean }
+	| { id?: string; type: "role.create"; definition: RoleDefinition }
+	| {
+			id?: string;
+			type: "role.edit";
+			roleId: string;
+			scope: "global" | "project";
+			expectedRevision: number;
+			patch: RoleDefinitionPatch;
+	  }
+	| {
+			id?: string;
+			type: "role.copy";
+			sourceRoleId: string;
+			sourceScope: "global" | "project";
+			targetRoleId: string;
+			targetScope: "global" | "project";
+			expectedRevision: number;
+	  }
+	| {
+			id?: string;
+			type: "role.delete";
+			roleId: string;
+			scope: "global" | "project";
+			expectedRevision: number;
+			reason?: string;
+	  }
+	| {
+			id?: string;
+			type: "role.preview";
+			definition: RoleDefinition;
+			modelProfile: ModelProfile;
+			parentCapabilitySelector?: ResourceSelector;
+	  }
+	| { id?: string; type: "model_profile.list" }
+	| { id?: string; type: "model_profile.get"; modelProfileId: string; revision?: number }
+	| { id?: string; type: "model_profile.put"; profile: RoleStudioModelProfileDraft; expectedRevision?: number }
 
 	// Model route inspection (ordinary, read-only; redacted output only)
 	| { id?: string; type: "get_model_routes" }
@@ -509,6 +557,30 @@ export type RpcResponse =
 	  }
 	| { id?: string; type: "response"; command: "policy.approve"; success: true }
 	| { id?: string; type: "response"; command: "policy.reject"; success: true }
+	| { id?: string; type: "response"; command: "role.list"; success: true; data: RoleStudioRoleListData }
+	| {
+			id?: string;
+			type: "response";
+			command: "role.get" | "role.create" | "role.edit" | "role.copy";
+			success: true;
+			data: RoleRegistryRecord;
+	  }
+	| { id?: string; type: "response"; command: "role.delete"; success: true; data: RoleTombstone }
+	| { id?: string; type: "response"; command: "role.preview"; success: true; data: RoleStudioPreviewData }
+	| {
+			id?: string;
+			type: "response";
+			command: "model_profile.list";
+			success: true;
+			data: RoleStudioModelProfileListData;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "model_profile.get" | "model_profile.put";
+			success: true;
+			data: ModelProfile;
+	  }
 	| {
 			id?: string;
 			type: "response";
@@ -697,6 +769,31 @@ export interface GetCapabilitiesData {
 export interface GetExecutionPolicyData {
 	summary: PublicPolicySummary;
 	pendingApprovals: ReadonlyArray<PolicyApprovalRequest>;
+}
+
+export type RoleStudioModelProfileDraft = Omit<ModelProfile, "fingerprint" | "revision" | "createdAt">;
+
+export interface RoleStudioRoleListData {
+	records: ReadonlyArray<RoleRegistryRecord>;
+}
+
+export interface RoleStudioModelProfileListData {
+	records: ReadonlyArray<{
+		schemaVersion: 1;
+		modelProfileId: string;
+		currentRevision: ModelProfile;
+		revisions: ReadonlyArray<ModelProfile>;
+	}>;
+}
+
+export interface RoleStudioPreviewData {
+	permission: {
+		parent: ResourceSelector;
+		requested: ResourceSelector;
+		tightens: boolean;
+		reason?: string;
+	};
+	resolution?: RoleResolutionPreview;
 }
 
 /** Public, metadata-only model route catalog returned by get_model_routes. */
@@ -1382,26 +1479,27 @@ export type RpcAutomationResponse =
 			error: AutomationError;
 	  };
 
-// Re-export the redacted capability binding view consumed by get_capabilities.
-export type { CapabilityBindingView } from "../../core/policy/capability-registry.ts";
-// Re-export public audit query/replay types.
-export type {
-	AuditEvent,
-	AuditEventType,
-	AuditExportQuery,
-	AuditExportResult,
-	AuditQuery,
-	AuditQueryResult,
-	AuditReplayQuery,
-	AuditReplayResult,
-	AuditWarning,
-} from "../../core/session/execution-audit-query.ts";
 // Re-export the only current External Connector selection surface.
 export type {
 	ExternalConnectorDescriptor,
 	ExternalConnectorReadinessStatus,
 	ExternalConnectorSelection,
 } from "../../core/connector/registry.ts";
+// Re-export the redacted capability binding view consumed by get_capabilities.
+export type { CapabilityBindingView } from "../../core/policy/capability-registry.ts";
+// Re-export public Task Credential types.
+export type {
+	TaskCredentialDeliveryReceipt,
+	TaskCredentialGrant,
+	TaskCredentialScope,
+	TaskCredentialStatus,
+} from "../../core/policy/task-credential-lease.ts";
+// Re-export public Task Gate types.
+export type {
+	TaskGateErrorCode,
+	TaskGateRecord,
+	TaskGateStatus,
+} from "../../core/policy/task-gate.ts";
 // Re-export the safe MCP content catalog/result types consumed by the wire.
 export type {
 	MCPContentProvenance,
@@ -1415,6 +1513,31 @@ export type {
 	MCPResourceListResult,
 	MCPResourceSummary,
 } from "../../core/runtime/mcp-types.ts";
+// Re-export public Task Graph types.
+export type {
+	TaskGraphErrorCode,
+	TaskGraphGateRef,
+	TaskGraphNodeAvailability,
+	TaskGraphNodeDefinition,
+	TaskGraphNodeStatus,
+	TaskGraphNodeView,
+	TaskGraphRecord,
+	TaskGraphRunRef,
+	TaskGraphStatus,
+	TaskGraphSummary,
+} from "../../core/scheduler/task-graph.ts";
+// Re-export public audit query/replay types.
+export type {
+	AuditEvent,
+	AuditEventType,
+	AuditExportQuery,
+	AuditExportResult,
+	AuditQuery,
+	AuditQueryResult,
+	AuditReplayQuery,
+	AuditReplayResult,
+	AuditWarning,
+} from "../../core/session/execution-audit-query.ts";
 // Re-export the core Automation Host types for consumers.
 export type {
 	AutomationError,
@@ -1429,29 +1552,3 @@ export type {
 	RunStatus,
 	RunTerminalStatus,
 } from "../../core/session/run-lifecycle.ts";
-// Re-export public Task Credential types.
-export type {
-	TaskCredentialDeliveryReceipt,
-	TaskCredentialGrant,
-	TaskCredentialScope,
-	TaskCredentialStatus,
-} from "../../core/policy/task-credential-lease.ts";
-// Re-export public Task Gate types.
-export type {
-	TaskGateErrorCode,
-	TaskGateRecord,
-	TaskGateStatus,
-} from "../../core/policy/task-gate.ts";
-// Re-export public Task Graph types.
-export type {
-	TaskGraphErrorCode,
-	TaskGraphGateRef,
-	TaskGraphNodeAvailability,
-	TaskGraphNodeDefinition,
-	TaskGraphNodeStatus,
-	TaskGraphNodeView,
-	TaskGraphRecord,
-	TaskGraphRunRef,
-	TaskGraphStatus,
-	TaskGraphSummary,
-} from "../../core/scheduler/task-graph.ts";

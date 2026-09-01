@@ -1,22 +1,17 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WEB_ASSETS } from "./assets.ts";
-import {
-	invokeWebReadOnlyRpc,
-	type WebReadOnlyRpcClient,
-	WebRpcRequestError,
-} from "./read-only-rpc.ts";
+import { invokeWebOperationRpc, WebOperationError, type WebOperationRpcClient } from "./operations-rpc.ts";
+import { invokeWebReadOnlyRpc, type WebReadOnlyRpcClient, WebRpcRequestError } from "./read-only-rpc.ts";
+import { ROLE_STUDIO_ASSETS } from "./role-studio-assets.ts";
+import { invokeRoleStudioReadRpc, invokeRoleStudioWriteRpc, type RoleStudioRpcClient } from "./role-studio-rpc.ts";
 import { loadTaskGraphBoard } from "./task-graph-board.ts";
-import {
-	invokeWebOperationRpc,
-	type WebOperationRpcClient,
-	WebOperationError,
-} from "./operations-rpc.ts";
 
 export const WEB_SURFACE_HOST = "127.0.0.1" as const;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const SECURITY_HEADERS = Object.freeze({
 	"cache-control": "no-store",
-	"content-security-policy": "default-src 'none'; connect-src 'self'; img-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+	"content-security-policy":
+		"default-src 'none'; connect-src 'self'; img-src 'self'; script-src 'self'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
 	"cross-origin-opener-policy": "same-origin",
 	"referrer-policy": "no-referrer",
 	"x-content-type-options": "nosniff",
@@ -35,7 +30,7 @@ export interface StartWebSurfaceServerOptions {
 }
 
 export async function startWebSurfaceServer(
-	client: WebReadOnlyRpcClient & WebOperationRpcClient,
+	client: WebReadOnlyRpcClient & WebOperationRpcClient & RoleStudioRpcClient,
 	options: StartWebSurfaceServerOptions = {},
 ): Promise<WebSurfaceServer> {
 	const port = options.port ?? 0;
@@ -58,7 +53,7 @@ export async function startWebSurfaceServer(
 }
 
 async function handleRequest(
-	client: WebReadOnlyRpcClient & WebOperationRpcClient,
+	client: WebReadOnlyRpcClient & WebOperationRpcClient & RoleStudioRpcClient,
 	request: IncomingMessage,
 	response: ServerResponse,
 ): Promise<void> {
@@ -72,7 +67,12 @@ async function handleRequest(
 			writeJson(response, 200, { data: await loadTaskGraphBoard(client) });
 			return;
 		}
-		if (url.pathname === "/api/rpc" || url.pathname === "/api/ops") {
+		if (
+			url.pathname === "/api/rpc" ||
+			url.pathname === "/api/ops" ||
+			url.pathname === "/api/role-studio/rpc" ||
+			url.pathname === "/api/role-studio/ops"
+		) {
 			if (request.method !== "POST") {
 				writeJson(response, 405, { error: { code: "method_not_allowed", message: "Use POST for RPC requests." } });
 				return;
@@ -88,7 +88,11 @@ async function handleRequest(
 			const data =
 				url.pathname === "/api/rpc"
 					? await invokeWebReadOnlyRpc(client, record.method, record.params)
-					: await invokeWebOperationRpc(client, record.method, record.params);
+					: url.pathname === "/api/ops"
+						? await invokeWebOperationRpc(client, record.method, record.params)
+						: url.pathname === "/api/role-studio/rpc"
+							? await invokeRoleStudioReadRpc(client, record.method, record.params)
+							: await invokeRoleStudioWriteRpc(client, record.method, record.params);
 			writeJson(response, 200, { data });
 			return;
 		}
@@ -97,7 +101,7 @@ async function handleRequest(
 			writeJson(response, 405, { error: { code: "method_not_allowed", message: "Method is not allowed." } });
 			return;
 		}
-		const asset = WEB_ASSETS[url.pathname];
+		const asset = ROLE_STUDIO_ASSETS[url.pathname] ?? WEB_ASSETS[url.pathname];
 		if (!asset) {
 			writeJson(response, 404, { error: { code: "not_found", message: "Resource was not found." } });
 			return;
