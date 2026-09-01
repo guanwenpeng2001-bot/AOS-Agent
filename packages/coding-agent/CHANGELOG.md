@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Model selector searches now match prefixes of `default`, and settings labels allow wider alignment.
 - Persisting a default model now adds it to an existing non-empty model scope.
 - Model and thinking changes now remain session-scoped unless explicitly persisted as defaults.
 - llama.cpp login now directs empty catalogs to `/llama` before `/model`.

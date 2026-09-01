@@ -51,6 +51,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private filteredModels: ModelItem[] = [];
 	private selectedIndex: number = 0;
 	private currentModel?: Model<any>;
+	private defaultProvider?: string;
+	private defaultModel?: string;
 	private modelRuntime: ModelRuntime;
 	private onSelectCallback: (model: Model<any>) => void;
 	private onCancelCallback: () => void;
@@ -69,7 +71,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	constructor(
 		tui: TUI,
 		currentModel: Model<any> | undefined,
-		_settingsManager: SettingsManager,
+		settingsManager: SettingsManager,
 		modelRuntime: ModelRuntime,
 		scopedModels: ReadonlyArray<ScopedModelItem>,
 		onSelect: (model: Model<any>) => void,
@@ -80,6 +82,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 		this.tui = tui;
 		this.currentModel = currentModel;
+		this.defaultProvider = settingsManager.getDefaultProvider();
+		this.defaultModel = settingsManager.getDefaultModel();
 		this.modelRuntime = modelRuntime;
 		this.scopedModels = scopedModels;
 		this.scope = scopedModels.length > 0 ? "scoped" : "all";
@@ -227,6 +231,15 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		return keyHint("tui.input.tab", "scope") + theme.fg("muted", " (all/scoped)");
 	}
 
+	private isDefaultModel(model: Model<any>): boolean {
+		return this.defaultProvider === model.provider && this.defaultModel === model.id;
+	}
+
+	private isDefaultSearch(query: string): boolean {
+		const normalized = query.trim().toLowerCase();
+		return normalized.length > 0 && "default".startsWith(normalized);
+	}
+
 	private setScope(scope: ModelScope): void {
 		if (this.scope === scope) return;
 		this.scope = scope;
@@ -240,11 +253,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private filterModels(query: string): void {
-		this.filteredModels = query
-			? fuzzyFilter(this.activeModels, query, ({ id, provider, model }) =>
-					getModelSelectorSearchText({ id, provider, name: model.name }),
-				)
-			: this.activeModels;
+		if (query) {
+			const filtered = fuzzyFilter(this.activeModels, query, ({ id, provider, model }) => {
+				const defaultText = this.isDefaultModel(model) ? " default" : "";
+				return `${getModelSelectorSearchText({ id, provider, name: model.name })}${defaultText}`;
+			});
+			if (this.isDefaultSearch(query)) {
+				const defaults = this.activeModels.filter((item) => this.isDefaultModel(item.model));
+				const keys = new Set(defaults.map((item) => `${item.provider}\0${item.id}`));
+				this.filteredModels = [...defaults, ...filtered.filter((item) => !keys.has(`${item.provider}\0${item.id}`))];
+			} else this.filteredModels = filtered;
+		} else this.filteredModels = this.activeModels;
 		// When filtering by a query, move the selector to the top row so the best
 		// match is highlighted. When the query is cleared, keep the current position
 		// clamped to the (restored) list length.

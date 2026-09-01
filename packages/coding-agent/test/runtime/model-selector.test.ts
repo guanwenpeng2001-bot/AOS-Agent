@@ -46,4 +46,25 @@ describe("model selector", () => {
 			expect(rendered).toContain("Could not refresh 2 model catalogs (openai, anthropic); showing cached models.");
 		});
 	});
+
+	it("matches prefix searches for the configured default", async () => {
+		harness = await createHarness({ models: [{ id: "fake-1" }, { id: "fake-2" }] });
+		harness.settingsManager.setDefaultModelAndProvider(harness.getModel("fake-2")!.provider, "fake-2");
+		vi.spyOn(harness.session.modelRuntime, "refresh").mockResolvedValue({ aborted: false, errors: new Map() });
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			harness.getModel("fake-1"),
+			harness.settingsManager,
+			harness.session.modelRuntime,
+			[],
+			() => {},
+			() => {},
+		);
+
+		(selector as unknown as { filterModels(query: string): void }).filterModels("def");
+
+		const rendered = stripAnsi(selector.render(120).join("\n"));
+		expect(rendered).toContain("fake-2");
+		expect(rendered).not.toContain("fake-1");
+	});
 });
