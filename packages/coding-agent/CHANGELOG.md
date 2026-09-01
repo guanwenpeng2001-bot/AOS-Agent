@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- `models.json` now accepts the documented `compat.supportsFinishReason` override.
 - JSON and RPC `toolcall_start` updates now include the tool-call ID and name without cumulative snapshots.
 - JSON and RPC streaming updates now retain cumulative usage while omitting cumulative message snapshots.
 - Toggling thinking visibility no longer clears partial output from running Bash tools.
