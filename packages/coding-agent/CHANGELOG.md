@@ -20,6 +20,7 @@
 
 ### Added
 
+- Session from-PR metadata persists pull request associations and exposes creation entry points through the CLI, SDK, and RPC session surfaces.
 - Server-side session search RPC with selector-compatible matching, archive/scope filters, result limits, and explicit ephemeral session markers.
 - Session archive support persists archive timestamps, filters archived sessions from default discovery, and exposes list/archive/unarchive through the CLI and RPC client.
 - Public Automation Host Run receipts now expose validated TaskResult summary, artifact references, and test results through RPC, SDK, terminal events, and replay.

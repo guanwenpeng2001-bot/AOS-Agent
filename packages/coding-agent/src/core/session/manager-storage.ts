@@ -73,6 +73,7 @@ export interface CodingAgentSessionMetadata extends SessionMetadata {
 	cwd: string;
 	path?: string;
 	legacyVersion: 3;
+	fromPr?: string;
 	archived: boolean;
 	archivedAt?: number;
 }
@@ -464,6 +465,7 @@ function makeMetadata(manager: SessionManager): CodingAgentSessionMetadata {
 	const header = manager.getHeader();
 	if (!header) failClosed("session header is missing");
 	const archiveState = manager.getArchiveState();
+	const fromPr = manager.getFromPr();
 	return {
 		id: header.id,
 		createdAt: toTimestamp(header.timestamp, 0),
@@ -471,6 +473,7 @@ function makeMetadata(manager: SessionManager): CodingAgentSessionMetadata {
 		cwd: header.cwd,
 		...(manager.getSessionFile() === undefined ? {} : { path: manager.getSessionFile() }),
 		legacyVersion: 3,
+		...(fromPr === undefined ? {} : { fromPr }),
 		archived: archiveState.archived,
 		...(archiveState.archivedAt === undefined
 			? {}

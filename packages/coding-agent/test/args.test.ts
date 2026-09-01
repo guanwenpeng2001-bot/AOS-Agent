@@ -249,6 +249,20 @@ describe("parseArgs", () => {
 		});
 	});
 
+	describe("--from-pr flag", () => {
+		test("parses a pull request reference", () => {
+			const result = parseArgs(["--from-pr", "https://github.com/example/repo/pull/42"]);
+			expect(result.fromPr).toBe("https://github.com/example/repo/pull/42");
+			expect(result.diagnostics).toEqual([]);
+		});
+
+		test("reports a missing pull request reference", () => {
+			expect(parseArgs(["--from-pr"]).diagnostics).toEqual([
+				{ type: "error", message: "--from-pr requires a value" },
+			]);
+		});
+	});
+
 	describe("--no-session flag", () => {
 		test("parses --no-session flag", () => {
 			const result = parseArgs(["--no-session"]);

@@ -28,6 +28,7 @@ export interface Args {
 	mode?: Mode;
 	rpcListen?: RpcTransportAddress;
 	name?: string;
+	fromPr?: string;
 	noSession?: boolean;
 	session?: string;
 	sessionId?: string;
@@ -140,6 +141,12 @@ export function parseArgs(args: string[]): Args {
 				result.name = args[++i];
 			} else {
 				result.diagnostics.push({ type: "error", message: "--name requires a value" });
+			}
+		} else if (arg === "--from-pr") {
+			if (i + 1 < args.length && !args[i + 1]!.startsWith("-")) {
+				result.fromPr = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--from-pr requires a value" });
 			}
 		} else if (arg === "--no-session") {
 			result.noSession = true;
@@ -318,6 +325,7 @@ ${chalk.bold("Options:")}
   --session-dir <dir>            Directory for session storage and lookup
   --no-session                   Don't save session (ephemeral)
   --name, -n <name>              Set session display name
+  --from-pr <number|url>         Associate a new session with a pull request
   --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
   --no-tools, -nt                Disable all tools by default (built-in and extension)

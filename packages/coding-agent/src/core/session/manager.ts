@@ -207,6 +207,7 @@ export interface SessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
+	fromPr?: string;
 	archived?: boolean;
 	archivedAt?: string;
 }
@@ -214,6 +215,7 @@ export interface SessionHeader {
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+	fromPr?: string;
 }
 
 export interface SessionEntryBase {
@@ -353,6 +355,8 @@ export interface SessionInfo {
 	name?: string;
 	/** Path to the parent session (if this session was forked). */
 	parentSessionPath?: string;
+	/** Pull request number or URL associated when the session was created. */
+	fromPr?: string;
 	archived: boolean;
 	archivedAt?: Date;
 	created: Date;
@@ -387,6 +391,7 @@ export type ReadonlySessionManager = Pick<
 	| "getEntries"
 	| "getTree"
 	| "getSessionName"
+	| "getFromPr"
 	| "getArchiveState"
 >;
 
@@ -988,6 +993,18 @@ function isSessionHeaderArchived(header: SessionHeader): boolean {
 	return header.archived === true;
 }
 
+function getSessionHeaderFromPr(header: SessionHeader): string | undefined {
+	const fromPr = (header as { fromPr?: unknown }).fromPr;
+	return typeof fromPr === "string" ? fromPr.trim() || undefined : undefined;
+}
+
+function normalizeFromPr(fromPr: string | undefined): string | undefined {
+	if (fromPr === undefined) return undefined;
+	const normalized = fromPr.trim();
+	if (normalized.length === 0) throw new Error("Session from-PR reference must be non-empty");
+	return normalized;
+}
+
 function sessionCwdMatches(cwd: string | undefined, resolvedCwd: string): boolean {
 	return cwd !== undefined && cwd !== "" && resolvePath(cwd) === resolvedCwd;
 }
@@ -1187,6 +1204,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 
 		const cwd = typeof header.cwd === "string" ? header.cwd : "";
 		const parentSessionPath = header.parentSession;
+		const fromPr = getSessionHeaderFromPr(header);
 		const archived = isSessionHeaderArchived(header);
 		const archivedAtTime =
 			archived && typeof header.archivedAt === "string" ? new Date(header.archivedAt).getTime() : NaN;
@@ -1204,6 +1222,7 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			cwd,
 			name,
 			parentSessionPath,
+			...(fromPr === undefined ? {} : { fromPr }),
 			archived,
 			...(!Number.isNaN(archivedAtTime) ? { archivedAt: new Date(archivedAtTime) } : {}),
 			created: new Date(header.timestamp),
@@ -1419,6 +1438,7 @@ export class SessionManager {
 			timestamp,
 			cwd: this.cwd,
 			parentSession: options?.parentSession,
+			fromPr: normalizeFromPr(options?.fromPr),
 		};
 		this.fileEntries = [header];
 		this.byId.clear();
@@ -1516,6 +1536,11 @@ export class SessionManager {
 
 	getSessionFile(): string | undefined {
 		return this.sessionFile;
+	}
+
+	getFromPr(): string | undefined {
+		const header = this.getHeader();
+		return header === null ? undefined : getSessionHeaderFromPr(header);
 	}
 
 	getArchiveState(): SessionArchiveState {
@@ -2070,6 +2095,7 @@ export class SessionManager {
 			timestamp,
 			cwd: this.cwd,
 			parentSession: this.persist ? previousSessionFile : undefined,
+			fromPr: this.getFromPr(),
 		};
 
 		// Collect labels for entries in the path
@@ -2523,6 +2549,7 @@ export class SessionManager {
 			timestamp,
 			cwd: resolvedTargetCwd,
 			parentSession: resolvedSourcePath,
+			fromPr: normalizeFromPr(options?.fromPr ?? getSessionHeaderFromPr(sourceHeader)),
 		};
 		new SessionWriteCoordinator(newSessionFile, dir).withWriteLock(() => {
 			writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });

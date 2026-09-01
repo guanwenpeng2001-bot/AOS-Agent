@@ -356,6 +356,7 @@ async function forkSessionOrExit(
 	cwd: string,
 	sessionDir?: string,
 	sessionId?: string,
+	fromPr?: string,
 ): Promise<SessionManager> {
 	try {
 		const sourceManager = SessionManager.open(sourcePath);
@@ -363,6 +364,7 @@ async function forkSessionOrExit(
 		const targetManager = SessionManager.create(cwd, sessionDir, {
 			id: sessionId,
 			parentSession: sourceManager.getSessionFile(),
+			fromPr: fromPr ?? sourceManager.getFromPr(),
 		});
 		const target = new Session(createSessionManagerStorage(targetManager));
 		const entries = await source.findEntries({ order: "oldestFirst" });
@@ -391,7 +393,10 @@ async function createSessionManager(
 	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
 	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
-		return SessionManager.inMemory(cwd, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
+		return SessionManager.inMemory(cwd, {
+			...(parsed.sessionId === undefined ? {} : { id: parsed.sessionId }),
+			...(parsed.fromPr === undefined ? {} : { fromPr: parsed.fromPr }),
+		});
 	}
 
 	if (parsed.fork) {
@@ -409,7 +414,7 @@ async function createSessionManager(
 			case "path":
 			case "local":
 			case "global":
-				return await forkSessionOrExit(resolved.path, cwd, sessionDir, parsed.sessionId);
+				return await forkSessionOrExit(resolved.path, cwd, sessionDir, parsed.sessionId, parsed.fromPr);
 
 			case "not_found":
 				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
@@ -465,7 +470,12 @@ async function createSessionManager(
 	if (parsed.sessionId) {
 		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 		if (existingSession) {
-			return SessionManager.open(existingSession.path, sessionDir);
+			const existing = SessionManager.open(existingSession.path, sessionDir);
+			if (parsed.fromPr !== undefined && existing.getFromPr() !== parsed.fromPr.trim()) {
+				console.error(chalk.red(`Session '${parsed.sessionId}' is not associated with pull request '${parsed.fromPr.trim()}'`));
+				process.exit(1);
+			}
+			return existing;
 		}
 		console.error(
 			chalk.yellow(
@@ -474,7 +484,24 @@ async function createSessionManager(
 		);
 	}
 
-	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
+	return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId, fromPr: parsed.fromPr });
+}
+
+function validateFromPrFlags(parsed: Args): void {
+	if (parsed.fromPr === undefined) return;
+	if (parsed.fromPr.trim().length === 0) {
+		console.error(chalk.red("Error: --from-pr requires a non-empty value"));
+		process.exit(1);
+	}
+	const conflictingFlags = [
+		parsed.session ? "--session" : undefined,
+		parsed.continue ? "--continue" : undefined,
+		parsed.resume ? "--resume" : undefined,
+	].filter((flag): flag is string => flag !== undefined);
+	if (conflictingFlags.length > 0) {
+		console.error(chalk.red(`Error: --from-pr cannot be combined with ${conflictingFlags.join(", ")}`));
+		process.exit(1);
+	}
 }
 
 function buildSessionOptions(
@@ -750,6 +777,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	validateForkFlags(parsed);
 	validateSessionIdFlags(parsed);
+	validateFromPrFlags(parsed);
 
 	// Run migrations (pass cwd for project-local migrations)
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd);

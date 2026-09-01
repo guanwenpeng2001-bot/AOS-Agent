@@ -92,7 +92,7 @@ export type RpcCommand =
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort" }
-	| { id?: string; type: "new_session"; parentSession?: string }
+	| { id?: string; type: "new_session"; parentSession?: string; fromPr?: string }
 
 	// State
 	| { id?: string; type: "get_state" }
@@ -435,6 +435,7 @@ export interface RpcSessionState {
 	followUpMode: "all" | "one-at-a-time";
 	sessionId: string;
 	sessionName?: string;
+	fromPr?: string;
 	ephemeral: boolean;
 	archived: boolean;
 	archivedAt?: string;
@@ -452,6 +453,7 @@ export interface RpcSessionInfo {
 	cwd: string;
 	name?: string;
 	parentSessionPath?: string;
+	fromPr?: string;
 	ephemeral: false;
 	archived: boolean;
 	archivedAt?: string;

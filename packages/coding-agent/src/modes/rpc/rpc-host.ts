@@ -417,6 +417,7 @@ function serializeRpcSessionInfo(info: SessionInfo): RpcSessionInfo {
 		cwd: info.cwd,
 		...(info.name === undefined ? {} : { name: info.name }),
 		...(info.parentSessionPath === undefined ? {} : { parentSessionPath: info.parentSessionPath }),
+		...(info.fromPr === undefined ? {} : { fromPr: info.fromPr }),
 		ephemeral: false,
 		archived: info.archived,
 		...(info.archivedAt === undefined ? {} : { archivedAt: info.archivedAt.toISOString() }),
@@ -5738,7 +5739,13 @@ export class RpcHostController {
 				}
 
 				case "new_session": {
-					const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
+					const options =
+						command.parentSession === undefined && command.fromPr === undefined
+							? undefined
+							: {
+									...(command.parentSession === undefined ? {} : { parentSession: command.parentSession }),
+									...(command.fromPr === undefined ? {} : { fromPr: command.fromPr }),
+								};
 					const result = await runtimeHost.newSession(options);
 					return success(id, "new_session", result);
 				}
@@ -5758,6 +5765,7 @@ export class RpcHostController {
 						followUpMode: currentBinding.session.followUpMode,
 						sessionId: currentBinding.session.sessionId,
 						sessionName: currentBinding.session.sessionName,
+						...(metadata.fromPr === undefined ? {} : { fromPr: metadata.fromPr }),
 						ephemeral: currentBinding.session.sessionFile === undefined,
 						archived: metadata.archived,
 						...(metadata.archivedAt === undefined
