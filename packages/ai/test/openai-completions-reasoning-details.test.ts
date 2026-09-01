@@ -147,4 +147,19 @@ describe("openai-completions reasoning_details streaming", () => {
 
 		expect(getAssistantPayload(mockState.payloads[1])?.reasoning_details).toEqual(expected);
 	});
+
+	it("counts Kimi top-level cached_tokens as cache reads", async () => {
+		mockState.chunkSets = [[
+			{
+				id: "chatcmpl-test",
+				model: "google/gemini-test",
+				choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }],
+				usage: { prompt_tokens: 10, completion_tokens: 2, cached_tokens: 4 },
+			},
+		]];
+
+		const message = await runOpenAICompletionsStream();
+
+		expect(message.usage).toMatchObject({ input: 6, output: 2, cacheRead: 4, totalTokens: 12 });
+	});
 });
