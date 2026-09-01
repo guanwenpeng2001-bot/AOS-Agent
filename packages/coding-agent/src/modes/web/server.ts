@@ -5,6 +5,7 @@ import {
 	type WebReadOnlyRpcClient,
 	WebRpcRequestError,
 } from "./read-only-rpc.ts";
+import { loadTaskGraphBoard } from "./task-graph-board.ts";
 
 export const WEB_SURFACE_HOST = "127.0.0.1" as const;
 const MAX_REQUEST_BYTES = 64 * 1024;
@@ -58,6 +59,14 @@ async function handleRequest(
 ): Promise<void> {
 	try {
 		const url = new URL(request.url ?? "/", `http://${WEB_SURFACE_HOST}`);
+		if (url.pathname === "/api/task-graph-board") {
+			if (request.method !== "GET") {
+				writeJson(response, 405, { error: { code: "method_not_allowed", message: "Use GET for board data." } });
+				return;
+			}
+			writeJson(response, 200, { data: await loadTaskGraphBoard(client) });
+			return;
+		}
 		if (url.pathname === "/api/rpc") {
 			if (request.method !== "POST") {
 				writeJson(response, 405, { error: { code: "method_not_allowed", message: "Use POST for RPC requests." } });

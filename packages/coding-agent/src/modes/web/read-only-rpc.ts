@@ -2,9 +2,11 @@ import type {
 	AuditQuery,
 	AuditQueryResult,
 	RunGetData,
+	SubagentListData,
 	TaskGraphGetData,
 	TaskGraphListData,
 	TaskGraphStatus,
+	WorkerListData,
 } from "../rpc/rpc-types.ts";
 
 export const WEB_READ_ONLY_RPC_METHODS = [
@@ -12,6 +14,8 @@ export const WEB_READ_ONLY_RPC_METHODS = [
 	"audit.query",
 	"task.graph.get",
 	"task.graph.list",
+	"worker.list",
+	"subagent.list",
 ] as const;
 
 export type WebReadOnlyRpcMethod = (typeof WEB_READ_ONLY_RPC_METHODS)[number];
@@ -26,6 +30,20 @@ export interface WebReadOnlyRpcClient {
 		status?: TaskGraphStatus;
 		limit?: number;
 	}): Promise<TaskGraphListData>;
+	listWorkers(filter?: {
+		runId?: string;
+		status?: WorkerListData["workers"][number]["status"];
+		limit?: number;
+		cursor?: string;
+	}): Promise<WorkerListData>;
+	listSubagents(
+		runId: string,
+		filter?: {
+			parentAgentInstanceId?: string;
+			status?: SubagentListData["subagents"][number]["status"];
+			limit?: number;
+		},
+	): Promise<SubagentListData>;
 }
 
 export class WebRpcRequestError extends Error {
@@ -58,9 +76,60 @@ export async function invokeWebReadOnlyRpc(
 		}
 		case "task.graph.list":
 			return client.listTaskGraphs(parseTaskGraphFilter(params));
+		case "worker.list":
+			return client.listWorkers(parseWorkerFilter(params));
+		case "subagent.list": {
+			const record = requireRecord(params);
+			const runId = requireString(record, "runId");
+			return client.listSubagents(runId, parseSubagentFilter(record));
+		}
 		default:
 			throw new WebRpcRequestError(403, "method_not_allowed", "RPC method is not available on the read-only web surface.");
 	}
+}
+
+function parseWorkerFilter(value: unknown): {
+	runId?: string;
+	status?: WorkerListData["workers"][number]["status"];
+	limit?: number;
+	cursor?: string;
+} {
+	const record = value === undefined ? {} : requireRecord(value);
+	const filter: {
+		runId?: string;
+		status?: WorkerListData["workers"][number]["status"];
+		limit?: number;
+		cursor?: string;
+	} = {};
+	if (record.runId !== undefined) filter.runId = requireString(record, "runId");
+	if (record.cursor !== undefined) filter.cursor = requireString(record, "cursor");
+	if (record.limit !== undefined) filter.limit = requirePositiveInteger(record, "limit");
+	if (record.status !== undefined) {
+		if (!isWorkerStatus(record.status)) throw invalidRequest("status is invalid");
+		filter.status = record.status;
+	}
+	return filter;
+}
+
+function parseSubagentFilter(record: Record<string, unknown>): {
+	parentAgentInstanceId?: string;
+	status?: SubagentListData["subagents"][number]["status"];
+	limit?: number;
+} {
+	const filter: {
+		parentAgentInstanceId?: string;
+		status?: SubagentListData["subagents"][number]["status"];
+		limit?: number;
+	} = {};
+	if (record.parentAgentInstanceId !== undefined) {
+		filter.parentAgentInstanceId = requireString(record, "parentAgentInstanceId");
+	}
+	if (record.limit !== undefined) filter.limit = requirePositiveInteger(record, "limit");
+	if (record.status !== undefined) {
+		if (!isSubagentStatus(record.status)) throw invalidRequest("status is invalid");
+		filter.status = record.status;
+	}
+	return filter;
 }
 
 function parseAuditQuery(value: unknown): AuditQuery {
@@ -134,6 +203,38 @@ function requirePositiveInteger(record: Record<string, unknown>, key: string): n
 
 function isTaskGraphStatus(value: unknown): value is TaskGraphStatus {
 	return value === "active" || value === "succeeded" || value === "failed" || value === "cancelled";
+}
+
+function isWorkerStatus(value: unknown): value is WorkerListData["workers"][number]["status"] {
+	return [
+		"new",
+		"starting",
+		"ready",
+		"running",
+		"cancelling",
+		"completed",
+		"failed",
+		"cancelled",
+		"lost",
+		"reclaiming",
+		"reclaimed",
+		"reclaim_unknown",
+	].includes(value as string);
+}
+
+function isSubagentStatus(value: unknown): value is SubagentListData["subagents"][number]["status"] {
+	return [
+		"spawning",
+		"running",
+		"awaiting_input",
+		"background",
+		"cancelling",
+		"succeeded",
+		"failed",
+		"cancelled",
+		"lost",
+		"closed",
+	].includes(value as string);
 }
 
 function invalidRequest(message: string): WebRpcRequestError {

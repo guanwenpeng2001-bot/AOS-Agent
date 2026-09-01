@@ -69,9 +69,11 @@ import type {
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
+	SubagentListData,
 	TaskGraphGetData,
 	TaskGraphListData,
 	TaskGraphStatus,
+	WorkerListData,
 } from "./rpc-types.ts";
 import {
 	type RpcRunStreamEvent,
@@ -868,6 +870,30 @@ export class RpcClient {
 	} = {}): Promise<TaskGraphListData> {
 		const response = await this.sendAutomation({ type: "task.graph.list", ...filter });
 		return this.getAutomationData<TaskGraphListData>(response);
+	}
+
+	/** List public-safe Operation Worker records for the current session. */
+	async listWorkers(filter: {
+		runId?: string;
+		status?: WorkerListData["workers"][number]["status"];
+		limit?: number;
+		cursor?: string;
+	} = {}): Promise<WorkerListData> {
+		const response = await this.sendAutomation({ type: "worker.list", ...filter });
+		return this.getAutomationData<WorkerListData>(response);
+	}
+
+	/** List public-safe Child Agent lifecycle records associated with one Run. */
+	async listSubagents(
+		runId: string,
+		filter: {
+			parentAgentInstanceId?: string;
+			status?: SubagentListData["subagents"][number]["status"];
+			limit?: number;
+		} = {},
+	): Promise<SubagentListData> {
+		const response = await this.sendAutomation({ type: "subagent.list", runId, ...filter });
+		return this.getAutomationData<SubagentListData>(response);
 	}
 
 	/**
