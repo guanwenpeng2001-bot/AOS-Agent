@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Root Markdown documentation is no longer treated as a skill unless it declares skill frontmatter.
 - Managed fd and ripgrep setup now starts after TUI mounting and reports progress in the transcript.
 - Interactive startup diagnostics now render inside the TUI transcript instead of being lost before initialization.
 - Settings diagnostics now include concrete file paths and deduplicate repeated warnings.

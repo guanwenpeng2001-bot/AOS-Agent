@@ -279,21 +279,24 @@ function loadSkillFromFile(
 	source: string,
 ): { skill: Skill | null; diagnostics: ResourceDiagnostic[] } {
 	const diagnostics: ResourceDiagnostic[] = [];
+	const isDeclaredSkill = basename(filePath) === "SKILL.md";
 
 	try {
 		const rawContent = readFileSync(filePath, "utf-8");
 		const { frontmatter } = parseFrontmatter<SkillFrontmatter>(rawContent);
 		const skillDir = dirname(filePath);
 		const parentDirName = basename(skillDir);
+		const description = typeof frontmatter.description === "string" ? frontmatter.description : undefined;
+		if (!isDeclaredSkill && (!description || description.trim() === "")) return { skill: null, diagnostics };
 
 		// Validate description
-		const descErrors = validateDescription(frontmatter.description);
+		const descErrors = validateDescription(description);
 		for (const error of descErrors) {
 			diagnostics.push({ type: "warning", message: error, path: filePath });
 		}
 
 		// Use name from frontmatter, or fall back to parent directory name
-		const name = frontmatter.name || parentDirName;
+		const name = typeof frontmatter.name === "string" ? frontmatter.name : parentDirName;
 
 		// Validate name
 		const nameErrors = validateName(name);
@@ -302,14 +305,14 @@ function loadSkillFromFile(
 		}
 
 		// Still load the skill even with warnings (unless description is completely missing)
-		if (!frontmatter.description || frontmatter.description.trim() === "") {
+		if (!description) {
 			return { skill: null, diagnostics };
 		}
 
 		return {
 			skill: {
 				name,
-				description: frontmatter.description,
+				description,
 				filePath,
 				baseDir: skillDir,
 				sourceInfo: createSkillSourceInfo(filePath, skillDir, source),
@@ -319,7 +322,7 @@ function loadSkillFromFile(
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "failed to parse skill file";
-		diagnostics.push({ type: "warning", message, path: filePath });
+		if (isDeclaredSkill) diagnostics.push({ type: "warning", message, path: filePath });
 		return { skill: null, diagnostics };
 	}
 }
