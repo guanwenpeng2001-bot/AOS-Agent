@@ -70,6 +70,13 @@ type LegacyEditToolInput = EditToolInput & {
 	oldText?: unknown;
 	newText?: unknown;
 };
+type SingleEditInput = { oldText: string; newText: string };
+
+function isSingleEditInput(value: unknown): value is SingleEditInput {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const edit = value as Record<string, unknown>;
+	return typeof edit.oldText === "string" && typeof edit.newText === "string";
+}
 
 export interface EditToolDetails {
 	/** Display-oriented diff of the changes made */
@@ -115,10 +122,11 @@ function prepareEditArguments(input: unknown): EditToolInput {
 	// Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array
 	if (typeof args.edits === "string") {
 		try {
-			const parsed = JSON.parse(args.edits);
+			const parsed: unknown = JSON.parse(args.edits);
 			if (Array.isArray(parsed)) args.edits = parsed;
+			else if (isSingleEditInput(parsed)) args.edits = [parsed];
 		} catch {}
-	}
+	} else if (isSingleEditInput(args.edits)) args.edits = [args.edits];
 
 	const legacy = args as LegacyEditToolInput;
 	if (typeof legacy.oldText !== "string" || typeof legacy.newText !== "string") {
