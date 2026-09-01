@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- llama.cpp login now directs empty catalogs to `/llama` before `/model`.
 - The Cerebras default now references the current `gpt-oss-120b` catalog model.
 - Z.AI Coding Plan defaults now reference the current GLM model IDs.
 - `models.json` now accepts the documented `compat.supportsFinishReason` override.
