@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Fragmented Mistral tool calls now merge by stream index when continuation chunks omit the call ID.
 - Assigned conservative nonzero context and output limits to Cursor's dynamic models so requests are not rejected before reaching the Cursor CLI.
 - Made Cursor login check for the CLI before saving credentials, distinguish missing, timed-out, expired, and token-missing states, and explain empty or unsupported model catalogs.
 - Made clean and offline checkouts use reproducible tracked model catalogs generated from the canonical catalog scripts.
