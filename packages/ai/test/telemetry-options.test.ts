@@ -1,4 +1,4 @@
-import { NOOP_TELEMETRY_CONTEXT, type TelemetryContext } from "@aos-agent/telemetry";
+import { InMemoryTelemetryContext, NOOP_TELEMETRY_CONTEXT, type TelemetryContext } from "@aos-agent/telemetry";
 import { describe, expect, it } from "vitest";
 import { buildBaseOptions } from "../src/api/simple-options.ts";
 import { generateImages } from "../src/images.ts";
@@ -167,5 +167,71 @@ describe("ProviderRequestOptions.telemetryContext", () => {
 		await models.generateImages(imageModel, imagesContext, { telemetryContext });
 
 		expect(observed).toEqual([telemetryContext, telemetryContext]);
+	});
+
+	it("records provider stream, deferred, cancellation, and image operations", async () => {
+		const telemetry = new InMemoryTelemetryContext();
+		const handle: DeferredHandle = {
+			provider: model.provider,
+			modelId: model.id,
+			api: model.api,
+			id: "response",
+		};
+		const provider = createProvider({
+			id: model.provider,
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+			models: [model],
+			api: {
+				stream: (requestModel) => completedStream(requestModel),
+				streamSimple: (requestModel) => completedStream(requestModel),
+				fetchDeferred: (requestModel) => completedStream(requestModel),
+				cancelDeferred: async () => {},
+			},
+		});
+
+		await provider.streamSimple(model, context, { telemetryContext: telemetry }).result();
+		await provider.fetchDeferred!(model, handle, { telemetryContext: telemetry }).result();
+		await provider.cancelDeferred!(model, handle, { telemetryContext: telemetry });
+
+		const imageProvider = createImagesProvider({
+			id: imageModel.provider,
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+			models: [imageModel],
+			api: {
+				generateImages: async (requestModel) => ({
+					api: requestModel.api,
+					provider: requestModel.provider,
+					model: requestModel.id,
+					output: [],
+					stopReason: "stop",
+					timestamp: 0,
+				}),
+			},
+		});
+		await imageProvider.generateImages(imageModel, imagesContext, { telemetryContext: telemetry });
+
+		const spans = telemetry.getSpans();
+		expect(spans.map((span) => span.attributes["aos.ai.operation"])).toEqual([
+			"stream",
+			"fetch_deferred",
+			"cancel_deferred",
+			"generate_images",
+		]);
+		expect(spans.every((span) => span.name === "aos.ai.request" && span.settled)).toBe(true);
+		expect(spans[0]?.attributes).toMatchObject({
+			"aos.ai.provider": model.provider,
+			"aos.ai.model": model.id,
+			"aos.ai.api": model.api,
+			"aos.ai.streaming": true,
+			"aos.ai.response.stop_reason": "stop",
+			"aos.ai.usage.total_tokens": 0,
+			"aos.ai.stream.chunk_count": 0,
+		});
+		expect(spans[1]?.attributes["aos.ai.deferred"]).toBe(true);
+		expect(spans[2]?.attributes["aos.ai.deferred"]).toBe(true);
+		expect(spans[3]?.attributes).toMatchObject({
+			"aos.ai.streaming": false,
+			"aos.ai.response.stop_reason": "stop",
+		});
 	});
 });

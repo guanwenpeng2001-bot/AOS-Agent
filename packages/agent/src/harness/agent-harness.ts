@@ -127,7 +127,11 @@ import {
 	type FoundationRecord,
 	type ProvisionedFoundationRecord,
 } from "./session/index.ts";
-import type { TelemetryContext } from "./telemetry.ts";
+import {
+	startHarnessSpan,
+	type TelemetryContext,
+	type TelemetrySpan,
+} from "./telemetry.ts";
 import { type AgentHarnessResources, type PromptTemplate, type Skill, toError } from "./types.ts";
 import {
 	DEFERRED_FETCH_INTENT_CUSTOM_TYPE,
@@ -348,8 +352,18 @@ export interface Events {
 }
 
 class HookRegistry implements Hooks {
-	private readonly handlers = new Map<HookName, Set<(event: unknown) => unknown | Promise<unknown>>>();
+	private readonly handlers = new Map<HookName, Map<(event: unknown) => unknown | Promise<unknown>, string | undefined>>();
+	private tracer?: (
+		name: HookName,
+		event: unknown,
+		registrationId: string | undefined,
+		run: () => Promise<unknown>,
+	) => Promise<unknown>;
 	private closed = false;
+
+	setTracer(tracer: typeof this.tracer): void {
+		this.tracer = tracer;
+	}
 
 	setClosed(): void {
 		this.closed = true;
@@ -358,12 +372,12 @@ class HookRegistry implements Hooks {
 	on(
 		name: HookName,
 		handler: (event: unknown) => unknown | Promise<unknown>,
-		_options?: { id?: string },
+		options?: { id?: string },
 	): () => void {
 		if (this.closed) throw new HarnessClosed();
-		const handlers = this.handlers.get(name) ?? new Set<(event: unknown) => unknown | Promise<unknown>>();
+		const handlers = this.handlers.get(name) ?? new Map<(event: unknown) => unknown | Promise<unknown>, string | undefined>();
 		this.handlers.set(name, handlers);
-		handlers.add(handler);
+		handlers.set(handler, options?.id);
 		return () => {
 			handlers.delete(handler);
 			if (handlers.size === 0) this.handlers.delete(name);
@@ -371,7 +385,11 @@ class HookRegistry implements Hooks {
 	}
 
 	async emit(name: HookName, event: unknown): Promise<void> {
-		for (const handler of this.handlers.get(name) ?? []) await handler(event);
+		for (const [handler, registrationId] of this.handlers.get(name) ?? []) {
+			const run = () => Promise.resolve(handler(event));
+			if (this.tracer === undefined) await run();
+			else await this.tracer(name, event, registrationId, run);
+		}
 	}
 }
 
@@ -1124,6 +1142,7 @@ export class AgentHarness implements AgentLane {
 	readonly events: Events;
 	private readonly durableSession: Session;
 	private readonly models: Models;
+	private readonly telemetryContext?: TelemetryContext;
 	private defaultModel: Model<Api>;
 	private readonly defaultThinkingLevel: ThinkingLevel;
 	private readonly defaultActiveToolNames: string[];
@@ -1189,6 +1208,10 @@ export class AgentHarness implements AgentLane {
 	private readonly assistantEntries = new Map<string, string>();
 	private readonly contextPreparationErrors = new Map<string, unknown>();
 	private readonly operationContextInputs = new Map<string, AgentContext>();
+	private readonly operationTelemetryContexts = new Map<string, TelemetryContext>();
+	private readonly requestTelemetryContexts = new Map<string, TelemetryContext>();
+	private readonly toolTelemetryContexts = new Map<string, TelemetryContext>();
+	private readonly recoveryTelemetryOperations = new Set<string>();
 	private closed = false;
 	private closing = false;
 	private closePromise?: Promise<void>;
@@ -1221,6 +1244,7 @@ export class AgentHarness implements AgentLane {
 		this.artifacts = this.ledger.artifacts;
 		this.ownsLedger = options.ledger === undefined;
 		this.models = options.models;
+		this.telemetryContext = options.context;
 		this.defaultModel = options.model;
 		this.defaultThinkingLevel = options.thinkingLevel ?? "off";
 		this.defaultActiveToolNames = [...(options.activeToolNames ?? options.tools?.map((tool) => tool.name) ?? [])];
@@ -1264,6 +1288,9 @@ export class AgentHarness implements AgentLane {
 		this.toolPipeline = options.toolPipeline;
 		this.toolPipelineOptions = options.toolPipelineOptions;
 		this.hooks = this.hookRegistry;
+		this.hookRegistry.setTracer((name, event, registrationId, run) =>
+			this.traceHook(name, event, registrationId, run),
+		);
 		this.events = new EventsFacade(this.eventBus);
 	}
 
@@ -2859,12 +2886,14 @@ export class AgentHarness implements AgentLane {
 		const activeToolNames = [...reduction.effectiveConfiguration.activeToolNames];
 		const pipelineOperationId = operationId ?? reduction.laneState.operation?.id ?? "context";
 		const activeTools = this.tools.filter((tool) => activeToolNames.includes(tool.name));
+		const executableTools = (this.foundationExecution === undefined || this.toolPipeline === undefined
+			? activeTools
+			: activeTools.map((tool) => this.pipelineTool(tool, lane, pipelineOperationId)))
+			.map((tool) => this.instrumentTool(tool, lane, pipelineOperationId));
 		const context: AgentContext = {
 				systemPrompt: await this.systemPrompt(),
 				messages,
-				tools: this.foundationExecution === undefined || this.toolPipeline === undefined
-					? activeTools
-					: activeTools.map((tool) => this.pipelineTool(tool, lane, pipelineOperationId)),
+				tools: executableTools,
 			};
 		const preparedContext = this.contextPreparation === undefined || purpose === "agent_turn"
 			? context
@@ -3142,6 +3171,9 @@ export class AgentHarness implements AgentLane {
 		let skipInitialSteeringPoll = false;
 		return {
 			...this.streamOptions,
+			telemetryContext: this.requestTelemetryContexts.get(operationId)
+				?? this.operationTelemetryContexts.get(operationId)
+				?? this.streamOptions.telemetryContext,
 			model,
 			reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
 			retry: { ...this.retryPolicy },
@@ -3167,9 +3199,10 @@ export class AgentHarness implements AgentLane {
 						const refreshedContext: AgentContext = {
 							...attemptContext,
 							messages: [...attemptContext.messages],
-							tools: this.foundationExecution === undefined || this.toolPipeline === undefined
+							tools: (this.foundationExecution === undefined || this.toolPipeline === undefined
 								? activeTools
-								: activeTools.map((tool) => this.pipelineTool(tool, lane, operationId)),
+								: activeTools.map((tool) => this.pipelineTool(tool, lane, operationId)))
+								.map((tool) => this.instrumentTool(tool, lane, operationId)),
 						};
 						this.operationContextInputs.set(operationId, {
 							...refreshedContext,
@@ -3237,6 +3270,210 @@ export class AgentHarness implements AgentLane {
 			...(signal ? { signal } : {}),
 			...(context ? {} : {}),
 		};
+	}
+
+	private instrumentTool(tool: HarnessTool, lane: string, operationId: string): HarnessTool {
+		const telemetryContext = this.toolTelemetryContexts.get(operationId)
+			?? this.operationTelemetryContexts.get(operationId);
+		if (telemetryContext === undefined) return tool;
+		return {
+			...tool,
+			execute: (toolCallId, params, signal, onUpdate) =>
+				startHarnessSpan(
+					telemetryContext,
+					"aos.harness.tool",
+					{
+						"aos.lane.name": lane,
+						"aos.operation.id": operationId,
+						"aos.turn.id": `turn:${operationId}`,
+						"aos.tool.name": tool.name,
+						"aos.tool.call_id": toolCallId,
+						"aos.tool.replay": tool.replay ?? "never",
+						"aos.tool.recovery": this.recoveryTelemetryOperations.has(operationId),
+					},
+					async (span) => {
+						try {
+							const result = await tool.execute(toolCallId, params as never, signal, onUpdate);
+							span.setAttributes({ "aos.tool.is_error": false });
+							return result;
+						} catch (error) {
+							span.setAttributes({ "aos.tool.is_error": true });
+							throw error;
+						}
+					},
+				),
+		};
+	}
+
+	private async traceHook(
+		name: HookName,
+		event: unknown,
+		registrationId: string | undefined,
+		run: () => Promise<unknown>,
+	): Promise<unknown> {
+		const eventRecord = asRecord(event);
+		const lane = typeof eventRecord?.lane === "string" ? eventRecord.lane : "main";
+		const operationId = typeof eventRecord?.runId === "string"
+			? eventRecord.runId
+			: typeof eventRecord?.operationId === "string"
+				? eventRecord.operationId
+				: undefined;
+		const telemetryContext = operationId === undefined
+			? this.telemetryContext
+			: this.requestTelemetryContexts.get(operationId)
+				?? this.toolTelemetryContexts.get(operationId)
+				?? this.operationTelemetryContexts.get(operationId)
+				?? this.telemetryContext;
+		if (telemetryContext === undefined) return run();
+		return startHarnessSpan(
+			telemetryContext,
+			"aos.harness.hook",
+			{
+				"aos.lane.name": lane,
+				...(operationId === undefined ? {} : { "aos.operation.id": operationId }),
+				"aos.hook.name": name,
+				...(registrationId === undefined ? {} : { "aos.hook.registration_id": registrationId }),
+			},
+			async (span) => {
+				try {
+					const result = await run();
+					span.setAttributes({ "aos.hook.outcome": "completed" });
+					return result;
+				} catch (error) {
+					span.setAttributes({ "aos.hook.outcome": "failed" });
+					throw error;
+				}
+			},
+		);
+	}
+
+	private setOperationResultAttributes(span: TelemetrySpan, result: unknown): void {
+		const resultRecord = asRecord(result);
+		if (resultRecord?.ok !== true) return;
+		const value = asRecord(resultRecord.value);
+		const outcome = value?.kind;
+		if (typeof outcome !== "string" || outcome === "pending") return;
+		span.setAttributes({ "aos.operation.outcome": outcome });
+		if (outcome !== "failed") return;
+		const error = asRecord(value?.error);
+		const code = typeof error?.code === "string" ? error.code : "failed";
+		span.setAttributes({ "aos.error.code": code, "aos.error.type": code });
+		span.setStatus({ status: "error" });
+	}
+
+	private async traceOperation<Result>(
+		lane: string,
+		operationId: string,
+		kind: "run" | "compaction" | "navigation",
+		recovery: boolean,
+		work: () => Promise<Result>,
+	): Promise<Result> {
+		if (this.telemetryContext === undefined) return work();
+		const sessionId = (await this.durableSession.getMetadata()).id;
+		const execute = async (span: TelemetrySpan): Promise<Result> => {
+			this.operationTelemetryContexts.set(operationId, span);
+			if (recovery) this.recoveryTelemetryOperations.add(operationId);
+			try {
+				const result = await work();
+				this.setOperationResultAttributes(span, result);
+				return result;
+			} catch (error) {
+				const normalized = operationError(error);
+				span.setAttributes({ "aos.error.code": normalized.code, "aos.error.type": normalized.code });
+				throw error;
+			} finally {
+				this.operationTelemetryContexts.delete(operationId);
+				this.recoveryTelemetryOperations.delete(operationId);
+			}
+		};
+		const attributes = {
+			"aos.session.id": sessionId,
+			"aos.lane.name": lane,
+			"aos.operation.id": operationId,
+			"aos.operation.recovery": recovery,
+		};
+		if (kind === "run") {
+			return startHarnessSpan(this.telemetryContext, "aos.harness.run", { ...attributes, "aos.operation.kind": "run" }, execute);
+		}
+		if (kind === "compaction") {
+			return startHarnessSpan(this.telemetryContext, "aos.harness.compaction", { ...attributes, "aos.operation.kind": "compaction" }, execute);
+		}
+		return startHarnessSpan(this.telemetryContext, "aos.harness.navigation", { ...attributes, "aos.operation.kind": "navigation" }, execute);
+	}
+
+	private async traceAgentTurn(lane: string, operationId: string, work: () => Promise<void>): Promise<void> {
+		const telemetryContext = this.operationTelemetryContexts.get(operationId);
+		if (telemetryContext === undefined) return work();
+		const attempts = await this.durableSession.findRecords({ lane, runId: operationId, type: "step_attempt", order: "oldestFirst" });
+		const step = attempts.filter((attempt) => attempt.step === "assistant").at(-1);
+		if (step === undefined) return work();
+		const turnId = `turn:${step.id}`;
+		return startHarnessSpan(
+			telemetryContext,
+			"aos.harness.turn",
+			{ "aos.lane.name": lane, "aos.operation.id": operationId, "aos.turn.id": turnId },
+			(turnSpan) => startHarnessSpan(
+				turnSpan,
+				"aos.harness.step",
+				{
+					"aos.lane.name": lane,
+					"aos.operation.id": operationId,
+					"aos.step.kind": "assistant",
+					"aos.step.attempt": step.attempt,
+				},
+				async (stepSpan) => {
+					this.toolTelemetryContexts.set(operationId, turnSpan);
+					this.requestTelemetryContexts.set(operationId, stepSpan);
+					try {
+						await work();
+						const entry = await this.durableSession.getEntry(step.resultEntryId);
+						const message = entry?.type === "message" && entry.message.role === "assistant" ? entry.message : undefined;
+						const outcome = message?.stopReason === "aborted"
+							? "aborted"
+							: message?.stopReason === "deferred"
+								? "deferred"
+								: message?.stopReason === "error"
+									? "failed"
+									: message?.stopReason === "length"
+										? "overflow"
+										: "succeeded";
+						stepSpan.setAttributes({ "aos.step.outcome": outcome });
+						if (outcome === "failed" || outcome === "overflow") stepSpan.setStatus({ status: "error" });
+					} finally {
+						this.requestTelemetryContexts.delete(operationId);
+						this.toolTelemetryContexts.delete(operationId);
+					}
+				},
+			),
+		);
+	}
+
+	private async traceSummaryStep(lane: string, operationId: string, work: () => Promise<void>): Promise<void> {
+		const telemetryContext = this.operationTelemetryContexts.get(operationId);
+		if (telemetryContext === undefined) return work();
+		const attempts = await this.durableSession.findRecords({ lane, runId: operationId, type: "step_attempt", order: "oldestFirst" });
+		const step = attempts.at(-1);
+		if (step === undefined || step.step === "assistant") return work();
+		return startHarnessSpan(
+			telemetryContext,
+			"aos.harness.step",
+			{
+				"aos.lane.name": lane,
+				"aos.operation.id": operationId,
+				"aos.step.kind": step.step,
+				"aos.step.attempt": step.attempt,
+				...(step.step === "compaction" ? { "aos.compaction.reason": step.compactionReason } : {}),
+			},
+			async (span) => {
+				this.requestTelemetryContexts.set(operationId, span);
+				try {
+					await work();
+					span.setAttributes({ "aos.step.outcome": "succeeded" });
+				} finally {
+					this.requestTelemetryContexts.delete(operationId);
+				}
+			},
+		);
 	}
 
 	private normalizePrompt(input: string | AgentMessage | AgentMessage[], images?: ImageContent[]): AgentMessage[] {
@@ -3819,7 +4056,7 @@ export class AgentHarness implements AgentLane {
 			promise: Promise.resolve(),
 		};
 		let operationModel = this.defaultModel;
-		const promise = (async () => {
+		const promise = this.traceAgentTurn(lane, runId, async () => {
 			try {
 				await this.hookRegistry.emit("before_request", { lane, runId });
 				const prepared = await this.contextForOperation(lane, runId);
@@ -3874,7 +4111,7 @@ export class AgentHarness implements AgentLane {
 			} finally {
 				await this.finishActiveOperation(runId);
 			}
-		})();
+		});
 		void promise.catch(() => undefined);
 		operation.promise = promise;
 		this.activeOperations.set(runId, operation);
@@ -3892,7 +4129,7 @@ export class AgentHarness implements AgentLane {
 		const operation: ActiveOperation = { id: runId, lane, kind: "summary", controller, promise: Promise.resolve() };
 		const promise = (async () => {
 			try {
-				await work(controller.signal);
+				await this.traceSummaryStep(lane, runId, () => work(controller.signal));
 			} catch (error) {
 				if (isHarnessInfrastructureFault(error)) {
 					this.faulted = true;
@@ -4251,7 +4488,10 @@ export class AgentHarness implements AgentLane {
 			operation.id,
 			async (signal) => {
 				try {
-					const response = await this.models.fetchDeferred(model, operation.deferred!, { signal });
+					const response = await this.models.fetchDeferred(model, operation.deferred!, {
+						signal,
+						telemetryContext: this.operationTelemetryContexts.get(operation.id) ?? this.streamOptions.telemetryContext,
+					});
 					await this.enqueue(lane, async () => {
 						const unknown = response.stopReason === "aborted";
 						const responseError = unknown
@@ -4541,9 +4781,11 @@ export class AgentHarness implements AgentLane {
 		if (this.closed) return Result.err(new Closed({ message: "AgentHarness is closed" }));
 		const started = await this.startRun(lane, this.normalizePrompt(input, images), requestedRunId, continuation);
 		if (!started.ok) return started;
-		if (this.drive === "manual") return this.pendingRunOutcome(lane, started.value);
-		await this.runToCompletionImpl(lane);
-		return this.runOutcome(lane, started.value);
+		return this.traceOperation(lane, started.value, "run", false, async () => {
+			if (this.drive === "manual") return this.pendingRunOutcome(lane, started.value);
+			await this.runToCompletionImpl(lane);
+			return this.runOutcome(lane, started.value);
+		});
 	}
 
 	async skill(name: string, additionalInstructions?: string): Promise<RunResult> {
@@ -4702,9 +4944,11 @@ export class AgentHarness implements AgentLane {
 			return Result.ok<string>(id);
 		});
 		if (!started.ok) return started;
-		if (this.drive === "manual") return this.pendingCompactionOutcome(lane, started.value);
-		await this.runToCompletionImpl(lane);
-		return this.compactOutcome(lane, started.value);
+		return this.traceOperation(lane, started.value, "compaction", false, async () => {
+			if (this.drive === "manual") return this.pendingCompactionOutcome(lane, started.value);
+			await this.runToCompletionImpl(lane);
+			return this.compactOutcome(lane, started.value);
+		});
 	}
 
 	async navigateTree(targetId: string | null, options: NavigateOptions = {}): Promise<NavigationResult> {
@@ -4730,9 +4974,11 @@ export class AgentHarness implements AgentLane {
 			return Result.ok<string>(id);
 		});
 		if (!started.ok) return started;
-		if (this.drive === "manual") return this.pendingNavigationOutcome(lane, started.value);
-		await this.runToCompletionImpl(lane);
-		return this.navigationOutcome(lane, started.value);
+		return this.traceOperation(lane, started.value, "navigation", false, async () => {
+			if (this.drive === "manual") return this.pendingNavigationOutcome(lane, started.value);
+			await this.runToCompletionImpl(lane);
+			return this.navigationOutcome(lane, started.value);
+		});
 	}
 
 	async resume(): Promise<ResumeResult> {
@@ -4752,22 +4998,24 @@ export class AgentHarness implements AgentLane {
 		const missingTools = this.missingTools(reduction.effectiveConfiguration.activeToolNames);
 		const missingModels = this.missingModels(reduction.effectiveConfiguration.model);
 		if (missingTools.length > 0 || missingModels.length > 0) return Result.err(new MissingIdentities({ lane, tools: missingTools, models: missingModels, message: "Suspended operation requires unavailable identities" }));
-		await this.hookRegistry.emit("before_resume", { lane, operationId: operation.id });
-		await this.resumeFoundationAttempt(lane, operation.id);
-		await this.runToCompletionImpl(lane);
-		if (operation.kind === "run") {
-			const result = await this.runOutcome(lane, operation.id);
+		return this.traceOperation(lane, operation.id, operation.kind, true, async () => {
+			await this.hookRegistry.emit("before_resume", { lane, operationId: operation.id });
+			await this.resumeFoundationAttempt(lane, operation.id);
+			await this.runToCompletionImpl(lane);
+			if (operation.kind === "run") {
+				const result = await this.runOutcome(lane, operation.id);
+				if (!result.ok) return Result.err(new NothingToResume({ lane, message: result.error.message }));
+				return Result.ok({ operation: "run" as const, ...result.value });
+			}
+			if (operation.kind === "compaction") {
+				const result = await this.compactOutcome(lane, operation.id);
+				if (!result.ok) return Result.err(new NothingToResume({ lane, message: result.error.message }));
+				return Result.ok({ operation: "compaction" as const, ...result.value });
+			}
+			const result = await this.navigationOutcome(lane, operation.id);
 			if (!result.ok) return Result.err(new NothingToResume({ lane, message: result.error.message }));
-			return Result.ok({ operation: "run", ...result.value });
-		}
-		if (operation.kind === "compaction") {
-			const result = await this.compactOutcome(lane, operation.id);
-			if (!result.ok) return Result.err(new NothingToResume({ lane, message: result.error.message }));
-			return Result.ok({ operation: "compaction", ...result.value });
-		}
-		const result = await this.navigationOutcome(lane, operation.id);
-		if (!result.ok) return Result.err(new NothingToResume({ lane, message: result.error.message }));
-		return Result.ok({ operation: "navigation", ...result.value });
+			return Result.ok({ operation: "navigation" as const, ...result.value });
+		});
 	}
 
 	async abort(): Promise<AbortResult> {
