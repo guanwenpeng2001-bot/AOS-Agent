@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const bedrockMock = vi.hoisted(() => ({
 	constructorCalls: [] as Array<Record<string, unknown>>,
+	streamEvents: undefined as unknown[] | undefined,
 }));
 
 vi.mock("@aws-sdk/client-bedrock-runtime", () => {
@@ -13,7 +14,16 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 			bedrockMock.constructorCalls.push(config);
 		}
 
-		send(): Promise<never> {
+		send(): Promise<unknown> {
+			if (bedrockMock.streamEvents) {
+				const events = bedrockMock.streamEvents;
+				return Promise.resolve({
+					$metadata: { httpStatusCode: 200 },
+					stream: (async function* () {
+						yield* events;
+					})(),
+				});
+			}
 			return Promise.reject(new Error("mock send"));
 		}
 	}
@@ -92,6 +102,45 @@ describe("Bedrock constrained sampling", () => {
 			}
 		).toolConfig;
 		expect(novaToolConfig.tools[0].toolSpec.strict).toBeUndefined();
+	});
+});
+
+describe("Bedrock redacted reasoning", () => {
+	it("persists streamed bytes and replays them as redactedContent", async () => {
+		const encrypted = new Uint8Array([1, 2, 3, 4]);
+		bedrockMock.streamEvents = [
+			{ messageStart: { role: "assistant" } },
+			{
+				contentBlockDelta: {
+					contentBlockIndex: 0,
+					delta: { reasoningContent: { redactedContent: encrypted } },
+				},
+			},
+			{ contentBlockStop: { contentBlockIndex: 0 } },
+			{ messageStop: { stopReason: "end_turn" } },
+		];
+		try {
+			const message = await streamBedrock(
+				baseModel,
+				{ messages: [{ role: "user", content: "think", timestamp: Date.now() }] },
+				{ cacheRetention: "none" },
+			).result();
+			const thinking = message.content.find((block) => block.type === "thinking");
+			expect(thinking).toMatchObject({
+				type: "thinking",
+				thinking: "[Reasoning redacted]",
+				thinkingSignature: "AQIDBA==",
+				redacted: true,
+			});
+
+			const payload = await capturePayload({ messages: [message, { role: "user", content: "continue", timestamp: Date.now() }] });
+			const replay = (payload as {
+				messages: Array<{ content: Array<{ reasoningContent?: { redactedContent?: Uint8Array } }> }>;
+			}).messages[0].content[0].reasoningContent?.redactedContent;
+			expect(replay).toEqual(encrypted);
+		} finally {
+			bedrockMock.streamEvents = undefined;
+		}
 	});
 });
 

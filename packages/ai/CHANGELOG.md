@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Bedrock redacted reasoning now round-trips through persisted thinking signatures.
 - Bedrock replay now removes empty tool-argument keys without mutating stored history.
 - Cloudflare AI Gateway provider typing now includes every registered API, and its generated catalog mirrors Workers AI passthroughs.
 - Kimi top-level `cached_tokens` usage now counts as cache reads instead of uncached input.

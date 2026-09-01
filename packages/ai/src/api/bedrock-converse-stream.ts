@@ -100,9 +100,14 @@ export interface BedrockOptions extends StreamOptions {
 	bearerToken?: string;
 }
 
-type Block = (TextContent | ThinkingContent | ToolCall) & { index?: number; partialJson?: string };
+type Block = (TextContent | ThinkingContent | ToolCall) & {
+	index?: number;
+	partialJson?: string;
+	redactedChunks?: Uint8Array[];
+};
 
 const EMPTY_TEXT_PLACEHOLDER = "<empty>";
+const REDACTED_THINKING_PLACEHOLDER = "[Reasoning redacted]";
 
 export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> = (
 	model: Model<"bedrock-converse-stream">,
@@ -305,13 +310,12 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
 
+			for (const block of output.content) finalizeStreamingBlock(block as Block);
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) {
-				delete (block as Block).index;
-				// partialJson is only a streaming scratch buffer; never persist it.
-				delete (block as Block).partialJson;
+				finalizeStreamingBlock(block as Block);
 			}
 			output.stopReason = options.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatBedrockError(error);
@@ -578,12 +582,39 @@ function handleContentBlockDelta(
 					partial: output,
 				});
 			}
-			if (delta.reasoningContent.signature) {
+			if (delta.reasoningContent.signature && !thinkingBlock.redacted) {
 				thinkingBlock.thinkingSignature =
 					(thinkingBlock.thinkingSignature || "") + delta.reasoningContent.signature;
 			}
+			if (delta.reasoningContent.redactedContent?.length) {
+				if (!thinkingBlock.redacted) {
+					thinkingBlock.redacted = true;
+					thinkingBlock.thinkingSignature = "";
+					thinkingBlock.thinking += REDACTED_THINKING_PLACEHOLDER;
+					stream.push({
+						type: "thinking_delta",
+						contentIndex: thinkingIndex,
+						delta: REDACTED_THINKING_PLACEHOLDER,
+						partial: output,
+					});
+				}
+				thinkingBlock.redactedChunks ??= [];
+				thinkingBlock.redactedChunks.push(delta.reasoningContent.redactedContent);
+			}
 		}
 	}
+}
+
+function flushRedactedContent(block: Block): void {
+	if (block.type !== "thinking" || !block.redactedChunks) return;
+	block.thinkingSignature = bytesToBase64(block.redactedChunks);
+	delete block.redactedChunks;
+}
+
+function finalizeStreamingBlock(block: Block): void {
+	delete block.index;
+	delete block.partialJson;
+	flushRedactedContent(block);
 }
 
 function handleMetadata(
@@ -617,6 +648,7 @@ function handleContentBlockStop(
 			stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: output });
 			break;
 		case "thinking":
+			flushRedactedContent(block);
 			stream.push({ type: "thinking_end", contentIndex: index, content: block.thinking, partial: output });
 			break;
 		case "toolCall":
@@ -888,6 +920,11 @@ function convertMessages(
 							});
 							break;
 						case "thinking": {
+							if (c.redacted) {
+								const redactedContent = decodeRedactedContent(c.thinkingSignature);
+								if (redactedContent?.length) contentBlocks.push({ reasoningContent: { redactedContent } });
+								continue;
+							}
 							// Skip empty thinking blocks
 							const thinking = sanitizeSurrogates(c.thinking);
 							if (thinking.trim().length === 0) continue;
@@ -1175,11 +1212,35 @@ function createImageBlock(mimeType: string, data: string) {
 			throw new Error(`Unknown image type: ${mimeType}`);
 	}
 
+	return { source: { bytes: base64ToBytes(data) }, format };
+}
+
+function base64ToBytes(data: string): Uint8Array {
 	const binaryString = atob(data);
 	const bytes = new Uint8Array(binaryString.length);
 	for (let i = 0; i < binaryString.length; i++) {
 		bytes[i] = binaryString.charCodeAt(i);
 	}
 
-	return { source: { bytes }, format };
+	return bytes;
+}
+
+function decodeRedactedContent(signature: string | undefined): Uint8Array | undefined {
+	if (!signature) return undefined;
+	try {
+		return base64ToBytes(signature);
+	} catch {
+		return undefined;
+	}
+}
+
+function bytesToBase64(chunks: Uint8Array[]): string {
+	const windowSize = 0x8000;
+	let binary = "";
+	for (const chunk of chunks) {
+		for (let index = 0; index < chunk.length; index += windowSize) {
+			binary += String.fromCharCode(...chunk.subarray(index, index + windowSize));
+		}
+	}
+	return btoa(binary);
 }
