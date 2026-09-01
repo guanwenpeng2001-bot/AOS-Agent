@@ -157,12 +157,15 @@ describe("web operations surface", () => {
 		expect(html.headers["content-security-policy"]).toContain("default-src 'none'");
 		expect(html.body).toContain("AOS Agent Web Surface");
 		expect(html.body).toContain("Task graph board");
+		expect(html.body).toContain("Usage and cost");
 		expect(html.body).toContain('src="/app.js"');
 		expect(html.body).toContain("Pending gates");
 		expect(script.body).toContain("createElementNS(SVG_NS");
 		expect(script.body).toContain("Parent / Child tree");
 		expect(script.body).toContain("window.confirm(confirmation)");
 		expect(script.body).toContain('callApi("/api/ops"');
+		expect(script.body).toContain('rpc("usage.summary",{})');
+		expect(script.body).toContain("usageBreakdown");
 		for (const method of ["task.gate.approve", "task.gate.reject", "run.cancel", "run.resume"]) {
 			expect(script.body).toContain(`"${method}"`);
 		}
@@ -170,7 +173,7 @@ describe("web operations surface", () => {
 		expect(resources).not.toMatch(/https?:\/\/|(?:src|href)=["']\/\//u);
 	});
 
-	it("forwards only the seven allowlisted read methods", async () => {
+	it("forwards only the eight allowlisted read methods, including the server-side usage summary", async () => {
 		const fake = createFakeClient();
 		surface = await startWebSurfaceServer(fake.client);
 
@@ -186,6 +189,7 @@ describe("web operations surface", () => {
 			status: "running",
 			limit: 10,
 		});
+		const usage = await postRpc(surface, "usage.summary", {});
 
 		expect([
 			run.statusCode,
@@ -195,7 +199,8 @@ describe("web operations surface", () => {
 			graphs.statusCode,
 			workers.statusCode,
 			subagents.statusCode,
-		]).toEqual([200, 200, 200, 200, 200, 200, 200]);
+			usage.statusCode,
+		]).toEqual([200, 200, 200, 200, 200, 200, 200, 200]);
 		expect(fake.getRun).toHaveBeenCalledWith("run-1");
 		expect(fake.auditQuery).toHaveBeenCalledWith({ scope: "current-session", limit: 25 });
 		expect(fake.listTaskGates).toHaveBeenCalledWith({ status: "pending", limit: 10 });
@@ -206,6 +211,18 @@ describe("web operations surface", () => {
 			parentAgentInstanceId: "parent-agent-1",
 			status: "running",
 			limit: 10,
+		});
+		expect(fake.auditQuery).toHaveBeenCalledWith({
+			scope: "session-directory",
+			types: ["run.completed", "run.failed", "run.cancelled", "model.attempt"],
+			limit: 200,
+		});
+		expect(JSON.parse(usage.body).data.totals).toEqual({
+			runCount: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			totalTokens: 0,
+			costUsd: 0,
 		});
 	});
 
@@ -346,6 +363,7 @@ describe("web operations surface", () => {
 		expect((await postRpc(surface, "audit.query", { scope: "global" })).statusCode).toBe(400);
 		expect((await postRpc(surface, "worker.list", { status: "unknown" })).statusCode).toBe(400);
 		expect((await postRpc(surface, "subagent.list", { limit: 10 })).statusCode).toBe(400);
+		expect((await postRpc(surface, "usage.summary", { from: "2026-09-01" })).statusCode).toBe(400);
 		expect((await requestSurface(surface, "/api/rpc")).statusCode).toBe(405);
 		expect((await requestSurface(surface, "/api/ops")).statusCode).toBe(405);
 		expect((await requestSurface(surface, "/missing")).statusCode).toBe(404);
