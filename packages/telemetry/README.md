@@ -8,9 +8,12 @@ This package provides:
 - a shared `NOOP_TELEMETRY_CONTEXT`;
 - a reference `InMemoryTelemetryContext` implementation;
 - serializable schema definitions with inferred TypeScript types;
-- no exporter, global current-span state, or dependency on a telemetry backend.
+- a dependency-free OTLP/HTTP JSON exporter with bounded batching and derived basic metrics;
+- no global current-span state or dependency on a telemetry SDK.
 
 Applications can use the in-memory reference or provide an adapter for OpenTelemetry, Sentry, logs, or another backend. AOS Agent packages pass telemetry contexts explicitly and define their domain schemas separately.
+
+`OtlpHttpTelemetryContext` exports completed spans to `/v1/traces` and derives run, AI-request, and tool count/duration metrics for `/v1/metrics`. Its queue is bounded, drops the oldest span on overflow, and contains network failures as diagnostic counters. Call `shutdown()` to stop its unreferenced timer and flush queued telemetry.
 
 ## Table of Contents
 

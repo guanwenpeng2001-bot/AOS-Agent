@@ -80,6 +80,18 @@ export interface RetrySettings {
 	provider?: ProviderRetrySettings;
 }
 
+export interface TelemetrySettings {
+	enabled?: boolean; // default: false
+	endpoint?: string; // default: http://localhost:4318
+	sampleRate?: number; // default: 1
+}
+
+export interface ResolvedTelemetrySettings {
+	enabled: boolean;
+	endpoint: string;
+	sampleRate: number;
+}
+
 export type TuiMode = RendererTuiMode;
 export type FullscreenExitOutput = "transcript" | "resume-hint";
 
@@ -148,6 +160,7 @@ export interface Settings {
 	memory?: MemorySettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
+	telemetry?: TelemetrySettings;
 	hideThinkingBlock?: boolean;
 	showCacheMissNotices?: boolean; // default: false - show transcript notices for significant prompt-cache misses
 	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR
@@ -1235,6 +1248,33 @@ export class SettingsManager {
 		this.globalSettings.enableInstallTelemetry = enabled;
 		this.markModified("enableInstallTelemetry");
 		this.save();
+	}
+
+	getTelemetrySettings(): ResolvedTelemetrySettings {
+		const telemetry = this.settings.telemetry;
+		if (telemetry === undefined) {
+			return { enabled: false, endpoint: "http://localhost:4318", sampleRate: 1 };
+		}
+		if (telemetry.enabled !== undefined && typeof telemetry.enabled !== "boolean") {
+			throw new Error("Invalid telemetry.enabled setting: expected a boolean");
+		}
+		if (
+			telemetry.endpoint !== undefined &&
+			(typeof telemetry.endpoint !== "string" || telemetry.endpoint.trim().length === 0)
+		) {
+			throw new Error("Invalid telemetry.endpoint setting: expected a non-empty string");
+		}
+		if (
+			telemetry.sampleRate !== undefined &&
+			(!Number.isFinite(telemetry.sampleRate) || telemetry.sampleRate < 0 || telemetry.sampleRate > 1)
+		) {
+			throw new Error("Invalid telemetry.sampleRate setting: expected a number between 0 and 1");
+		}
+		return {
+			enabled: telemetry.enabled ?? false,
+			endpoint: telemetry.endpoint?.trim() ?? "http://localhost:4318",
+			sampleRate: telemetry.sampleRate ?? 1,
+		};
 	}
 
 	getEnableAnalytics(): boolean {
