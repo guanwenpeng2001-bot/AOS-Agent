@@ -159,6 +159,10 @@
           "path": "rpc.md"
         },
         {
+          "title": "Web Surface",
+          "path": "web-surface.md"
+        },
+        {
           "title": "JSON Event Stream Mode",
           "path": "json.md"
         },

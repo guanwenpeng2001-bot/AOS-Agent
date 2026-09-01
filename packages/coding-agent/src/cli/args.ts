@@ -9,7 +9,7 @@ import type { ExtensionFlag } from "../core/extensions/types.ts";
 import type { TuiMode } from "../core/runtime/settings-manager.ts";
 import { parseRpcTransportAddress, type RpcTransportAddress } from "../modes/rpc/rpc-transport-address.ts";
 
-export type Mode = "text" | "json" | "rpc";
+export type Mode = "text" | "json" | "rpc" | "web";
 
 export interface Args {
 	provider?: string;
@@ -84,7 +84,7 @@ export function parseArgs(args: string[]): Args {
 			result.version = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
-			if (mode === "text" || mode === "json" || mode === "rpc") {
+			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "web") {
 				result.mode = mode;
 			}
 		} else if (arg === "--rpc-listen") {
@@ -306,7 +306,7 @@ ${chalk.bold("Options:")}
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
-  --mode <mode>                  Output mode: text (default), json, or rpc
+  --mode <mode>                  Output mode: text (default), json, rpc, or web
   --rpc-listen <address>         RPC TCP listener (tcp://127.0.0.1:<port>); requires --mode rpc
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session

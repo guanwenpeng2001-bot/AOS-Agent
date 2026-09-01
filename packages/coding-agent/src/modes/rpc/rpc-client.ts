@@ -69,6 +69,9 @@ import type {
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
+	TaskGraphGetData,
+	TaskGraphListData,
+	TaskGraphStatus,
 } from "./rpc-types.ts";
 import {
 	type RpcRunStreamEvent,
@@ -848,6 +851,23 @@ export class RpcClient {
 	async getRun(runId: string): Promise<RunGetData> {
 		const response = await this.sendAutomation({ type: "run.get", runId });
 		return this.getAutomationData<RunGetData>(response);
+	}
+
+	/** Read one safe task graph view. */
+	async getTaskGraph(taskId: string, graphRevision: number): Promise<TaskGraphGetData> {
+		const response = await this.sendAutomation({ type: "task.graph.get", taskId, graphRevision });
+		return this.getAutomationData<TaskGraphGetData>(response);
+	}
+
+	/** List safe task graph views for the current session. */
+	async listTaskGraphs(filter: {
+		taskId?: string;
+		graphRevision?: number;
+		status?: TaskGraphStatus;
+		limit?: number;
+	} = {}): Promise<TaskGraphListData> {
+		const response = await this.sendAutomation({ type: "task.graph.list", ...filter });
+		return this.getAutomationData<TaskGraphListData>(response);
 	}
 
 	/**

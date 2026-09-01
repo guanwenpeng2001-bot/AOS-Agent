@@ -43,6 +43,7 @@ Then run `aos` in the project you want to work on. See [Quickstart](quickstart.m
 
 - [SDK](sdk.md) — embed the agent in Node.js applications.
 - [RPC mode](rpc.md) — integrate over stdin/stdout JSONL.
+- [Web surface](web-surface.md) — inspect runs, task graphs, and safe audit events in a local read-only dashboard.
 - [JSON event stream mode](json.md) — print mode with structured events.
 - [TUI components](tui.md) — build custom terminal UI for extensions.
 

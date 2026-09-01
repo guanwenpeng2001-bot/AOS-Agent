@@ -51,6 +51,7 @@ export {
 	type RpcTransportSink,
 } from "./rpc/rpc-transport.ts";
 export { runRpcMode, type RpcModeOptions } from "./rpc/rpc-mode.ts";
+export { runWebMode, type WebModeOptions } from "./web/web-mode.ts";
 export {
 	createRpcHostController,
 	RpcHostController,
