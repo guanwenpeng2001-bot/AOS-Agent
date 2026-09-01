@@ -4630,7 +4630,7 @@ describe("RPC Automation Host run lifecycle", () => {
 			await vi.waitFor(() => expect(responsesFor(rpcIo.outputLines, "i-audit")).toHaveLength(1));
 			expect(
 				(responsesFor(rpcIo.outputLines, "i-audit")[0].data as { auditCommands: string[] }).auditCommands,
-			).toEqual(["audit.query", "audit.replay"]);
+			).toEqual(["audit.query", "audit.replay", "audit.export"]);
 
 			lineHandler(JSON.stringify({ id: "run-audit", type: "run.start", message: "Hello" }));
 			let runId: string;

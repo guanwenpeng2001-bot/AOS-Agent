@@ -7,8 +7,10 @@
  * for a discovered file, because opening can migrate and rewrite old sessions.
  */
 
+import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { canonicalFoundationJson } from "@aos-agent/agent-core";
 
 import {
 	AUDIT_CURSOR_SORT_KEYS,
@@ -27,9 +29,9 @@ import {
 	type AuditEventType,
 	type AuditFoldResult,
 	type AuditQuery,
-	type AuditQueryResult,
+	type AuditQueryResult as BaseAuditQueryResult,
 	type AuditReplayQuery as BaseAuditReplayQuery,
-	type AuditReplayResult,
+	type AuditReplayResult as BaseAuditReplayResult,
 	type AuditReplayStatus,
 	type AuditSession,
 	type AuditSortKey,
@@ -37,6 +39,11 @@ import {
 	type AuditQueryScope,
 } from "./execution-audit.ts";
 import { loadEntriesFromFile, type FileEntry, type SessionEntry } from "./manager.ts";
+import {
+	type AuditIntegrityProof,
+	type AuditIntegrityStatus,
+	verifySessionAuditIntegrity,
+} from "./audit-integrity.ts";
 
 /** Maximum number of `.jsonl` candidates inspected in one directory query. */
 export const AUDIT_MAX_SESSION_CANDIDATES = 256;
@@ -52,11 +59,35 @@ export type {
 	AuditEvent,
 	AuditEventType,
 	AuditQuery,
-	AuditQueryResult,
-	AuditReplayResult,
 	AuditSortKey,
 	AuditWarning,
 } from "./execution-audit.ts";
+
+export interface AuditIntegrityResult {
+	readonly schemaVersion: 1;
+	readonly status: AuditIntegrityStatus;
+	readonly cursorProtection: "injected" | "legacy-fallback";
+	readonly sessions: ReadonlyArray<AuditIntegrityProof>;
+}
+
+export interface AuditQueryResult extends BaseAuditQueryResult {
+	readonly integrity: AuditIntegrityResult;
+}
+
+export interface AuditReplayResult extends BaseAuditReplayResult {
+	readonly integrity: AuditIntegrityResult;
+}
+
+export type AuditExportQuery = Omit<AuditQuery, "cursor" | "limit">;
+
+export interface AuditExportResult {
+	readonly schemaVersion: 1;
+	readonly mediaType: "application/x-ndjson";
+	readonly eventCount: number;
+	readonly eventsDigest: string;
+	readonly integrity: AuditIntegrityResult;
+	readonly jsonl: string;
+}
 
 export interface ExecutionAuditQueryOptions {
 	readonly cursorSecret?: AuditCursorSecret;
@@ -89,6 +120,7 @@ interface FoldedSession {
 	readonly sessionId: string;
 	readonly adapter: ExecutionAuditAdapter;
 	readonly fold: AuditFoldResult;
+	readonly integrity: AuditIntegrityProof;
 }
 
 interface ReadSnapshot {
@@ -96,6 +128,7 @@ interface ReadSnapshot {
 	readonly events: ReadonlyArray<AuditEvent>;
 	readonly warnings: ReadonlyArray<AuditWarning>;
 	readonly unavailable: boolean;
+	readonly integrity: ReadonlyArray<AuditIntegrityProof>;
 }
 
 const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
@@ -389,11 +422,13 @@ function entriesWithoutHeader(entries: ReadonlyArray<FileEntry>): ReadonlyArray<
 export class ExecutionAuditQuery {
 	private readonly source: AuditQuerySession;
 	private readonly secret: AuditCursorSecret | undefined;
+	private readonly cursorProtection: AuditIntegrityResult["cursorProtection"];
 	private readonly limits: NormalizedLimits;
 
 	constructor(source: AuditQuerySession, options: ExecutionAuditQueryOptions = {}) {
 		this.source = source;
 		this.secret = options.cursorSecret;
+		this.cursorProtection = options.cursorSecret === undefined ? "legacy-fallback" : "injected";
 		this.limits = resolveLimits(options);
 	}
 
@@ -411,13 +446,20 @@ export class ExecutionAuditQuery {
 	private foldCurrentSession(sessionId: string): FoldedSession {
 		try {
 			const entries = [...(this.source.getPhysicalEntries?.() ?? this.source.getEntries())];
+			const integrity = verifySessionAuditIntegrity(sessionId, entries);
 			const snapshot: AuditSession = {
 				getSessionId: () => sessionId,
 				getEntries: () => entries,
 			};
 			const adapter = new ExecutionAuditAdapter(snapshot);
-			const physicalFold = adapter.fold();
-			if (this.source.getPhysicalEntries === undefined) return { sessionId, adapter, fold: physicalFold };
+			let physicalFold: AuditFoldResult;
+			try {
+				physicalFold = adapter.fold();
+			} catch (error) {
+				if (integrity.status !== "invalid") throw error;
+				physicalFold = { events: [], warnings: [], runSummaries: new Map() };
+			}
+			if (this.source.getPhysicalEntries === undefined) return { sessionId, adapter, fold: physicalFold, integrity };
 			const physicalIds = new Set(entries.map((entry) => entry.id));
 			const projectedEntries = this.source
 				.getEntries()
@@ -425,7 +467,7 @@ export class ExecutionAuditQuery {
 					(entry): entry is Extract<SessionEntry, { type: "custom" }> =>
 						entry.type === "custom" && !physicalIds.has(entry.id),
 				);
-			if (projectedEntries.length === 0) return { sessionId, adapter, fold: physicalFold };
+			if (projectedEntries.length === 0) return { sessionId, adapter, fold: physicalFold, integrity };
 			const projectedAuditEntries = projectedEntries.filter((entry) =>
 				PROJECTED_AUDIT_CUSTOM_TYPES.has(entry.customType),
 			);
@@ -456,6 +498,7 @@ export class ExecutionAuditQuery {
 					warnings: [...physicalFold.warnings, ...projectedFold.warnings, ...unsupportedWarnings],
 					runSummaries: physicalFold.runSummaries,
 				},
+				integrity,
 			};
 		} catch (error) {
 			if (error instanceof ExecutionAuditError) throw error;
@@ -522,9 +565,22 @@ export class ExecutionAuditQuery {
 				getSessionId: () => sessionId,
 				getEntries: () => entriesWithoutHeader(entries),
 			};
+			const integrity = verifySessionAuditIntegrity(sessionId, entriesWithoutHeader(entries));
 			try {
 				const adapter = new ExecutionAuditAdapter(session);
-				sessions.push({ sessionId, adapter, fold: adapter.fold() });
+				let fold: AuditFoldResult;
+				try {
+					fold = adapter.fold();
+				} catch (error) {
+					if (integrity.status !== "invalid") throw error;
+					fold = { events: [], warnings: [], runSummaries: new Map() };
+				}
+				sessions.push({
+					sessionId,
+					adapter,
+					fold,
+					integrity,
+				});
 			} catch (error) {
 				if (error instanceof ExecutionAuditError && error.code === "audit_replay_incomplete") throw error;
 				warnings.push(unavailableWarning(sessionId));
@@ -534,7 +590,7 @@ export class ExecutionAuditQuery {
 
 		const events = mergeEvents(sessions.flatMap((session) => [...session.fold.events]));
 		const mergedWarnings = mergeWarnings([...warnings, ...sessions.flatMap((session) => [...session.fold.warnings])]);
-		return { sessions, events, warnings: mergedWarnings, unavailable };
+		return { sessions, events, warnings: mergedWarnings, unavailable, integrity: sessions.map((session) => session.integrity) };
 	}
 
 	private read(query: AuditQuery): ReadSnapshot {
@@ -545,9 +601,24 @@ export class ExecutionAuditQuery {
 				events: mergeEvents(current.fold.events),
 				warnings: mergeWarnings(current.fold.warnings),
 				unavailable: false,
+				integrity: [current.integrity],
 			};
 		}
 		return this.foldDirectory(query);
+	}
+
+	private integrity(proofs: ReadonlyArray<AuditIntegrityProof>): AuditIntegrityResult {
+		const status: AuditIntegrityStatus = proofs.some((proof) => proof.status === "invalid")
+			? "invalid"
+			: proofs.some((proof) => proof.status === "legacy")
+				? "legacy"
+				: "verified";
+		return {
+			schemaVersion: 1,
+			status,
+			cursorProtection: this.cursorProtection,
+			sessions: proofs,
+		};
 	}
 
 	query(input: AuditQuery): AuditQueryResult {
@@ -560,6 +631,35 @@ export class ExecutionAuditQuery {
 			events: page.events,
 			...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
 			warnings: snapshot.warnings,
+			integrity: this.integrity(snapshot.integrity),
+		};
+	}
+
+	export(input: AuditExportQuery): AuditExportResult {
+		const query = normalizeQuery({ ...input, limit: AUDIT_MAX_LIMIT }, this.currentSessionId());
+		const snapshot = this.read(query);
+		const events = filterEvents(snapshot.events, query);
+		const integrity = this.integrity(snapshot.integrity);
+		const eventsDigest = createHash("sha256").update(canonicalFoundationJson(events), "utf8").digest("hex");
+		const lines = [
+			JSON.stringify({ kind: "audit.export", schemaVersion: 1, scope: query.scope, integrity }),
+			...events.map((event) => JSON.stringify({ kind: "audit.event", event })),
+			JSON.stringify({
+				kind: "audit.proof",
+				schemaVersion: 1,
+				algorithm: "sha256",
+				eventCount: events.length,
+				eventsDigest,
+				integrity,
+			}),
+		];
+		return {
+			schemaVersion: 1,
+			mediaType: "application/x-ndjson",
+			eventCount: events.length,
+			eventsDigest,
+			integrity,
+			jsonl: `${lines.join("\n")}\n`,
 		};
 	}
 
@@ -578,7 +678,7 @@ export class ExecutionAuditQuery {
 		const orderedRunSessions = [...runSessions].sort((left, right) => left.sessionId.localeCompare(right.sessionId));
 		const run = orderedRunSessions[0]!.fold.runSummaries.get(runId)!;
 		const replayWarnings: AuditWarning[] = [];
-		let incomplete = snapshot.unavailable;
+		let incomplete = snapshot.unavailable || snapshot.integrity.some((proof) => proof.status === "invalid");
 		for (const session of orderedRunSessions) {
 			try {
 				const local = session.adapter.replay(runId);
@@ -609,6 +709,7 @@ export class ExecutionAuditQuery {
 			...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
 			status,
 			warnings,
+			integrity: this.integrity(snapshot.integrity),
 		};
 	}
 

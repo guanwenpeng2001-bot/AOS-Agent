@@ -986,6 +986,21 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 					record: result.record,
 				}, result.record.id);
 			}
+			const currentState = this.foundationState();
+			const latestRetention = currentState.getRecords()
+				.filter((record): record is Extract<FoundationRecord, { kind: "retention" }> => record.kind === "retention")
+				.at(-1);
+			if (
+				result.record.kind === "retention" &&
+				latestRetention?.retentionRevision === result.record.retentionRevision
+			) {
+				const prunable = currentState.prunableFoundationRecords();
+				this.manager.executeFoundationRetention(prunable, {
+					recordId: result.record.id,
+					revision: result.record.retentionRevision,
+					cutSequence: policy.cutSequence,
+				});
+			}
 			return clone(result);
 		});
 	}

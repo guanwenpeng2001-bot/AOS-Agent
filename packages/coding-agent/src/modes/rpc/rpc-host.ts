@@ -161,6 +161,8 @@ import { filterAndSortSessions } from "../interactive/components/session-selecto
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { type JsonAgentSessionEvent, toJsonEvent } from "../json-event.ts";
 import type {
+	AuditExportData,
+	AuditExportQuery,
 	AuditQuery,
 	AuditQueryData,
 	AuditReplayData,
@@ -276,6 +278,8 @@ export interface RpcHostControllerOptions {
 			reference: CanonicalExternalAgentArtifactReference,
 		): ExternalAgentArtifactInspection | Promise<ExternalAgentArtifactInspection>;
 	};
+	/** Host-owned override; settings or a random process secret are used when omitted. */
+	auditCursorSecret?: string | Uint8Array;
 }
 
 /** Minimal authoritative Worker registry seam supplied by Host composition. */
@@ -340,6 +344,9 @@ function adaptOutputSink(sink: RpcOutputSinkLike): RpcHostOutputSink {
 export type {
 	AuditEvent,
 	AuditEventType,
+	AuditExportData,
+	AuditExportQuery,
+	AuditExportResult,
 	AuditQuery,
 	AuditQueryData,
 	AuditQueryResult,
@@ -780,6 +787,7 @@ export class RpcHostController {
 	private readonly endpointKind: EndpointKind;
 	private readonly endpointSecurity: EndpointSecurityVerdict;
 	private readonly externalArtifactAuthority?: NonNullable<RpcHostControllerOptions["externalArtifactAuthority"]>;
+	private readonly auditCursorSecret: string | Uint8Array;
 	private commandHandler?: (
 		command: RpcCommand,
 	) => Promise<
@@ -813,6 +821,11 @@ export class RpcHostController {
 			allowRemote: false,
 		};
 		this.externalArtifactAuthority = options.externalArtifactAuthority;
+		const runtimeServices = (runtimeHost as { readonly services?: AgentSessionRuntime["services"] }).services;
+		this.auditCursorSecret =
+			options.auditCursorSecret ??
+			runtimeServices?.settingsManager.getAuditCursorSecret() ??
+			crypto.randomBytes(32);
 	}
 
 	private inspectExternalArtifact(
@@ -1304,6 +1317,16 @@ export class RpcHostController {
 			"to",
 			"cursor",
 			"limit",
+		]);
+		const AUDIT_EXPORT_COMMAND_KEYS = new Set([
+			"id",
+			"type",
+			"scope",
+			"sessionId",
+			"runId",
+			"types",
+			"from",
+			"to",
 		]);
 
 		const auditErrorMessage = (code: AuditAutomationCode): string => {
@@ -3910,7 +3933,7 @@ export class RpcHostController {
 						sessionId: currentBinding.session.sessionId,
 						runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
 						...(networkProtocol === undefined ? {} : { protocol: networkProtocol }),
-						auditCommands: ["audit.query", "audit.replay"],
+						auditCommands: ["audit.query", "audit.replay", "audit.export"],
 						taskGateCommands: [
 							"task.gate.request",
 							"task.gate.get",
@@ -4282,7 +4305,9 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).query(
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session), {
+							cursorSecret: this.auditCursorSecret,
+						}).query(
 							query,
 						) satisfies AuditQueryData;
 						return { id, type: "response", command: "audit.query", success: true, data };
@@ -4309,12 +4334,39 @@ export class RpcHostController {
 						...(command.limit === undefined ? {} : { limit: command.limit }),
 					};
 					try {
-						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session)).replay(
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session), {
+							cursorSecret: this.auditCursorSecret,
+						}).replay(
 							query,
 						) satisfies AuditReplayData;
 						return { id, type: "response", command: "audit.replay", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.replay", auditCommandError(err, "audit_replay_incomplete"));
+					}
+				}
+
+				case "audit.export": {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
+						return automationError(id, "audit.export", hostNotInitializedError());
+					}
+					if (Object.keys(command).some((key) => !AUDIT_EXPORT_COMMAND_KEYS.has(key))) {
+						return automationError(id, "audit.export", auditCommandError(undefined, "audit_query_invalid"));
+					}
+					const query: AuditExportQuery = {
+						scope: command.scope,
+						...(command.sessionId === undefined ? {} : { sessionId: command.sessionId }),
+						...(command.runId === undefined ? {} : { runId: command.runId }),
+						...(command.types === undefined ? {} : { types: command.types }),
+						...(command.from === undefined ? {} : { from: command.from }),
+						...(command.to === undefined ? {} : { to: command.to }),
+					};
+					try {
+						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session), {
+							cursorSecret: this.auditCursorSecret,
+						}).export(query) satisfies AuditExportData;
+						return { id, type: "response", command: "audit.export", success: true, data };
+					} catch (err) {
+						return automationError(id, "audit.export", auditCommandError(err, "audit_query_invalid"));
 					}
 				}
 

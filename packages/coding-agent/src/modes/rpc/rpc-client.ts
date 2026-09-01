@@ -44,6 +44,8 @@ import { RpcTransportError, type RpcTransportErrorCode, type RpcTransportErrorRe
 export { RpcTransportError };
 export type { RpcTransportErrorCode, RpcTransportErrorRecord };
 import type {
+	AuditExportQuery,
+	AuditExportResult,
 	AuditQuery,
 	AuditQueryResult,
 	AuditReplayQuery,
@@ -1601,6 +1603,16 @@ export class RpcClient {
 		options: Omit<AuditReplayQuery, "runId"> = {},
 	): Promise<AuditReplayResult> {
 		return this.auditReplay(query, options);
+	}
+
+	/** Export the filtered safe audit view as proof-bearing JSONL. */
+	async auditExport(query: AuditExportQuery): Promise<AuditExportResult> {
+		const response = await this.sendAutomation({ type: "audit.export", ...query });
+		return this.getAutomationData<AuditExportResult>(response);
+	}
+
+	async exportAudit(query: AuditExportQuery): Promise<AuditExportResult> {
+		return this.auditExport(query);
 	}
 
 	/**

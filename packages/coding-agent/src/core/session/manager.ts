@@ -38,6 +38,13 @@ import {
 	createCustomMessage,
 } from "../messages.ts";
 import { SessionWriteCoordinator } from "./write-coordinator.ts";
+import {
+	latestSessionAuditDigest,
+	rechainSessionAuditEntries,
+	sealSessionAuditEntry,
+	type SessionAuditSeal,
+	verifySessionAuditIntegrity,
+} from "./audit-integrity.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -223,6 +230,8 @@ export interface SessionEntryBase {
 	id: string;
 	parentId: string | null;
 	timestamp: string;
+	/** Optional physical-ledger hash-chain seal. Historical entries omit it. */
+	readonly auditIntegrity?: SessionAuditSeal;
 }
 
 export interface SessionMessageEntry extends SessionEntryBase {
@@ -1500,6 +1509,122 @@ export class SessionManager {
 		}
 	}
 
+	private _replacePhysicalEntries(entries: readonly SessionEntry[]): void {
+		const header = this.getHeader();
+		if (header === null) throw new Error("Session header is missing");
+		const nextEntries: FileEntry[] = [header, ...rechainSessionAuditEntries(this.sessionId, entries)];
+		if (this.persist && this.sessionFile) {
+			this._withWriteLock(() => {
+				const temporaryPath = `${this.sessionFile}.audit-rewrite-${randomUUID()}.tmp`;
+				try {
+					const fd = openSync(temporaryPath, "wx");
+					try {
+						for (const entry of nextEntries) writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+						fsyncSync(fd);
+					} finally {
+						closeSync(fd);
+					}
+					renameSync(temporaryPath, this.sessionFile!);
+				} finally {
+					rmSync(temporaryPath, { force: true });
+				}
+			});
+		}
+		this.fileEntries = nextEntries;
+		this._buildIndex();
+	}
+
+	/** Archive and physically replace prunable Foundation records with sequence-preserving checkpoints. */
+	executeFoundationRetention(
+		records: readonly { readonly id: string; readonly seq: number }[],
+		retention: { readonly recordId: string; readonly revision: number; readonly cutSequence: number },
+	): number {
+		if (records.length === 0) return 0;
+		const physical = this.getPhysicalEntries();
+		if (verifySessionAuditIntegrity(this.sessionId, physical).status === "invalid") {
+			throw new Error("Session audit integrity verification failed before retention");
+		}
+		const recordById = new Map(records.map((record) => [record.id, record]));
+		const archived: SessionEntry[] = [];
+		const replacement = physical.map((entry): SessionEntry => {
+			if (
+				entry.type !== "custom" ||
+				entry.customType !== "__aos.foundation.durable.v1" ||
+				!isRecord(entry.data) ||
+				entry.data.retentionPruned === true ||
+				!isRecord(entry.data.record) ||
+				typeof entry.data.record.id !== "string"
+			) return entry;
+			const record = recordById.get(entry.data.record.id);
+			if (record === undefined) return entry;
+			archived.push(structuredClone(entry));
+			const durableRecord = structuredClone(entry.data.record);
+			if (durableRecord.kind === "fact") {
+				durableRecord.payload = {
+					retentionPruned: true,
+					originalDigest: createHash("sha256")
+						.update(JSON.stringify(durableRecord.payload))
+						.digest("hex"),
+				};
+			} else if (durableRecord.kind === "intent") {
+				delete durableRecord.payload;
+			} else if (durableRecord.kind === "retention" && isRecord(durableRecord.policy)) {
+				delete durableRecord.policy.reason;
+			}
+			return {
+				...entry,
+				data: {
+					schemaVersion: 1,
+					kind: "durable",
+					record: durableRecord,
+					retentionPruned: true,
+					retentionRecordId: retention.recordId,
+					retentionRevision: retention.revision,
+				},
+			};
+		});
+		if (archived.length === 0) return 0;
+		if (this.persist && this.sessionFile) {
+			const archivePath = `${this.sessionFile}.audit-archive-r${retention.revision}`;
+			this._withWriteLock(() => {
+				if (existsSync(archivePath)) {
+					const lines = readFileSync(archivePath, "utf8").trimEnd().split("\n");
+					let recovered: unknown[];
+					try {
+						recovered = lines.slice(1).map((line) => JSON.parse(line) as unknown);
+					} catch {
+						throw new Error("Audit retention archive is malformed");
+					}
+					if (
+						recovered.length !== archived.length ||
+						recovered.some((entry, index) => JSON.stringify(entry) !== JSON.stringify(archived[index]))
+					) {
+						throw new Error("Audit retention archive does not match the prunable records");
+					}
+					return;
+				}
+				const fd = openSync(archivePath, "wx");
+				try {
+					writeFileSync(fd, `${JSON.stringify({
+						type: "audit_retention_archive",
+						schemaVersion: 1,
+						sessionId: this.sessionId,
+						retentionRecordId: retention.recordId,
+						retentionRevision: retention.revision,
+						cutSequence: retention.cutSequence,
+						entryCount: archived.length,
+					})}\n`);
+					for (const entry of archived) writeFileSync(fd, `${JSON.stringify(entry)}\n`);
+					fsyncSync(fd);
+				} finally {
+					closeSync(fd);
+				}
+			});
+		}
+		this._replacePhysicalEntries(replacement);
+		return archived.length;
+	}
+
 	/** Persist the complete pending log after a canonical assistant response settles. */
 	flushPendingSession(): void {
 		this.assertWritesAllowed();
@@ -1622,11 +1747,19 @@ export class SessionManager {
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
-		const nextEntries = [...this.fileEntries, entry];
-		this._persist(entry, nextEntries);
-		this.fileEntries.push(entry);
-		this.byId.set(entry.id, entry);
-		this.leafId = entry.id;
+		const physicalEntries = this.getPhysicalEntries();
+		const integrity = verifySessionAuditIntegrity(this.sessionId, physicalEntries);
+		if (integrity.status === "invalid") throw new Error("Session audit integrity verification failed");
+		const sealedEntry = sealSessionAuditEntry(
+			this.sessionId,
+			entry,
+			latestSessionAuditDigest(physicalEntries),
+		);
+		const nextEntries = [...this.fileEntries, sealedEntry];
+		this._persist(sealedEntry, nextEntries);
+		this.fileEntries.push(sealedEntry);
+		this.byId.set(sealedEntry.id, sealedEntry);
+		this.leafId = sealedEntry.id;
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id.
@@ -2126,7 +2259,10 @@ export class SessionManager {
 				parentId = labelEntry.id;
 			}
 
-			const nextFileEntries: FileEntry[] = [header, ...pathWithoutLabels, ...labelEntries];
+			const nextFileEntries: FileEntry[] = [
+				header,
+				...rechainSessionAuditEntries(newSessionId, [...pathWithoutLabels, ...labelEntries]),
+			];
 
 			// Only write the file now if it contains an assistant message.
 			// Otherwise defer to _persist(), which creates the file on the
@@ -2171,7 +2307,10 @@ export class SessionManager {
 			labelEntries.push(labelEntry);
 			parentId = labelEntry.id;
 		}
-		this.fileEntries = [header, ...pathWithoutLabels, ...labelEntries];
+		this.fileEntries = [
+			header,
+			...rechainSessionAuditEntries(newSessionId, [...pathWithoutLabels, ...labelEntries]),
+		];
 		this.sessionId = newSessionId;
 		this._buildIndex();
 		return undefined;
@@ -2349,16 +2488,18 @@ export class SessionManager {
 				entry.data.entry.parentId = sourceCanonicalLeafIds.get(advancedLane) ?? null;
 			}
 		}
-		const merged = [...sourceEntries, ...candidateDelta];
+		let merged = [...sourceEntries, ...candidateDelta];
 		this.normalizeFoundationSequences(merged);
+		merged = [merged[0]!, ...rechainSessionAuditEntries(this.sessionId, merged.slice(1) as SessionEntry[])];
 		const hasAssistant = merged.some((entry) => entry.type === "message" && entry.message.role === "assistant");
 		const shouldWrite = source.flushed || this.detachedFlushRequested || hasAssistant;
+		const mergedDelta = merged.slice(sourceEntries.length);
 
 		source._withWriteLock(() => {
 			if (!source.persist || !source.sessionFile || !shouldWrite) return;
 			if (source.flushed && existsSync(source.sessionFile)) {
-				if (candidateDelta.length > 0) {
-					appendFileSync(source.sessionFile, candidateDelta.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+				if (mergedDelta.length > 0) {
+					appendFileSync(source.sessionFile, mergedDelta.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
 				}
 				return;
 			}
@@ -2555,9 +2696,12 @@ export class SessionManager {
 			writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });
 
 			// Copy all non-header entries from source
+			let previousDigest: string | null = null;
 			for (const entry of sourceEntries) {
 				if (entry.type !== "session") {
-					appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
+					const sealed = sealSessionAuditEntry(newSessionId, entry, previousDigest);
+					appendFileSync(newSessionFile, `${JSON.stringify(sealed)}\n`);
+					previousDigest = sealed.auditIntegrity!.digest;
 				}
 			}
 		});
