@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Z.AI Coding Plan defaults now reference the current GLM model IDs.
 - `models.json` now accepts the documented `compat.supportsFinishReason` override.
 - JSON and RPC `toolcall_start` updates now include the tool-call ID and name without cumulative snapshots.
 - JSON and RPC streaming updates now retain cumulative usage while omitting cumulative message snapshots.
