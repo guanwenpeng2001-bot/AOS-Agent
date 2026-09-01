@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Repeated truncated-response recovery now reports truncation instead of mislabeling it as context overflow.
 - Extensions now receive `session_compact_failed` when compaction fails or is aborted.
 - Compaction and branch summarization now reject token-capped partial summaries instead of persisting them as checkpoints.
 - Compaction and branch summarization now reject provider responses that attempt tool calls.

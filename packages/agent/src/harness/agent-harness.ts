@@ -4587,11 +4587,15 @@ export class AgentHarness implements AgentLane {
 		const entries = await this.getLaneEntries("main");
 		const latestCompaction = [...entries].reverse().find((entry): entry is CompactionEntry => entry.type === "compaction");
 		if (latestCompaction !== undefined && assistantMessage.timestamp <= latestCompaction.timestamp) return false;
-		if (isContextOverflow(assistantMessage, model.contextWindow) || isRecoverableLength(assistantMessage, model.maxTokens)) {
+		const contextOverflow = isContextOverflow(assistantMessage, model.contextWindow);
+		const recoverableLength = isRecoverableLength(assistantMessage, model.maxTokens);
+		if (contextOverflow || recoverableLength) {
 			const willRetry = assistantMessage.stopReason !== "stop";
 			if (!willRetry) return autoCompaction("overflow", false);
 			if (this.overflowRecoveryAttempted) {
-				const errorMessage = "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
+				const errorMessage = contextOverflow
+					? "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."
+					: "Truncated response recovery failed after one compact-and-retry attempt.";
 				this.eventBus.emit({
 					type: "compaction_end",
 					reason: "overflow",

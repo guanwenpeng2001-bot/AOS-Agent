@@ -397,7 +397,7 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.fake.state.callCount).toBe(2);
 		expect(harness.eventsOfType("compaction_start").filter((event) => event.reason === "overflow")).toHaveLength(1);
 		expect(harness.eventsOfType("compaction_end").at(-1)?.errorMessage).toBe(
-			"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+			"Truncated response recovery failed after one compact-and-retry attempt.",
 		);
 	});
 
