@@ -14,7 +14,6 @@ import {
 	createWorkerLifecycle,
 	type WorkerBinding,
 	type WorkerLifecycleState,
-	type WorkerLifecycleStatus,
 } from "../../src/core/worker/lifecycle.ts";
 
 const CHILD_ENTRY = fileURLToPath(new URL("../fixtures/fake-worker-child.ts", import.meta.url));
@@ -59,7 +58,7 @@ function config(
 		// The dedicated ready_timeout profile below keeps the readiness deadline assertion strict.
 		readyTimeoutMs: 10_000,
 		heartbeatTimeoutMs: 250,
-		cancelTimeoutMs: 100,
+		cancelTimeoutMs: 2_000,
 		terminateTimeoutMs: 500,
 		...overrides,
 	};
@@ -101,29 +100,15 @@ function request(workerBinding: WorkerBinding, operationId = "operation-1"): San
 	};
 }
 
-async function waitForStatus(
+async function synchronizeRunning(
 	supervisor: OperationWorkerSupervisor,
-	status: WorkerLifecycleStatus,
-	timeoutMs = 1_000,
+	operationId: string,
 ): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (supervisor.snapshot.record?.status === status) return;
-		await new Promise((resolve) => setTimeout(resolve, 5));
+	const live = await supervisor.probeLiveness(operationId);
+	if (!live.ok) throw live.error;
+	if (supervisor.snapshot.record?.status !== "running") {
+		throw new Error("Operation Worker did not enter running before pong");
 	}
-	throw new Error(`Timed out waiting for ${status}`);
-}
-
-async function waitForNoLiveProcess(
-	supervisor: OperationWorkerSupervisor,
-	timeoutMs = 1_000,
-): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (!supervisor.snapshot.hasLiveProcess) return;
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	throw new Error("Timed out waiting for the worker process to stop");
 }
 
 function recoveredReadyState(workerBinding: WorkerBinding): WorkerLifecycleState {
@@ -284,7 +269,7 @@ describe("Operation Worker supervisor", () => {
 		expect(current.supervisor.snapshot.record?.status).toBe("lost");
 		expect(current.supervisor.lifecycleState?.transitions.map((item) => item.to)).toContain("lost");
 		expect(current.supervisor.lifecycleState?.transitions.some((item) => item.to === "completed")).toBe(false);
-		await waitForNoLiveProcess(current.supervisor);
+		expect(current.supervisor.snapshot.hasLiveProcess).toBe(false);
 		const cancelled = await current.supervisor.cancel();
 		expect(cancelled).toMatchObject({
 			ok: false,
@@ -331,7 +316,7 @@ describe("Operation Worker supervisor", () => {
 		const confirmed = create("cancel_success");
 		await activate(confirmed.supervisor, confirmed.workerBinding);
 		const confirmedExecution = confirmed.supervisor.execute(request(confirmed.workerBinding));
-		await waitForStatus(confirmed.supervisor, "running");
+		await synchronizeRunning(confirmed.supervisor, "operation-1");
 		expect(await confirmed.supervisor.cancel("cancel", "operation-1")).toEqual({ ok: true, value: undefined });
 		const confirmedOutcome = await confirmedExecution;
 		if (!confirmedOutcome.ok) throw confirmedOutcome.error;
@@ -342,7 +327,7 @@ describe("Operation Worker supervisor", () => {
 		const timedOut = create("cancel_timeout", { config: { cancelTimeoutMs: 40 } });
 		await activate(timedOut.supervisor, timedOut.workerBinding);
 		const timedOutExecution = timedOut.supervisor.execute(request(timedOut.workerBinding));
-		await waitForStatus(timedOut.supervisor, "running");
+		await synchronizeRunning(timedOut.supervisor, "operation-1");
 		expect(await timedOut.supervisor.cancel("cancel", "operation-1")).toMatchObject({
 			ok: false,
 			error: { code: "worker_cancel_failed" },
@@ -386,9 +371,7 @@ describe("Operation Worker supervisor", () => {
 		});
 		await activate(current.supervisor, current.workerBinding);
 		clockOffsetMs = activationDeadlineAt - Date.now() - 80;
-		const pending = current.supervisor.execute(request(current.workerBinding));
-		await waitForStatus(current.supervisor, "lost", 2_000);
-		const outcome = await pending;
+		const outcome = await current.supervisor.execute(request(current.workerBinding));
 		expect(outcome).toMatchObject({ ok: false, error: { code: "worker_deadline_exceeded" } });
 		expect(current.supervisor.lifecycleState?.transitions.some((item) => item.to === "completed")).toBe(false);
 	});
@@ -408,7 +391,10 @@ describe("Operation Worker supervisor", () => {
 		await activate(current.supervisor, current.workerBinding);
 		expect(current.supervisor.lifecycleState?.heartbeatSequence).toBe(1);
 		const deadlineAt = current.supervisor.lifecycleState?.binding.deadlineAt;
-		await waitForStatus(current.supervisor, "lost");
+		expect(await current.supervisor.execute(request(current.workerBinding))).toMatchObject({
+			ok: false,
+			error: { code: "worker_lost" },
+		});
 		expect(current.supervisor.lifecycleState?.binding.deadlineAt).toBe(deadlineAt);
 		expect(current.supervisor.lifecycleState?.heartbeatSequence).toBe(1);
 	});

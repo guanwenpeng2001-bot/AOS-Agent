@@ -93,13 +93,12 @@ function workerBinding(sideEffect: "none" | "writes"): WorkerBinding {
 	};
 }
 
-async function waitForRunning(supervisor: OperationWorkerSupervisor): Promise<void> {
-	const deadline = Date.now() + 2_000;
-	while (Date.now() < deadline) {
-		if (supervisor.snapshot.record?.status === "running") return;
-		await new Promise((resolve) => setTimeout(resolve, 5));
+async function synchronizeRunning(supervisor: OperationWorkerSupervisor, operationId: string): Promise<void> {
+	const live = await supervisor.probeLiveness(operationId);
+	if (!live.ok) throw live.error;
+	if (supervisor.snapshot.record?.status !== "running") {
+		throw new Error("Operation Worker did not enter running before pong");
 	}
-	throw new Error("Timed out waiting for the Worker operation to start");
 }
 
 afterEach(async () => {
@@ -226,7 +225,7 @@ describe("readonly Operation Worker timeout settlement", () => {
 				payload: { action: "wait" },
 			};
 			const execution = supervisor.execute(request);
-			await waitForRunning(supervisor);
+			await synchronizeRunning(supervisor, request.operationId);
 
 			expect(await supervisor.cancel("cancel", request.operationId)).toMatchObject({
 				ok: false,

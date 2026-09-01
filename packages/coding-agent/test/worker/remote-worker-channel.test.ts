@@ -168,8 +168,8 @@ describe("remote Operation Worker channel", () => {
 				lease: { leaseId: "remote-lease-1", expiresAt: initialExpiry },
 			},
 		);
-		await waitForStatus(supervisor, "running");
 		const renewed = await handle.heartbeat();
+		expect(supervisor.snapshot.record?.status).toBe("running");
 		expect(renewed.leaseId).toBe("remote-lease-1");
 		expect(Date.parse(renewed.expiresAt)).toBeGreaterThan(Date.parse(initialExpiry));
 		await handle.cancel();
@@ -220,19 +220,6 @@ function request(workerBinding: WorkerBinding): SandboxOperationRequest {
 	};
 }
 
-async function waitForStatus(
-	supervisor: OperationWorkerSupervisor,
-	status: "running",
-	timeoutMs = 2_000,
-): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (supervisor.snapshot.record?.status === status) return;
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	throw new Error(`Timed out waiting for ${status}`);
-}
-
 async function startRemoteEndpoint(address: WebsocketRpcAddress): Promise<{
 	readonly spawnCount: () => number;
 	readonly closeConnection: () => Promise<void>;
@@ -262,18 +249,19 @@ async function startRemoteEndpoint(address: WebsocketRpcAddress): Promise<{
 			children.add(child);
 			child.stdout.setEncoding("utf8");
 			detachChildOutput = attachJsonlLineReader(child.stdout, (line) => {
-				relayTail = relayTail.then(() => relayWorkerEvent(connection, line));
-				void relayTail.catch(() => {
-					if (child.exitCode === null && child.signalCode === null) child.kill();
-					void connection.close();
-				});
+				relayTail = relayTail
+					.then(() => relayWorkerEvent(connection, line))
+					.catch(async () => {
+						if (child.exitCode === null && child.signalCode === null) child.kill();
+						await connection.close().catch(() => undefined);
+					});
 			});
 			child.stderr.resume();
 			child.once("error", () => void connection.close());
 			child.once("exit", () => {
 				children.delete(child);
 				detachChildOutput();
-				void relayTail.finally(() => connection.close());
+				relayTail = relayTail.then(() => connection.close()).catch(() => undefined);
 			});
 		},
 		onConnectionClose: () => {
