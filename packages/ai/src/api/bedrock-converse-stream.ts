@@ -23,7 +23,7 @@ import {
 	ToolResultStatus,
 } from "@aws-sdk/client-bedrock-runtime";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
-import type { BuildMiddleware, DocumentType, MetadataBearer } from "@smithy/types";
+import type { BuildMiddleware, DeserializeMiddleware, DocumentType, HttpResponse, MetadataBearer } from "@smithy/types";
 import { HttpProxyAgent } from "http-proxy-agent";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { calculateCost } from "../models.ts";
@@ -35,6 +35,7 @@ import type {
 	ImageContent,
 	Model,
 	ProviderEnv,
+	ProviderResponse,
 	SimpleStreamOptions,
 	StopReason,
 	StreamFunction,
@@ -231,6 +232,12 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 
 		try {
 			const client = new BedrockRuntimeClient(config);
+			let observedRawResponse = false;
+			if (options.onResponse) {
+				addResponseHeadersMiddleware(client, options.onResponse, model, () => {
+					observedRawResponse = true;
+				});
+			}
 			const customHeaders = providerHeadersToRecord(options.headers);
 			if (customHeaders) {
 				addCustomHeadersMiddleware(client, customHeaders);
@@ -257,7 +264,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 
 			const response = await client.send(command, { abortSignal: options.signal });
 			responseRequestId = normalizeDiagnosticValue(response.$metadata.requestId);
-			if (response.$metadata.httpStatusCode !== undefined) {
+			if (!observedRawResponse && response.$metadata.httpStatusCode !== undefined) {
 				const responseHeaders: Record<string, string> = {};
 				if (response.$metadata.requestId) {
 					responseHeaders["x-amzn-requestid"] = response.$metadata.requestId;
@@ -459,6 +466,35 @@ function addCustomHeadersMiddleware(client: BedrockRuntimeClient, headers: Recor
 		return next(args);
 	};
 	client.middlewareStack.add(middleware, { step: "build", name: "aos-ai-custom-headers", priority: "low" });
+}
+
+function isSmithyHttpResponse(response: unknown): response is HttpResponse {
+	if (!response || typeof response !== "object") return false;
+	const candidate = response as Partial<HttpResponse>;
+	return typeof candidate.statusCode === "number" && !!candidate.headers && typeof candidate.headers === "object";
+}
+
+function toProviderResponse(response: unknown): ProviderResponse | undefined {
+	if (!isSmithyHttpResponse(response)) return undefined;
+	return { status: response.statusCode, headers: { ...response.headers } };
+}
+
+function addResponseHeadersMiddleware(
+	client: BedrockRuntimeClient,
+	onResponse: NonNullable<BedrockOptions["onResponse"]>,
+	model: Model<"bedrock-converse-stream">,
+	onObserved: () => void,
+): void {
+	const middleware: DeserializeMiddleware<object, MetadataBearer> = (next) => async (args) => {
+		const result = await next(args);
+		const providerResponse = toProviderResponse(result.response);
+		if (providerResponse) {
+			onObserved();
+			await onResponse(providerResponse, model);
+		}
+		return result;
+	};
+	client.middlewareStack.add(middleware, { step: "deserialize", name: "aos-ai-response-headers" });
 }
 
 export const streamSimple: StreamFunction<"bedrock-converse-stream", SimpleStreamOptions> = (
