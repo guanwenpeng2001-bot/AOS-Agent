@@ -20,6 +20,16 @@ The remote-neutral operation adapter binds one authorized Sandbox operation to t
 
 The Host alone writes the Run terminal state and `RunReceipt`. Worker cancellation/finalization returns bounded operation evidence to the Host; it never makes a Run terminal. Reclaim is revision-fenced and idempotent, including explicit `reclaim_unknown` handling when side effects cannot be proven absent.
 
+## Lightweight self-hosted pool
+
+A Session may compose local and user-operated remote Worker daemons into one lightweight pool. Each member registers a stable pool, Worker, machine, locality, and executor-provider identity plus a positive concurrency limit. Membership progresses through `starting`, `ready`, `running`, `lost`, and `release`; the first monotonic heartbeat admits a starting member as ready, active claims derive running state, and a released member cannot heartbeat or accept new work.
+
+The pool does not implement another scheduler. Each ready member is one executor in the existing Scheduler registry, and Queue selection creates the existing durable selection reservation under that member's `maxConcurrency`. For example, concurrent limits 1 and 2 admit at most three claims across two machines; a fourth claim remains queued with Scheduler backpressure. A single local member with limit 1 therefore retains the previous single-Worker behavior.
+
+Heartbeat timeout removes the member from future selection before recovery starts. Every in-flight claim then calls the existing Operation Worker reconcile/reclaim path and settles its Scheduler reservation as `restart_reconciled`; unknown remote termination continues to produce the existing `reclaim_unknown` quarantine outcome. Heartbeats prove daemon liveness only and do not renew Task Credential leases or Session writer leases.
+
+Pool membership is static trusted composition. Users start and operate remote daemons themselves. This contract does not provide remote provisioning, automatic scaling, multi-tenant quota isolation, or a separate metrics exporter.
+
 ## F2 provenance boundary
 
 Worker durable records, Worker events, and `WorkerReceipt` provenance omit `agentInstanceId`. A request-side `agentInstanceId` may arrive from upstream only as correlation input; it is not copied into Worker durable state or receipt provenance. Host-owned Attempt join or audit records may contain Agent identity while correlating the result, but those records are Host-owned facts and are not Worker durable records.
@@ -54,7 +64,7 @@ RPC advertises optional Worker commands only when the registry is composed:
 - `worker.list` returns a bounded, cursor-paged current-session list with optional Run/status filters.
 - `worker.reclaim` requests idempotent reclaim for a reclaimable terminal Worker.
 
-There is no public start, execute, cancel, credential, or raw-receipt Worker RPC. Public Worker records omit `receiptId`, `workerReceiptId`, receipt references, protocol credentials, process/VM/QEMU details, environment, paths, and secret material. `worker.reclaim` cannot change Run terminal state.
+There is no public start, execute, cancel, credential, or raw-receipt Worker RPC. Public Worker records omit `receiptId`, `workerReceiptId`, receipt references, protocol credentials, process/VM/QEMU details, environment, paths, and secret material. For pool-assigned operations, `worker.get` and `worker.list` add only the safe static `pool` projection: pool Worker and machine identifiers, locality, and maximum concurrency. Dynamic membership and Scheduler reservation authority remain Host-owned. `worker.reclaim` cannot change Run terminal state.
 
 ## Optional isolation provider
 
@@ -67,7 +77,7 @@ The retired machine-checkable Worker ledger is preserved in the out-of-repositor
 - Implemented by the Worker: 74–87, 135, 136 (16 capabilities).
 - Uses existing Foundation capabilities: 6, 32, 47, 52, 61 (5 capabilities).
 - Capability 132 is implemented by the External Agent Connector.
-- Capabilities 88, 89, and 137 remain outside this contract pending remote-worker, fleet, and credential hardening.
+- Capability 89 is implemented for the lightweight single-user self-hosted pool; production multi-tenant fleet operation remains outside this contract. Capabilities 88 and 137 remain outside this contract pending remote-worker and credential hardening.
 - Capability 140 is not part of the Worker contract.
 
 ## R4 nonblocking follow-ups

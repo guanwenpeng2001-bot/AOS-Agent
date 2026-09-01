@@ -81,7 +81,7 @@ import type {
 import type { SourceOrigin, SourceScope } from "../../core/source-info.ts";
 import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
 import type { ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
-import type { WorkerLifecycleStatus } from "../../core/worker/lifecycle.ts";
+import type { WorkerLifecycleStatus, WorkerPoolBinding } from "../../core/worker/lifecycle.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -1338,6 +1338,7 @@ export interface RpcWorkerRecord {
 	endedAt?: string;
 	lastHeartbeatAt?: string;
 	activeOperationId?: string;
+	pool?: WorkerPoolBinding;
 }
 
 /** Data returned by a successful `worker.get`. */

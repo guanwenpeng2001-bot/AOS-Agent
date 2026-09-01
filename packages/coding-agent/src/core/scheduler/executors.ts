@@ -832,6 +832,13 @@ export class SchedulerExecutorRegistry {
 				};
 	}
 
+	unregister(providerId: string): ResultValue<SchedulerExecutorEntry, FoundationError> {
+		const found = this.byId.get(providerId);
+		if (found === undefined) return schedulerFail("scheduler_not_found");
+		this.byId.delete(providerId);
+		return Result.ok(serializeSchedulerExecutorEntry(found.entry));
+	}
+
 	list(): readonly SchedulerExecutorEntry[] {
 		return [...this.byId.values()].map((item) => serializeSchedulerExecutorEntry(item.entry));
 	}

@@ -620,6 +620,7 @@ function toRpcWorkerRecord(record: WorkerRecord): RpcWorkerRecord {
 		...(record.endedAt === undefined ? {} : { endedAt: record.endedAt }),
 		...(record.lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt: record.lastHeartbeatAt }),
 		...(record.activeOperationId === undefined ? {} : { activeOperationId: record.activeOperationId }),
+		...(record.pool === undefined ? {} : { pool: Object.freeze({ ...record.pool }) }),
 	};
 }
 

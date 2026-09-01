@@ -20,6 +20,7 @@
 
 ### Added
 
+- Added a lightweight self-hosted Worker pool with local/remote membership heartbeats, Scheduler reservation-backed concurrency, lost-claim reconciliation, and safe pool fields on Worker RPC records.
 - Added a loopback Role/Mode Studio with confirmed Role and ModelProfile writes, tighten-only permission inspection, and side-effect-free resolved AgentBinding previews through the production Resolver.
 - Local short-lived credential projections now reuse Task Credential lease and target lifecycle semantics with opaque references, terminal TTL expiry, immediate revocation, restart-safe metadata, and atomic `auth.json` dual-credential rotation windows.
 - Optional Node SQLite Session ledger with cross-Host writer fencing, explicit take-over, read-only followers, and JSONL migration.

@@ -321,6 +321,18 @@ export {
 	type OperationBoundaryOptions,
 } from "./operation-boundary.ts";
 export {
+	WORKER_POOL_STATUSES,
+	WorkerPoolRegistry,
+	type WorkerPoolAssignment,
+	type WorkerPoolAssignmentInput,
+	type WorkerPoolHeartbeat,
+	type WorkerPoolMemberRecord,
+	type WorkerPoolMemberRegistration,
+	type WorkerPoolRegistryOptions,
+	type WorkerPoolStatus,
+} from "./worker/pool.ts";
+export type { WorkerPoolBinding } from "./worker/lifecycle.ts";
+export {
 	createSessionBranchBoundary,
 	createSessionCheckpoint,
 	getSessionBoundaries,
