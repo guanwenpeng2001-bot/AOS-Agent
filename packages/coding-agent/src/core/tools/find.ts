@@ -275,7 +275,7 @@ export function createFindToolDefinition(
 						args.push("--", effectivePattern, searchPath);
 						const fdPath =
 							authorization.sandbox === undefined || policy?.profile.enforcement !== "sandbox"
-								? await ensureTool("fd", true)
+								? await ensureTool("fd")
 								: "fd";
 						if (signal?.aborted) {
 							settle(() => reject(new Error("Operation aborted")));
