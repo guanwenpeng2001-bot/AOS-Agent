@@ -4557,13 +4557,14 @@ export class AgentHarness implements AgentLane {
 		if (assistantMessage.stopReason === "error" || directContextTokens === 0) {
 			const messages = await this.getMessages();
 			const estimate = estimateContextTokens(messages);
-			if (estimate.lastUsageIndex === null) return false;
-			const usageMessage = messages[estimate.lastUsageIndex];
-			if (
-				latestCompaction !== undefined &&
-				usageMessage?.role === "assistant" &&
-				usageMessage.timestamp <= latestCompaction.timestamp
-			) return false;
+			if (estimate.lastUsageIndex !== null) {
+				const usageMessage = messages[estimate.lastUsageIndex];
+				if (
+					latestCompaction !== undefined &&
+					usageMessage?.role === "assistant" &&
+					usageMessage.timestamp <= latestCompaction.timestamp
+				) return false;
+			}
 			contextTokens = estimate.tokens;
 		}
 		return shouldCompact(contextTokens, model.contextWindow, this.compactionSettings)

@@ -2707,14 +2707,15 @@ export class CanonicalAgentSessionServices {
 			|| isRecoverableLength(assistantMessage, model.maxTokens)
 		) return false;
 		const estimate = estimateContextTokens(this.agent.state.messages);
-		if (estimate.lastUsageIndex === null) return false;
-		const usageMessage = this.agent.state.messages[estimate.lastUsageIndex];
 		const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
-		if (
-			latestCompaction !== null
-			&& usageMessage?.role === "assistant"
-			&& usageMessage.timestamp <= Date.parse(latestCompaction.timestamp)
-		) return false;
+		if (estimate.lastUsageIndex !== null) {
+			const usageMessage = this.agent.state.messages[estimate.lastUsageIndex];
+			if (
+				latestCompaction !== null
+				&& usageMessage?.role === "assistant"
+				&& usageMessage.timestamp <= Date.parse(latestCompaction.timestamp)
+			) return false;
+		}
 		const settings = this.settingsManager.getCompactionSettings();
 		return shouldCompact(estimate.tokens, model.contextWindow, settings)
 			? (autoCompaction ?? ((reason, willRetry) => this._runAutoCompaction(reason, willRetry)))("threshold", false)

@@ -551,7 +551,7 @@ describe("AgentSession compaction characterization", () => {
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 	});
 
-	it("does not trigger threshold compaction for error messages when no prior usage exists", async () => {
+	it("does not trigger threshold compaction when a no-usage estimate stays below the threshold", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
