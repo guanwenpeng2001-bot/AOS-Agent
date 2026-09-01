@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Settings diagnostics now include concrete file paths and deduplicate repeated warnings.
 - Decoded text inputs now consistently strip a leading UTF-8 BOM before parsing or model inclusion.
 - Package manifest expansion now uses deterministic native Node globbing and no longer requires the external `glob` runtime dependency.
 - Package update checks no longer treat older registry versions as available updates.
