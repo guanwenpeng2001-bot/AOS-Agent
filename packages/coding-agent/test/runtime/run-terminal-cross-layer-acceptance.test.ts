@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Session } from "../../../agent/src/internal.ts";
 import { describe, expect, it, vi } from "vitest";
+import type { RunReceipt as SdkRunReceipt } from "../../src/modes/index.ts";
 import { projectAutomationRuns } from "../../src/core/session/automation-run-projection.ts";
 import { ExecutionAuditQuery } from "../../src/core/session/execution-audit-query.ts";
 import {
@@ -153,6 +154,92 @@ describe("canonical Run terminal cross-layer acceptance", () => {
 		expect(recovered?.receipt).toEqual(serializePublicRunReceipt(recovered!.receipt!));
 		expect(recovered?.receipt?.runReceiptId).toBe(canonical.runReceipt.runReceiptId);
 		expect(await canonicalReceiptCount(afterSession)).toBe(1);
+	});
+
+	it("projects validated TaskResult fields through live, RPC/SDK, event, and replay receipts", async () => {
+		const artifact = {
+			schemaVersion: 1,
+			artifactId: "artifact-public-receipt",
+			mediaType: "text/plain",
+			digest: `sha256:${"a".repeat(64)}`,
+			producer: "canonical-run-test",
+			sizeBytes: 12,
+		} as const;
+		const test = {
+			name: "receipt projection",
+			required: false,
+			status: "failed",
+			summary: "failure evidence",
+			evidenceRefs: [artifact],
+		} as const;
+		const session = SessionManager.inMemory("/workspace/task-result-public-receipt");
+		const run = acceptRun(createRunLifecycleCoordinator(session), "run-task-result-public-receipt");
+		run.start();
+		const observed = await observeCanonicalTerminal(session, run, {
+			outcome: "failed",
+			terminalErrorCode: "agent_run_failed",
+			taskResult: {
+				summary: "public TaskResult summary",
+				artifacts: [artifact],
+				tests: [test],
+			},
+		});
+		const receipt = run.receipt();
+		if (receipt === undefined) throw new Error("missing live receipt");
+		const expectedTaskResult = {
+			summary: "public TaskResult summary",
+			artifacts: [{
+				schemaVersion: 1,
+				artifactId: artifact.artifactId,
+				mediaType: artifact.mediaType,
+				digest: artifact.digest,
+			}],
+			tests: [{
+				...test,
+				evidenceRefs: [{
+					schemaVersion: 1,
+					artifactId: artifact.artifactId,
+					mediaType: artifact.mediaType,
+					digest: artifact.digest,
+				}],
+			}],
+		};
+
+		expect(receipt).toMatchObject(expectedTaskResult);
+		expect(observed.event).toMatchObject({ receipt: expectedTaskResult });
+		const sdkReceipt: SdkRunReceipt = serializePublicRunReceipt(receipt);
+		expect(sdkReceipt).toMatchObject(expectedTaskResult);
+		expect(sdkReceipt.artifacts).not.toBe(receipt.artifacts);
+		expect(sdkReceipt.tests).not.toBe(receipt.tests);
+		expect(sdkReceipt.tests?.[0]?.evidenceRefs).not.toBe(receipt.tests?.[0]?.evidenceRefs);
+
+		const replayed = createRunLifecycleCoordinator(session).getRun(run.runId)?.receipt;
+		expect(replayed).toEqual(sdkReceipt);
+		expect(replayed?.artifacts).not.toBe(observed.canonical.taskResult?.artifacts);
+		expect(replayed?.tests).not.toBe(observed.canonical.taskResult?.tests);
+	});
+
+	it("keeps TaskResult fields absent when the canonical RunReceipt has no TaskResult", async () => {
+		const session = SessionManager.inMemory("/workspace/no-task-result-public-receipt");
+		const run = acceptRun(createRunLifecycleCoordinator(session), "run-no-task-result-public-receipt");
+		run.start();
+		const observed = await observeCanonicalTerminal(session, run, {
+			outcome: "failed",
+			terminalErrorCode: "agent_run_failed",
+			taskResult: false,
+		});
+		if (observed.event === undefined || !("receipt" in observed.event)) throw new Error("missing terminal event");
+
+		for (const receipt of [
+			run.receipt(),
+			observed.event.receipt,
+			createRunLifecycleCoordinator(session).getRun(run.runId)?.receipt,
+		]) {
+			expect(receipt).toBeDefined();
+			expect(receipt).not.toHaveProperty("summary");
+			expect(receipt).not.toHaveProperty("artifacts");
+			expect(receipt).not.toHaveProperty("tests");
+		}
 	});
 
 	it("recovers the canonical terminal when a later Automation append fails", async () => {
