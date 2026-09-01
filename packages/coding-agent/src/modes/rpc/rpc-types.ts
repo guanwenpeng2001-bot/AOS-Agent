@@ -14,6 +14,8 @@ import type { CapabilityCatalogView } from "../../core/policy/capability-registr
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { ConnectorRuntimeStatus } from "../../core/connector/runtime-status.ts";
 import type {
+	AuditExportQuery,
+	AuditExportResult,
 	AuditQuery,
 	AuditQueryResult,
 	AuditReplayQuery,
@@ -77,6 +79,9 @@ export type RpcAuditQueryCommand = { id?: string; type: "audit.query" } & AuditQ
 
 /** Flattened Automation Host request for a single-run audit replay. */
 export type RpcAuditReplayCommand = { id?: string; type: "audit.replay" } & AuditReplayQuery;
+
+/** Flattened read-only JSONL export request. */
+export type RpcAuditExportCommand = { id?: string; type: "audit.export" } & AuditExportQuery;
 
 export type RpcCommand =
 	// Prompting
@@ -227,6 +232,7 @@ export type RpcCommand =
 	  }
 	| RpcAuditQueryCommand
 	| RpcAuditReplayCommand
+	| RpcAuditExportCommand
 	// Task Gate control-plane commands (write commands require clientRequestId)
 	| {
 			id?: string;
@@ -943,7 +949,7 @@ export type RpcCommandType = RpcCommand["type"];
 export type RpcRunCommandType = "run.start" | "run.get" | "run.cancel" | "run.resume";
 
 /** Automation Host audit commands. */
-export type RpcAuditCommandType = "audit.query" | "audit.replay";
+export type RpcAuditCommandType = "audit.query" | "audit.replay" | "audit.export";
 
 /** Task Gate control-plane commands. Write commands require `clientRequestId`. */
 export type RpcTaskGateCommandType =
@@ -1060,6 +1066,9 @@ export type AuditQueryData = AuditQueryResult;
 
 /** Data returned by a successful `audit.replay`. */
 export type AuditReplayData = AuditReplayResult;
+
+/** Data returned by a successful `audit.export`. */
+export type AuditExportData = AuditExportResult;
 
 /** Data returned by a successful `task.gate.request` / approve / reject / cancel. */
 export interface TaskGateMutationData {
@@ -1275,6 +1284,7 @@ export type RpcAutomationResponse =
 	| { id?: string; type: "response"; command: "run.cancel"; success: true; data: RunCancelData }
 	| { id?: string; type: "response"; command: "audit.query"; success: true; data: AuditQueryData }
 	| { id?: string; type: "response"; command: "audit.replay"; success: true; data: AuditReplayData }
+	| { id?: string; type: "response"; command: "audit.export"; success: true; data: AuditExportData }
 	| { id?: string; type: "response"; command: "task.gate.request"; success: true; data: TaskGateMutationData }
 	| { id?: string; type: "response"; command: "task.gate.get"; success: true; data: TaskGateGetData }
 	| { id?: string; type: "response"; command: "task.gate.list"; success: true; data: TaskGateListData }
@@ -1312,6 +1322,8 @@ export type { CapabilityBindingView } from "../../core/policy/capability-registr
 export type {
 	AuditEvent,
 	AuditEventType,
+	AuditExportQuery,
+	AuditExportResult,
 	AuditQuery,
 	AuditQueryResult,
 	AuditReplayQuery,

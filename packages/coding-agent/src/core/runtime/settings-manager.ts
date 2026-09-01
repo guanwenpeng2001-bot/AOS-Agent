@@ -113,6 +113,11 @@ export interface WarningSettings {
 	anthropicExtraUsage?: boolean; // default: true
 }
 
+export interface AuditSettings {
+	/** HMAC secret shared by audit cursors across Host restarts. */
+	cursorSecret?: string;
+}
+
 export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
@@ -178,6 +183,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
+	audit?: AuditSettings;
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for AOS Agent-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
@@ -1557,6 +1563,15 @@ export class SettingsManager {
 
 	getWarnings(): WarningSettings {
 		return { ...(this.settings.warnings ?? {}) };
+	}
+
+	getAuditCursorSecret(): string | undefined {
+		const secret = this.settings.audit?.cursorSecret;
+		if (secret === undefined) return undefined;
+		if (typeof secret !== "string" || secret.length < 32) {
+			throw new Error("Invalid audit.cursorSecret setting: expected at least 32 characters");
+		}
+		return secret;
 	}
 
 	setWarnings(warnings: WarningSettings): void {

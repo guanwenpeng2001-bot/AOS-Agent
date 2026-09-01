@@ -90,6 +90,12 @@ function replayResult(
 		...(nextCursor === undefined ? {} : { nextCursor }),
 		status,
 		warnings: [],
+		integrity: {
+			schemaVersion: 1,
+			status: "legacy",
+			cursorProtection: "injected",
+			sessions: [],
+		},
 	};
 }
 
