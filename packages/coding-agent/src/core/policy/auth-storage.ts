@@ -4,6 +4,7 @@
  */
 
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@aos-agent/ai";
+import { randomUUID } from "node:crypto";
 import { join } from "path";
 import { getAgentDir } from "../../config.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
@@ -16,7 +17,34 @@ import {
 } from "../control-plane-atomic-storage.ts";
 import { isCommandConfigValue, resolveConfigValue } from "../resolve-config-value.ts";
 
-type AuthStorageData = Record<string, Credential>;
+export const AUTH_CREDENTIAL_ROTATION_SCHEMA_VERSION = 1 as const;
+
+const AUTH_CREDENTIAL_ROTATION_KEY = "_aosCredentialRotation";
+const AUTH_CREDENTIAL_REVISION_MAX_LENGTH = 128;
+
+export interface AuthCredentialPreviousRevision {
+	revisionId: string;
+	credential: Credential;
+	validUntil: string;
+}
+
+export interface AuthCredentialRotationMetadata {
+	schemaVersion: typeof AUTH_CREDENTIAL_ROTATION_SCHEMA_VERSION;
+	activeRevisionId: string;
+	previous?: AuthCredentialPreviousRevision;
+}
+
+export interface AuthCredentialRotationSnapshot {
+	activeRevisionId: string;
+	previousRevisionId?: string;
+	previousValidUntil?: string;
+}
+
+type StoredCredential = Credential & {
+	_aosCredentialRotation?: AuthCredentialRotationMetadata;
+};
+
+type AuthStorageData = Record<string, StoredCredential>;
 
 type LockResult<T> = {
 	result: T;
@@ -38,37 +66,123 @@ type AuthFileReadState = {
 
 let sharedAuthFileReadState: { authPath: string; readState: AuthFileReadState } | undefined;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+	return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isCanonicalTimestamp(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const epochMs = Date.parse(value);
+	return Number.isFinite(epochMs) && new Date(epochMs).toISOString() === value;
+}
+
+function isCredentialRevisionId(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= AUTH_CREDENTIAL_REVISION_MAX_LENGTH &&
+		/^[A-Za-z0-9._-]+$/.test(value)
+	);
+}
+
+function parseCredential(value: unknown, providerId: string): Credential {
+	if (!isRecord(value)) {
+		throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
+	}
+	if (value.type === "api_key") {
+		const key = typeof value.key === "string" ? value.key : undefined;
+		const validKey = value.key === undefined || key !== undefined;
+		const validEnv =
+			value.env === undefined ||
+			(isRecord(value.env) && Object.values(value.env).every((entry) => typeof entry === "string"));
+		if (validKey && validEnv) {
+			return {
+				type: "api_key",
+				...(key === undefined ? {} : { key }),
+				...(value.env === undefined ? {} : { env: { ...value.env } as Record<string, string> }),
+			};
+		}
+	} else if (
+		value.type === "oauth" &&
+		typeof value.access === "string" &&
+		typeof value.refresh === "string" &&
+		typeof value.expires === "number" &&
+		Number.isFinite(value.expires)
+	) {
+		const credential = structuredClone(value);
+		delete credential[AUTH_CREDENTIAL_ROTATION_KEY];
+		return credential as Credential;
+	}
+	throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
+}
+
+function parseRotationMetadata(value: unknown, providerId: string): AuthCredentialRotationMetadata | undefined {
+	if (value === undefined) return undefined;
+	if (
+		!isRecord(value) ||
+		!hasOnlyKeys(value, new Set(["schemaVersion", "activeRevisionId", "previous"])) ||
+		value.schemaVersion !== AUTH_CREDENTIAL_ROTATION_SCHEMA_VERSION ||
+		!isCredentialRevisionId(value.activeRevisionId)
+	) {
+		throw new Error(`Invalid auth.json rotation metadata for provider "${providerId}"`);
+	}
+	let previous: AuthCredentialPreviousRevision | undefined;
+	if (value.previous !== undefined) {
+		if (
+			!isRecord(value.previous) ||
+			!hasOnlyKeys(value.previous, new Set(["revisionId", "credential", "validUntil"])) ||
+			!isCredentialRevisionId(value.previous.revisionId) ||
+			!isCanonicalTimestamp(value.previous.validUntil) ||
+			value.previous.revisionId === value.activeRevisionId
+		) {
+			throw new Error(`Invalid auth.json rotation metadata for provider "${providerId}"`);
+		}
+		previous = {
+			revisionId: value.previous.revisionId,
+			credential: parseCredential(value.previous.credential, providerId),
+			validUntil: value.previous.validUntil,
+		};
+	}
+	return {
+		schemaVersion: AUTH_CREDENTIAL_ROTATION_SCHEMA_VERSION,
+		activeRevisionId: value.activeRevisionId,
+		...(previous === undefined ? {} : { previous }),
+	};
+}
+
+function storedCredential(credential: Credential, rotation?: AuthCredentialRotationMetadata): StoredCredential {
+	const stored = structuredClone(credential) as StoredCredential;
+	delete stored._aosCredentialRotation;
+	if (rotation !== undefined) stored._aosCredentialRotation = structuredClone(rotation);
+	return stored;
+}
+
+function credentialFromStored(value: StoredCredential): Credential {
+	const credential = structuredClone(value) as StoredCredential;
+	delete credential._aosCredentialRotation;
+	return credential;
+}
+
+function rotationFromStored(value: StoredCredential): AuthCredentialRotationMetadata | undefined {
+	return value._aosCredentialRotation === undefined ? undefined : structuredClone(value._aosCredentialRotation);
+}
+
 function parseAuthStorageData(content: string): AuthStorageData {
 	const parsed: unknown = JSON.parse(stripBom(content));
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error("Invalid auth.json: expected an object");
 	}
-	for (const [providerId, credential] of Object.entries(parsed)) {
-		if (typeof credential !== "object" || credential === null || Array.isArray(credential)) {
-			throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
-		}
-		const value = credential as Record<string, unknown>;
-		if (value.type === "api_key") {
-			const validKey = value.key === undefined || typeof value.key === "string";
-			const validEnv =
-				value.env === undefined ||
-				(typeof value.env === "object" &&
-					value.env !== null &&
-					!Array.isArray(value.env) &&
-					Object.values(value.env).every((entry) => typeof entry === "string"));
-			if (validKey && validEnv) continue;
-		} else if (
-			value.type === "oauth" &&
-			typeof value.access === "string" &&
-			typeof value.refresh === "string" &&
-			typeof value.expires === "number" &&
-			Number.isFinite(value.expires)
-		) {
-			continue;
-		}
-		throw new Error(`Invalid auth.json credential for provider "${providerId}"`);
+	const data: AuthStorageData = {};
+	for (const [providerId, value] of Object.entries(parsed)) {
+		const credential = parseCredential(value, providerId);
+		const rotation = parseRotationMetadata(isRecord(value) ? value[AUTH_CREDENTIAL_ROTATION_KEY] : undefined, providerId);
+		data[providerId] = storedCredential(credential, rotation);
 	}
-	return parsed as AuthStorageData;
+	return data;
 }
 
 const AUTH_STORAGE_OPTIONS = {
@@ -124,9 +238,10 @@ export class ReadOnlyAuthStorage implements CredentialStore {
 
 	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
 		options?.signal?.throwIfAborted();
-		const credential = this.load()[providerId];
+		const stored = this.load()[providerId];
 		options?.signal?.throwIfAborted();
-		if (!credential) return undefined;
+		if (!stored) return undefined;
+		const credential = credentialFromStored(stored);
 		if (credential.type !== "api_key" || !credential.key || isCommandConfigValue(credential.key)) {
 			return structuredClone(credential);
 		}
@@ -319,8 +434,9 @@ export class AuthStorage implements CredentialStore {
 	}
 
 	async read(provider: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
-		const credential = (await this.readLatestData(options))[provider];
+		const stored = (await this.readLatestData(options))[provider];
 		options?.signal?.throwIfAborted();
+		const credential = stored === undefined ? undefined : credentialFromStored(stored);
 		if (credential?.type !== "api_key") return credential;
 		if (credential.key === undefined) return credential;
 		return { ...credential, key: resolveConfigValue(credential.key, credential.env) };
@@ -335,14 +451,18 @@ export class AuthStorage implements CredentialStore {
 		let revision: string | undefined;
 		const result = await this.storage.withLockAsync(async (content) => {
 			const currentData = this.parseStorageData(content);
-			const next = await fn(currentData[provider]);
+			const current = currentData[provider];
+			const next = await fn(current === undefined ? undefined : credentialFromStored(current));
 			if (next === undefined) {
 				latestData = currentData;
 				revision = this.authPath ? getFileRevision(this.authPath) : undefined;
-				return { result: currentData[provider] };
+				return { result: current === undefined ? undefined : credentialFromStored(current) };
 			}
 
-			const merged: AuthStorageData = { ...currentData, [provider]: next };
+			const merged: AuthStorageData = {
+				...currentData,
+				[provider]: storedCredential(next, current === undefined ? undefined : rotationFromStored(current)),
+			};
 			latestData = merged;
 			return { result: next, next: JSON.stringify(merged, null, 2) };
 		}, options);
@@ -378,5 +498,149 @@ export function readStoredCredential(
 	authPath: string = join(getAgentDir(), "auth.json"),
 ): Credential | undefined {
 	const content = readControlPlaneState(normalizePath(authPath), AUTH_STORAGE_OPTIONS);
-	return content === undefined ? undefined : parseAuthStorageData(content)[providerId];
+	const stored = content === undefined ? undefined : parseAuthStorageData(content)[providerId];
+	return stored === undefined ? undefined : credentialFromStored(stored);
+}
+
+function createCredentialRevisionId(): string {
+	return `credential_revision_${randomUUID().replaceAll("-", "")}`;
+}
+
+function validateRotationClock(nowMs: number): void {
+	if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+		throw new TypeError("Credential rotation requires a valid epoch timestamp");
+	}
+}
+
+function validateTransitionTtl(transitionTtlMs: number): void {
+	if (!Number.isSafeInteger(transitionTtlMs) || transitionTtlMs <= 0) {
+		throw new TypeError("Credential rotation transition TTL must be a positive safe integer");
+	}
+}
+
+function rotationSnapshot(metadata: AuthCredentialRotationMetadata): AuthCredentialRotationSnapshot {
+	return {
+		activeRevisionId: metadata.activeRevisionId,
+		...(metadata.previous === undefined
+			? {}
+			: {
+					previousRevisionId: metadata.previous.revisionId,
+					previousValidUntil: metadata.previous.validUntil,
+				}),
+	};
+}
+
+/** Ensure a stored provider credential has a stable revision id for projection binding. */
+export function ensureStoredCredentialRevision(
+	providerId: string,
+	authPath: string = join(getAgentDir(), "auth.json"),
+	createRevision: () => string = createCredentialRevisionId,
+): AuthCredentialRotationSnapshot {
+	const backend = new FileAuthStorageBackend(authPath);
+	return backend.withLock((content) => {
+		const data = content === undefined ? {} : parseAuthStorageData(content);
+		const current = data[providerId];
+		if (current === undefined) throw new Error("Credential is not configured");
+		const existing = rotationFromStored(current);
+		if (existing !== undefined) return { result: rotationSnapshot(existing) };
+		const activeRevisionId = createRevision();
+		if (!isCredentialRevisionId(activeRevisionId)) throw new TypeError("Credential revision id is invalid");
+		const metadata: AuthCredentialRotationMetadata = {
+			schemaVersion: AUTH_CREDENTIAL_ROTATION_SCHEMA_VERSION,
+			activeRevisionId,
+		};
+		data[providerId] = storedCredential(credentialFromStored(current), metadata);
+		return { result: rotationSnapshot(metadata), next: JSON.stringify(data, null, 2) };
+	});
+}
+
+export interface RotateStoredCredentialOptions {
+	transitionTtlMs: number;
+	nowMs?: number;
+	createRevisionId?: () => string;
+}
+
+/** Atomically install a new active credential and retain the old revision for a bounded transition window. */
+export function rotateStoredCredential(
+	providerId: string,
+	nextCredential: Credential,
+	options: RotateStoredCredentialOptions,
+	authPath: string = join(getAgentDir(), "auth.json"),
+): AuthCredentialRotationSnapshot {
+	const nowMs = options.nowMs ?? Date.now();
+	validateRotationClock(nowMs);
+	validateTransitionTtl(options.transitionTtlMs);
+	const parsedNext = parseCredential(nextCredential, providerId);
+	const createRevision = options.createRevisionId ?? createCredentialRevisionId;
+	const backend = new FileAuthStorageBackend(authPath);
+	return backend.withLock((content) => {
+		const data = content === undefined ? {} : parseAuthStorageData(content);
+		const current = data[providerId];
+		if (current === undefined) throw new Error("Credential is not configured");
+		const currentRotation = rotationFromStored(current);
+		const previousRevisionId = currentRotation?.activeRevisionId ?? createRevision();
+		const activeRevisionId = createRevision();
+		if (
+			!isCredentialRevisionId(previousRevisionId) ||
+			!isCredentialRevisionId(activeRevisionId) ||
+			previousRevisionId === activeRevisionId
+		) {
+			throw new TypeError("Credential revision id is invalid");
+		}
+		const metadata: AuthCredentialRotationMetadata = {
+			schemaVersion: AUTH_CREDENTIAL_ROTATION_SCHEMA_VERSION,
+			activeRevisionId,
+			previous: {
+				revisionId: previousRevisionId,
+				credential: credentialFromStored(current),
+				validUntil: new Date(nowMs + options.transitionTtlMs).toISOString(),
+			},
+		};
+		data[providerId] = storedCredential(parsedNext, metadata);
+		return { result: rotationSnapshot(metadata), next: JSON.stringify(data, null, 2) };
+	});
+}
+
+/** Atomically revoke the retained old credential revision. Active credentials cannot be revoked through this path. */
+export function revokeStoredCredentialRevision(
+	providerId: string,
+	revisionId: string,
+	authPath: string = join(getAgentDir(), "auth.json"),
+): boolean {
+	if (!isCredentialRevisionId(revisionId)) throw new TypeError("Credential revision id is invalid");
+	const backend = new FileAuthStorageBackend(authPath);
+	return backend.withLock((content) => {
+		const data = content === undefined ? {} : parseAuthStorageData(content);
+		const current = data[providerId];
+		if (current === undefined) return { result: false };
+		const rotation = rotationFromStored(current);
+		if (rotation?.previous?.revisionId !== revisionId) return { result: false };
+		const nextRotation: AuthCredentialRotationMetadata = {
+			schemaVersion: AUTH_CREDENTIAL_ROTATION_SCHEMA_VERSION,
+			activeRevisionId: rotation.activeRevisionId,
+		};
+		data[providerId] = storedCredential(credentialFromStored(current), nextRotation);
+		return { result: true, next: JSON.stringify(data, null, 2) };
+	});
+}
+
+/** Resolve one exact credential revision while its transition window remains valid. */
+export function readStoredCredentialRevision(
+	providerId: string,
+	revisionId: string,
+	nowMs: number = Date.now(),
+	authPath: string = join(getAgentDir(), "auth.json"),
+): Credential | undefined {
+	if (!isCredentialRevisionId(revisionId)) return undefined;
+	validateRotationClock(nowMs);
+	const content = readControlPlaneState(normalizePath(authPath), AUTH_STORAGE_OPTIONS);
+	if (content === undefined) return undefined;
+	const current = parseAuthStorageData(content)[providerId];
+	if (current === undefined) return undefined;
+	const rotation = rotationFromStored(current);
+	if (rotation?.activeRevisionId === revisionId) return credentialFromStored(current);
+	if (rotation?.previous?.revisionId !== revisionId || nowMs >= Date.parse(rotation.previous.validUntil)) {
+		return undefined;
+	}
+	return structuredClone(rotation.previous.credential);
 }
