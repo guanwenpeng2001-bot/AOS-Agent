@@ -10,6 +10,7 @@ import type {
 	TaskGraphStatus,
 	WorkerListData,
 } from "../rpc/rpc-types.ts";
+import { loadWebUsageSummary } from "./usage-summary.ts";
 
 export const WEB_READ_ONLY_RPC_METHODS = [
 	"run.get",
@@ -19,6 +20,7 @@ export const WEB_READ_ONLY_RPC_METHODS = [
 	"task.graph.list",
 	"worker.list",
 	"subagent.list",
+	"usage.summary",
 ] as const;
 
 export type WebReadOnlyRpcMethod = (typeof WEB_READ_ONLY_RPC_METHODS)[number];
@@ -93,6 +95,11 @@ export async function invokeWebReadOnlyRpc(
 			const record = requireRecord(params);
 			const runId = requireString(record, "runId");
 			return client.listSubagents(runId, parseSubagentFilter(record));
+		}
+		case "usage.summary": {
+			const record = params === undefined ? {} : requireRecord(params);
+			if (Object.keys(record).length !== 0) throw invalidRequest("usage.summary params must be empty");
+			return loadWebUsageSummary(client);
 		}
 		default:
 			throw new WebRpcRequestError(403, "method_not_allowed", "RPC method is not available on the read-only web surface.");

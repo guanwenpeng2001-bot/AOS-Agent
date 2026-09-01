@@ -32,6 +32,7 @@
 - Added a read-only Web Task Graph board with a self-drawn SVG DAG, derived node availability, Run/Attempt and Worker linkage, and a parent/Child Agent status tree.
 - Added confirmed Web controls for Task Gate approval/rejection and Run cancellation/resume through an exact four-method write allowlist with safe error mapping.
 - Added a loopback-only `--mode web` dashboard for read-only run, task graph, and audit inspection through an allowlisted RPC proxy.
+- Added Web usage and recorded-cost summary cards with server-side Session, model, and UTC-day aggregation from audit and Run receipt projections.
 - Public Automation Host Run receipts now expose validated TaskResult summary, artifact references, and test results through RPC, SDK, terminal events, and replay.
 - Optional OTLP/HTTP JSON span export and derived run, model-call, and tool metrics through the default-off `telemetry` settings section, with bounded batching and failure containment.
 - Added tamper-evident audit hash chains, configurable cursor secrets, physical Foundation retention, and proof-bearing `audit.export` JSONL.
