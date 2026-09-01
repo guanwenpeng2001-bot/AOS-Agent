@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Failed extension factories now discard staged flags, providers, and event subscriptions and disable their captured API.
 - Node SEA binaries now load extensions through bundled virtual modules.
 - Extension flags now reject defaults whose runtime type does not match the declaration.
 - Default keybindings now avoid Windows and WSL terminal conflicts while remaining configurable.

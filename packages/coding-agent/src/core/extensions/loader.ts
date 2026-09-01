@@ -236,10 +236,27 @@ export function createExtensionRuntime(): ExtensionRuntime {
  */
 function createExtensionAPI(
 	extension: Extension,
-	runtime: ExtensionRuntime,
+	sharedRuntime: ExtensionRuntime,
 	cwd: string,
 	eventBus: EventBus,
-): ExtensionAPI {
+): { api: ExtensionAPI; commit(): void; discard(): void } {
+	const pendingFlagValues = new Map<string, boolean | string>();
+	const pendingRuntimeChanges: Array<() => void> = [];
+	const loadingUnsubscribers: Array<() => void> = [];
+	let state: "loading" | "active" | "failed" = "loading";
+	const assertActive = (): void => {
+		if (state === "failed") throw new Error(`Extension "${extension.path}" failed to load and its API is no longer active.`);
+		sharedRuntime.assertActive();
+	};
+	const runtime = new Proxy(sharedRuntime, {
+		get(target, property) {
+			return property === "assertActive" ? assertActive : Reflect.get(target, property, target);
+		},
+	});
+	const applyRuntimeChange = (change: () => void): void => {
+		if (state === "loading") pendingRuntimeChanges.push(change);
+		else change();
+	};
 	const api = {
 		// Registration methods - write to extension
 		on(event: string, handler: HandlerFn): void {
@@ -288,7 +305,8 @@ function createExtensionAPI(
 			}
 			extension.flags.set(name, { name, extensionPath: extension.path, ...options });
 			if (options.default !== undefined && !runtime.flagValues.has(name)) {
-				runtime.flagValues.set(name, options.default);
+				if (state === "loading") pendingFlagValues.set(name, options.default);
+				else runtime.flagValues.set(name, options.default);
 			}
 		},
 
@@ -312,7 +330,7 @@ function createExtensionAPI(
 		getFlag(name: string): boolean | string | undefined {
 			runtime.assertActive();
 			if (!extension.flags.has(name)) return undefined;
-			return runtime.flagValues.get(name);
+			return runtime.flagValues.has(name) ? runtime.flagValues.get(name) : pendingFlagValues.get(name);
 		},
 
 		// Action methods - delegate to shared runtime
@@ -390,15 +408,15 @@ function createExtensionAPI(
 			runtime.assertActive();
 			if (typeof providerOrName === "string") {
 				if (!config) throw new Error("Provider config is required when registering by name");
-				runtime.registerProvider(providerOrName, config, extension.path);
+				applyRuntimeChange(() => runtime.registerProvider(providerOrName, config, extension.path));
 				return;
 			}
-			runtime.registerNativeProvider(providerOrName, extension.path);
+			applyRuntimeChange(() => runtime.registerNativeProvider(providerOrName, extension.path));
 		},
 
 		unregisterProvider(name: string) {
 			runtime.assertActive();
-			runtime.unregisterProvider(name, extension.path);
+			applyRuntimeChange(() => runtime.unregisterProvider(name, extension.path));
 		},
 
 		events: {
@@ -408,12 +426,36 @@ function createExtensionAPI(
 			},
 			on(channel, handler) {
 				runtime.assertActive();
-				return runtime.trackEventBusSubscription(eventBus.on(channel, handler));
+				const unsubscribe = runtime.trackEventBusSubscription(eventBus.on(channel, handler));
+				if (state === "loading") loadingUnsubscribers.push(unsubscribe);
+				return unsubscribe;
 			},
 		},
 	} as ExtensionAPI;
 
-	return api;
+	return {
+		api,
+		commit() {
+			if (state !== "loading") return;
+			sharedRuntime.assertActive();
+			for (const [name, value] of pendingFlagValues) {
+				if (!sharedRuntime.flagValues.has(name)) sharedRuntime.flagValues.set(name, value);
+			}
+			for (const apply of pendingRuntimeChanges) apply();
+			state = "active";
+			pendingFlagValues.clear();
+			pendingRuntimeChanges.length = 0;
+			loadingUnsubscribers.length = 0;
+		},
+		discard() {
+			if (state !== "loading") return;
+			state = "failed";
+			for (const unsubscribe of loadingUnsubscribers) unsubscribe();
+			pendingFlagValues.clear();
+			pendingRuntimeChanges.length = 0;
+			loadingUnsubscribers.length = 0;
+		},
+	};
 }
 
 function isCurrentCacheToken(cacheToken: ExtensionCacheToken | undefined): cacheToken is ExtensionCacheToken {
@@ -478,6 +520,27 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 	};
 }
 
+async function initializeExtension(
+	factory: ExtensionFactory,
+	extensionPath: string,
+	resolvedPath: string,
+	cwd: string,
+	eventBus: EventBus,
+	runtime: ExtensionRuntime,
+): Promise<Extension> {
+	const extension = createExtension(extensionPath, resolvedPath);
+	const load = createExtensionAPI(extension, runtime, cwd, eventBus);
+	try {
+		await factory(load.api);
+		load.commit();
+	} catch (error) {
+		load.discard();
+		throw error;
+	}
+	time(`${extensionPath} factory`, "extensions");
+	return extension;
+}
+
 async function loadExtension(
 	extensionPath: string,
 	cwd: string,
@@ -494,10 +557,7 @@ async function loadExtension(
 			return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
 		}
 
-		const extension = createExtension(extensionPath, resolvedPath);
-		const api = createExtensionAPI(extension, runtime, cwd, eventBus);
-		await factory(api);
-		time(`${extensionPath} factory`, "extensions");
+		const extension = await initializeExtension(factory, extensionPath, resolvedPath, cwd, eventBus, runtime);
 
 		return { extension, error: null };
 	} catch (err) {
@@ -516,12 +576,8 @@ export async function loadExtensionFromFactory(
 	runtime: ExtensionRuntime,
 	extensionPath = "<inline>",
 ): Promise<Extension> {
-	const extension = createExtension(extensionPath, extensionPath);
 	const resolvedCwd = resolvePath(cwd);
-	const api = createExtensionAPI(extension, runtime, resolvedCwd, eventBus);
-	await factory(api);
-	time(`${extensionPath} factory`, "extensions");
-	return extension;
+	return initializeExtension(factory, extensionPath, extensionPath, resolvedCwd, eventBus, runtime);
 }
 
 /**
