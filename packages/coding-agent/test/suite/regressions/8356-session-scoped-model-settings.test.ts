@@ -26,4 +26,21 @@ describe("issue #8356 session-scoped model settings", () => {
 		expect(harness.settingsManager.getDefaultModel()).toBe(beforeModel);
 		expect(harness.settingsManager.getDefaultThinkingLevel()).toBe(beforeThinking);
 	});
+
+	it("adds an explicitly persisted default to a non-empty model scope", async () => {
+		harness = await createHarness({ models: [{ id: "fake-1" }, { id: "fake-2" }] });
+		const first = harness.getModel("fake-1")!;
+		const second = harness.getModel("fake-2")!;
+		harness.session.setScopedModels([{ model: first }]);
+		harness.settingsManager.setEnabledModels([`${first.provider}/${first.id}`]);
+
+		await harness.session.setModel(second, { persist: true });
+
+		expect(harness.settingsManager.getDefaultModel()).toBe("fake-2");
+		expect(harness.session.scopedModels.map((item) => item.model.id)).toEqual(["fake-1", "fake-2"]);
+		expect(harness.settingsManager.getEnabledModels()).toEqual([
+			`${first.provider}/${first.id}`,
+			`${second.provider}/${second.id}`,
+		]);
+	});
 });

@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Persisting a default model now adds it to an existing non-empty model scope.
 - Model and thinking changes now remain session-scoped unless explicitly persisted as defaults.
 - llama.cpp login now directs empty catalogs to `/llama` before `/model`.
 - The Cerebras default now references the current `gpt-oss-120b` catalog model.

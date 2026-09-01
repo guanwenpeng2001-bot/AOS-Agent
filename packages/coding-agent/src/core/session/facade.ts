@@ -40,6 +40,7 @@ import {
 	type AssistantMessageEventStream,
 	type ImageContent,
 	type Model,
+	modelsAreEqual,
 	type ThinkingLevel as AiThinkingLevel,
 	type Usage,
 } from "@aos-agent/ai";
@@ -2781,8 +2782,8 @@ export class CanonicalAgentSessionServices {
 		};
 	}
 
-	async setModel(model: Model<Api>): Promise<void> {
-		await this.setModelInternal(model, "set");
+	async setModel(model: Model<Api>, options: { persist?: boolean } = {}): Promise<void> {
+		await this.setModelInternal(model, "set", options.persist === true);
 	}
 
 	/** @internal Persist SDK bootstrap facts through the canonical Session. */
@@ -2803,11 +2804,19 @@ export class CanonicalAgentSessionServices {
 		);
 	}
 
-	private async setModelInternal(model: Model<Api>, source: "set" | "cycle" | "restore"): Promise<void> {
+	private async setModelInternal(
+		model: Model<Api>,
+		source: "set" | "cycle" | "restore",
+		persist = false,
+	): Promise<void> {
 		const auth = await this._modelRuntime.checkAuth(model.provider);
 		if (auth === undefined) throw new Error(`No API key for ${model.provider}/${model.id}`);
 		const previousModel = this.model;
 		await this.harness.setModel(model);
+		if (persist) {
+			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+			this.addPersistedDefaultToNonEmptyScope(model);
+		}
 		const effectiveThinkingLevel = clampThinkingLevel(model, this.thinkingLevel) as ThinkingLevel;
 		this.applyThinkingLevel(effectiveThinkingLevel);
 		await this._extensionRunner.emit({
@@ -2816,6 +2825,16 @@ export class CanonicalAgentSessionServices {
 			previousModel,
 			source,
 		});
+	}
+
+	private addPersistedDefaultToNonEmptyScope(model: Model<Api>): void {
+		if (this._scopedModels.length === 0 || this._scopedModels.some((item) => modelsAreEqual(item.model, model))) return;
+		this._scopedModels = [...this._scopedModels, { model }];
+		const enabledModels = this.settingsManager.getEnabledModels();
+		if (!enabledModels?.length) return;
+		const reference = `${model.provider}/${model.id}`;
+		if (enabledModels.some((pattern) => pattern.toLowerCase() === reference.toLowerCase())) return;
+		this.settingsManager.setEnabledModels([...enabledModels, reference]);
 	}
 
 	private applyThinkingLevel(level: ThinkingLevel): void {
