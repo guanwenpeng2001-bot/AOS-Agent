@@ -45,6 +45,15 @@ vi.mock("../../src/modes/rpc/jsonl.js", () => ({
 	serializeJsonLine: (value: unknown) => `${JSON.stringify(value)}\n`,
 }));
 
+vi.mock("../../src/core/session/facade.js", () => ({
+	getAgentCanonicalSession: () => ({
+		getMetadata: () => Promise.resolve({ archived: false }),
+	}),
+	getAgentSessionLedger: () => {
+		throw new Error("The public-boundary fixture does not exercise the canonical ledger");
+	},
+}));
+
 function expectNoMarkers(value: unknown): void {
 	const json = JSON.stringify(value);
 	expect(json).not.toContain(PATH_MARKER_WIN);

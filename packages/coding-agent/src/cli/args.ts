@@ -39,6 +39,7 @@ export interface Args {
 	rpcTlsMinVersion?: "1.2" | "1.3";
 	rpcAllowRemote?: boolean;
 	name?: string;
+	fromPr?: string;
 	noSession?: boolean;
 	session?: string;
 	sessionId?: string;
@@ -195,6 +196,12 @@ export function parseArgs(args: string[]): Args {
 				result.name = args[++i];
 			} else {
 				result.diagnostics.push({ type: "error", message: "--name requires a value" });
+			}
+		} else if (arg === "--from-pr") {
+			if (i + 1 < args.length && !args[i + 1]!.startsWith("-")) {
+				result.fromPr = args[++i];
+			} else {
+				result.diagnostics.push({ type: "error", message: "--from-pr requires a value" });
 			}
 		} else if (arg === "--no-session") {
 			result.noSession = true;
@@ -435,6 +442,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config [-l]               Open TUI to enable/disable package resources (Tab switches scope)
   ${APP_NAME} auth <command>            Print credentials or check provider readiness
+	${APP_NAME} session <command>         List, archive, or unarchive sessions
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth
 
 ${chalk.bold("Options:")}
@@ -464,6 +472,7 @@ ${chalk.bold("Options:")}
   --session-dir <dir>            Directory for session storage and lookup
   --no-session                   Don't save session (ephemeral)
   --name, -n <name>              Set session display name
+  --from-pr <number|url>         Associate a new session with a pull request
   --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
   --no-tools, -nt                Disable all tools by default (built-in and extension)

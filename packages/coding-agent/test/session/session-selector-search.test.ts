@@ -10,6 +10,8 @@ function makeSession(
 		id: overrides.id,
 		cwd: overrides.cwd ?? "",
 		name: overrides.name,
+		fromPr: overrides.fromPr,
+		archived: overrides.archived ?? false,
 		created: overrides.created ?? new Date(0),
 		modified: overrides.modified,
 		messageCount: overrides.messageCount ?? 1,
@@ -123,6 +125,21 @@ describe("session selector search", () => {
 
 		const result = filterAndSortSessions(sessions, "re:(", "recent");
 		expect(result).toEqual([]);
+	});
+
+	it("matches pull request metadata", () => {
+		const sessions = [
+			makeSession({
+				id: "pr-session",
+				fromPr: "https://github.com/example/repo/pull/42",
+				modified: new Date("2026-01-01T00:00:00.000Z"),
+				allMessagesText: "unrelated",
+			}),
+		];
+
+		expect(filterAndSortSessions(sessions, '"pull/42"', "recent").map((session) => session.id)).toEqual([
+			"pr-session",
+		]);
 	});
 
 	describe("name filter", () => {

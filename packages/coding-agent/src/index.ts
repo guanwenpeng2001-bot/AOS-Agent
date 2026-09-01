@@ -82,6 +82,8 @@ export {
 } from "./core/runtime/sdk.ts";
 export type {
 	SessionEntry,
+	SessionInfo,
+	SessionListOptions,
 	SessionMessageEntry,
 } from "./core/session/manager.ts";
 export { SettingsManager } from "./core/runtime/settings-manager.ts";
@@ -106,7 +108,14 @@ export {
 	truncateTail,
 	withFileMutationQueue,
 } from "./core/tools/index.ts";
-export type { AuditQuery, RunReceipt, RunRecord, TaskGateRecord } from "./modes/index.ts";
+export type {
+	AuditQuery,
+	RpcSessionInfo,
+	RpcSessionSearchOptions,
+	RunReceipt,
+	RunRecord,
+	TaskGateRecord,
+} from "./modes/index.ts";
 export {
 	InteractiveMode,
 	type JsonAgentSessionEvent,

@@ -160,6 +160,7 @@ function createAssistantMessage(text: string): AssistantMessage {
 
 interface RuntimeHostOptions {
 	readonly streamDelayMs?: number;
+	readonly ephemeral?: boolean;
 }
 
 const DEFAULT_MODEL: Model<"anthropic-messages"> = {
@@ -236,7 +237,8 @@ async function createRuntimeHost(
 			resourceLoader,
 		});
 
-	let currentSession = openSession(SessionManager.create(tempDir));
+	let currentManager = options.ephemeral ? SessionManager.inMemory(tempDir) : SessionManager.create(tempDir);
+	let currentSession = openSession(currentManager);
 	let prepareRebindCallback: Parameters<AgentSessionRuntime["setPrepareSessionRebind"]>[0];
 	const runtimeHost = {
 		get session(): AgentSession {
@@ -250,14 +252,22 @@ async function createRuntimeHost(
 		}),
 		switchSession: vi.fn(async (sessionPath: string) => {
 			const previousSession = currentSession;
-			const nextSession = openSession(SessionManager.open(sessionPath));
+			const nextManager = SessionManager.open(sessionPath);
+			const nextSession = openSession(nextManager);
 			const preparedRebind = await prepareRebindCallback?.(nextSession, previousSession);
 			currentSession = nextSession;
+			currentManager = nextManager;
 			preparedRebind?.commit();
 			await preparedRebind?.disposePrevious?.(AbortSignal.timeout(5_000));
 			await previousSession.dispose();
 			await preparedRebind?.activate?.();
 			return { cancelled: false };
+		}),
+		setSessionArchived: vi.fn((sessionPath: string, archived: boolean) => {
+			const currentPath = currentManager.getSessionFile();
+			return currentPath === sessionPath
+				? currentManager.setArchived(archived)
+				: SessionManager.setArchived(sessionPath, archived);
 		}),
 		newSession: vi.fn(async () => ({ cancelled: true })),
 		fork: vi.fn(async () => ({ cancelled: true, selectedText: "" })),
@@ -1486,6 +1496,110 @@ function normalizePublicValue(
 }
 
 describe("RPC stdio/TCP public transcript parity", () => {
+	it("marks ephemeral session state", async () => {
+		const adapter = await startStdioRpcMode({ ephemeral: true });
+		try {
+			const state = await sendAutomationCommand(adapter, { id: "state", type: "get_state" });
+			expect(state).toMatchObject({ success: true, data: { ephemeral: true, archived: false } });
+		} finally {
+			await adapter.cleanup();
+		}
+	});
+
+	it("persists archive state and applies default list filtering over RPC", async () => {
+		const adapter = await startStdioRpcMode();
+		try {
+			await adapter.send({ id: "prompt", type: "prompt", message: "persist session" });
+			await waitForRecord(adapter, (record) => record.type === "response" && record.id === "prompt");
+			await waitForRecord(adapter, (record) => record.type === "agent_settled");
+
+			const initial = await sendAutomationCommand(adapter, { id: "list-initial", type: "list_sessions" });
+			if (!isRecord(initial.data) || !Array.isArray(initial.data.sessions) || !isRecord(initial.data.sessions[0])) {
+				throw new Error("list_sessions response did not include a session");
+			}
+			const sessionPath = initial.data.sessions[0].path;
+			if (typeof sessionPath !== "string") throw new Error("list_sessions response did not include a path");
+			expect(initial.data.sessions[0]).toMatchObject({ ephemeral: false });
+
+			const matching = await sendAutomationCommand(adapter, {
+				id: "search-matching",
+				type: "search_sessions",
+				query: '"persist session"',
+			});
+			expect(matching).toMatchObject({
+				success: true,
+				data: { sessions: [{ path: sessionPath, ephemeral: false }] },
+			});
+			const missing = await sendAutomationCommand(adapter, {
+				id: "search-missing",
+				type: "search_sessions",
+				query: "missing phrase",
+			});
+			expect(missing).toMatchObject({ success: true, data: { sessions: [] } });
+
+			const archived = await sendAutomationCommand(adapter, {
+				id: "archive",
+				type: "archive_session",
+				sessionPath,
+			});
+			expect(archived).toMatchObject({ success: true, data: { archived: true } });
+			if (!isRecord(archived.data) || typeof archived.data.archivedAt !== "string") {
+				throw new Error("archive_session response did not include archivedAt");
+			}
+			const archivedAt = archived.data.archivedAt;
+			const archivedState = await sendAutomationCommand(adapter, { id: "state-archived", type: "get_state" });
+			expect(archivedState).toMatchObject({
+				success: true,
+				data: { ephemeral: false, archived: true, archivedAt },
+			});
+			const archivedSearch = await sendAutomationCommand(adapter, {
+				id: "search-archived",
+				type: "search_sessions",
+				query: "persist",
+			});
+			expect(archivedSearch).toMatchObject({ success: true, data: { sessions: [] } });
+			const includedSearch = await sendAutomationCommand(adapter, {
+				id: "search-archived-included",
+				type: "search_sessions",
+				query: "persist",
+				includeArchived: true,
+			});
+			expect(includedSearch).toMatchObject({
+				success: true,
+				data: { sessions: [{ path: sessionPath, archived: true }] },
+			});
+
+			const filtered = await sendAutomationCommand(adapter, { id: "list-filtered", type: "list_sessions" });
+			expect(filtered).toMatchObject({ success: true, data: { sessions: [] } });
+			const included = await sendAutomationCommand(adapter, {
+				id: "list-included",
+				type: "list_sessions",
+				includeArchived: true,
+			});
+			expect(included).toMatchObject({
+				success: true,
+				data: { sessions: [{ path: sessionPath, archived: true }] },
+			});
+
+			const unarchived = await sendAutomationCommand(adapter, {
+				id: "unarchive",
+				type: "unarchive_session",
+				sessionPath,
+			});
+			expect(unarchived).toMatchObject({ success: true, data: { archived: false } });
+			const activeState = await sendAutomationCommand(adapter, { id: "state-active", type: "get_state" });
+			expect(activeState).toMatchObject({ success: true, data: { archived: false } });
+			expect((activeState.data as Record<string, unknown>).archivedAt).toBeUndefined();
+			const restored = await sendAutomationCommand(adapter, { id: "list-restored", type: "list_sessions" });
+			expect(restored).toMatchObject({
+				success: true,
+				data: { sessions: [{ path: sessionPath, archived: false }] },
+			});
+		} finally {
+			await adapter.cleanup();
+		}
+	});
+
 	it("emits the same Automation Host records for the same fake-provider sequence", async () => {
 		const stdio = await startStdioRpcMode();
 		let stdioTranscript: ParsedRecord[];

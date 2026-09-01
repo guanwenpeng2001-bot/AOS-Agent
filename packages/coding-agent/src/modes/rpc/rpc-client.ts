@@ -72,6 +72,8 @@ import type {
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcResponse,
+	RpcSessionInfo,
+	RpcSessionSearchOptions,
 	RpcSessionState,
 	RpcSessionStats,
 	RpcSlashCommand,
@@ -855,6 +857,30 @@ export class RpcClient {
 	 */
 	async getSessionStats(): Promise<RpcSessionStats> {
 		const response = await this.send({ type: "get_session_stats" });
+		return this.getData(response);
+	}
+
+	/** List sessions in the current project, or across all projects when requested. */
+	async listSessions(options: { all?: boolean; includeArchived?: boolean } = {}): Promise<RpcSessionInfo[]> {
+		const response = await this.send({ type: "list_sessions", ...options });
+		return this.getData<{ sessions: RpcSessionInfo[] }>(response).sessions;
+	}
+
+	/** Search sessions with the same matching and ordering semantics as the interactive selector. */
+	async searchSessions(query: string, options: RpcSessionSearchOptions = {}): Promise<RpcSessionInfo[]> {
+		const response = await this.send({ type: "search_sessions", query, ...options });
+		return this.getData<{ sessions: RpcSessionInfo[] }>(response).sessions;
+	}
+
+	/** Archive a persisted session. Repeated calls preserve its original archive timestamp. */
+	async archiveSession(sessionPath: string): Promise<{ archived: boolean; archivedAt?: string }> {
+		const response = await this.send({ type: "archive_session", sessionPath });
+		return this.getData(response);
+	}
+
+	/** Remove a persisted session from the archive. */
+	async unarchiveSession(sessionPath: string): Promise<{ archived: boolean; archivedAt?: string }> {
+		const response = await this.send({ type: "unarchive_session", sessionPath });
 		return this.getData(response);
 	}
 

@@ -34,6 +34,58 @@ afterEach(async () => {
 });
 
 describe("RpcClient TCP transport", () => {
+	it("exposes session list, search, archive, and unarchive commands", async () => {
+		const received: RpcRecord[] = [];
+		const { server, port } = await listen((socket, request) => {
+			received.push(request);
+			const command = request.type;
+			const data =
+				command === "list_sessions" || command === "search_sessions"
+					? {
+							sessions: [
+								{
+									path: "/sessions/one.jsonl",
+									id: "one",
+									cwd: "/workspace",
+									ephemeral: false,
+									archived: true,
+									archivedAt: "2026-09-01T12:00:00.000Z",
+									created: "2026-09-01T10:00:00.000Z",
+									modified: "2026-09-01T11:00:00.000Z",
+									messageCount: 1,
+									firstMessage: "first",
+									allMessagesText: "first",
+								},
+							],
+						}
+					: command === "archive_session"
+						? { archived: true, archivedAt: "2026-09-01T12:00:00.000Z" }
+						: { archived: false };
+			socket.write(
+				serializeJsonLine({ type: "response", id: request.id, command, success: true, data }),
+			);
+		});
+		servers.push(server);
+		const client = new RpcClient({ transport: { type: "tcp", port } });
+		clients.push(client);
+		await startTcpClient(client);
+
+		await expect(client.listSessions({ all: true, includeArchived: true })).resolves.toMatchObject([
+			{ id: "one", ephemeral: false, archived: true },
+		]);
+		await expect(client.searchSessions("first", { sort: "recent", nameFilter: "named", limit: 5 })).resolves.toMatchObject([
+			{ id: "one", ephemeral: false, archived: true },
+		]);
+		await expect(client.archiveSession("/sessions/one.jsonl")).resolves.toMatchObject({ archived: true });
+		await expect(client.unarchiveSession("/sessions/one.jsonl")).resolves.toEqual({ archived: false });
+		expect(received.map(({ id: _id, ...request }) => request)).toEqual([
+			{ type: "list_sessions", all: true, includeArchived: true },
+			{ type: "search_sessions", query: "first", sort: "recent", nameFilter: "named", limit: 5 },
+			{ type: "archive_session", sessionPath: "/sessions/one.jsonl" },
+			{ type: "unarchive_session", sessionPath: "/sessions/one.jsonl" },
+		]);
+	});
+
 	it("connects without spawning the configured CLI and routes shared JSONL responses and events", async () => {
 		const receivedCommands: string[] = [];
 		const { server, port } = await listen((socket, request) => {

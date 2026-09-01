@@ -28,8 +28,10 @@ import {
 	invalidDurableRecord,
 	parseFoundationMutation,
 	type SideEffectState,
+	type TaskArtifactProjection,
 	type TaskResult,
 	type ThinkingLevel,
+	type ValidationResult,
 	validateAttemptReceipt,
 	validateRunReceipt as validateCanonicalRunReceipt,
 	validateTaskResult,
@@ -535,12 +537,23 @@ export interface PublicRunReceipt {
 	sessionId: SessionId;
 	runReceiptId: string;
 	taskResultId?: string;
+	/** Present only when the canonical RunReceipt resolves to a validated TaskResult. */
+	summary?: string;
+	/** Present only when the canonical RunReceipt resolves to a validated TaskResult. */
+	artifacts?: ReadonlyArray<TaskArtifactProjection>;
+	/** Present only when the canonical RunReceipt resolves to a validated TaskResult. */
+	tests?: ReadonlyArray<PublicRunValidationResult>;
 	attemptReceiptIds: ReadonlyArray<string>;
 	sideEffectState: SideEffectState;
 	status: RunTerminalStatus;
 	usage: RunUsage;
 	terminalError?: AutomationError;
 }
+
+/** Public ValidationResult with nested ArtifactRefs reduced to safe artifact projections. */
+export type PublicRunValidationResult = Omit<ValidationResult, "evidenceRefs"> & {
+	readonly evidenceRefs?: ReadonlyArray<TaskArtifactProjection>;
+};
 
 export type RunStreamEvent =
 	| {
@@ -2228,6 +2241,11 @@ export function serializePublicRunReceipt(receipt: PublicRunReceipt): PublicRunR
 		usage: { input: receipt.usage.input, output: receipt.usage.output, total: receipt.usage.total },
 	};
 	if (receipt.taskResultId !== undefined) copy.taskResultId = receipt.taskResultId;
+	if (receipt.summary !== undefined) copy.summary = receipt.summary;
+	if (receipt.artifacts !== undefined) {
+		copy.artifacts = receipt.artifacts.map((artifact) => cloneRunReceiptArtifact(artifact));
+	}
+	if (receipt.tests !== undefined) copy.tests = receipt.tests.map((test) => cloneRunReceiptTest(test));
 	if (receipt.terminalError !== undefined) copy.terminalError = serializePublicAutomationError(receipt.terminalError);
 	return copy;
 }
@@ -2724,6 +2742,27 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 	return copy;
 }
 
+function cloneRunReceiptArtifact(artifact: TaskArtifactProjection): TaskArtifactProjection {
+	return {
+		schemaVersion: 1,
+		artifactId: artifact.artifactId,
+		mediaType: artifact.mediaType,
+		digest: artifact.digest,
+	};
+}
+
+function cloneRunReceiptTest(test: PublicRunValidationResult): PublicRunValidationResult {
+	return {
+		name: test.name,
+		required: test.required,
+		status: test.status,
+		...(test.summary === undefined ? {} : { summary: test.summary }),
+		...(test.evidenceRefs === undefined
+			? {}
+			: { evidenceRefs: test.evidenceRefs.map((artifact) => cloneRunReceiptArtifact(artifact)) }),
+	};
+}
+
 function cloneRunReceipt(receipt: PublicRunReceipt): PublicRunReceipt {
 	const copy: PublicRunReceipt = {
 		runId: receipt.runId,
@@ -2735,6 +2774,11 @@ function cloneRunReceipt(receipt: PublicRunReceipt): PublicRunReceipt {
 		usage: { input: receipt.usage.input, output: receipt.usage.output, total: receipt.usage.total },
 	};
 	if (receipt.taskResultId !== undefined) copy.taskResultId = receipt.taskResultId;
+	if (receipt.summary !== undefined) copy.summary = receipt.summary;
+	if (receipt.artifacts !== undefined) {
+		copy.artifacts = receipt.artifacts.map((artifact) => cloneRunReceiptArtifact(artifact));
+	}
+	if (receipt.tests !== undefined) copy.tests = receipt.tests.map((test) => cloneRunReceiptTest(test));
 	if (receipt.terminalError !== undefined) copy.terminalError = cloneAutomationError(receipt.terminalError);
 	return copy;
 }
@@ -2970,6 +3014,19 @@ function receiptFromCanonicalProjection(projection: CanonicalAutomationRunProjec
 		...(projection.canonicalResult.taskResultId === undefined
 			? {}
 			: { taskResultId: projection.canonicalResult.taskResultId }),
+		...(projection.canonicalResult.taskSummary === undefined
+			? {}
+			: { summary: projection.canonicalResult.taskSummary }),
+		...(projection.canonicalResult.artifacts === undefined
+			? {}
+			: {
+					artifacts: projection.canonicalResult.artifacts.map((artifact) =>
+						cloneRunReceiptArtifact(artifact),
+					),
+				}),
+		...(projection.canonicalResult.tests === undefined
+			? {}
+			: { tests: projection.canonicalResult.tests.map((test) => cloneRunReceiptTest(test)) }),
 		attemptReceiptIds: [...projection.canonicalResult.attemptReceiptIds],
 		sideEffectState: projection.canonicalResult.sideEffectState,
 		status: projection.status,

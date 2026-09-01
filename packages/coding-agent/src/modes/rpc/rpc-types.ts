@@ -84,13 +84,21 @@ export type RpcAuditQueryCommand = { id?: string; type: "audit.query" } & AuditQ
 /** Flattened Automation Host request for a single-run audit replay. */
 export type RpcAuditReplayCommand = { id?: string; type: "audit.replay" } & AuditReplayQuery;
 
+export interface RpcSessionSearchOptions {
+	all?: boolean;
+	includeArchived?: boolean;
+	sort?: "recent" | "relevance";
+	nameFilter?: "all" | "named";
+	limit?: number;
+}
+
 export type RpcCommand =
 	// Prompting
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort" }
-	| { id?: string; type: "new_session"; parentSession?: string }
+	| { id?: string; type: "new_session"; parentSession?: string; fromPr?: string }
 
 	// State
 	| { id?: string; type: "get_state" }
@@ -132,6 +140,10 @@ export type RpcCommand =
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
+	| { id?: string; type: "list_sessions"; all?: boolean; includeArchived?: boolean }
+	| ({ id?: string; type: "search_sessions"; query: string } & RpcSessionSearchOptions)
+	| { id?: string; type: "archive_session"; sessionPath: string }
+	| { id?: string; type: "unarchive_session"; sessionPath: string }
 
 	// Messages
 	| { id?: string; type: "get_messages" }
@@ -429,6 +441,10 @@ export interface RpcSessionState {
 	followUpMode: "all" | "one-at-a-time";
 	sessionId: string;
 	sessionName?: string;
+	fromPr?: string;
+	ephemeral: boolean;
+	archived: boolean;
+	archivedAt?: string;
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
@@ -436,6 +452,23 @@ export interface RpcSessionState {
 
 /** Session statistics safe for public RPC output. Internal sessionFile is omitted. */
 export type RpcSessionStats = Omit<SessionStats, "sessionFile">;
+
+export interface RpcSessionInfo {
+	path: string;
+	id: string;
+	cwd: string;
+	name?: string;
+	parentSessionPath?: string;
+	fromPr?: string;
+	ephemeral: false;
+	archived: boolean;
+	archivedAt?: string;
+	created: string;
+	modified: string;
+	messageCount: number;
+	firstMessage: string;
+	allMessagesText: string;
+}
 
 // ============================================================================
 // RPC Responses (stdout)
@@ -553,6 +586,27 @@ export type RpcResponse =
 			data: { text: string | null };
 	  }
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "list_sessions";
+			success: true;
+			data: { sessions: RpcSessionInfo[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "search_sessions";
+			success: true;
+			data: { sessions: RpcSessionInfo[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "archive_session" | "unarchive_session";
+			success: true;
+			data: { archived: boolean; archivedAt?: string };
+	  }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }

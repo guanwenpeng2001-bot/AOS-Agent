@@ -207,11 +207,15 @@ export interface SessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
+	fromPr?: string;
+	archived?: boolean;
+	archivedAt?: string;
 }
 
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+	fromPr?: string;
 }
 
 export interface SessionEntryBase {
@@ -351,11 +355,24 @@ export interface SessionInfo {
 	name?: string;
 	/** Path to the parent session (if this session was forked). */
 	parentSessionPath?: string;
+	/** Pull request number or URL associated when the session was created. */
+	fromPr?: string;
+	archived: boolean;
+	archivedAt?: Date;
 	created: Date;
 	modified: Date;
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
+}
+
+export interface SessionListOptions {
+	includeArchived?: boolean;
+}
+
+export interface SessionArchiveState {
+	archived: boolean;
+	archivedAt?: string;
 }
 
 export type ReadonlySessionManager = Pick<
@@ -374,6 +391,8 @@ export type ReadonlySessionManager = Pick<
 	| "getEntries"
 	| "getTree"
 	| "getSessionName"
+	| "getFromPr"
+	| "getArchiveState"
 >;
 
 function createSessionId(): string {
@@ -970,6 +989,22 @@ function getSessionHeaderCwd(header: SessionHeader): string | undefined {
 	return typeof cwd === "string" ? cwd : undefined;
 }
 
+function isSessionHeaderArchived(header: SessionHeader): boolean {
+	return header.archived === true;
+}
+
+function getSessionHeaderFromPr(header: SessionHeader): string | undefined {
+	const fromPr = (header as { fromPr?: unknown }).fromPr;
+	return typeof fromPr === "string" ? fromPr.trim() || undefined : undefined;
+}
+
+function normalizeFromPr(fromPr: string | undefined): string | undefined {
+	if (fromPr === undefined) return undefined;
+	const normalized = fromPr.trim();
+	if (normalized.length === 0) throw new Error("Session from-PR reference must be non-empty");
+	return normalized;
+}
+
 function sessionCwdMatches(cwd: string | undefined, resolvedCwd: string): boolean {
 	return cwd !== undefined && cwd !== "" && resolvePath(cwd) === resolvedCwd;
 }
@@ -986,6 +1021,7 @@ export function findMostRecentSession(sessionDir: string, cwd?: string): string 
 			.filter(
 				(file): file is { path: string; header: SessionHeader } =>
 					file.header !== null &&
+					!isSessionHeaderArchived(file.header) &&
 					(!resolvedCwd || sessionCwdMatches(getSessionHeaderCwd(file.header), resolvedCwd)),
 			)
 			.map(({ path }) => ({ path, mtime: statSync(path).mtime }))
@@ -1168,6 +1204,10 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 
 		const cwd = typeof header.cwd === "string" ? header.cwd : "";
 		const parentSessionPath = header.parentSession;
+		const fromPr = getSessionHeaderFromPr(header);
+		const archived = isSessionHeaderArchived(header);
+		const archivedAtTime =
+			archived && typeof header.archivedAt === "string" ? new Date(header.archivedAt).getTime() : NaN;
 		const headerTime = typeof header.timestamp === "string" ? new Date(header.timestamp).getTime() : NaN;
 		const modified =
 			typeof lastActivityTime === "number" && lastActivityTime > 0
@@ -1182,6 +1222,9 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			cwd,
 			name,
 			parentSessionPath,
+			...(fromPr === undefined ? {} : { fromPr }),
+			archived,
+			...(!Number.isNaN(archivedAtTime) ? { archivedAt: new Date(archivedAtTime) } : {}),
 			created: new Date(header.timestamp),
 			modified,
 			messageCount,
@@ -1395,6 +1438,7 @@ export class SessionManager {
 			timestamp,
 			cwd: this.cwd,
 			parentSession: options?.parentSession,
+			fromPr: normalizeFromPr(options?.fromPr),
 		};
 		this.fileEntries = [header];
 		this.byId.clear();
@@ -1492,6 +1536,51 @@ export class SessionManager {
 
 	getSessionFile(): string | undefined {
 		return this.sessionFile;
+	}
+
+	getFromPr(): string | undefined {
+		const header = this.getHeader();
+		return header === null ? undefined : getSessionHeaderFromPr(header);
+	}
+
+	getArchiveState(): SessionArchiveState {
+		const header = this.getHeader();
+		if (!header || !isSessionHeaderArchived(header)) return { archived: false };
+		const archivedAtTime =
+			typeof header.archivedAt === "string" ? new Date(header.archivedAt).getTime() : NaN;
+		return {
+			archived: true,
+			...(!Number.isNaN(archivedAtTime) ? { archivedAt: new Date(archivedAtTime).toISOString() } : {}),
+		};
+	}
+
+	setArchived(archived: boolean, archivedAt: Date = new Date()): SessionArchiveState {
+		this.assertWritesAllowed();
+		const header = this.getHeader();
+		if (!header) throw new Error("Session header is missing");
+		const currentState = this.getArchiveState();
+		if (currentState.archived === archived && (!archived || currentState.archivedAt !== undefined)) {
+			return currentState;
+		}
+
+		if (archived) {
+			header.archived = true;
+			header.archivedAt = archivedAt.toISOString();
+		} else {
+			delete header.archived;
+			delete header.archivedAt;
+		}
+		if (this.persist && this.sessionFile) {
+			this._rewriteFile();
+			this.flushed = true;
+		}
+		return this.getArchiveState();
+	}
+
+	static setArchived(path: string, archived: boolean, archivedAt: Date = new Date()): SessionArchiveState {
+		const resolvedPath = resolvePath(path);
+		if (!existsSync(resolvedPath)) throw new Error(`Session file not found: ${resolvedPath}`);
+		return SessionManager.open(resolvedPath).setArchived(archived, archivedAt);
 	}
 
 	_persist(entry: SessionEntry, entries: FileEntry[] = this.fileEntries): void {
@@ -2006,6 +2095,7 @@ export class SessionManager {
 			timestamp,
 			cwd: this.cwd,
 			parentSession: this.persist ? previousSessionFile : undefined,
+			fromPr: this.getFromPr(),
 		};
 
 		// Collect labels for entries in the path
@@ -2459,6 +2549,7 @@ export class SessionManager {
 			timestamp,
 			cwd: resolvedTargetCwd,
 			parentSession: resolvedSourcePath,
+			fromPr: normalizeFromPr(options?.fromPr ?? getSessionHeaderFromPr(sourceHeader)),
 		};
 		new SessionWriteCoordinator(newSessionFile, dir).withWriteLock(() => {
 			writeFileSync(newSessionFile, `${JSON.stringify(newHeader)}\n`, { flag: "wx" });
@@ -2482,12 +2573,21 @@ export class SessionManager {
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.aos-agent/agent/sessions/<encoded-cwd>/).
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
-	static async list(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
+	static async list(
+		cwd: string,
+		sessionDir?: string,
+		onProgressOrOptions?: SessionListProgress | SessionListOptions,
+		options: SessionListOptions = {},
+	): Promise<SessionInfo[]> {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 		const resolvedCwd = resolvePath(cwd);
+		const onProgress = typeof onProgressOrOptions === "function" ? onProgressOrOptions : undefined;
+		const listOptions = typeof onProgressOrOptions === "object" ? onProgressOrOptions : options;
 		const sessions = (await listSessionsFromDir(dir, onProgress)).filter(
-			(session) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd),
+			(session) =>
+				(listOptions.includeArchived === true || !session.archived) &&
+				(!filterCwd || sessionCwdMatches(session.cwd, resolvedCwd)),
 		);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 		return sessions;
@@ -2497,17 +2597,37 @@ export class SessionManager {
 	 * List all sessions across all project directories.
 	 * @param onProgress Optional callback for progress updates (loaded, total)
 	 */
-	static async listAll(onProgress?: SessionListProgress): Promise<SessionInfo[]>;
-	static async listAll(sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]>;
+	static async listAll(onProgressOrOptions?: SessionListProgress | SessionListOptions): Promise<SessionInfo[]>;
 	static async listAll(
-		sessionDirOrOnProgress?: string | SessionListProgress,
-		onProgress?: SessionListProgress,
+		sessionDir?: string,
+		onProgressOrOptions?: SessionListProgress | SessionListOptions,
+		options?: SessionListOptions,
+	): Promise<SessionInfo[]>;
+	static async listAll(
+		sessionDirOrOnProgressOrOptions?: string | SessionListProgress | SessionListOptions,
+		onProgressOrOptions?: SessionListProgress | SessionListOptions,
+		options: SessionListOptions = {},
 	): Promise<SessionInfo[]> {
 		const customSessionDir =
-			typeof sessionDirOrOnProgress === "string" ? normalizePath(sessionDirOrOnProgress) : undefined;
-		const progress = typeof sessionDirOrOnProgress === "function" ? sessionDirOrOnProgress : onProgress;
+			typeof sessionDirOrOnProgressOrOptions === "string"
+				? normalizePath(sessionDirOrOnProgressOrOptions)
+				: undefined;
+		const progress =
+			typeof sessionDirOrOnProgressOrOptions === "function"
+				? sessionDirOrOnProgressOrOptions
+				: typeof onProgressOrOptions === "function"
+					? onProgressOrOptions
+					: undefined;
+		const listOptions =
+			typeof sessionDirOrOnProgressOrOptions === "object"
+				? sessionDirOrOnProgressOrOptions
+				: typeof onProgressOrOptions === "object"
+					? onProgressOrOptions
+					: options;
 		if (customSessionDir) {
-			const sessions = await listSessionsFromDir(customSessionDir, progress);
+			const sessions = (await listSessionsFromDir(customSessionDir, progress)).filter(
+				(session) => listOptions.includeArchived === true || !session.archived,
+			);
 			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 			return sessions;
 		}
@@ -2547,7 +2667,7 @@ export class SessionManager {
 			});
 
 			for (const info of results) {
-				if (info) {
+				if (info && (listOptions.includeArchived === true || !info.archived)) {
 					sessions.push(info);
 				}
 			}

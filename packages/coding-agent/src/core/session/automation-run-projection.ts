@@ -11,7 +11,9 @@ import {
 	type PublicExecutionErrorCategory,
 	type RunReceipt,
 	type SideEffectState,
+	type TaskArtifactProjection,
 	type TaskResult,
+	type ValidationResult,
 } from "@aos-agent/agent-core";
 
 export type AutomationRunStatus = "completed" | "failed" | "cancelled";
@@ -48,8 +50,14 @@ export interface AutomationRunCanonicalResultProjection {
 	readonly taskResultId?: string;
 	readonly attemptReceiptIds: readonly string[];
 	readonly taskSummary?: string;
+	readonly artifacts?: readonly TaskArtifactProjection[];
+	readonly tests?: readonly AutomationRunValidationProjection[];
 	readonly sideEffectState: SideEffectState;
 }
+
+export type AutomationRunValidationProjection = Omit<ValidationResult, "evidenceRefs"> & {
+	readonly evidenceRefs?: readonly TaskArtifactProjection[];
+};
 
 /** Provenance attached only to a current record migrated from a legacy automation.run entry. */
 export interface AutomationRunMigrationProvenance {
@@ -391,7 +399,30 @@ function projectRun(
 			runReceiptId: receipt.runReceiptId,
 			...(receipt.taskResultId === undefined ? {} : { taskResultId: receipt.taskResultId }),
 			attemptReceiptIds: [...receipt.attemptReceiptIds],
-			...(taskResult === undefined ? {} : { taskSummary: taskResult.summary }),
+			...(taskResult === undefined
+				? {}
+				: {
+						taskSummary: taskResult.summary,
+						artifacts: taskResult.artifacts.map((artifact) => ({
+							schemaVersion: 1,
+							artifactId: artifact.artifactId,
+							mediaType: artifact.mediaType,
+							digest: artifact.digest,
+						})),
+						tests: taskResult.tests.map((test) => ({
+							...test,
+							...(test.evidenceRefs === undefined
+								? {}
+								: {
+										evidenceRefs: test.evidenceRefs.map((artifact) => ({
+											schemaVersion: 1,
+											artifactId: artifact.artifactId,
+											mediaType: artifact.mediaType,
+											digest: artifact.digest,
+										})),
+									}),
+						})),
+					}),
 			sideEffectState,
 		},
 	};

@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import { dirname } from "node:path";
 import {
 	AgentOperationError,
 	type CanonicalRunResult,
@@ -118,7 +119,12 @@ import {
 	serializePublicSessionEvent,
 	serializePublicSessionTreeNode,
 } from "../../core/session/run-lifecycle.ts";
-import { loadEntriesFromFile, type SessionEntry } from "../../core/session/manager.ts";
+import {
+	loadEntriesFromFile,
+	SessionManager,
+	type SessionEntry,
+	type SessionInfo,
+} from "../../core/session/manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
@@ -151,6 +157,7 @@ import {
 	type WorkerRecord,
 } from "../../core/worker/lifecycle.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
+import { filterAndSortSessions } from "../interactive/components/session-selector-search.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { type JsonAgentSessionEvent, toJsonEvent } from "../json-event.ts";
 import type {
@@ -184,6 +191,7 @@ import type {
 	RpcResponse,
 	RpcSchedulerResponse,
 	RpcSessionState,
+	RpcSessionInfo,
 	RpcSessionStats,
 	RpcSlashCommand,
 	RpcSourceInfo,
@@ -410,6 +418,36 @@ export type {
 function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
 	const { sessionFile: _sessionFile, ...publicStats } = stats;
 	return publicStats;
+}
+
+function serializeRpcSessionInfo(info: SessionInfo): RpcSessionInfo {
+	return {
+		path: info.path,
+		id: info.id,
+		cwd: info.cwd,
+		...(info.name === undefined ? {} : { name: info.name }),
+		...(info.parentSessionPath === undefined ? {} : { parentSessionPath: info.parentSessionPath }),
+		...(info.fromPr === undefined ? {} : { fromPr: info.fromPr }),
+		ephemeral: false,
+		archived: info.archived,
+		...(info.archivedAt === undefined ? {} : { archivedAt: info.archivedAt.toISOString() }),
+		created: info.created.toISOString(),
+		modified: info.modified.toISOString(),
+		messageCount: info.messageCount,
+		firstMessage: info.firstMessage,
+		allMessagesText: info.allMessagesText,
+	};
+}
+
+async function listRpcSessionInfos(
+	session: AgentSession,
+	options: { all?: boolean; includeArchived?: boolean },
+): Promise<SessionInfo[]> {
+	const sessionDir = session.sessionFile === undefined ? undefined : dirname(session.sessionFile);
+	const listOptions = { includeArchived: options.includeArchived === true };
+	return options.all === true
+		? SessionManager.listAll(sessionDir, listOptions)
+		: SessionManager.list(session.cwd, sessionDir, listOptions);
 }
 
 function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
@@ -1212,6 +1250,8 @@ export class RpcHostController {
 			"fork",
 			"clone",
 			"set_session_name",
+			"archive_session",
+			"unarchive_session",
 			"mcp.resource.attach",
 			"mcp.prompt.attach",
 		]);
@@ -5750,7 +5790,13 @@ export class RpcHostController {
 				}
 
 				case "new_session": {
-					const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
+					const options =
+						command.parentSession === undefined && command.fromPr === undefined
+							? undefined
+							: {
+									...(command.parentSession === undefined ? {} : { parentSession: command.parentSession }),
+									...(command.fromPr === undefined ? {} : { fromPr: command.fromPr }),
+								};
 					const result = await runtimeHost.newSession(options);
 					return success(id, "new_session", result);
 				}
@@ -5760,6 +5806,7 @@ export class RpcHostController {
 				// =================================================================
 
 				case "get_state": {
+					const metadata = await getAgentCanonicalSession(currentBinding.session).getMetadata();
 					const state: RpcSessionState = {
 						model: currentBinding.session.model,
 						thinkingLevel: currentBinding.session.thinkingLevel,
@@ -5769,6 +5816,12 @@ export class RpcHostController {
 						followUpMode: currentBinding.session.followUpMode,
 						sessionId: currentBinding.session.sessionId,
 						sessionName: currentBinding.session.sessionName,
+						...(metadata.fromPr === undefined ? {} : { fromPr: metadata.fromPr }),
+						ephemeral: currentBinding.session.sessionFile === undefined,
+						archived: metadata.archived,
+						...(metadata.archivedAt === undefined
+							? {}
+							: { archivedAt: new Date(metadata.archivedAt).toISOString() }),
 						autoCompactionEnabled: currentBinding.session.autoCompactionEnabled,
 						messageCount: currentBinding.session.messages.length,
 						pendingMessageCount: currentBinding.session.pendingMessageCount,
@@ -5911,6 +5964,39 @@ export class RpcHostController {
 				case "get_session_stats": {
 					const stats = currentBinding.session.getSessionStats();
 					return success(id, "get_session_stats", serializePublicSessionStats(stats));
+				}
+
+				case "list_sessions": {
+					const sessions = await listRpcSessionInfos(currentBinding.session, command);
+					return success(id, "list_sessions", {
+						sessions: sessions.map(serializeRpcSessionInfo),
+					});
+				}
+
+				case "search_sessions": {
+					const sessions = await listRpcSessionInfos(currentBinding.session, command);
+					const matches = filterAndSortSessions(
+						sessions,
+						command.query,
+						command.sort ?? "relevance",
+						command.nameFilter ?? "all",
+					);
+					const limited = command.limit === undefined
+						? matches
+						: matches.slice(0, Math.max(0, Math.trunc(command.limit)));
+					return success(id, "search_sessions", {
+						sessions: limited.map(serializeRpcSessionInfo),
+					});
+				}
+
+				case "archive_session": {
+					const state = runtimeHost.setSessionArchived(command.sessionPath, true);
+					return success(id, "archive_session", state);
+				}
+
+				case "unarchive_session": {
+					const state = runtimeHost.setSessionArchived(command.sessionPath, false);
+					return success(id, "unarchive_session", state);
 				}
 
 				case "get_context": {

@@ -410,16 +410,24 @@ describe("Foundation Prompt Task adapter", () => {
 		expect(provider.runCount).toBe(0);
 	});
 
-	it("fails closed before provider execution when settlement prerequisites are absent", async () => {
+	it("derives an empty truthful result and assistant summary when optional settlement input is absent", async () => {
 		const calls: PromptTaskDependencyName[] = [];
 		const provider = new PromptTaskProvider();
 		const session = new Session(new InMemorySessionStorage({ id: "session-missing-settlement", createdAt: 1 }));
 		const runtime = createModelsWithResponse();
 		const adapter = createPromptTaskAdapter({ dependencies: dependencies(calls), provider, harness: { session, env: executionEnv(), models: runtime.models, model: runtime.model, tools: [], activeToolNames: [] } });
-		const input = { ...promptInput(), settlement: undefined } as unknown as PromptTaskInput;
-		await expect(adapter.execute(input)).rejects.toMatchObject({ code: "prompt_task_input_invalid" });
-		expect(calls).toEqual([]);
-		expect(provider.createCount).toBe(0);
-		expect(provider.runCount).toBe(0);
+		const base = promptInput();
+		const input: PromptTaskInput = {
+			...base,
+			task: { ...base.task, expectedOutputs: [] },
+			settlement: undefined,
+		};
+		const execution = await adapter.execute(input);
+		expect(calls).toEqual(PROMPT_TASK_DEPENDENCY_NAMES);
+		expect(provider.createCount).toBe(1);
+		expect(provider.runCount).toBe(1);
+		expect(execution.taskResult.summary).toBe("done");
+		expect(execution.taskResult.tests).toEqual([]);
+		expect(execution.taskResult.artifacts).toEqual([OUTPUT_ARTIFACT]);
 	});
 });

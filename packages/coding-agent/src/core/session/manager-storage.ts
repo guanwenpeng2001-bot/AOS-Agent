@@ -73,6 +73,9 @@ export interface CodingAgentSessionMetadata extends SessionMetadata {
 	cwd: string;
 	path?: string;
 	legacyVersion: 3;
+	fromPr?: string;
+	archived: boolean;
+	archivedAt?: number;
 }
 
 interface FoundationEntryEnvelope {
@@ -461,6 +464,8 @@ function usageStats(records: readonly LaneRecord[]): SessionStats {
 function makeMetadata(manager: SessionManager): CodingAgentSessionMetadata {
 	const header = manager.getHeader();
 	if (!header) failClosed("session header is missing");
+	const archiveState = manager.getArchiveState();
+	const fromPr = manager.getFromPr();
 	return {
 		id: header.id,
 		createdAt: toTimestamp(header.timestamp, 0),
@@ -468,6 +473,11 @@ function makeMetadata(manager: SessionManager): CodingAgentSessionMetadata {
 		cwd: header.cwd,
 		...(manager.getSessionFile() === undefined ? {} : { path: manager.getSessionFile() }),
 		legacyVersion: 3,
+		...(fromPr === undefined ? {} : { fromPr }),
+		archived: archiveState.archived,
+		...(archiveState.archivedAt === undefined
+			? {}
+			: { archivedAt: Date.parse(archiveState.archivedAt) }),
 	};
 }
 
@@ -480,14 +490,12 @@ function makeMetadata(manager: SessionManager): CodingAgentSessionMetadata {
  */
 export class SessionManagerStorage implements SessionStorage<CodingAgentSessionMetadata>, DurableLedgerApi {
 	private readonly manager: SessionManager;
-	private readonly metadata: CodingAgentSessionMetadata;
 	private readonly tail: { promise: Promise<void> } = { promise: Promise.resolve() };
 	private ledgerLease: LedgerWriterLease | null = null;
 	private ledgerLeaseRevision = 0;
 
 	constructor(manager: SessionManager) {
 		this.manager = manager;
-		this.metadata = makeMetadata(manager);
 		this.snapshot();
 		this.manager.setEntriesReadProjection(
 			() => this.legacyEntriesSnapshot(),
@@ -904,7 +912,7 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 	}
 
 	private foundationState(): FoundationLedgerState {
-		const state = new FoundationLedgerState({ sessionId: this.metadata.id });
+		const state = new FoundationLedgerState({ sessionId: this.manager.getSessionId() });
 		const physical = this.physicalEntries();
 		for (let index = 0; index < physical.length; index += 1) {
 			const seq = index + 1;
@@ -1007,7 +1015,14 @@ export class SessionManagerStorage implements SessionStorage<CodingAgentSessionM
 	}
 
 	getMetadata(): Promise<CodingAgentSessionMetadata> {
-		return Promise.resolve(clone(this.metadata));
+		return Promise.resolve(clone(makeMetadata(this.manager)));
+	}
+
+	setArchived(archived: boolean, archivedAt?: Date): Promise<CodingAgentSessionMetadata> {
+		return this.enqueue(async () => {
+			this.manager.setArchived(archived, archivedAt);
+			return clone(makeMetadata(this.manager));
+		});
 	}
 
 	getLanes(): Promise<LanePointer[]> {

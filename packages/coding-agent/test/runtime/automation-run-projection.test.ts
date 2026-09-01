@@ -174,6 +174,8 @@ describe("canonical Automation Run projection", () => {
 					taskResultId: fixture.runReceipt.taskResultId,
 					attemptReceiptIds: fixture.runReceipt.attemptReceiptIds,
 					taskSummary: "Task completed summary",
+					artifacts: [],
+					tests: [],
 					sideEffectState: "none",
 				},
 			},

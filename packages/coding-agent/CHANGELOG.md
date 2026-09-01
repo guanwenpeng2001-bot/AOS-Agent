@@ -24,6 +24,10 @@
 - Remote Operation Workers can connect through the shared bearer/mTLS WebSocket transport configuration, carrying the existing bounded stdio frame contract over WS/TLS without changing Worker protocol records.
 - RPC TCP and WebSocket listeners now support bearer authentication, TLS termination, mTLS client certificates, secured non-loopback binding, and matching `RpcClient` credentials.
 - Loopback WebSocket RPC transport for Automation Host, including `ws://127.0.0.1:<port>` CLI listeners and `RpcClient` connections.
+- Session from-PR metadata persists pull request associations and exposes creation entry points through the CLI, SDK, and RPC session surfaces.
+- Server-side session search RPC with selector-compatible matching, archive/scope filters, result limits, and explicit ephemeral session markers.
+- Session archive support persists archive timestamps, filters archived sessions from default discovery, and exposes list/archive/unarchive through the CLI and RPC client.
+- Public Automation Host Run receipts now expose validated TaskResult summary, artifact references, and test results through RPC, SDK, terminal events, and replay.
 - Claude connector artifact input and exact Bedrock `aos_gateway` model projection support, with verified native image/PDF/text blocks and material-free lease correlation.
 - Codex connectors now accept trusted workspace file and image artifact input and support exact `aos_gateway` provider, model, effort, and service-tier projection with material-free credential leases; unsupported artifact sources and media fail closed.
 - Trusted External Connector targets can now be registered in settings for standard CLI, RPC, and SDK Sessions; project and Role selections require project trust and can only narrow global targets.
@@ -55,6 +59,7 @@
 
 ### Changed
 
+- Product prompts and external connectors now populate task-result summaries, tests, and artifacts from durable execution records.
 - Windows full-load regression coverage now bounds and terminates a stalled invalid-session source child and makes reftable watcher changes observable without weakening behavior assertions.
 - The built-in Radius provider points at the upstream-hosted gateway by default, so `/login radius` and its model catalog work out of the box; custom gateways in `models.json` are unchanged.
 - Default workspace `build`, CI, and release hydrate the ignored model wrappers from the tracked AI test-fixture snapshot instead of fetching live catalogs.
