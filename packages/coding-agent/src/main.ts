@@ -345,14 +345,18 @@ function validateSessionIdFlags(parsed: Args): void {
 	}
 }
 
-function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
+function createSessionManagerOrExit(create: () => SessionManager): SessionManager {
 	try {
-		return SessionManager.open(path, sessionDir);
+		return create();
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
 		process.exit(1);
 	}
+}
+
+function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
+	return createSessionManagerOrExit(() => SessionManager.open(path, sessionDir));
 }
 
 async function forkSessionOrExit(
@@ -456,14 +460,14 @@ async function createSessionManager(
 				console.log(chalk.dim("No session selected"));
 				process.exit(0);
 			}
-			return SessionManager.open(selectedPath, sessionDir);
+			return openSessionOrExit(selectedPath, sessionDir);
 		} finally {
 			stopThemeWatcher();
 		}
 	}
 
 	if (parsed.continue) {
-		return SessionManager.continueRecent(cwd, sessionDir);
+		return createSessionManagerOrExit(() => SessionManager.continueRecent(cwd, sessionDir));
 	}
 
 	if (parsed.sessionId) {
