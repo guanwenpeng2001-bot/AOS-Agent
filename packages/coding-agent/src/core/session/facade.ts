@@ -2808,7 +2808,6 @@ export class CanonicalAgentSessionServices {
 		if (auth === undefined) throw new Error(`No API key for ${model.provider}/${model.id}`);
 		const previousModel = this.model;
 		await this.harness.setModel(model);
-		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 		const effectiveThinkingLevel = clampThinkingLevel(model, this.thinkingLevel) as ThinkingLevel;
 		this.applyThinkingLevel(effectiveThinkingLevel);
 		await this._extensionRunner.emit({
@@ -2823,7 +2822,6 @@ export class CanonicalAgentSessionServices {
 		const previousLevel = this.thinkingLevel;
 		if (previousLevel === level) return;
 		void this.harness.setThinkingLevel(level);
-		this.settingsManager.setDefaultThinkingLevel(level);
 		for (const listener of this.sessionInfoSubscribers) listener({ type: "thinking_level_changed", level });
 		void this._extensionRunner.emit({ type: "thinking_level_select", level, previousLevel });
 	}
