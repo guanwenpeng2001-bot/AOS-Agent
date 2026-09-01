@@ -1174,6 +1174,7 @@ export class AgentHarness implements AgentLane {
 	private readonly laneReductions = new Map<string, LaneReductionResult>();
 	private readonly mutationTails = new Map<string, Promise<void>>();
 	private readonly compatibilityTasks = new Set<Promise<unknown>>();
+	private readonly pendingCompatibilityMessages: AgentMessage[] = [];
 	private readonly pendingExternalMessageTasks = new Set<Promise<void>>();
 	private readonly laneSnapshots = new Map<string, LaneSnapshot>();
 	private readonly pendingQueueMutations = new Map<string, PendingQueueMutation>();
@@ -1434,6 +1435,15 @@ export class AgentHarness implements AgentLane {
 	recordCompatibilityMessage(message: AgentMessage): Promise<void> {
 		this.ensureOpen();
 		if (this.compatibilityWriter === undefined) throw new HarnessFault("No compatibility writer is bound", undefined);
+		if (this.currentOperationKind === "run") {
+			this.pendingCompatibilityMessages.push(structuredClone(message));
+			return Promise.resolve();
+		}
+		return this.writeCompatibilityMessage(message);
+	}
+
+	private writeCompatibilityMessage(message: AgentMessage): Promise<void> {
+		if (this.compatibilityWriter === undefined) throw new HarnessFault("No compatibility writer is bound", undefined);
 		const snapshot = structuredClone(message);
 		const written = this.compatibilityWriter.recordMessage(snapshot);
 		const task = Promise.resolve(written).then(() => {
@@ -1442,6 +1452,11 @@ export class AgentHarness implements AgentLane {
 		});
 		this.trackCompatibilityTask(task);
 		return task;
+	}
+
+	private async flushPendingCompatibilityMessages(): Promise<void> {
+		const pending = this.pendingCompatibilityMessages.splice(0);
+		for (const message of pending) await this.writeCompatibilityMessage(message);
 	}
 
 	emitBashExecutionUpdate(id: string | undefined, delta: string): void {
@@ -3724,6 +3739,9 @@ export class AgentHarness implements AgentLane {
 			case "tool_execution_start":
 				await this.appendToolStarted(lane, runId, event);
 				break;
+			case "turn_end":
+				await this.flushPendingCompatibilityMessages();
+				break;
 			case "agent_end": {
 				const finalMessage = [...event.messages].reverse().find((message): message is AssistantMessage => message.role === "assistant");
 				if (!finalMessage || finalMessage.stopReason === "deferred") break;
@@ -3776,6 +3794,7 @@ export class AgentHarness implements AgentLane {
 		this.operationContextInputs.delete(runId);
 		try {
 			await this.refreshSnapshots();
+			if (activeOperation?.kind === "run") await this.flushPendingCompatibilityMessages();
 			if (this.agentSettlementPending && this.activeOperations.size === 0 && this.sessionSnapshot.lanes.every((lane) => lane.operation === null)) {
 				this.agentSettlementPending = false;
 				this.eventBus.emit({ type: "agent_settled" });
