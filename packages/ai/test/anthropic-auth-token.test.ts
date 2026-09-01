@@ -9,6 +9,7 @@ import type { Context, Model } from "../src/types.ts";
 const mockState = vi.hoisted(() => ({
 	constructorOpts: undefined as Record<string, unknown> | undefined,
 	createParams: undefined as Record<string, unknown> | undefined,
+	responseModel: "claude-test",
 }));
 
 vi.mock("@anthropic-ai/sdk", () => {
@@ -18,6 +19,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 				type: "message_start",
 				message: {
 					id: "msg_test",
+					model: mockState.responseModel,
 					usage: { input_tokens: 1, output_tokens: 0 },
 				},
 			})}\n`,
@@ -83,6 +85,7 @@ const kimiModel: Model<"anthropic-messages"> = {
 afterEach(() => {
 	mockState.constructorOpts = undefined;
 	mockState.createParams = undefined;
+	mockState.responseModel = "claude-test";
 });
 
 describe("Anthropic auth token env", () => {
@@ -211,5 +214,30 @@ describe("Anthropic-compatible user agents", () => {
 		await streamAnthropic(anthropicModel, context, { apiKey: "anthropic-key" }).result();
 		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
 		expect(Object.keys(headers).some((name) => name.toLowerCase() === "user-agent")).toBe(false);
+	});
+});
+
+describe("Anthropic refusal fallback", () => {
+	it("sends allowlisted fallback targets and prices the selected model", async () => {
+		const primary: Model<"anthropic-messages"> = {
+			...anthropicModel,
+			id: "primary-model",
+			compat: {
+				allowedFallbackModels: [{
+					provider: "anthropic",
+					model: "fallback-model",
+					cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+				}],
+			},
+		};
+		mockState.responseModel = "fallback-model";
+
+		const message = await streamAnthropic(primary, context, { apiKey: "anthropic-key" }).result();
+
+		expect(mockState.createParams?.fallbacks).toEqual([{ model: "fallback-model" }]);
+		const headers = mockState.constructorOpts?.defaultHeaders as Record<string, string>;
+		expect(headers["anthropic-beta"]).toContain("server-side-fallback-2026-07-01");
+		expect(message.model).toBe("fallback-model");
+		expect(message.usage.cost.total).toBeCloseTo(0.000003);
 	});
 });

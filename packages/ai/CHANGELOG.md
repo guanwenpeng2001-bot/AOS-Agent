@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Anthropic refusal fallbacks now use generated allowlisted targets and charge usage at the selected fallback model's rates.
 - GitHub Copilot login now catalogs first, enables only eligible models sequentially, and retries bounded 429 responses.
 - Kimi Coding requests now use the service-compatible pi runtime user agent while Codex requests retain AOS branding.
 - DeepSeek-compatible base URLs are now detected case-insensitively.
