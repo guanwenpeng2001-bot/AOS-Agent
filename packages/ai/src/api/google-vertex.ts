@@ -13,7 +13,6 @@ import type {
 	AssistantMessage,
 	Context,
 	Model,
-	ThinkingLevel as PiThinkingLevel,
 	ProviderEnv,
 	ProviderHeaders,
 	SimpleStreamOptions,
@@ -29,13 +28,14 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
-import type { GoogleThinkingLevel } from "./google-shared.ts";
+import type { GoogleThinkingLevel, ResolvedGoogleThinkingLevel } from "./google-shared.ts";
 import {
 	convertMessages,
 	convertTools,
 	isThinkingPart,
 	mapStopReason,
 	resolveGoogleFunctionCallingMode,
+	resolveGoogleThinkingLevel,
 	retainThoughtSignature,
 	retryGoogleRequest,
 	supportsGoogleStrictToolSampling,
@@ -324,7 +324,7 @@ export const streamSimple: StreamFunction<"google-vertex", SimpleStreamOptions> 
 	}
 
 	const clampedReasoning = clampThinkingLevel(model, options.reasoning);
-	const effort = (clampedReasoning === "off" ? "high" : clampedReasoning) as ClampedThinkingLevel;
+	const effort = resolveGoogleThinkingLevel(model, clampedReasoning);
 	const geminiModel = model as unknown as Model<"google-generative-ai">;
 
 	if (isGemini3ProModel(geminiModel) || isGemini3FlashModel(geminiModel)) {
@@ -506,8 +506,6 @@ function buildParams(
 	return params;
 }
 
-type ClampedThinkingLevel = Exclude<PiThinkingLevel, "xhigh" | "max">;
-
 function isGemini3ProModel(model: Model<"google-generative-ai">): boolean {
 	return /gemini-3(?:\.\d+)?-pro/.test(model.id.toLowerCase());
 }
@@ -534,7 +532,7 @@ function getDisabledThinkingConfig(model: Model<"google-vertex">): ThinkingConfi
 }
 
 function getGemini3ThinkingLevel(
-	effort: ClampedThinkingLevel,
+	effort: ResolvedGoogleThinkingLevel,
 	model: Model<"google-generative-ai">,
 ): GoogleThinkingLevel {
 	if (isGemini3ProModel(model)) {
@@ -561,7 +559,7 @@ function getGemini3ThinkingLevel(
 
 function getGoogleBudget(
 	model: Model<"google-generative-ai">,
-	effort: ClampedThinkingLevel,
+	effort: ResolvedGoogleThinkingLevel,
 	customBudgets?: ThinkingBudgets,
 ): number {
 	if (customBudgets?.[effort] !== undefined) {
@@ -569,7 +567,7 @@ function getGoogleBudget(
 	}
 
 	if (model.id.includes("2.5-pro")) {
-		const budgets: Record<ClampedThinkingLevel, number> = {
+		const budgets: Record<ResolvedGoogleThinkingLevel, number> = {
 			minimal: 128,
 			low: 2048,
 			medium: 8192,
@@ -579,7 +577,7 @@ function getGoogleBudget(
 	}
 
 	if (model.id.includes("2.5-flash")) {
-		const budgets: Record<ClampedThinkingLevel, number> = {
+		const budgets: Record<ResolvedGoogleThinkingLevel, number> = {
 			minimal: 128,
 			low: 2048,
 			medium: 8192,
