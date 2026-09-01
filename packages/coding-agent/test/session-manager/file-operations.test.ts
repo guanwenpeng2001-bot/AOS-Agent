@@ -77,6 +77,19 @@ describe("loadEntriesFromFile", () => {
 		);
 	});
 
+	it("repairs a valid session whose final record has no newline when opening it", () => {
+		const file = join(tempDir, "unterminated.jsonl");
+		const content =
+			'{"type":"session","version":3,"id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n' +
+			'{"type":"message","id":"12345678","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}';
+		writeFileSync(file, content);
+
+		const manager = SessionManager.open(file, tempDir);
+
+		expect(manager.getEntries()).toHaveLength(1);
+		expect(readFileSync(file, "utf8")).toBe(`${content}\n`);
+	});
+
 	it("rejects malformed lines instead of silently keeping valid suffix entries", () => {
 		const file = join(tempDir, "mixed.jsonl");
 		writeFileSync(

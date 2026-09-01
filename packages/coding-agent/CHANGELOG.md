@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Resumed sessions now repair a valid final JSONL record that lacks a trailing newline before appending new entries.
 - Print-mode prompts now continue after recoverable tool failures and settle successfully when a later model or tool step recovers.
 - Fixed session selector discovery and marker search for canonical sessions in explicit session directories.
 - Resuming a persisted session after its host process is killed now reclaims the stale processing lease and finishes the interrupted turn, while a live holder still blocks concurrent prompts.

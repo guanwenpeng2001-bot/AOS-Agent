@@ -840,7 +840,33 @@ function repairCorruptSessionFile(filePath: string, corruption: SessionFileCorru
 
 function loadSessionEntriesForOpen(filePath: string, sessionDir: string): FileEntry[] {
 	try {
-		return loadEntriesFromFile(filePath);
+		const entries = loadEntriesFromFile(filePath);
+		const size = statSync(filePath).size;
+		if (entries.length === 0 || size === 0) return entries;
+
+		const finalByte = Buffer.allocUnsafe(1);
+		const fd = openSync(filePath, "r");
+		try {
+			readSync(fd, finalByte, 0, 1, size - 1);
+		} finally {
+			closeSync(fd);
+		}
+		if (finalByte[0] === 0x0a) return entries;
+
+		return new SessionWriteCoordinator(filePath, sessionDir).withWriteLock(() => {
+			const lockedEntries = loadEntriesFromFile(filePath);
+			if (lockedEntries.length === 0) return lockedEntries;
+			const lockedSize = statSync(filePath).size;
+			const lockedFinalByte = Buffer.allocUnsafe(1);
+			const lockedFd = openSync(filePath, "r");
+			try {
+				readSync(lockedFd, lockedFinalByte, 0, 1, lockedSize - 1);
+			} finally {
+				closeSync(lockedFd);
+			}
+			if (lockedFinalByte[0] !== 0x0a) appendFileSync(filePath, "\n");
+			return lockedEntries;
+		});
 	} catch (initialError) {
 		if (!(initialError instanceof SessionFileCorruptionError)) throw initialError;
 		return new SessionWriteCoordinator(filePath, sessionDir).withWriteLock(() => {
