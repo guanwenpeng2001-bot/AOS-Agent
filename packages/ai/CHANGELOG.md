@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Google adapters now preserve length and error stops even when a response also contains tool calls.
 - Azure OpenAI Responses now forwards provider-specific `toolChoice` settings.
 - Bedrock `onResponse` now exposes raw Smithy response headers, including custom gateway metadata.
 - Bedrock redacted reasoning now round-trips through persisted thinking signatures.
