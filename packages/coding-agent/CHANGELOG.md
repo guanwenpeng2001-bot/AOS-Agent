@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Package manifest expansion now uses deterministic native Node globbing and no longer requires the external `glob` runtime dependency.
 - Package update checks no longer treat older registry versions as available updates.
 - Failed extension factories now discard staged flags, providers, and event subscriptions and disable their captured API.
 - Node SEA binaries now load extensions through bundled virtual modules.

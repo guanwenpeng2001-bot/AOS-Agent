@@ -1639,6 +1639,24 @@ Content`,
 			expect(result.skills.some((r) => isEnabled(r, "pdf-to-markdown", "includes"))).toBe(true);
 			expect(result.skills.some((r) => isEnabled(r, "document-processor-api", "includes"))).toBe(true);
 		});
+
+		it("sorts native manifest glob matches and excludes hidden paths", async () => {
+			const pkgDir = join(tempDir, "native-glob-pkg");
+			mkdirSync(join(pkgDir, "extensions"), { recursive: true });
+			writeFileSync(join(pkgDir, "extensions", "z.ts"), "export default function() {}");
+			writeFileSync(join(pkgDir, "extensions", "a.ts"), "export default function() {}");
+			writeFileSync(join(pkgDir, "extensions", ".hidden.ts"), "export default function() {}");
+			writeFileSync(join(pkgDir, "package.json"), JSON.stringify({
+				name: "native-glob-pkg",
+				aosAgent: { extensions: ["./extensions/*.ts"] },
+			}));
+
+			const result = await packageManager.resolveExtensionSources([pkgDir]);
+			expect(result.extensions.map((resource) => relative(pkgDir, resource.path))).toEqual([
+				join("extensions", "a.ts"),
+				join("extensions", "z.ts"),
+			]);
+		});
 	});
 
 	describe("pattern filtering in package filters", () => {
