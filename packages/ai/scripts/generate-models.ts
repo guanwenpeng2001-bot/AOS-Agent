@@ -686,7 +686,7 @@ function detectOpenAICompletionsCompat(model: Model<"openai-completions">): Open
 		baseUrl.includes("api.x.ai") ||
 		isTogether ||
 		baseUrl.includes("chutes.ai") ||
-		baseUrl.includes("deepseek.com") ||
+		baseUrl.toLowerCase().includes("deepseek.com") ||
 		isZai ||
 		isMoonshot ||
 		provider === "opencode" ||
@@ -695,7 +695,7 @@ function detectOpenAICompletionsCompat(model: Model<"openai-completions">): Open
 		isCloudflareAiGateway ||
 		isAntLing;
 
-	const isDeepSeek = provider === "deepseek" || baseUrl.includes("deepseek.com");
+	const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");
 	const useMaxTokens =
 		baseUrl.includes("chutes.ai") ||
 		isDeepSeek ||
