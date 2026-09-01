@@ -39,3 +39,12 @@ Allowed dispositions:
 - `needs investigation`: evidence is incomplete. This is temporary and blocks release.
 
 End the report with grouped proposed tickets and the next pi baseline commit. Keep intermediate repositories, patches, and generated evidence outside the product tree.
+
+## Latest completed backport
+
+- AOS baseline: `8190bb1a` (`fix/ux-u0-integration`, including merged U4 fixes).
+- pi range: `936aff00..853a80d2`.
+- Final disposition: 52 ported or adapted, 2 already covered, 0 unresolved.
+- The two covered commits are `df018b60` and `7d8c11d3`, both satisfied by AOS commit `6844ec2d` in the rewritten runtime catalog layer.
+- The per-commit release evidence is written to `%TEMP%/aos-agent-ux-audit/u5-backport-map.md`.
+- Next pi baseline: `853a80d2`.
