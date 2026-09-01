@@ -140,6 +140,11 @@ export interface SchedulerExecutorRegistryOptions {
 	readonly reservationStore?: SchedulerSelectionReservationStore;
 }
 
+export interface SchedulerExecutorDiscoveryBinding {
+	readonly sync: () => Promise<ResultValue<void, FoundationError>>;
+	readonly isOwnerAvailable: (ownerId: string) => Promise<boolean>;
+}
+
 export type SchedulerSelectionSettlementUsage = AttemptReceiptUsage | Readonly<Record<string, never>>;
 
 export interface SchedulerExecutorSelectionInput {
@@ -341,7 +346,7 @@ export function createSchedulerExecutorRuntimeSnapshot(
 	return Result.ok(deepFreeze({ ...base, digest: fingerprintFoundationValue(base) }));
 }
 
-function validateSchedulerExecutorRuntimeSnapshot(
+export function validateSchedulerExecutorRuntimeSnapshot(
 	value: SchedulerExecutorRuntimeSnapshot,
 ): ResultValue<SchedulerExecutorRuntimeSnapshot, FoundationError> {
 	if (
@@ -672,8 +677,10 @@ export function projectSchedulerSelectionFact(
 
 export class SchedulerExecutorRegistry {
 	private readonly byId = new Map<string, SchedulerExecutorRegistration>();
+	private readonly discoveredProviderIds = new Set<string>();
 	private readonly factsByQueueEntryId = new Map<string, SchedulerSelectionFact>();
 	private readonly reservationStore: SchedulerSelectionReservationStore | undefined;
+	private discovery: SchedulerExecutorDiscoveryBinding | undefined;
 	private selectionTail: Promise<void> = Promise.resolve();
 
 	constructor(options: SchedulerExecutorRegistryOptions = {}) {
@@ -684,9 +691,59 @@ export class SchedulerExecutorRegistry {
 		return this.reservationStore !== undefined;
 	}
 
+	attachDiscovery(binding: SchedulerExecutorDiscoveryBinding): void {
+		if (this.discovery !== undefined && this.discovery !== binding) {
+			throw new TypeError("Scheduler executor registry already has a discovery binding");
+		}
+		this.discovery = binding;
+	}
+
+	isOwnerAvailable(ownerId: string): Promise<boolean> {
+		return this.discovery?.isOwnerAvailable(ownerId) ?? Promise.resolve(true);
+	}
+
 	async register(
 		registration: SchedulerExecutorRegistration,
 	): Promise<ResultValue<SchedulerExecutorEntry, FoundationError>> {
+		const prepared = await this.prepareRegistration(registration);
+		if (!prepared.ok) return prepared;
+		const providerId = prepared.value.entry.descriptor.providerId;
+		if (this.byId.has(providerId)) return schedulerFail("scheduler_queue_conflict");
+		this.byId.set(providerId, prepared.value);
+		return Result.ok(prepared.value.entry);
+	}
+
+	/**
+	 * Replace the shared-ledger compatibility projection without disturbing
+	 * process-local registrations. Discovery owns only identities that it
+	 * previously projected, so a remote Host cannot shadow a local provider.
+	 */
+	async replaceDiscovered(
+		registrations: readonly SchedulerExecutorRegistration[],
+	): Promise<ResultValue<readonly SchedulerExecutorEntry[], FoundationError>> {
+		const prepared = new Map<string, SchedulerExecutorRegistration>();
+		for (const registration of registrations) {
+			const checked = await this.prepareRegistration(registration);
+			if (!checked.ok) return checked;
+			const providerId = checked.value.entry.descriptor.providerId;
+			if (prepared.has(providerId)) return schedulerFail("scheduler_queue_conflict");
+			if (this.byId.has(providerId) && !this.discoveredProviderIds.has(providerId)) {
+				return schedulerFail("scheduler_queue_conflict");
+			}
+			prepared.set(providerId, checked.value);
+		}
+		for (const providerId of this.discoveredProviderIds) this.byId.delete(providerId);
+		this.discoveredProviderIds.clear();
+		for (const [providerId, registration] of prepared) {
+			this.byId.set(providerId, registration);
+			this.discoveredProviderIds.add(providerId);
+		}
+		return Result.ok([...prepared.values()].map((registration) => registration.entry));
+	}
+
+	private async prepareRegistration(
+		registration: SchedulerExecutorRegistration,
+	): Promise<ResultValue<SchedulerExecutorRegistration, FoundationError>> {
 		const parsed = parseSchedulerExecutorEntry(registration.entry);
 		if (!parsed.ok) return parsed;
 		if (typeof registration.trusted !== "boolean") {
@@ -783,7 +840,6 @@ export class SchedulerExecutorRegistry {
 			capabilitySatisfied(liveCapabilities, required),
 		);
 		if (!liveCoverDeclared) return schedulerFail("scheduler_no_executor");
-		if (this.byId.has(parsed.value.descriptor.providerId)) return schedulerFail("scheduler_queue_conflict");
 		const stored: SchedulerExecutorRegistration = {
 			entry: serializeSchedulerExecutorEntry(parsed.value),
 			provider: registration.provider,
@@ -795,8 +851,7 @@ export class SchedulerExecutorRegistry {
 			...(registration.quota === undefined ? {} : { quota: registration.quota }),
 			...(registration.budget === undefined ? {} : { budget: { ...registration.budget } }),
 		};
-		this.byId.set(stored.entry.descriptor.providerId, stored);
-		return Result.ok(stored.entry);
+		return Result.ok(stored);
 	}
 
 	persistSelectionFact(fact: SchedulerSelectionFact): ResultValue<SchedulerSelectionFact, FoundationError> {
@@ -849,6 +904,8 @@ export class SchedulerExecutorRegistry {
 	async select(
 		input: SchedulerExecutorSelectionInput,
 	): Promise<ResultValue<SchedulerExecutorSelectionResult, FoundationError>> {
+		const synced = await this.discovery?.sync();
+		if (synced !== undefined && !synced.ok) return synced;
 		if (this.reservationStore !== undefined) {
 			return this.serializeSelection(() => this.selectDurable(input, this.reservationStore!));
 		}

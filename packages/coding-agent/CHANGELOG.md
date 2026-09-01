@@ -20,6 +20,7 @@
 
 ### Added
 
+- Shared-ledger cross-Host executor registration, heartbeat discovery, offline filtering, explicit durable handoff targeting, and lost-executor reclaim through the existing Scheduler queue recovery path.
 - Shared SQLite Session fencing now stays monotonic across Host handoffs, requires explicit take-over after crash expiry, rejects revived stale writers, and records atomic take-over audit history.
 - Added a loopback Role/Mode Studio with confirmed Role and ModelProfile writes, tighten-only permission inspection, and side-effect-free resolved AgentBinding previews through the production Resolver.
 - Local short-lived credential projections now reuse Task Credential lease and target lifecycle semantics with opaque references, terminal TTL expiry, immediate revocation, restart-safe metadata, and atomic `auth.json` dual-credential rotation windows.

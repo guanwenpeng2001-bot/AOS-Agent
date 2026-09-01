@@ -488,7 +488,7 @@ export class SchedulerWorkflowController {
 					now: this.nowFn,
 					cancelSourceDispatch: (queueEntryId, fencingToken) =>
 						this.dispatch.cancelDispatch(queueEntryId, fencingToken),
-					targetAvailable: async () => true,
+					targetAvailable: (ownerId) => options.registry.isOwnerAvailable(ownerId),
 				},
 				this.clock,
 			),
