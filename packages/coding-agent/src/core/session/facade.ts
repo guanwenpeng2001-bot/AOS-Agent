@@ -887,6 +887,10 @@ export class CanonicalAgentSessionServices {
 					willRetry,
 				});
 			},
+			failed: async (event) => {
+				if (!this._extensionRunner.hasHandlers("session_compact_failed")) return;
+				await this._extensionRunner.emit({ type: "session_compact_failed", ...event });
+			},
 		});
 		this.harness.setNavigationHooks({
 			before: async (input) => {

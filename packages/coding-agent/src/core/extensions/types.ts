@@ -609,7 +609,7 @@ export interface SessionBeforeCompactEvent {
 	signal: AbortSignal;
 }
 
-/** Fired after context compaction */
+/** Fired after context compaction succeeds */
 export interface SessionCompactEvent {
 	type: "session_compact";
 	compactionEntry: CompactionEntry;
@@ -618,6 +618,16 @@ export interface SessionCompactEvent {
 	reason: "manual" | "threshold" | "overflow";
 	/** True when the aborted turn is retried after this compaction (overflow recovery) */
 	willRetry: boolean;
+}
+
+/** Fired after context compaction fails or is aborted. */
+export interface SessionCompactFailedEvent {
+	type: "session_compact_failed";
+	reason: "manual" | "threshold" | "overflow";
+	errorMessage?: string;
+	aborted: boolean;
+	willRetry: boolean;
+	fromExtension: boolean;
 }
 
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
@@ -666,6 +676,7 @@ export type SessionEvent =
 	| SessionBeforeForkEvent
 	| SessionBeforeCompactEvent
 	| SessionCompactEvent
+	| SessionCompactFailedEvent
 	| SessionShutdownEvent
 	| SessionBeforeTreeEvent
 	| SessionTreeEvent;
@@ -1243,6 +1254,7 @@ export interface ExtensionAPI {
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;

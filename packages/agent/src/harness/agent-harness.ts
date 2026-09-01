@@ -460,6 +460,7 @@ export interface HarnessCompactionResult {
 export interface HarnessCompactionHooks {
 	before?: (input: HarnessCompactionHookInput) => HarnessCompactionHookResult | undefined | Promise<HarnessCompactionHookResult | undefined>;
 	after?: (input: { entry: CompactionEntry; result: HarnessCompactionResult; reason: "manual" | "threshold" | "overflow"; willRetry: boolean }) => void | Promise<void>;
+	failed?: (input: { reason: "manual" | "threshold" | "overflow"; errorMessage?: string; aborted: boolean; willRetry: boolean; fromExtension: boolean }) => void | Promise<void>;
 }
 export interface HarnessNavigationHooks {
 	before?: (input: { preparation: { targetId: string | null; oldLeafId: string | null; commonAncestorId: string | null; entriesToSummarize: Entry[]; userWantsSummary: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }; signal: AbortSignal }) => HarnessNavigationHookResult | undefined | Promise<HarnessNavigationHookResult | undefined>;
@@ -3908,6 +3909,7 @@ export class AgentHarness implements AgentLane {
 		const preparation = preparationResult.value;
 		const reason = intent.reason ?? "manual";
 		const willRetry = intent.willRetry ?? false;
+		let fromExtension = false;
 		const step = await this.ensureStep(lane, reduction, "compaction", reason);
 		this.startActiveOperation(
 			lane,
@@ -3923,9 +3925,11 @@ export class AgentHarness implements AgentLane {
 				});
 				if (hookResult?.cancel === true) {
 					await this.enqueue(lane, () => this.finishOperation(lane, operation.id, "aborted", USER_ABORT_ERROR));
+					await this.compactionHooks?.failed?.({ reason, aborted: true, willRetry, fromExtension: false });
 					return;
 				}
 				const extensionCompaction = hookResult?.compaction;
+				fromExtension = extensionCompaction !== undefined;
 				let result: {
 					summary: string;
 					firstKeptEntryId: string;
@@ -3972,9 +3976,16 @@ export class AgentHarness implements AgentLane {
 						},
 					);
 					if (!generated.ok) {
+						const aborted = generated.error.code === "aborted";
 						await this.enqueue(lane, async () => {
-							const aborted = generated.error.code === "aborted";
 							await this.finishOperation(lane, operation.id, aborted && signal.aborted ? "aborted" : "failed", aborted ? (signal.aborted ? USER_ABORT_ERROR : providerAbortError(generated.error.message)) : operationError(generated.error));
+						});
+						await this.compactionHooks?.failed?.({
+							reason,
+							...(aborted ? {} : { errorMessage: generated.error.message }),
+							aborted,
+							willRetry,
+							fromExtension: false,
 						});
 						return;
 					}
@@ -4030,7 +4041,16 @@ export class AgentHarness implements AgentLane {
 					}
 				});
 			},
-			async (error, signal) => this.finishOperation(lane, operation.id, signal.aborted ? "aborted" : "failed", signal.aborted ? USER_ABORT_ERROR : operationError(error)),
+			async (error, signal) => {
+				await this.finishOperation(lane, operation.id, signal.aborted ? "aborted" : "failed", signal.aborted ? USER_ABORT_ERROR : operationError(error));
+				await this.compactionHooks?.failed?.({
+					reason,
+					...(signal.aborted ? {} : { errorMessage: toError(error).message }),
+					aborted: signal.aborted,
+					willRetry,
+					fromExtension,
+				});
+			},
 		);
 	}
 
@@ -4571,12 +4591,20 @@ export class AgentHarness implements AgentLane {
 			const willRetry = assistantMessage.stopReason !== "stop";
 			if (!willRetry) return autoCompaction("overflow", false);
 			if (this.overflowRecoveryAttempted) {
+				const errorMessage = "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
 				this.eventBus.emit({
 					type: "compaction_end",
 					reason: "overflow",
 					aborted: false,
 					willRetry: false,
-					errorMessage: "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+					errorMessage,
+				});
+				await this.compactionHooks?.failed?.({
+					reason: "overflow",
+					errorMessage,
+					aborted: false,
+					willRetry: false,
+					fromExtension: false,
 				});
 				return false;
 			}

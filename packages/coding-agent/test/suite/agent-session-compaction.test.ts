@@ -283,6 +283,42 @@ describe("AgentSession compaction characterization", () => {
 		expect(getStreamCallCount()).toBe(1);
 	});
 
+	it("notifies extensions when auto-compaction fails", async () => {
+		const failedEvents: Array<{
+			reason: "manual" | "threshold" | "overflow";
+			errorMessage?: string;
+			aborted: boolean;
+			willRetry: boolean;
+			fromExtension: boolean;
+		}> = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_compact_failed", (event) => {
+						failedEvents.push(event);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		harness.setResponses([fakeAssistantMessage("partial", { stopReason: "length" })]);
+		const internals = harness.session as unknown as SessionWithCompactionInternals;
+
+		await expect(internals._runAutoCompaction("threshold", false)).resolves.toBe(false);
+
+		expect(failedEvents).toEqual([
+			expect.objectContaining({
+				type: "session_compact_failed",
+				reason: "threshold",
+				aborted: false,
+				willRetry: false,
+				fromExtension: false,
+				errorMessage: expect.stringContaining("token cap"),
+			}),
+		]);
+	});
+
 	it("compacts and resumes after a length stop below the desired output limit when Context Engine is disabled", async () => {
 		const harness = await createHarness({
 			models: [{ id: "fake-1", contextWindow: 1000, maxTokens: 100 }],

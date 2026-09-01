@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Extensions now receive `session_compact_failed` when compaction fails or is aborted.
 - Compaction and branch summarization now reject token-capped partial summaries instead of persisting them as checkpoints.
 - Compaction and branch summarization now reject provider responses that attempt tool calls.
 - Long tool results now trigger threshold compaction before the next provider request, while terminating tools still stop without compacting.
