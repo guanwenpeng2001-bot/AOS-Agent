@@ -71,7 +71,7 @@ import { printTimings, resetTimings, time } from "./core/runtime/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/policy/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
-import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
+import { InteractiveMode, runPrintMode, runRpcMode, runWebMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
@@ -128,7 +128,7 @@ function resolveAppMode(parsed: Args, stdinIsTTY: boolean, stdoutIsTTY: boolean)
 	return "interactive";
 }
 
-function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc"> {
+function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc" | "web"> {
 	return appMode === "json" ? "json" : "text";
 }
 
@@ -752,6 +752,15 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	parsed ??= parseTopLevelArgs(args);
 	await handleRuntimeMetadataCommand(parsed, agentDir);
+	if (parsed.mode === "web") {
+		if (parsed.fileArgs.length > 0) {
+			console.error(chalk.red("Error: @file arguments are not supported in web mode"));
+			process.exitCode = 1;
+			return;
+		}
+		await runWebMode({ cwd, cliArgs: args });
+		return;
+	}
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) takeOverStdout();

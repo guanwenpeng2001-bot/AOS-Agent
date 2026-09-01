@@ -80,6 +80,11 @@ import type {
 	RunAcceptedData,
 	RunCancelData,
 	RunGetData,
+	SubagentListData,
+	TaskGraphGetData,
+	TaskGraphListData,
+	TaskGraphStatus,
+	WorkerListData,
 } from "./rpc-types.ts";
 import {
 	type RpcRunStreamEvent,
@@ -1058,6 +1063,47 @@ export class RpcClient {
 	async getRun(runId: string): Promise<RunGetData> {
 		const response = await this.sendAutomation({ type: "run.get", runId });
 		return this.getAutomationData<RunGetData>(response);
+	}
+
+	/** Read one safe task graph view. */
+	async getTaskGraph(taskId: string, graphRevision: number): Promise<TaskGraphGetData> {
+		const response = await this.sendAutomation({ type: "task.graph.get", taskId, graphRevision });
+		return this.getAutomationData<TaskGraphGetData>(response);
+	}
+
+	/** List safe task graph views for the current session. */
+	async listTaskGraphs(filter: {
+		taskId?: string;
+		graphRevision?: number;
+		status?: TaskGraphStatus;
+		limit?: number;
+	} = {}): Promise<TaskGraphListData> {
+		const response = await this.sendAutomation({ type: "task.graph.list", ...filter });
+		return this.getAutomationData<TaskGraphListData>(response);
+	}
+
+	/** List public-safe Operation Worker records for the current session. */
+	async listWorkers(filter: {
+		runId?: string;
+		status?: WorkerListData["workers"][number]["status"];
+		limit?: number;
+		cursor?: string;
+	} = {}): Promise<WorkerListData> {
+		const response = await this.sendAutomation({ type: "worker.list", ...filter });
+		return this.getAutomationData<WorkerListData>(response);
+	}
+
+	/** List public-safe Child Agent lifecycle records associated with one Run. */
+	async listSubagents(
+		runId: string,
+		filter: {
+			parentAgentInstanceId?: string;
+			status?: SubagentListData["subagents"][number]["status"];
+			limit?: number;
+		} = {},
+	): Promise<SubagentListData> {
+		const response = await this.sendAutomation({ type: "subagent.list", runId, ...filter });
+		return this.getAutomationData<SubagentListData>(response);
 	}
 
 	/**

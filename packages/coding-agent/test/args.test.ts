@@ -151,6 +151,11 @@ describe("parseArgs", () => {
 			expect(result.mode).toBe("rpc");
 		});
 
+		test("parses --mode web", () => {
+			const result = parseArgs(["--mode", "web"]);
+			expect(result.mode).toBe("web");
+		});
+
 		test("parses and validates --rpc-listen", () => {
 			const result = parseArgs(["--mode", "rpc", "--rpc-listen", "tcp://127.0.0.1:4123"]);
 			expect(result.rpcListen).toEqual({ transport: "tcp", host: "127.0.0.1", port: 4123 });
