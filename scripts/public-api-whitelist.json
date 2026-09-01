@@ -1195,6 +1195,8 @@
         "DurableLedgerError",
         "EXTERNAL_ERROR_CODES",
         "EXTERNAL_ERROR_MESSAGES",
+        "EndpointKind",
+        "EndpointSecurityVerdict",
         "Entry",
         "EntryOrder",
         "EntryQuery",
@@ -1256,11 +1258,15 @@
         "NewRecord",
         "ObserverCursor",
         "OperationStartedRecord",
+        "PROTOCOL_VERSION",
         "Plan",
         "PlanStatus",
         "PluginContract",
         "PrepareNextTurnContext",
         "ProfileContract",
+        "ProtocolCapabilities",
+        "ProtocolFeature",
+        "ProtocolNegotiation",
         "ProvisionedEntry",
         "ProvisionedFoundationRecord",
         "PublicExecutionError",
@@ -1346,6 +1352,7 @@
         "agentLoopContinue",
         "artifactDigestFromId",
         "assertJsonSerializable",
+        "authenticateConnection",
         "bashExecutionToText",
         "budgetExhaustionReason",
         "canonicalFoundationJson",
@@ -1387,6 +1394,7 @@
         "isToolGatewayRoute",
         "isValidArtifactDigest",
         "isValidArtifactId",
+        "negotiateProtocol",
         "newFoundationId",
         "ok",
         "parseCommandArgs",
@@ -1423,6 +1431,7 @@
         "validateConnectorCapabilitySnapshotForProvider",
         "validateDispatch",
         "validateDurableEvent",
+        "validateEndpointSecurity",
         "validateEventPayloadForCategory",
         "validateExactShape",
         "validateExecutionCorrelation",
@@ -1686,7 +1695,6 @@
         "ModeSwitchExecutionInput",
         "ModeSwitchIntent",
         "MonitorExtensionContract",
-        "negotiateProtocol",
         "newFoundationUuid",
         "NewMemoryEntry",
         "NOOP_TELEMETRY_CONTEXT",
@@ -1859,7 +1867,6 @@
         "validateCheckpointImpactPlan",
         "validateChildSpawnResult",
         "validateDurableBindingSources",
-        "validateEndpointSecurity",
         "validateExtensionContract",
         "validateFoundationEnvelope",
         "validateHostTerminalGateAuthority",
@@ -14208,9 +14215,9 @@
     {
       "name": "authenticateConnection",
       "entry": "@aos-agent/agent-core",
-      "decision": "delete",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/src/harness/foundation/protocol.ts:94"
+        "packages/coding-agent/src/modes/rpc/rpc-transport.ts:18"
       ]
     },
     {
@@ -16464,17 +16471,17 @@
     {
       "name": "EndpointKind",
       "entry": "@aos-agent/agent-core",
-      "decision": "delete",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/src/harness/foundation/protocol.ts:11"
+        "packages/coding-agent/src/modes/rpc/rpc-host.ts:19"
       ]
     },
     {
       "name": "EndpointSecurityVerdict",
       "entry": "@aos-agent/agent-core",
-      "decision": "delete",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/src/harness/foundation/protocol.ts:82"
+        "packages/coding-agent/src/modes/rpc/rpc-host.ts:20"
       ]
     },
     {
@@ -19787,10 +19794,9 @@
     {
       "name": "negotiateProtocol",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/test/harness/foundation-contracts.test.ts:31",
-        "packages/agent/test/harness/foundation-provider-conformance.test.ts:22"
+        "packages/coding-agent/src/modes/rpc/rpc-host.ts:23"
       ]
     },
     {
@@ -21281,17 +21287,18 @@
     {
       "name": "PROTOCOL_VERSION",
       "entry": "@aos-agent/agent-core",
-      "decision": "delete",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/src/harness/foundation/protocol.ts:8"
+        "packages/coding-agent/src/modes/rpc/rpc-client.ts:12",
+        "packages/coding-agent/src/modes/rpc/rpc-host.ts:24"
       ]
     },
     {
       "name": "ProtocolCapabilities",
       "entry": "@aos-agent/agent-core",
-      "decision": "delete",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/src/harness/foundation/protocol.ts:17"
+        "packages/coding-agent/src/modes/rpc/rpc-host.ts:25"
       ]
     },
     {
@@ -21329,9 +21336,9 @@
     {
       "name": "ProtocolFeature",
       "entry": "@aos-agent/agent-core",
-      "decision": "delete",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/src/harness/foundation/protocol.ts:15"
+        "packages/coding-agent/src/modes/rpc/rpc-host.ts:26"
       ]
     },
     {
@@ -21361,9 +21368,9 @@
     {
       "name": "ProtocolNegotiation",
       "entry": "@aos-agent/agent-core",
-      "decision": "delete",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/src/harness/foundation/protocol.ts:18"
+        "packages/coding-agent/src/modes/rpc/rpc-types.ts:12"
       ]
     },
     {
@@ -26124,9 +26131,10 @@
     {
       "name": "validateEndpointSecurity",
       "entry": "@aos-agent/agent-core",
-      "decision": "internal",
+      "decision": "keep",
       "evidence": [
-        "packages/agent/test/harness/foundation-contracts.test.ts:50"
+        "packages/coding-agent/src/modes/rpc/rpc-mode.ts:5",
+        "packages/coding-agent/src/modes/rpc/rpc-transport.ts:21"
       ]
     },
     {

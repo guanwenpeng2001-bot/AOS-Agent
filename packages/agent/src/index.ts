@@ -123,6 +123,7 @@ export type { PluginContract } from "./harness/foundation/plugin.ts";
 export type { ProfileContract } from "./harness/foundation/profile.ts";
 export {
 	PROTOCOL_VERSION,
+	authenticateConnection,
 	negotiateProtocol,
 	validateEndpointSecurity,
 } from "./harness/foundation/protocol.ts";

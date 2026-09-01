@@ -2,12 +2,16 @@
  * CLI argument parsing and help display
  */
 
-import type { ThinkingLevel } from "@aos-agent/agent-core";
+import { type ThinkingLevel, validateEndpointSecurity } from "@aos-agent/agent-core";
 import chalk from "chalk";
 import { APP_NAME, APP_TITLE, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
 import type { TuiMode } from "../core/runtime/settings-manager.ts";
-import { parseRpcTransportAddress, type RpcTransportAddress } from "../modes/rpc/rpc-transport-address.ts";
+import {
+	parseRpcTransportAddress,
+	type RpcTransportAddress,
+	validateRpcTransportAddress,
+} from "../modes/rpc/rpc-transport-address.ts";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -27,6 +31,13 @@ export interface Args {
 	version?: boolean;
 	mode?: Mode;
 	rpcListen?: RpcTransportAddress;
+	rpcAuth?: "bearer" | "mtls";
+	rpcBearerToken?: string;
+	rpcTlsCert?: string;
+	rpcTlsKey?: string;
+	rpcTlsClientCa?: string;
+	rpcTlsMinVersion?: "1.2" | "1.3";
+	rpcAllowRemote?: boolean;
 	name?: string;
 	noSession?: boolean;
 	session?: string;
@@ -102,6 +113,50 @@ export function parseArgs(args: string[]): Args {
 					});
 				}
 			}
+		} else if (arg === "--rpc-auth") {
+			const scheme = args[i + 1];
+			if (scheme === "bearer" || scheme === "mtls") {
+				result.rpcAuth = scheme;
+				i++;
+			} else {
+				if (scheme !== undefined && !scheme.startsWith("-")) i++;
+				result.diagnostics.push({ type: "error", message: "--rpc-auth requires bearer or mtls" });
+			}
+		} else if (arg === "--rpc-bearer-token") {
+			if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--rpc-bearer-token requires a value" });
+			} else {
+				result.rpcBearerToken = args[++i]!;
+			}
+		} else if (arg === "--rpc-tls-cert") {
+			if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--rpc-tls-cert requires a path" });
+			} else {
+				result.rpcTlsCert = args[++i]!;
+			}
+		} else if (arg === "--rpc-tls-key") {
+			if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--rpc-tls-key requires a path" });
+			} else {
+				result.rpcTlsKey = args[++i]!;
+			}
+		} else if (arg === "--rpc-tls-client-ca") {
+			if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--rpc-tls-client-ca requires a path" });
+			} else {
+				result.rpcTlsClientCa = args[++i]!;
+			}
+		} else if (arg === "--rpc-tls-min-version") {
+			const version = args[i + 1];
+			if (version === "1.2" || version === "1.3") {
+				result.rpcTlsMinVersion = version;
+				i++;
+			} else {
+				if (version !== undefined && !version.startsWith("-")) i++;
+				result.diagnostics.push({ type: "error", message: "--rpc-tls-min-version requires 1.2 or 1.3" });
+			}
+		} else if (arg === "--rpc-allow-remote") {
+			result.rpcAllowRemote = true;
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
@@ -267,8 +322,93 @@ export function parseArgs(args: string[]): Args {
 		result.diagnostics.push({ type: "error", message: "--rpc-listen requires --mode rpc" });
 		result.rpcListen = undefined;
 	}
+	finalizeRpcListener(result);
 
 	return result;
+}
+
+function finalizeRpcListener(result: Args): void {
+	const hasSecurityFlags =
+		result.rpcAuth !== undefined ||
+		result.rpcBearerToken !== undefined ||
+		result.rpcTlsCert !== undefined ||
+		result.rpcTlsKey !== undefined ||
+		result.rpcTlsClientCa !== undefined ||
+		result.rpcTlsMinVersion !== undefined ||
+		result.rpcAllowRemote === true;
+	if (result.rpcListen === undefined) {
+		if (hasSecurityFlags) {
+			result.diagnostics.push({ type: "error", message: "RPC security flags require --rpc-listen" });
+		}
+		return;
+	}
+
+	const authScheme =
+		result.rpcAuth ??
+		(result.rpcBearerToken !== undefined ? "bearer" : result.rpcTlsClientCa !== undefined ? "mtls" : "none");
+	let invalid = false;
+	if (authScheme === "bearer" && !result.rpcBearerToken) {
+		result.diagnostics.push({ type: "error", message: "RPC bearer authentication requires --rpc-bearer-token" });
+		invalid = true;
+	}
+	if (authScheme === "mtls" && !result.rpcTlsClientCa) {
+		result.diagnostics.push({ type: "error", message: "RPC mTLS authentication requires --rpc-tls-client-ca" });
+		invalid = true;
+	}
+	if (authScheme === "mtls" && result.rpcBearerToken !== undefined) {
+		result.diagnostics.push({ type: "error", message: "--rpc-bearer-token cannot be used with mTLS authentication" });
+		invalid = true;
+	}
+
+	const tlsEnabled =
+		result.rpcListen.tls?.enabled === true ||
+		result.rpcTlsCert !== undefined ||
+		result.rpcTlsKey !== undefined ||
+		result.rpcTlsClientCa !== undefined ||
+		authScheme === "mtls";
+	if (tlsEnabled && (!result.rpcTlsCert || !result.rpcTlsKey)) {
+		result.diagnostics.push({
+			type: "error",
+			message: "RPC TLS requires both --rpc-tls-cert and --rpc-tls-key",
+		});
+		invalid = true;
+	}
+
+	const address = validateRpcTransportAddress({
+		...result.rpcListen,
+		...(authScheme === "none"
+			? {}
+			: {
+					auth:
+						authScheme === "bearer"
+							? { scheme: "bearer", bearerToken: result.rpcBearerToken ?? "invalid" }
+							: { scheme: "mtls" as const },
+				}),
+		...(tlsEnabled
+			? {
+					tls: {
+						enabled: true,
+						minVersion: result.rpcTlsMinVersion ?? result.rpcListen.tls?.minVersion ?? "1.2",
+						...(result.rpcTlsCert === undefined ? {} : { certRef: result.rpcTlsCert }),
+						...(result.rpcTlsKey === undefined ? {} : { keyRef: result.rpcTlsKey }),
+						...(result.rpcTlsClientCa === undefined ? {} : { clientCaRef: result.rpcTlsClientCa }),
+					},
+				}
+			: {}),
+		...(result.rpcAllowRemote === true ? { allowRemote: true } : {}),
+	});
+	result.rpcListen = address;
+	if (invalid) return;
+
+	const endpoint = validateEndpointSecurity({
+		kind: address.transport,
+		host: address.host,
+		port: address.port,
+		auth: { scheme: address.auth?.scheme ?? "none" },
+		tls: address.tls,
+		allowRemote: address.allowRemote ?? false,
+	});
+	if (!endpoint.ok) result.diagnostics.push({ type: "error", message: endpoint.error.message });
 }
 
 export function printHelp(extensionFlags?: ExtensionFlag[]): void {
@@ -307,7 +447,14 @@ ${chalk.bold("Options:")}
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
-  --rpc-listen <address>         Loopback RPC listener (tcp:// or ws://127.0.0.1:<port>); requires --mode rpc
+  --rpc-listen <address>         RPC listener (tcp://, ws://, or wss://<host>:<port>); requires --mode rpc
+  --rpc-auth <scheme>            RPC authentication scheme: bearer or mtls
+  --rpc-bearer-token <token>     Expected RPC bearer token
+  --rpc-tls-cert <path>          RPC TLS server certificate PEM path
+  --rpc-tls-key <path>           RPC TLS server private-key PEM path
+  --rpc-tls-client-ca <path>     RPC mTLS client CA bundle PEM path
+  --rpc-tls-min-version <value>  RPC TLS minimum version: 1.2 (default) or 1.3
+  --rpc-allow-remote             Explicitly permit a secured non-loopback RPC listener
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume

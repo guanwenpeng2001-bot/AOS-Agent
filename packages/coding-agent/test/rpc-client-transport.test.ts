@@ -1,16 +1,22 @@
 import { createServer, type Server, type Socket } from "node:net";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl.ts";
 import { AutomationRpcError, RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import { createRpcTransport, type RpcTransport } from "../src/modes/rpc/rpc-transport.ts";
-import type { WebsocketRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
+import type { TcpRpcAddress, WebsocketRpcAddress } from "../src/modes/rpc/rpc-transport-address.ts";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const TRANSIENT_WINDOWS_CONNECT_CODES = new Set(["EADDRNOTAVAIL", "ECONNREFUSED", "ECONNRESET", "ENOBUFS", "ETIMEDOUT"]);
 const TCP_CONNECT_ATTEMPTS = 3;
+const TLS_FIXTURE_CERT = join(import.meta.dirname, "../../../node_modules/ssh2/test/fixtures/https_cert.pem");
+const TLS_FIXTURE_KEY = join(import.meta.dirname, "../../../node_modules/ssh2/test/fixtures/https_key.pem");
 const clients: RpcClient[] = [];
 const servers: Server[] = [];
-const websocketTransports: Array<RpcTransport<RpcRecord, RpcRecord, WebsocketRpcAddress>> = [];
+const rpcTransports: Array<
+	| RpcTransport<RpcRecord, RpcRecord, TcpRpcAddress>
+	| RpcTransport<RpcRecord, RpcRecord, WebsocketRpcAddress>
+> = [];
 
 type RpcRecord = Record<string, unknown>;
 type RpcRequestHandler = (socket: Socket, request: RpcRecord) => void;
@@ -22,7 +28,7 @@ afterEach(async () => {
 	for (const server of servers.splice(0)) {
 		await closeServer(server);
 	}
-	for (const transport of websocketTransports.splice(0)) {
+	for (const transport of rpcTransports.splice(0)) {
 		await transport.close();
 	}
 });
@@ -96,14 +102,63 @@ describe("RpcClient TCP transport", () => {
 		expect(sessionEvents).toEqual(["agent_settled"]);
 	});
 
-	it("rejects non-loopback TCP options before attempting a connection", async () => {
+	it("normalizes remote TCP credentials for a secured connection", () => {
 		const client = new RpcClient({
-			cliPath: "missing-cli-entry-point.js",
-			transport: { type: "tcp", host: "localhost", port: 1, connectTimeoutMs: 20 },
+			transport: {
+				type: "tcp",
+				host: "remote.example",
+				port: 4123,
+				bearerToken: "token",
+				tls: { caPath: "ca.pem", certPath: "client.pem", keyPath: "client.key" },
+			},
+		});
+		expect((client as unknown as { resolveTcpOptions: () => unknown }).resolveTcpOptions()).toEqual({
+			host: "remote.example",
+			port: 4123,
+			connectTimeoutMs: 10_000,
+			bearerToken: "token",
+			tls: { caPath: "ca.pem", certPath: "client.pem", keyPath: "client.key" },
+		});
+	});
+
+	it("connects to an mTLS TCP listener with client certificate paths", async () => {
+		const port = await getAvailablePort();
+		const transport = createRpcTransport<RpcRecord, RpcRecord>({
+			address: {
+				transport: "tcp",
+				host: "localhost",
+				port,
+				auth: { scheme: "mtls" },
+				tls: {
+					enabled: true,
+					minVersion: "1.2",
+					certRef: TLS_FIXTURE_CERT,
+					keyRef: TLS_FIXTURE_KEY,
+					clientCaRef: TLS_FIXTURE_CERT,
+				},
+			},
+			dispatch: (request, sink) =>
+				sink.send({
+					type: "response",
+					id: request.id,
+					command: request.type,
+					success: true,
+					data: { commands: [] },
+				}),
+		});
+		rpcTransports.push(transport);
+		await transport.start();
+		const client = new RpcClient({
+			transport: {
+				type: "tcp",
+				host: "localhost",
+				port,
+				tls: { caPath: TLS_FIXTURE_CERT, certPath: TLS_FIXTURE_CERT, keyPath: TLS_FIXTURE_KEY },
+			},
 		});
 		clients.push(client);
-
-		await expect(client.start()).rejects.toMatchObject({ code: "rpc_transport_not_loopback" });
+		await client.start();
+		await expect(client.getCommands()).resolves.toEqual([]);
 	});
 
 	it.each([0, 65_536])("rejects TCP port %s before attempting a connection", async (port) => {
@@ -298,6 +353,76 @@ describe("RpcClient TCP transport", () => {
 });
 
 describe("RpcClient WebSocket transport", () => {
+	it("sends bearer credentials in the WebSocket upgrade", async () => {
+		const port = await getAvailablePort();
+		const transport = createRpcTransport<RpcRecord, RpcRecord>({
+			address: {
+				transport: "websocket",
+				host: LOOPBACK_HOST,
+				port,
+				path: "/rpc",
+				auth: { scheme: "bearer", bearerToken: "expected-token" },
+			},
+			dispatch: (request, sink) =>
+				sink.send({
+					type: "response",
+					id: request.id,
+					command: request.type,
+					success: true,
+					data: { commands: [] },
+				}),
+		});
+		rpcTransports.push(transport);
+		await transport.start();
+		const client = new RpcClient({
+			transport: { type: "websocket", port, bearerToken: "expected-token" },
+		});
+		clients.push(client);
+		await client.start();
+		await expect(client.getCommands()).resolves.toEqual([]);
+	});
+
+	it("connects to a WSS listener with mTLS client certificate paths", async () => {
+		const port = await getAvailablePort();
+		const transport = createRpcTransport<RpcRecord, RpcRecord>({
+			address: {
+				transport: "websocket",
+				host: "localhost",
+				port,
+				path: "/rpc",
+				auth: { scheme: "mtls" },
+				tls: {
+					enabled: true,
+					minVersion: "1.2",
+					certRef: TLS_FIXTURE_CERT,
+					keyRef: TLS_FIXTURE_KEY,
+					clientCaRef: TLS_FIXTURE_CERT,
+				},
+			},
+			dispatch: (request, sink) =>
+				sink.send({
+					type: "response",
+					id: request.id,
+					command: request.type,
+					success: true,
+					data: { commands: [] },
+				}),
+		});
+		rpcTransports.push(transport);
+		await transport.start();
+		const client = new RpcClient({
+			transport: {
+				type: "websocket",
+				host: "localhost",
+				port,
+				tls: { caPath: TLS_FIXTURE_CERT, certPath: TLS_FIXTURE_CERT, keyPath: TLS_FIXTURE_KEY },
+			},
+		});
+		clients.push(client);
+		await client.start();
+		await expect(client.getCommands()).resolves.toEqual([]);
+	});
+
 	it("runs initialize, start, get, cancel, and resume over one framed connection", async () => {
 		const port = await getAvailablePort();
 		const commands: string[] = [];
@@ -362,7 +487,7 @@ describe("RpcClient WebSocket transport", () => {
 				});
 			},
 		});
-		websocketTransports.push(transport);
+		rpcTransports.push(transport);
 		await transport.start();
 		const client = new RpcClient({ transport: { type: "websocket", port } });
 		clients.push(client);
@@ -383,12 +508,24 @@ describe("RpcClient WebSocket transport", () => {
 		expect(commands).toEqual(["initialize", "run.start", "run.get", "run.cancel", "run.resume"]);
 	});
 
-	it("rejects non-loopback WebSocket options before connecting", async () => {
+	it("normalizes remote WebSocket bearer and TLS options", () => {
 		const client = new RpcClient({
-			transport: { type: "websocket", host: "localhost", port: 1 },
+			transport: {
+				type: "websocket",
+				host: "remote.example",
+				port: 4123,
+				bearerToken: "token",
+				tls: { caPath: "ca.pem" },
+			},
 		});
-		clients.push(client);
-		await expect(client.start()).rejects.toMatchObject({ code: "rpc_transport_not_loopback" });
+		expect((client as unknown as { resolveWebsocketOptions: () => unknown }).resolveWebsocketOptions()).toEqual({
+			host: "remote.example",
+			port: 4123,
+			path: "/rpc",
+			connectTimeoutMs: 10_000,
+			bearerToken: "token",
+			tls: { caPath: "ca.pem" },
+		});
 	});
 });
 

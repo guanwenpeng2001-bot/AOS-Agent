@@ -1,15 +1,32 @@
-import { createHash } from "node:crypto";
-import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer } from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import {
+	createServer as createHttpServer,
+	type Server as HttpServer,
+	type IncomingMessage,
+	type ServerResponse,
+} from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { createServer, type Server, type Socket } from "node:net";
+import {
+	createServer as createTlsServer,
+	type TLSSocket,
+	type TlsOptions,
+} from "node:tls";
 import { TextDecoder } from "node:util";
 import {
+	authenticateConnection,
+	type EndpointSecurityVerdict,
+	validateEndpointSecurity,
+} from "@aos-agent/agent-core";
+import {
 	BoundedProtocolError,
+	type BoundedProtocolLimits,
 	BoundedProtocolWriter,
 	DEFAULT_BOUNDED_PROTOCOL_LIMITS,
 	resolveBoundedProtocolLimits,
-	type BoundedProtocolLimits,
 } from "../../core/bounded-protocol.ts";
-import { runtimeClockFor, withRuntimeClock, type RuntimeClock } from "../../core/runtime/clock.ts";
+import { type RuntimeClock, runtimeClockFor, withRuntimeClock } from "../../core/runtime/clock.ts";
 import {
 	attachJsonlLineReader,
 	createJsonlLineWriter,
@@ -18,10 +35,10 @@ import {
 	type JsonlLineWriter,
 } from "./jsonl.ts";
 import {
-	RPC_TRANSPORT_LOOPBACK_HOST,
-	validateRpcTransportAddress,
 	type RpcTransportAddress,
+	RpcTransportAddressError,
 	type TcpRpcAddress,
+	validateRpcTransportAddress,
 	type WebsocketRpcAddress,
 } from "./rpc-transport-address.ts";
 
@@ -30,10 +47,13 @@ export const DEFAULT_RPC_TRANSPORT_MAX_PENDING_WRITE_BYTES = DEFAULT_BOUNDED_PRO
 export const DEFAULT_RPC_TRANSPORT_MAX_PENDING_WRITE_ENTRIES = DEFAULT_BOUNDED_PROTOCOL_LIMITS.maxPendingEntries;
 export const DEFAULT_RPC_TRANSPORT_DRAIN_TIMEOUT_MS = DEFAULT_BOUNDED_PROTOCOL_LIMITS.drainTimeoutMs;
 
+type TransportEndpointConfig = Parameters<typeof validateEndpointSecurity>[0];
+
 export type RpcTransportErrorCode =
 	| "rpc_transport_address_invalid"
 	| "rpc_transport_not_loopback"
 	| "rpc_transport_bind_failed"
+	| "rpc_transport_not_authorized"
 	| "rpc_transport_connection_busy"
 	| "rpc_transport_frame_too_large"
 	| "rpc_transport_pending_write_limit"
@@ -51,6 +71,7 @@ const RPC_TRANSPORT_ERROR_MESSAGES: Readonly<Record<RpcTransportErrorCode, strin
 	rpc_transport_address_invalid: "RPC transport address is invalid",
 	rpc_transport_not_loopback: "RPC transport address must use the loopback host 127.0.0.1",
 	rpc_transport_bind_failed: "RPC listener failed to bind",
+	rpc_transport_not_authorized: "RPC transport connection is not authorized",
 	rpc_transport_connection_busy: "Another control connection is active",
 	rpc_transport_frame_too_large: "RPC JSONL frame exceeds the configured maximum",
 	rpc_transport_pending_write_limit: "RPC pending-write capacity exceeded",
@@ -118,6 +139,11 @@ export interface RpcTransportOptions<TCommand, TOutput> {
 	readonly onConnection?: (connection: RpcTransportConnection<TCommand, TOutput>) => void;
 	readonly onConnectionClose?: (connection: RpcTransportConnection<TCommand, TOutput>) => void;
 	readonly onConnectionError?: (error: RpcTransportError) => void;
+}
+
+interface RpcTcpBearerHandshake {
+	readonly type: "authenticate";
+	readonly bearerToken: string;
 }
 
 export interface RpcTransportConnection<_TCommand, TOutput> extends RpcTransportSink<TOutput> {
@@ -776,10 +802,13 @@ export class RpcTransport<
 	private readonly protocolLimits: BoundedProtocolLimits;
 	private readonly clock: RuntimeClock;
 	private readonly configuredAddress: TAddress;
+	private readonly endpointConfig: TransportEndpointConfig;
+	private readonly endpointSecurityValue: EndpointSecurityVerdict;
 	private server?: Server;
-	private websocketServer?: HttpServer;
+	private websocketServer?: HttpServer | HttpsServer;
 	private boundAddress?: TAddress;
 	private activeConnectionValue?: RpcTransportConnection<TCommand, TOutput>;
+	private readonly pendingAuthenticationSockets = new Set<Socket>();
 	private connectionSequence = 0;
 	private startPromise?: Promise<this>;
 	private closePromise?: Promise<void>;
@@ -789,6 +818,19 @@ export class RpcTransport<
 	constructor(options: RpcTransportOptions<TCommand, TOutput> & { readonly address: TAddress }) {
 		this.options = options;
 		this.configuredAddress = validateRpcTransportAddress(options.address) as TAddress;
+		this.endpointConfig = toEndpointConfig(this.configuredAddress);
+		const endpointSecurity = validateEndpointSecurity(this.endpointConfig);
+		if (!endpointSecurity.ok) throw endpointSecurity.error;
+		if (
+			this.endpointConfig.auth?.scheme === "mtls" &&
+			(this.configuredAddress.tls?.enabled !== true || !this.configuredAddress.tls.clientCaRef)
+		) {
+			throw new RpcTransportAddressError(
+				"rpc_transport_address_invalid",
+				"RPC mTLS authentication requires TLS and a client CA reference",
+			);
+		}
+		this.endpointSecurityValue = endpointSecurity.value;
 		this.maxFrameBytes = resolveMaxFrameBytes(options.maxFrameBytes ?? options.maxFrameLength);
 		this.protocolLimits = resolveBoundedProtocolLimits({
 			maxPendingBytes: options.maxPendingWriteBytes ?? DEFAULT_RPC_TRANSPORT_MAX_PENDING_WRITE_BYTES,
@@ -804,6 +846,10 @@ export class RpcTransport<
 
 	get listening(): boolean {
 		return this.started && !this.closing;
+	}
+
+	get endpointSecurity(): EndpointSecurityVerdict {
+		return this.endpointSecurityValue;
 	}
 
 	get activeConnection(): RpcTransportConnection<TCommand, TOutput> | undefined {
@@ -830,7 +876,10 @@ export class RpcTransport<
 		if (this.configuredAddress.transport === "websocket") {
 			return this.startWebsocketInternal(this.configuredAddress);
 		}
-		const server = createServer({ allowHalfOpen: false }, (socket) => this.accept(socket));
+		const tlsOptions = await this.loadTlsOptions();
+		const server = tlsOptions
+			? createTlsServer(tlsOptions, (socket) => this.accept(socket))
+			: createServer({ allowHalfOpen: false }, (socket) => this.accept(socket));
 		this.server = server;
 		try {
 			await listenServer(server, this.configuredAddress);
@@ -842,7 +891,7 @@ export class RpcTransport<
 			if (address === null || typeof address === "string") {
 				throw createTransportError("rpc_transport_bind_failed");
 			}
-			this.boundAddress = { transport: "tcp", host: RPC_TRANSPORT_LOOPBACK_HOST, port: address.port } as TAddress;
+			this.boundAddress = { ...this.configuredAddress, port: address.port } as TAddress;
 			server.on("error", this.onServerError);
 			this.started = true;
 			return this;
@@ -864,10 +913,14 @@ export class RpcTransport<
 	}
 
 	private async startWebsocketInternal(address: WebsocketRpcAddress): Promise<this> {
-		const server = createHttpServer((_request, response) => {
+		const requestListener = (_request: IncomingMessage, response: ServerResponse): void => {
 			response.writeHead(426, { Connection: "close", "Content-Type": "text/plain" });
 			response.end("WebSocket upgrade required");
-		});
+		};
+		const tlsOptions = await this.loadTlsOptions();
+		const server = tlsOptions
+			? createHttpsServer(tlsOptions, requestListener)
+			: createHttpServer(requestListener);
 		this.websocketServer = server;
 		server.on("upgrade", (request, socket, head) =>
 			this.acceptWebsocket(address, request, socket as Socket, head),
@@ -906,6 +959,18 @@ export class RpcTransport<
 			socket.destroy();
 			return;
 		}
+		if (this.endpointConfig.auth?.scheme === "bearer") {
+			this.acceptTcpBearerHandshake(socket);
+			return;
+		}
+		if (!this.authenticate(socket, undefined)) {
+			socket.destroy();
+			return;
+		}
+		this.admitTcpConnection(socket);
+	}
+
+	private admitTcpConnection(socket: Socket): void {
 		const active = this.activeConnectionValue;
 		if (active && !active.closed) {
 			void this.rejectBusy(socket);
@@ -933,13 +998,71 @@ export class RpcTransport<
 		}
 	}
 
+	private acceptTcpBearerHandshake(socket: Socket): void {
+		this.pendingAuthenticationSockets.add(socket);
+		socket.once("close", () => this.pendingAuthenticationSockets.delete(socket));
+		let detach = (): void => {};
+		detach = attachJsonlLineReader(
+			socket,
+			(line) => {
+				detach();
+				let handshake: RpcTcpBearerHandshake | undefined;
+				try {
+					const parsed: unknown = JSON.parse(line);
+					if (
+						typeof parsed === "object" &&
+						parsed !== null &&
+						(parsed as { type?: unknown }).type === "authenticate" &&
+						typeof (parsed as { bearerToken?: unknown }).bearerToken === "string"
+					) {
+						handshake = parsed as RpcTcpBearerHandshake;
+					}
+				} catch {
+					// Invalid authentication material fails closed below.
+				}
+				if (!this.authenticate(socket, handshake?.bearerToken)) {
+					this.rejectUnauthorizedTcp(socket);
+					return;
+				}
+				const writer = createJsonlLineWriter(socket, { maxFrameBytes: this.maxFrameBytes });
+				void writer
+					.write({ type: "authenticated" })
+					.then(() => {
+						writer.detach();
+						this.pendingAuthenticationSockets.delete(socket);
+						this.admitTcpConnection(socket);
+					})
+					.catch(() => {
+						writer.detach();
+						if (!socket.destroyed) socket.destroy();
+					});
+			},
+			{
+				maxFrameBytes: this.maxFrameBytes,
+				onError: () => {
+					detach();
+					this.rejectUnauthorizedTcp(socket);
+				},
+				onEnd: () => detach(),
+			},
+		);
+	}
+
 	private acceptWebsocket(
 		address: WebsocketRpcAddress,
 		request: IncomingMessage,
 		socket: Socket,
 		head: Buffer,
 	): void {
-		if (this.closing || request.url !== address.path || !acceptWebsocketHandshake(request, socket)) {
+		if (this.closing || request.url !== address.path) {
+			if (!socket.destroyed) socket.destroy();
+			return;
+		}
+		if (!this.authenticate(socket, bearerTokenFromRequest(request))) {
+			rejectWebsocketAuthentication(request, socket);
+			return;
+		}
+		if (!acceptWebsocketHandshake(request, socket)) {
 			if (!socket.destroyed) socket.destroy();
 			return;
 		}
@@ -966,6 +1089,64 @@ export class RpcTransport<
 			const transportError = createTransportError("rpc_transport_connection_failed", error);
 			this.reportConnectionError(transportError);
 			void connection.release();
+		}
+	}
+
+	private authenticate(socket: Socket, bearerToken: string | undefined): boolean {
+		const expectedToken = this.configuredAddress.auth?.bearerToken;
+		const bearerTokenProvided =
+			this.endpointConfig.auth?.scheme === "bearer" &&
+			typeof expectedToken === "string" &&
+			typeof bearerToken === "string" &&
+			matchesSecret(expectedToken, bearerToken);
+		const tlsSocket = socket as Partial<TLSSocket>;
+		const clientCertificatePresent =
+			this.endpointConfig.auth?.scheme === "mtls" &&
+			tlsSocket.authorized === true &&
+			typeof tlsSocket.getPeerCertificate === "function" &&
+			Object.keys(tlsSocket.getPeerCertificate()).length > 0;
+		const authenticated = authenticateConnection(this.endpointConfig, {
+			bearerTokenProvided,
+			clientCertificatePresent,
+		});
+		if (authenticated.ok) return true;
+		this.reportConnectionError(createTransportError("rpc_transport_not_authorized", authenticated.error));
+		return false;
+	}
+
+	private rejectUnauthorizedTcp(socket: Socket): void {
+		const error = createTransportError("rpc_transport_not_authorized");
+		const writer = createJsonlLineWriter(socket, { maxFrameBytes: this.maxFrameBytes });
+		void writer
+			.write(toTransportErrorRecord(error))
+			.then(() => writer.close())
+			.catch(() => undefined)
+			.finally(() => {
+				writer.detach();
+				if (!socket.destroyed) socket.destroy();
+			});
+	}
+
+	private async loadTlsOptions(): Promise<TlsOptions | undefined> {
+		const tls = this.configuredAddress.tls;
+		if (tls?.enabled !== true) return undefined;
+		try {
+			const [cert, key, clientCa] = await Promise.all([
+				readFile(tls.certRef!),
+				readFile(tls.keyRef!),
+				tls.clientCaRef === undefined ? Promise.resolve(undefined) : readFile(tls.clientCaRef),
+			]);
+			const mtls = this.endpointConfig.auth?.scheme === "mtls";
+			return {
+				cert,
+				key,
+				minVersion: tls.minVersion === "1.3" ? "TLSv1.3" : "TLSv1.2",
+				...(clientCa === undefined ? {} : { ca: clientCa }),
+				requestCert: mtls,
+				rejectUnauthorized: mtls,
+			};
+		} catch (error: unknown) {
+			throw createTransportError("rpc_transport_bind_failed", error);
 		}
 	}
 
@@ -1052,6 +1233,8 @@ export class RpcTransport<
 		const server = this.server;
 		const websocketServer = this.websocketServer;
 		const active = this.activeConnectionValue;
+		for (const socket of this.pendingAuthenticationSockets) socket.destroy();
+		this.pendingAuthenticationSockets.clear();
 		try {
 			await Promise.all([
 				server ? closeServer(server) : Promise.resolve(),
@@ -1144,7 +1327,7 @@ function listenServer(server: Server, address: RpcTransportAddress): Promise<voi
 	});
 }
 
-function listenHttpServer(server: HttpServer, address: WebsocketRpcAddress): Promise<void> {
+function listenHttpServer(server: HttpServer | HttpsServer, address: WebsocketRpcAddress): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
 		const onError = (error: Error): void => {
 			server.off("listening", onListening);
@@ -1197,6 +1380,45 @@ function acceptWebsocketHandshake(request: IncomingMessage, socket: Socket): boo
 		`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
 	);
 	return true;
+}
+
+function bearerTokenFromRequest(request: IncomingMessage): string | undefined {
+	const authorization = request.headers.authorization;
+	if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) return undefined;
+	const token = authorization.slice("Bearer ".length);
+	return token.length === 0 ? undefined : token;
+}
+
+function rejectWebsocketAuthentication(request: IncomingMessage, socket: Socket): void {
+	if (socket.destroyed) return;
+	const challenge = request.headers.authorization === undefined ? "WWW-Authenticate: Bearer\r\n" : "";
+	socket.end(`HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n${challenge}\r\n`);
+}
+
+function matchesSecret(expected: string, provided: string): boolean {
+	const expectedDigest = createHash("sha256").update(expected, "utf8").digest();
+	const providedDigest = createHash("sha256").update(provided, "utf8").digest();
+	return timingSafeEqual(expectedDigest, providedDigest);
+}
+
+function toEndpointConfig(address: RpcTransportAddress): TransportEndpointConfig {
+	return {
+		kind: address.transport,
+		host: address.host,
+		port: address.port,
+		auth: { scheme: address.auth?.scheme ?? "none" },
+		...(address.tls === undefined
+			? {}
+			: {
+					tls: {
+						enabled: address.tls.enabled,
+						minVersion: address.tls.minVersion,
+						...(address.tls.certRef === undefined ? {} : { certRef: address.tls.certRef }),
+						...(address.tls.keyRef === undefined ? {} : { keyRef: address.tls.keyRef }),
+					},
+				}),
+		allowRemote: address.allowRemote ?? false,
+	};
 }
 
 function encodeWebsocketFrame(opcode: number, payload: Buffer): Buffer {
@@ -1280,7 +1502,7 @@ function closeServer(server: Server): Promise<void> {
 	});
 }
 
-function closeHttpServer(server: HttpServer): Promise<void> {
+function closeHttpServer(server: HttpServer | HttpsServer): Promise<void> {
 	if (!server.listening) return Promise.resolve();
 	return new Promise<void>((resolve, reject) => {
 		server.close((error) => (error ? reject(error) : resolve()));

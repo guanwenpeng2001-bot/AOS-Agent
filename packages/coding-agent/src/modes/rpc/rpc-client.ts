@@ -5,10 +5,13 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import type { Writable } from "node:stream";
-import type { AgentMessage, ThinkingLevel } from "@aos-agent/agent-core";
+import { connect as createTlsConnection, type ConnectionOptions as TlsConnectionOptions } from "node:tls";
+import { PROTOCOL_VERSION, type AgentMessage, type ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
+import { Agent as UndiciAgent, type MessageEvent as UndiciMessageEvent, WebSocket } from "undici";
 import type { BashResult } from "../../core/runtime/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
@@ -104,25 +107,41 @@ export interface RpcClientTcpOptions {
 	transport?: "tcp";
 	/** Alternate discriminator accepted for transport-oriented callers. */
 	kind?: "tcp";
-	/** The only host accepted by the RPC client. Defaults to 127.0.0.1. */
+	/** Listener host. Defaults to 127.0.0.1. */
 	host?: string;
 	/** TCP port of the Automation Host listener. */
 	port: number;
 	/** Maximum time to wait for the TCP connection to open. */
 	connectTimeoutMs?: number;
+	/** Bearer credential sent in the transport authentication handshake. */
+	bearerToken?: string;
+	/** TLS trust and optional mTLS client-certificate paths. */
+	tls?: RpcClientTlsOptions;
 }
 
-/** Explicit loopback WebSocket connection settings for an RpcClient. */
+export interface RpcClientTlsOptions {
+	/** PEM CA bundle used to verify the listener certificate. */
+	caPath?: string;
+	/** PEM client certificate for mTLS. Must be paired with keyPath. */
+	certPath?: string;
+	/** PEM client private key for mTLS. Must be paired with certPath. */
+	keyPath?: string;
+	minVersion?: "1.2" | "1.3";
+}
+
+/** Explicit WebSocket connection settings for an RpcClient. */
 export interface RpcClientWebsocketOptions {
 	type: "websocket";
 	transport?: "websocket";
 	kind?: "websocket";
-	/** The only host accepted by the RPC client. Defaults to 127.0.0.1. */
+	/** Listener host. Defaults to 127.0.0.1. */
 	host?: string;
 	port: number;
 	/** Fixed path for this transport revision. Defaults to /rpc. */
 	path?: "/rpc";
 	connectTimeoutMs?: number;
+	bearerToken?: string;
+	tls?: RpcClientTlsOptions;
 }
 
 /** RpcClient transport selection. Stdio remains the default when omitted. */
@@ -142,8 +161,8 @@ export interface RpcClientOptions {
 	/** Additional CLI arguments */
 	args?: string[];
 	/**
-	 * Transport selection. An object selects TCP and may include its connection
-	 * timeout; omitted or `stdio` keeps the existing child-process transport.
+	 * Transport selection. An object selects TCP or WebSocket and may include
+	 * credentials; omitted or `stdio` keeps the existing child-process transport.
 	 */
 	transport?: RpcClientTransportOptions;
 	/** Convenience form for `transport: "tcp"`. */
@@ -196,6 +215,7 @@ function isRpcTransportErrorCode(value: unknown): value is RpcTransportErrorCode
 		value === "rpc_transport_address_invalid" ||
 		value === "rpc_transport_not_loopback" ||
 		value === "rpc_transport_bind_failed" ||
+		value === "rpc_transport_not_authorized" ||
 		value === "rpc_transport_connection_busy" ||
 		value === "rpc_transport_frame_too_large" ||
 		value === "rpc_transport_pending_write_limit" ||
@@ -305,6 +325,7 @@ export class RpcClient {
 	private inputStream: Writable | null = null;
 	private tcpWriter: JsonlLineWriter | null = null;
 	private websocketWriter: RpcClientWebsocketWriter | null = null;
+	private websocketDispatcher: UndiciAgent | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private tcpSocketEvents: {
 		socket: Socket;
@@ -313,7 +334,7 @@ export class RpcClient {
 	} | null = null;
 	private websocketEvents: {
 		websocket: WebSocket;
-		onMessage: (event: MessageEvent) => void;
+		onMessage: (event: UndiciMessageEvent) => void;
 		onError: () => void;
 		onClose: () => void;
 	} | null = null;
@@ -415,7 +436,10 @@ export class RpcClient {
 	}
 
 	private async startTcp(options: NormalizedRpcClientTcpOptions): Promise<void> {
-		const socket = createConnection({ host: options.host, port: options.port });
+		const tlsOptions = await loadClientTlsOptions(options.tls);
+		const socket = tlsOptions
+			? createTlsConnection({ host: options.host, port: options.port, ...tlsOptions })
+			: createConnection({ host: options.host, port: options.port });
 		this.socket = socket;
 		this.inputStream = socket;
 		this.tcpWriter = createJsonlLineWriter(socket, {
@@ -424,20 +448,23 @@ export class RpcClient {
 				this.handleTcpSocketError(socket, toRpcTransportError(error, "rpc_transport_write_failed")),
 		});
 		this.attachTcpSocketEvents(socket);
-		this.stopReadingStdout = attachJsonlLineReader(
-			socket,
-			(line) => {
-				this.handleLine(line);
-			},
-			{
-				maxFrameBytes: DEFAULT_MAX_JSONL_FRAME_BYTES,
-				onError: (error) =>
-					this.handleTcpSocketError(socket, toRpcTransportError(error, "rpc_transport_connection_failed")),
-			},
-		);
 
 		try {
-			await this.waitForTcpConnection(socket, options.connectTimeoutMs);
+			await this.waitForTcpConnection(socket, options.connectTimeoutMs, tlsOptions !== undefined);
+			if (options.bearerToken !== undefined) {
+				await this.authenticateTcpBearer(socket, options.bearerToken, options.connectTimeoutMs);
+			}
+			this.stopReadingStdout = attachJsonlLineReader(
+				socket,
+				(line) => {
+					this.handleLine(line);
+				},
+				{
+					maxFrameBytes: DEFAULT_MAX_JSONL_FRAME_BYTES,
+					onError: (error) =>
+						this.handleTcpSocketError(socket, toRpcTransportError(error, "rpc_transport_connection_failed")),
+				},
+			);
 		} catch (error: unknown) {
 			const connectionError = this.exitError ?? toRpcTransportError(error, "rpc_transport_connection_failed");
 			this.exitError = connectionError;
@@ -456,8 +483,86 @@ export class RpcClient {
 		}
 	}
 
+	private authenticateTcpBearer(socket: Socket, bearerToken: string, timeoutMs: number): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			let settled = false;
+			let detach = (): void => {};
+			const finish = (error?: Error): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				detach();
+				socket.off("error", onError);
+				socket.off("close", onClose);
+				if (error === undefined) resolve();
+				else reject(error);
+			};
+			const onError = (error: Error): void => finish(error);
+			const onClose = (): void =>
+				finish(new RpcTransportError("rpc_transport_closed", "RPC transport connection is closed"));
+			const timeout = setTimeout(
+				() =>
+					finish(
+						new RpcTransportError(
+							"rpc_transport_connection_failed",
+							`Timed out authenticating RPC TCP transport after ${timeoutMs}ms`,
+						),
+					),
+				timeoutMs,
+			);
+			detach = attachJsonlLineReader(
+				socket,
+				(line) => {
+					let record: unknown;
+					try {
+						record = JSON.parse(line) as unknown;
+					} catch {
+						finish(new RpcTransportError("rpc_transport_connection_failed", "RPC authentication reply is invalid"));
+						return;
+					}
+					if (
+						typeof record === "object" &&
+						record !== null &&
+						(record as { type?: unknown }).type === "authenticated"
+					) {
+						finish();
+						return;
+					}
+					if (isRpcTransportErrorRecord(record)) {
+						finish(new RpcTransportError(record.error.code, record.error.message));
+						return;
+					}
+					finish(new RpcTransportError("rpc_transport_connection_failed", "RPC authentication reply is invalid"));
+				},
+				{ maxFrameBytes: DEFAULT_MAX_JSONL_FRAME_BYTES, onError: (error) => finish(error) },
+			);
+			socket.once("error", onError);
+			socket.once("close", onClose);
+			void this.tcpWriter?.write({ type: "authenticate", bearerToken }).catch((error: unknown) => {
+				finish(toRpcTransportError(error, "rpc_transport_write_failed"));
+			});
+		});
+	}
+
 	private async startWebsocket(options: NormalizedRpcClientWebsocketOptions): Promise<void> {
-		const websocket = new WebSocket(`ws://${options.host}:${options.port}${options.path}`);
+		const tlsOptions = await loadClientTlsOptions(options.tls);
+		const dispatcher = tlsOptions === undefined ? undefined : new UndiciAgent({ connect: tlsOptions });
+		this.websocketDispatcher = dispatcher ?? null;
+		let websocket: WebSocket;
+		try {
+			websocket = new WebSocket(
+				`${tlsOptions === undefined ? "ws" : "wss"}://${options.host}:${options.port}${options.path}`,
+				{
+					...(options.bearerToken === undefined
+						? {}
+						: { headers: { Authorization: `Bearer ${options.bearerToken}` } }),
+					...(dispatcher === undefined ? {} : { dispatcher }),
+				},
+			);
+		} catch (error: unknown) {
+			await this.closeWebsocketDispatcher();
+			throw toRpcTransportError(error, "rpc_transport_connection_failed");
+		}
 		this.websocket = websocket;
 		this.websocketWriter = new RpcClientWebsocketWriter(websocket, (error) =>
 			this.handleWebsocketError(websocket, toRpcTransportError(error, "rpc_transport_write_failed")),
@@ -469,10 +574,11 @@ export class RpcClient {
 			const connectionError = this.exitError ?? toRpcTransportError(error, "rpc_transport_connection_failed");
 			this.exitError = connectionError;
 			this.rejectPendingRequests(connectionError);
-			this.websocketWriter.close();
+			this.websocketWriter?.close();
 			this.websocketWriter = null;
 			this.detachWebsocketEvents(websocket);
 			this.websocket = null;
+			await this.closeWebsocketDispatcher();
 			if (websocket.readyState === WebSocket.CONNECTING || websocket.readyState === WebSocket.OPEN) {
 				websocket.close();
 			}
@@ -490,7 +596,10 @@ export class RpcClient {
 			await this.stopTcp(this.socket);
 			return;
 		}
-		if (!this.process) return;
+		if (!this.process) {
+			await this.closeWebsocketDispatcher();
+			return;
+		}
 
 		this.rejectPendingRequests(new Error("RPC client stopped"));
 		this.stopReadingStdout?.();
@@ -859,15 +968,17 @@ export class RpcClient {
 	 * advertised host contract.
 	 */
 	async initializeAutomationHost(): Promise<InitializeData> {
+		const transportFeature =
+			this.websocket !== null ? "transport.websocket" : this.socket !== null ? "transport.tcp" : undefined;
 		const response = await this.sendAutomation({
 			type: "initialize",
-			protocolVersion: 1,
-			...(this.websocket === null
+			protocolVersion: PROTOCOL_VERSION,
+			...(transportFeature === undefined
 				? {}
 				: {
 						client: {
-							versions: { min: 1, max: 1 },
-							features: ["transport.websocket"] as const,
+							versions: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION },
+							features: [transportFeature, "transport.auth", "transport.tls"],
 						},
 					}),
 		});
@@ -1615,7 +1726,7 @@ export class RpcClient {
 	}
 
 	private attachWebsocketEvents(websocket: WebSocket): void {
-		const onMessage = (event: MessageEvent): void => {
+		const onMessage = (event: UndiciMessageEvent): void => {
 			if (this.websocket !== websocket) return;
 			if (typeof event.data !== "string") {
 				this.handleWebsocketError(
@@ -1696,6 +1807,7 @@ export class RpcClient {
 		this.websocketWriter?.close();
 		this.websocketWriter = null;
 		this.websocket = null;
+		void this.closeWebsocketDispatcher();
 	}
 
 	private async stopWebsocket(websocket: WebSocket): Promise<void> {
@@ -1705,6 +1817,7 @@ export class RpcClient {
 		if (websocket.readyState === WebSocket.CLOSED) {
 			this.detachWebsocketEvents(websocket);
 			if (this.websocket === websocket) this.websocket = null;
+			await this.closeWebsocketDispatcher();
 			return;
 		}
 		await new Promise<void>((resolve) => {
@@ -1721,6 +1834,13 @@ export class RpcClient {
 		});
 		this.detachWebsocketEvents(websocket);
 		if (this.websocket === websocket) this.websocket = null;
+		await this.closeWebsocketDispatcher();
+	}
+
+	private async closeWebsocketDispatcher(): Promise<void> {
+		const dispatcher = this.websocketDispatcher;
+		this.websocketDispatcher = null;
+		if (dispatcher !== null) await dispatcher.close().catch(() => undefined);
 	}
 
 	private waitForWebsocketConnection(websocket: WebSocket, timeoutMs: number): Promise<void> {
@@ -1793,14 +1913,14 @@ export class RpcClient {
 		});
 	}
 
-	private waitForTcpConnection(socket: Socket, timeoutMs: number): Promise<void> {
+	private waitForTcpConnection(socket: Socket, timeoutMs: number, tls: boolean): Promise<void> {
 		return new Promise((resolve, reject) => {
 			let settled = false;
 			const finish = (error?: Error): void => {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timeout);
-				socket.off("connect", onConnect);
+				socket.off(tls ? "secureConnect" : "connect", onConnect);
 				socket.off("error", onError);
 				socket.off("close", onClose);
 				if (error) reject(error);
@@ -1820,7 +1940,7 @@ export class RpcClient {
 					),
 				timeoutMs,
 			);
-			socket.once("connect", onConnect);
+			socket.once(tls ? "secureConnect" : "connect", onConnect);
 			socket.once("error", onError);
 			socket.once("close", onClose);
 		});
@@ -2032,16 +2152,20 @@ export class RpcClient {
 }
 
 interface NormalizedRpcClientTcpOptions {
-	host: typeof RPC_TRANSPORT_LOOPBACK_HOST;
+	host: string;
 	port: number;
 	connectTimeoutMs: number;
+	bearerToken?: string;
+	tls?: RpcClientTlsOptions;
 }
 
 interface NormalizedRpcClientWebsocketOptions {
-	host: typeof RPC_TRANSPORT_LOOPBACK_HOST;
+	host: string;
 	port: number;
 	path: typeof RPC_WEBSOCKET_DEFAULT_PATH;
 	connectTimeoutMs: number;
+	bearerToken?: string;
+	tls?: RpcClientTlsOptions;
 }
 
 function normalizeTcpOptions(options: RpcClientTcpOptions): NormalizedRpcClientTcpOptions {
@@ -2068,7 +2192,8 @@ function normalizeTcpOptions(options: RpcClientTcpOptions): NormalizedRpcClientT
 			`RpcClient TCP connectTimeoutMs must be an integer between 1 and ${MAX_RPC_CLIENT_CONNECT_TIMEOUT_MS}`,
 		);
 	}
-	return { host: address.host, port: address.port, connectTimeoutMs };
+	const credentials = normalizeClientCredentials(options.bearerToken, options.tls);
+	return { host: address.host, port: address.port, connectTimeoutMs, ...credentials };
 }
 
 function normalizeWebsocketOptions(options: RpcClientWebsocketOptions): NormalizedRpcClientWebsocketOptions {
@@ -2099,7 +2224,42 @@ function normalizeWebsocketOptions(options: RpcClientWebsocketOptions): Normaliz
 			`RpcClient WebSocket connectTimeoutMs must be an integer between 1 and ${MAX_RPC_CLIENT_CONNECT_TIMEOUT_MS}`,
 		);
 	}
-	return { host: address.host, port: address.port, path: address.path, connectTimeoutMs };
+	const credentials = normalizeClientCredentials(options.bearerToken, options.tls);
+	return { host: address.host, port: address.port, path: address.path, connectTimeoutMs, ...credentials };
+}
+
+function normalizeClientCredentials(
+	bearerToken: string | undefined,
+	tls: RpcClientTlsOptions | undefined,
+): { bearerToken?: string; tls?: RpcClientTlsOptions } {
+	if (bearerToken !== undefined && bearerToken.length === 0) {
+		throw new RpcTransportAddressError("rpc_transport_address_invalid", "RPC bearer token must not be empty");
+	}
+	if ((tls?.certPath === undefined) !== (tls?.keyPath === undefined)) {
+		throw new RpcTransportAddressError(
+			"rpc_transport_address_invalid",
+			"RPC TLS client certificate and key paths must be configured together",
+		);
+	}
+	return {
+		...(bearerToken === undefined ? {} : { bearerToken }),
+		...(tls === undefined ? {} : { tls: { ...tls } }),
+	};
+}
+
+async function loadClientTlsOptions(tls: RpcClientTlsOptions | undefined): Promise<TlsConnectionOptions | undefined> {
+	if (tls === undefined) return undefined;
+	const [ca, cert, key] = await Promise.all([
+		tls.caPath === undefined ? Promise.resolve(undefined) : readFile(tls.caPath),
+		tls.certPath === undefined ? Promise.resolve(undefined) : readFile(tls.certPath),
+		tls.keyPath === undefined ? Promise.resolve(undefined) : readFile(tls.keyPath),
+	]);
+	return {
+		...(ca === undefined ? {} : { ca }),
+		...(cert === undefined ? {} : { cert }),
+		...(key === undefined ? {} : { key }),
+		minVersion: tls.minVersion === "1.3" ? "TLSv1.3" : "TLSv1.2",
+	};
 }
 
 class RpcClientWebsocketWriter {

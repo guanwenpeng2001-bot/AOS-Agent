@@ -1,5 +1,5 @@
 /**
- * RPC adapters for stdio and loopback network listeners.
+ * RPC adapters for stdio and secured network listeners.
  */
 
 import { validateEndpointSecurity } from "@aos-agent/agent-core";
@@ -24,7 +24,7 @@ import { createRpcHostController, type RpcHostOutputRecord } from "./rpc-host.ts
 import type { RpcCommand, RpcExtensionUIResponse } from "./rpc-types.ts";
 
 export interface RpcModeOptions {
-	/** Listen for RPC commands over loopback TCP or WebSocket instead of process stdio. */
+	/** Listen for RPC commands over TCP or WebSocket instead of process stdio. */
 	readonly listen?: RpcTransportAddress;
 }
 
@@ -128,14 +128,15 @@ async function runStdioRpcMode(runtimeHost: AgentSessionRuntime): Promise<never>
 	return new Promise<never>(() => {});
 }
 
-/** Run the RPC host over one-at-a-time loopback network connections. */
+/** Run the RPC host over one-at-a-time authenticated network connections. */
 async function runNetworkRpcMode(runtimeHost: AgentSessionRuntime, address: RpcTransportAddress): Promise<never> {
 	const endpointSecurity = validateEndpointSecurity({
 		kind: address.transport,
 		host: address.host,
 		port: address.port,
-		auth: { scheme: "none" },
-		allowRemote: false,
+		auth: { scheme: address.auth?.scheme ?? "none" },
+		tls: address.tls,
+		allowRemote: address.allowRemote ?? false,
 	});
 	if (!endpointSecurity.ok) {
 		throw endpointSecurity.error;
@@ -147,6 +148,7 @@ async function runNetworkRpcMode(runtimeHost: AgentSessionRuntime, address: RpcT
 	const controller = createRpcHostController(runtimeHost, {
 		onShutdown: () => requestProcessShutdown(),
 		endpointKind: address.transport,
+		endpointSecurity: endpointSecurity.value,
 	});
 	await controller.start();
 

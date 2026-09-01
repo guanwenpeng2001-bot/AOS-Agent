@@ -694,6 +694,15 @@ applications may also compose these contracts directly.
 
 **`SessionLedgerWriter`.** Serializes canonical ledger mutations under one Session and writer identity; agent-core artifact, context, memory, and settlement services plus coding-agent Scheduler and Subagent consumers use it.
 
+### Transport protocol and security contracts
+
+`PROTOCOL_VERSION`, `ProtocolCapabilities`, `ProtocolFeature`, and
+`ProtocolNegotiation` define the version and feature values consumed by
+`negotiateProtocol`. `EndpointKind` and `EndpointSecurityVerdict` describe the
+validated listener endpoint. `validateEndpointSecurity` enforces authentication,
+TLS, and explicit remote access for non-loopback listeners, while
+`authenticateConnection` verifies the transport-provided bearer or mTLS proof.
+
 ### Complete exported-name index
 
 This index is checked against the public API whitelist. It provides searchable

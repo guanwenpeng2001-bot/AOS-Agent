@@ -20,6 +20,7 @@ export {
 	RpcClient,
 	type RpcClientOptions,
 	type RpcClientTcpOptions,
+	type RpcClientTlsOptions,
 	type RpcClientTransportOptions,
 	type RpcClientWebsocketOptions,
 	type RpcEventListener,
@@ -36,9 +37,11 @@ export {
 	parseRpcTransportAddress,
 	validateRpcTransportAddress,
 	type RpcTransportAddress,
+	type RpcTransportAuthConfig,
 	type RpcTransportAddressErrorCode,
 	type RpcTransportAddressParseResult,
 	type TcpRpcAddress,
+	type RpcTransportTlsConfig,
 	type WebsocketRpcAddress,
 } from "./rpc/rpc-transport-address.ts";
 export {

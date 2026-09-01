@@ -16,11 +16,14 @@ import {
 	AgentOperationError,
 	type CanonicalRunResult,
 	type EndpointKind,
+	type EndpointSecurityVerdict,
 	type FoundationError,
 	fingerprintFoundationValue,
 	LayeredResultSettlement,
 	negotiateProtocol,
+	PROTOCOL_VERSION,
 	type ProtocolCapabilities,
+	type ProtocolFeature,
 	type ResultValue,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
@@ -254,6 +257,8 @@ export interface RpcHostControllerOptions {
 	output?: RpcHostOutputSink | RpcOutputSink;
 	/** Active transport endpoint used for protocol feature negotiation. */
 	endpointKind?: EndpointKind;
+	/** Validated security facts for the active network listener. */
+	endpointSecurity?: EndpointSecurityVerdict;
 	/** Called after the runtime has been disposed by an internal shutdown request. */
 	onShutdown?: () => void;
 	/** Trusted Host-only authority for dereferencing canonical External Connector artifacts. */
@@ -735,6 +740,7 @@ export class RpcHostController {
 	private outputSink: RpcHostOutputSink | undefined;
 	private readonly onShutdown?: () => void;
 	private readonly endpointKind: EndpointKind;
+	private readonly endpointSecurity: EndpointSecurityVerdict;
 	private readonly externalArtifactAuthority?: NonNullable<RpcHostControllerOptions["externalArtifactAuthority"]>;
 	private commandHandler?: (
 		command: RpcCommand,
@@ -761,6 +767,13 @@ export class RpcHostController {
 		this.outputSink = options.output === undefined ? undefined : adaptOutputSink(options.output);
 		this.onShutdown = options.onShutdown;
 		this.endpointKind = options.endpointKind ?? "stdio";
+		this.endpointSecurity = options.endpointSecurity ?? {
+			kind: this.endpointKind,
+			loopback: true,
+			authScheme: "none",
+			tlsEnabled: false,
+			allowRemote: false,
+		};
 		this.externalArtifactAuthority = options.externalArtifactAuthority;
 	}
 
@@ -3784,7 +3797,7 @@ export class RpcHostController {
 				// =================================================================
 
 				case "initialize": {
-					if (command.protocolVersion !== 1) {
+					if (command.protocolVersion !== PROTOCOL_VERSION) {
 						return automationError(
 							id,
 							"initialize",
@@ -3795,15 +3808,21 @@ export class RpcHostController {
 							),
 						);
 					}
-					let websocketProtocol: InitializeData["protocol"] | undefined;
+					let networkProtocol: InitializeData["protocol"] | undefined;
 					if (this.endpointKind === "websocket") {
+						const transportFeature = "transport.websocket";
+						const serverFeatures: readonly ProtocolFeature[] = [
+							transportFeature,
+							"transport.auth",
+							"transport.tls",
+						];
 						const server: ProtocolCapabilities = {
-							versions: { min: 1, max: 1 },
-							features: ["transport.websocket"],
+							versions: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION },
+							features: serverFeatures,
 						};
 						const client: ProtocolCapabilities = command.client ?? {
 							versions: { min: command.protocolVersion, max: command.protocolVersion },
-							features: ["transport.websocket"],
+							features: serverFeatures,
 						};
 						const negotiation = negotiateProtocol(server, client);
 						if (!negotiation.ok) {
@@ -3813,16 +3832,10 @@ export class RpcHostController {
 								createAutomationError("unsupported_protocol_version", negotiation.error.message, false),
 							);
 						}
-						websocketProtocol = {
+						networkProtocol = {
 							server,
 							negotiated: negotiation.value,
-							endpoint: {
-								kind: "websocket",
-								loopback: true,
-								authScheme: "none",
-								tlsEnabled: false,
-								allowRemote: false,
-							},
+							endpoint: this.endpointSecurity,
 						};
 					}
 					// Idempotent: a repeat initialize re-advertises the contract without
@@ -3855,7 +3868,7 @@ export class RpcHostController {
 						protocolVersion: 1,
 						sessionId: currentBinding.session.sessionId,
 						runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
-						...(websocketProtocol === undefined ? {} : { protocol: websocketProtocol }),
+						...(networkProtocol === undefined ? {} : { protocol: networkProtocol }),
 						auditCommands: ["audit.query", "audit.replay"],
 						taskGateCommands: [
 							"task.gate.request",

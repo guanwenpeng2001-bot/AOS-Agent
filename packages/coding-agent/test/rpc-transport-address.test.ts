@@ -7,8 +7,8 @@ import {
 	RPC_TRANSPORT_PORT_MIN,
 	RPC_WEBSOCKET_DEFAULT_PATH,
 	RpcTransportAddressError,
-	validateRpcTransportAddress,
 	type RpcTransportAddressErrorCode,
+	validateRpcTransportAddress,
 } from "../src/modes/rpc/rpc-transport-address.ts";
 
 function expectAddress(value: string, port: number): void {
@@ -48,17 +48,24 @@ describe("RPC TCP transport address", () => {
 	});
 
 	test.each([
-		["tcp://localhost:4123", "rpc_transport_not_loopback"],
-		["tcp://0.0.0.0:4123", "rpc_transport_not_loopback"],
-		["tcp://127.0.0.2:4123", "rpc_transport_not_loopback"],
-		["tcp://192.168.1.10:4123", "rpc_transport_not_loopback"],
-		["tcp://203.0.113.10:4123", "rpc_transport_not_loopback"],
-		["tcp://127.0.0.1%2e:4123", "rpc_transport_not_loopback"],
 		["tcp://[::1]:4123", "rpc_transport_address_invalid"],
 		["tcp://[::ffff:127.0.0.1]:4123", "rpc_transport_address_invalid"],
 		["tcp://::1:4123", "rpc_transport_address_invalid"],
 	] as const)("rejects unsupported host %s", (value, code) => {
 		expectError(value, code);
+	});
+
+	test.each(["localhost", "0.0.0.0", "127.0.0.2", "192.168.1.10", "203.0.113.10"])(
+		"accepts canonical host %s for later endpoint-security validation",
+		(host) => {
+			expect(parseRpcTransportAddress(`tcp://${host}:4123`)).toEqual({
+				address: { transport: "tcp", host, port: 4123 },
+			});
+		},
+	);
+
+	test("rejects a URL-normalized host spelling", () => {
+		expectError("tcp://127.0.0.1%2e:4123", "rpc_transport_address_invalid");
 	});
 
 	test.each([
@@ -144,16 +151,27 @@ describe("RPC WebSocket transport address", () => {
 		).toBe("ws://127.0.0.1:4123/rpc");
 	});
 
-	test.each([
-		"ws://localhost:4123",
-		"ws://0.0.0.0:4123",
-		"ws://192.168.1.10:4123",
-	])("rejects non-loopback host %s", (value) => {
-		expectError(value, "rpc_transport_not_loopback");
+	test("accepts a remote host for later endpoint-security validation", () => {
+		expect(parseRpcTransportAddress("ws://192.168.1.10:4123")).toEqual({
+			address: { transport: "websocket", host: "192.168.1.10", port: 4123, path: "/rpc" },
+		});
+	});
+
+	test("parses and formats secure WebSocket addresses", () => {
+		const parsed = parseRpcTransportAddress("wss://127.0.0.1:4123/rpc");
+		expect(parsed).toEqual({
+			address: {
+				transport: "websocket",
+				host: "127.0.0.1",
+				port: 4123,
+				path: "/rpc",
+				tls: { enabled: true, minVersion: "1.2" },
+			},
+		});
+		if ("address" in parsed) expect(formatRpcTransportAddress(parsed.address)).toBe("wss://127.0.0.1:4123/rpc");
 	});
 
 	test.each([
-		"wss://127.0.0.1:4123",
 		"ws://user@127.0.0.1:4123",
 		"ws://user:secret@127.0.0.1:4123",
 		"ws://127.0.0.1:4123/",
