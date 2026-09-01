@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Branch summaries now record the leaf being left in `fromId` instead of the navigation destination.
 - Resumed sessions now repair a valid final JSONL record that lacks a trailing newline before appending new entries.
 - Print-mode prompts now continue after recoverable tool failures and settle successfully when a later model or tool step recovers.
 - Fixed session selector discovery and marker search for canonical sessions in explicit session directories.
