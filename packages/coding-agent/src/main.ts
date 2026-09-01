@@ -33,6 +33,7 @@ import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
+import { handleSessionCommand } from "./cli/session-command.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
 import { APP_NAME, expandTildePath, getAgentDir, getEnvSessionDirOverride, getPackageDir, VERSION } from "./config.ts";
 import type { AgentRuntimeCompositionFactory } from "./core/runtime/composition-factory.ts";
@@ -675,6 +676,19 @@ export async function main(args: string[], options?: MainOptions) {
 	const agentDir = getAgentDir();
 
 	if (await runAuthCommand(args)) {
+		return;
+	}
+	if (args[0] === "session") {
+		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+		const envSessionDir = getEnvSessionDirOverride();
+		const sessionDir =
+			(envSessionDir ? expandTildePath(envSessionDir) : undefined) ?? settingsManager.getSessionDir();
+		try {
+			await handleSessionCommand(args, { cwd, sessionDir });
+		} catch (error: unknown) {
+			console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+			process.exitCode = 1;
+		}
 		return;
 	}
 	// Package/config subcommands own their flags. Defer top-level parsing until

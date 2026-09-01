@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import { dirname } from "node:path";
 import {
 	AgentOperationError,
 	type CanonicalRunResult,
@@ -112,7 +113,12 @@ import {
 	serializePublicSessionEvent,
 	serializePublicSessionTreeNode,
 } from "../../core/session/run-lifecycle.ts";
-import { loadEntriesFromFile, type SessionEntry } from "../../core/session/manager.ts";
+import {
+	loadEntriesFromFile,
+	SessionManager,
+	type SessionEntry,
+	type SessionInfo,
+} from "../../core/session/manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
@@ -178,6 +184,7 @@ import type {
 	RpcResponse,
 	RpcSchedulerResponse,
 	RpcSessionState,
+	RpcSessionInfo,
 	RpcSessionStats,
 	RpcSlashCommand,
 	RpcSourceInfo,
@@ -400,6 +407,23 @@ export type {
 function serializePublicSessionStats(stats: SessionStats): RpcSessionStats {
 	const { sessionFile: _sessionFile, ...publicStats } = stats;
 	return publicStats;
+}
+
+function serializeRpcSessionInfo(info: SessionInfo): RpcSessionInfo {
+	return {
+		path: info.path,
+		id: info.id,
+		cwd: info.cwd,
+		...(info.name === undefined ? {} : { name: info.name }),
+		...(info.parentSessionPath === undefined ? {} : { parentSessionPath: info.parentSessionPath }),
+		archived: info.archived,
+		...(info.archivedAt === undefined ? {} : { archivedAt: info.archivedAt.toISOString() }),
+		created: info.created.toISOString(),
+		modified: info.modified.toISOString(),
+		messageCount: info.messageCount,
+		firstMessage: info.firstMessage,
+		allMessagesText: info.allMessagesText,
+	};
 }
 
 function serializePublicSourceInfo(sourceInfo: SourceInfo): RpcSourceInfo {
@@ -1192,6 +1216,8 @@ export class RpcHostController {
 			"fork",
 			"clone",
 			"set_session_name",
+			"archive_session",
+			"unarchive_session",
 			"mcp.resource.attach",
 			"mcp.prompt.attach",
 		]);
@@ -5709,6 +5735,7 @@ export class RpcHostController {
 				// =================================================================
 
 				case "get_state": {
+					const metadata = await getAgentCanonicalSession(currentBinding.session).getMetadata();
 					const state: RpcSessionState = {
 						model: currentBinding.session.model,
 						thinkingLevel: currentBinding.session.thinkingLevel,
@@ -5718,6 +5745,10 @@ export class RpcHostController {
 						followUpMode: currentBinding.session.followUpMode,
 						sessionId: currentBinding.session.sessionId,
 						sessionName: currentBinding.session.sessionName,
+						archived: metadata.archived,
+						...(metadata.archivedAt === undefined
+							? {}
+							: { archivedAt: new Date(metadata.archivedAt).toISOString() }),
 						autoCompactionEnabled: currentBinding.session.autoCompactionEnabled,
 						messageCount: currentBinding.session.messages.length,
 						pendingMessageCount: currentBinding.session.pendingMessageCount,
@@ -5860,6 +5891,28 @@ export class RpcHostController {
 				case "get_session_stats": {
 					const stats = currentBinding.session.getSessionStats();
 					return success(id, "get_session_stats", serializePublicSessionStats(stats));
+				}
+
+				case "list_sessions": {
+					const currentSessionFile = currentBinding.session.sessionFile;
+					const sessionDir = currentSessionFile === undefined ? undefined : dirname(currentSessionFile);
+					const listOptions = { includeArchived: command.includeArchived === true };
+					const sessions = command.all === true
+						? await SessionManager.listAll(sessionDir, listOptions)
+						: await SessionManager.list(currentBinding.session.cwd, sessionDir, listOptions);
+					return success(id, "list_sessions", {
+						sessions: sessions.map(serializeRpcSessionInfo),
+					});
+				}
+
+				case "archive_session": {
+					const state = runtimeHost.setSessionArchived(command.sessionPath, true);
+					return success(id, "archive_session", state);
+				}
+
+				case "unarchive_session": {
+					const state = runtimeHost.setSessionArchived(command.sessionPath, false);
+					return success(id, "unarchive_session", state);
 				}
 
 				case "get_context": {

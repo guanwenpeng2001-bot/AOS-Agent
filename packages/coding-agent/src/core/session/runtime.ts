@@ -192,6 +192,15 @@ export class AgentSessionRuntime {
 		return this.currentScope.current.session;
 	}
 
+	setSessionArchived(sessionPath: string, archived: boolean): ReturnType<SessionManager["setArchived"]> {
+		const currentManager = this.currentScope.current.sessionManager;
+		const currentPath = currentManager.getSessionFile();
+		if (currentPath !== undefined && resolve(currentPath) === resolve(sessionPath)) {
+			return currentManager.setArchived(archived);
+		}
+		return SessionManager.setArchived(sessionPath, archived);
+	}
+
 	get runtimeComposition(): AgentRuntimeComposition {
 		return this.currentScope.current.runtimeComposition;
 	}

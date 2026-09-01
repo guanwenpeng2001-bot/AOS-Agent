@@ -106,6 +106,7 @@ export type {
 	RpcSchedulerCommandType,
 	RpcSchedulerResponse,
 	RpcSessionState,
+	RpcSessionInfo,
 	RpcTaskCredentialCommandType,
 	RpcTaskGateCommandType,
 	RpcTaskGraphCommandType,

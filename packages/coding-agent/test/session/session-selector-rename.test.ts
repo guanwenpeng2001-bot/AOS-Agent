@@ -17,6 +17,7 @@ function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionI
 		id: overrides.id,
 		cwd: overrides.cwd ?? "",
 		name: overrides.name,
+		archived: overrides.archived ?? false,
 		created: overrides.created ?? new Date(0),
 		modified: overrides.modified ?? new Date(0),
 		messageCount: overrides.messageCount ?? 1,

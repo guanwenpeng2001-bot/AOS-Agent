@@ -36,7 +36,7 @@ import { createModelBroker, ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "../policy/sandbox.ts";
-import { SessionManager } from "../session/manager.ts";
+import { SessionManager, type SessionListOptions } from "../session/manager.ts";
 import { createSessionManagerForOptions, type SessionCreationOptions } from "../session/creation.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
@@ -257,13 +257,19 @@ function getDefaultAgentDir(): string {
 }
 
 /** List persisted sessions without exposing the physical SessionManager writer. */
-export function listSessions(cwd: string = process.cwd(), sessionDirectory?: string) {
-	return SessionManager.list(cwd, sessionDirectory);
+export function listSessions(
+	cwd: string = process.cwd(),
+	sessionDirectory?: string,
+	options: SessionListOptions = {},
+) {
+	return SessionManager.list(cwd, sessionDirectory, options);
 }
 
 /** List persisted sessions across project directories. */
-export function listAllSessions(sessionDirectory?: string) {
-	return sessionDirectory === undefined ? SessionManager.listAll() : SessionManager.listAll(sessionDirectory);
+export function listAllSessions(sessionDirectory?: string, options: SessionListOptions = {}) {
+	return sessionDirectory === undefined
+		? SessionManager.listAll(options)
+		: SessionManager.listAll(sessionDirectory, options);
 }
 
 /**

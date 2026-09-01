@@ -772,6 +772,56 @@ If an extension cancelled the switch:
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": true}}
 ```
 
+#### list_sessions
+
+List sessions in the current project. Archived sessions are excluded unless `includeArchived` is true. Set `all` to list across project directories.
+
+```json
+{"type": "list_sessions", "includeArchived": true}
+```
+
+Response timestamps are ISO 8601 strings:
+
+```json
+{
+  "type": "response",
+  "command": "list_sessions",
+  "success": true,
+  "data": {
+    "sessions": [
+      {
+        "path": "/path/to/session.jsonl",
+        "id": "session-id",
+        "cwd": "/workspace",
+        "archived": true,
+        "archivedAt": "2026-09-01T12:00:00.000Z",
+        "created": "2026-09-01T10:00:00.000Z",
+        "modified": "2026-09-01T11:00:00.000Z",
+        "messageCount": 2,
+        "firstMessage": "Implement the feature",
+        "allMessagesText": "Implement the feature Done"
+      }
+    ]
+  }
+}
+```
+
+#### archive_session / unarchive_session
+
+Archive or unarchive a persisted session. Archiving is idempotent and preserves the first archive timestamp.
+
+```json
+{"type": "archive_session", "sessionPath": "/path/to/session.jsonl"}
+{"type": "unarchive_session", "sessionPath": "/path/to/session.jsonl"}
+```
+
+Responses:
+
+```json
+{"type": "response", "command": "archive_session", "success": true, "data": {"archived": true, "archivedAt": "2026-09-01T12:00:00.000Z"}}
+{"type": "response", "command": "unarchive_session", "success": true, "data": {"archived": false}}
+```
+
 #### fork
 
 Create a new fork from a previous user message on the active branch. Can be cancelled by a `session_before_fork` extension event handler. Returns the text of the message being forked from.
