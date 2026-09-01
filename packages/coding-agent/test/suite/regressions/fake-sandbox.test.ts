@@ -254,7 +254,7 @@ describe("fake-sandbox execution policy regressions", () => {
 			environmentNames: ["PATH", "SECRET_TOKEN"],
 		});
 
-		expect(network.ok && network.decision?.reasonCode).toBe("policy_denied");
+		expect(network.ok && network.decision?.reasonCode).toBe("network_policy_violation");
 		expect(credentials.ok && credentials.decision?.reasonCode).toBe("credential_policy_violation");
 		expect(environment.ok && environment.decision?.reasonCode).toBe("policy_denied");
 	});
@@ -490,7 +490,7 @@ describe("fake-sandbox execution policy regressions", () => {
 			},
 		});
 
-		expect(modelBrokerAttempted.ok && modelBrokerAttempted.decision?.reasonCode).toBe("policy_denied");
+		expect(modelBrokerAttempted.ok && modelBrokerAttempted.decision?.reasonCode).toBe("network_policy_violation");
 		expect(contextAttemptedCredential.ok && contextAttemptedCredential.decision?.reasonCode).toBe(
 			"credential_policy_violation",
 		);
