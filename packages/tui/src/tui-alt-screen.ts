@@ -123,6 +123,8 @@ export interface TuiAltScreenOptions {
 	openUrl?: (url: string) => void;
 	/** Handle an unmodified secondary-button press for clipboard paste. Currently enabled on Windows only. */
 	onRightClickPaste?: () => void;
+	/** Copy selected text through a host clipboard implementation. */
+	copySelection?: (text: string) => Promise<boolean>;
 }
 
 /** Alternate-screen TUI with a scrollable, application-owned viewport. */
@@ -159,6 +161,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly mouseEnabled: boolean;
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
+	private readonly copySelection?: (text: string) => Promise<boolean>;
 
 	constructor(
 		terminal: Terminal,
@@ -179,6 +182,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.mouseEnabled = options.mouse ?? true;
 		this.openUrl = options.openUrl;
 		this.onRightClickPaste = options.onRightClickPaste;
+		this.copySelection = options.copySelection;
 		this.addInputListener((data) => this.handleViewportInput(data));
 	}
 
@@ -794,7 +798,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				this.requestRender();
 				return;
 			}
-			this.copySelectionToClipboard();
+			void this.copySelectionToClipboard();
 			this.requestRender();
 			return;
 		}
@@ -870,7 +874,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return { start: Math.max(minColumn, start), end: Math.min(maxColumn, end) };
 	}
 
-	private copySelectionToClipboard(): void {
+	private async copySelectionToClipboard(): Promise<void> {
 		const selection = this.getSelectionBounds();
 		if (!selection) return;
 		let sourceLines: readonly string[] = this.previousScreen;
@@ -892,6 +896,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		const text = lines.join("\n");
 		if (text.length === 0) return;
+		if (this.copySelection) {
+			this.flash(await this.copySelection(text) ? "Copied!" : "Copy failed");
+			return;
+		}
 		this.terminal.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
 		this.flash("Copied!");
 	}

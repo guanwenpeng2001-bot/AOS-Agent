@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Fullscreen selection copy now uses the host clipboard and reports verified success or failure.
 - Edit tools now normalize a single edit object into a one-entry edit array.
 - Root Markdown documentation is no longer treated as a skill unless it declares skill frontmatter.
 - Managed fd and ripgrep setup now starts after TUI mounting and reports progress in the transcript.

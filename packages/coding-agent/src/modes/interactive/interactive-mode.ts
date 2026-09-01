@@ -412,6 +412,14 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 		return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory, {
 			openUrl: openBrowser,
 			onRightClickPaste: options.onRightClickPaste,
+			copySelection: async (text) => {
+				try {
+					await copyToClipboard(text);
+					return true;
+				} catch {
+					return false;
+				}
+			},
 		});
 	}
 	return new TuiMainScreen(terminal, options.showHardwareCursor, options.logDirectory);
