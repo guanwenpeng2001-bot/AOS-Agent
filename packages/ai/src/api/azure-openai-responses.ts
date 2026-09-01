@@ -55,6 +55,7 @@ function formatAzureOpenAIError(error: unknown): string {
 // Azure OpenAI Responses-specific options
 export interface AzureOpenAIResponsesOptions extends StreamOptions {
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+	toolChoice?: ResponseCreateParamsStreaming["tool_choice"];
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
 	azureApiVersion?: string;
 	azureResourceName?: string;
@@ -303,6 +304,7 @@ function buildParams(
 			supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		});
 	}
+	if (options?.toolChoice !== undefined) params.tool_choice = options.toolChoice;
 
 	if (model.reasoning) {
 		if (options?.reasoningEffort || options?.reasoningSummary) {

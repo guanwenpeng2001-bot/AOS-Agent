@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Azure OpenAI Responses now forwards provider-specific `toolChoice` settings.
 - Bedrock `onResponse` now exposes raw Smithy response headers, including custom gateway metadata.
 - Bedrock redacted reasoning now round-trips through persisted thinking signatures.
 - Bedrock replay now removes empty tool-argument keys without mutating stored history.
