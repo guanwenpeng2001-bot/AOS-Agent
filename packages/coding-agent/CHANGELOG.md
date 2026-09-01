@@ -79,6 +79,7 @@
 - Print-mode prompts now continue after recoverable tool failures and settle successfully when a later model or tool step recovers.
 - Fixed session selector discovery and marker search for canonical sessions in explicit session directories.
 - Resuming a persisted session after its host process is killed now reclaims the stale processing lease and finishes the interrupted turn, while a live holder still blocks concurrent prompts.
+- Fixed the npm CLI launcher on Windows long working directories by routing the bin through a JavaScript bootstrap that uses the extended path form before loading the product entrypoint.
 - Made Cursor login and logout report the committed credential state, explain empty model catalogs, and provide `/reload` or `/model` recovery paths after local synchronization or CLI probe failures.
 - 只读搜索超时不再误报未知副作用.
 - Fixed overlapping model-catalog refreshes dropping persisted provider caches, and retried hung catalog HTTP attempts within the refresh deadline.

@@ -23,6 +23,7 @@ import {
 	createPackageSmokeResult,
 	PACKAGED_FIXTURE_TOOL_CALL_ID,
 	bunIsAvailable,
+	normalizeWindowsWorkingDirectory,
 	runInstalledBootSmokes,
 } from "./pack-smoke.mjs";
 import { digestJson } from "./pack-smoke-common.mjs";
@@ -47,7 +48,7 @@ function npmCommand() {
 
 function run(command, args, cwd) {
 	const result = spawn.sync(command, args, {
-		cwd,
+		cwd: normalizeWindowsWorkingDirectory(cwd),
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		timeout: 120_000,
@@ -104,7 +105,19 @@ function createStagedPackage(root) {
 		[
 			"#!/usr/bin/env node",
 			'const supported = new Set(["--version", "--help", "--list-models"]);',
+			'if (process.argv[2] === "--version") console.log("AOS_LONG_PATH_OK");',
 			"if (process.argv.length !== 3 || !supported.has(process.argv[2])) process.exitCode = 2;",
+			"",
+		].join("\n"),
+		{ mode: 0o755 },
+	);
+	writeFileSync(
+		join(staged, "dist", "launcher.js"),
+		[
+			"#!/usr/bin/env node",
+			'import { createRequire } from "node:module";',
+			"const require = createRequire(import.meta.url);",
+			'require("./cli.js");',
 			"",
 		].join("\n"),
 		{ mode: 0o755 },
@@ -154,7 +167,7 @@ function createStagedPackage(root) {
 			name: "aos-agent",
 			version: "1.0.0",
 			type: "module",
-			bin: { aos: "dist/cli.js" },
+			bin: { aos: "dist/launcher.js" },
 			exports: {
 				".": {
 					types: "./dist/index.d.ts",
@@ -178,7 +191,7 @@ function createStagedPackage(root) {
 
 test("package metadata owns the CLI, SDK, External Connector exports, and both asset copies", () => {
 	const packageJson = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"));
-	assert.equal(packageJson.bin.aos, "dist/cli.js");
+	assert.equal(packageJson.bin.aos, "dist/launcher.js");
 	assert.deepEqual(packageJson.exports["."], {
 		types: "./dist/index.d.ts",
 		import: "./dist/index.js",
@@ -202,6 +215,7 @@ test("package metadata owns the CLI, SDK, External Connector exports, and both a
 test("package-content validation catches missing public exports and assets", () => {
 	const files = [
 		"dist/cli.js",
+		"dist/launcher.js",
 		"dist/external-connector.js",
 		"dist/external-connector.d.ts",
 		"dist/external-connector-testing.js",
@@ -288,6 +302,17 @@ test("external npm install boots the CLI and SDK before executing the test-suppo
 			install,
 		);
 		runInstalledBootSmokes({ installDirectory: install, env: process.env });
+		if (process.platform === "win32") {
+			const longCwd = join(
+				root,
+				"long-cwd",
+				...Array.from({ length: 6 }, () => `segment-${"x".repeat(40)}`),
+			);
+			mkdirSync(longCwd, { recursive: true });
+			assert.ok(longCwd.length > 260);
+			const longPathOutput = run(join(install, "node_modules", ".bin", "aos.cmd"), ["--version"], longCwd);
+			assert.match(longPathOutput, /AOS_LONG_PATH_OK/u);
+		}
 		const runner = join(install, "runner.mjs");
 		writeFileSync(
 			runner,
