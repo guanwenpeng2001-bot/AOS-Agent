@@ -32,6 +32,7 @@ import type {
 	SimpleStreamOptions,
 	Usage,
 } from "./types.ts";
+import { traceAiOperation, traceAiStream } from "./telemetry.ts";
 import { operationSignal, raceWithAbortSignal } from "./utils/abort.ts";
 
 export { ModelsError, type ModelsErrorCode } from "./auth/resolve.ts";
@@ -826,15 +827,20 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 				}
 			: undefined,
 		filterModels: input.filterModels,
-		stream: (model, context, options) => dispatch(model, (streams) => streams.stream(model, context, options)),
+		stream: (model, context, options) =>
+			traceAiStream(model, "stream", options, (tracedOptions) =>
+				dispatch(model, (streams) => streams.stream(model, context, tracedOptions)),
+			),
 		streamSimple: (model, context, options) =>
-			dispatch(model, (streams) => streams.streamSimple(model, context, options)),
+			traceAiStream(model, "stream", options, (tracedOptions) =>
+				dispatch(model, (streams) => streams.streamSimple(model, context, tracedOptions)),
+			),
 	};
 
 	const streams = single ? [single] : Object.values(byApi ?? {}).filter((entry) => entry !== undefined);
 	if (streams.some((entry) => entry.fetchDeferred !== undefined)) {
 		provider.fetchDeferred = (model, handle, options) =>
-			lazyStream(model, async () => {
+			traceAiStream(model, "fetch_deferred", options, (tracedOptions) => lazyStream(model, async () => {
 				const implementation = apiFor(model);
 				if (!implementation?.fetchDeferred) {
 					throw new ModelsError(
@@ -842,20 +848,21 @@ export function createProvider<TApi extends Api = Api>(input: CreateProviderOpti
 						`Provider ${input.id} does not support deferred responses for "${model.api}"`,
 					);
 				}
-				return implementation.fetchDeferred(model, handle, options);
-			});
+				return implementation.fetchDeferred(model, handle, tracedOptions);
+			}));
 	}
 	if (streams.some((entry) => entry.cancelDeferred !== undefined)) {
-		provider.cancelDeferred = async (model, handle, options) => {
-			const implementation = apiFor(model);
-			if (!implementation?.cancelDeferred) {
-				throw new ModelsError(
-					"provider",
-					`Provider ${input.id} cannot cancel deferred responses for "${model.api}"`,
-				);
-			}
-			await implementation.cancelDeferred(model, handle, options);
-		};
+		provider.cancelDeferred = (model, handle, options) =>
+			traceAiOperation(options?.telemetryContext, model, "cancel_deferred", async (telemetryContext) => {
+				const implementation = apiFor(model);
+				if (!implementation?.cancelDeferred) {
+					throw new ModelsError(
+						"provider",
+						`Provider ${input.id} cannot cancel deferred responses for "${model.api}"`,
+					);
+				}
+				await implementation.cancelDeferred(model, handle, { ...options, telemetryContext });
+			});
 	}
 
 	return provider;

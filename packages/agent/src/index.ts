@@ -1,5 +1,12 @@
 export { agentLoop, agentLoopContinue } from "./agent-loop.ts";
 export { Agent } from "./agent.ts";
+export type {
+	OtlpHttpTelemetryDiagnostic,
+	OtlpHttpTelemetryOptions,
+	OtlpHttpTelemetryStats,
+	TelemetryContext,
+} from "@aos-agent/telemetry";
+export { NOOP_TELEMETRY_CONTEXT, OtlpHttpTelemetryContext } from "@aos-agent/telemetry";
 export { AgentHarness } from "./harness/agent-harness.ts";
 export type {
 	AgentHarnessFoundationExecution,

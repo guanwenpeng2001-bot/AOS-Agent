@@ -7,6 +7,10 @@
 - Renamed `TextSignatureV1` to `TextSignature`; the wire field `v` remains `1`.
 - Renamed the public fake test-provider API from `Faux*`/`faux*` to `Fake*`/`fake*`, including `registerFakeProvider`, with no compatibility aliases.
 
+### Added
+
+- Provider stream, deferred-response, cancellation, and image-generation calls now emit `aos.ai.request` spans when given a telemetry context.
+
 ### Changed
 
 - The Radius provider again defaults to the upstream-hosted gateway (`https://radius.pi.dev`), so its catalog and OAuth discovery work without configuration; custom gateways still override per provider in `models.json`.

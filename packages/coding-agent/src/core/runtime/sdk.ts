@@ -41,6 +41,7 @@ import { createSessionManagerForOptions, type SessionCreationOptions } from "../
 import { SettingsManager } from "./settings-manager.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import { time } from "./timings.ts";
+import { createProductTelemetry } from "./telemetry.ts";
 import {
 	createBashTool,
 	createAllTools,
@@ -608,33 +609,42 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const capabilityRegistry =
 		options.capabilityRegistry ?? new CapabilityRegistry(await CapabilityPublicIdentity.load(agentDir));
 
-	const session = createAgentSessionWithRuntimeComposition({
-		agent,
-		sessionManager,
-		settingsManager,
-		agentDir,
-		cwd,
-		scopedModels: options.scopedModels,
-		resourceLoader,
-		customTools: options.customTools,
-		modelRuntime,
-		modelBroker,
-		modelBrokerConfigRevision: options.modelBrokerConfigRevision ?? modelBrokerSettings.configRevision,
-		initialModelSelection: explicitModelSelection ? "manual" : "default",
-		initialActiveToolNames,
-		allowedToolNames,
-		excludedToolNames,
-		baseToolsOverride,
-		extensionRunnerRef,
-		sessionStartEvent: options.sessionStartEvent,
-		capabilityRegistry,
-		mcpTransportFactory: options.mcpTransportFactory,
-		mcpAuthProvider: options.mcpAuthProvider,
-		mcpAuthManagerOptions,
-		sandboxProviders: options.sandboxProviders,
-		policyProfile: options.policyProfile,
-		noTools: options.noTools,
-	}, runtimeComposition);
+	const productTelemetry = createProductTelemetry(settingsManager);
+	let session: AgentSession;
+	try {
+		session = createAgentSessionWithRuntimeComposition({
+			agent,
+			sessionManager,
+			settingsManager,
+			telemetryContext: productTelemetry.context,
+			telemetryShutdown: productTelemetry.shutdown,
+			agentDir,
+			cwd,
+			scopedModels: options.scopedModels,
+			resourceLoader,
+			customTools: options.customTools,
+			modelRuntime,
+			modelBroker,
+			modelBrokerConfigRevision: options.modelBrokerConfigRevision ?? modelBrokerSettings.configRevision,
+			initialModelSelection: explicitModelSelection ? "manual" : "default",
+			initialActiveToolNames,
+			allowedToolNames,
+			excludedToolNames,
+			baseToolsOverride,
+			extensionRunnerRef,
+			sessionStartEvent: options.sessionStartEvent,
+			capabilityRegistry,
+			mcpTransportFactory: options.mcpTransportFactory,
+			mcpAuthProvider: options.mcpAuthProvider,
+			mcpAuthManagerOptions,
+			sandboxProviders: options.sandboxProviders,
+			policyProfile: options.policyProfile,
+			noTools: options.noTools,
+		}, runtimeComposition);
+	} catch (error) {
+		await productTelemetry.shutdown();
+		throw error;
+	}
 	try {
 		sessionForToolEnvironment = session;
 		if (!hasExistingSession || !hasThinkingEntry) {

@@ -199,6 +199,7 @@ export interface CanonicalAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	sessionManager: SessionManager;
 	settingsManager: SettingsManager;
+	telemetryShutdown?: () => Promise<void>;
 	cwd: string;
 	agentDir?: string;
 	resourceLoader: ResourceLoader;
@@ -402,6 +403,7 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		followUpMode: options.settingsManager.getFollowUpMode(),
 		retry: options.settingsManager.getRetrySettings(),
 		compaction: options.settingsManager.getCompactionSettings(),
+		context: options.telemetryContext,
 		compatibilityWriter: createHarnessCompatibilityWriter(session, storage),
 		...(options.sessionManager.isPersisted()
 			? {}
@@ -414,6 +416,7 @@ function createCanonicalOptionsFromLegacy(options: AgentSessionConfig): Canonica
 		systemPrompt: legacyAgent.state.systemPrompt,
 		sessionManager: options.sessionManager,
 		settingsManager: options.settingsManager,
+		telemetryShutdown: options.telemetryShutdown,
 		cwd: options.cwd,
 		agentDir: options.agentDir,
 		resourceLoader: options.resourceLoader,
@@ -634,6 +637,7 @@ export class CanonicalAgentSessionServices {
 	private disposed = false;
 	private disposePromise: Promise<void> | undefined;
 	private readonly sessionInfoSubscribers = new Set<AgentSessionEventListener>();
+	private readonly telemetryShutdown: (() => Promise<void>) | undefined;
 
 	constructor(options: CanonicalAgentSessionOptions);
 	/** @deprecated Legacy construction is a synchronous compatibility composition root. */
@@ -657,6 +661,7 @@ export class CanonicalAgentSessionServices {
 			appendCustomEntry: (customType: string, data: unknown) => this.harness.recordCustomEntry(customType, data),
 		};
 		this.settingsManager = canonical.settingsManager;
+		this.telemetryShutdown = canonical.telemetryShutdown;
 		this._resourceLoader = canonical.resourceLoader;
 		this._modelRuntime = canonical.modelRuntime;
 		this._modelBroker = canonical.modelBroker ?? new ModelBroker();
@@ -3788,11 +3793,15 @@ export class CanonicalAgentSessionServices {
 	}
 
 	private async disposeInternal(): Promise<void> {
-		this._extensionRunner.invalidate();
-		await this.controlPlane.dispose();
-		this.flushPendingExternalMessages();
-		await this.harness.close();
-		await this.storage.drain();
+		try {
+			this._extensionRunner.invalidate();
+			await this.controlPlane.dispose();
+			this.flushPendingExternalMessages();
+			await this.harness.close();
+			await this.storage.drain();
+		} finally {
+			await this.telemetryShutdown?.();
+		}
 	}
 }
 

@@ -14,6 +14,7 @@
 
 ### Added
 
+- AgentHarness operations now emit nested operation, turn, step, tool, hook, and AI-request spans through the existing telemetry schema.
 - Remote-ready Agent Loop hardening: bounded convergence, stable error classification, safe retry gating, and cancellation/deadline propagation.
 - Tool runtime support: profile and plugin management, Tool Gateway and pipeline execution, runtime services, and scoped selector/fencing behavior.
 - Tool authority and recovery: durable local plugin activation recovery, consumer-shaped ToolGateway fakes, transformer provenance, read-only hooks, scoped reservations, and fail-closed cancellation/deadline settlement.

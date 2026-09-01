@@ -1,4 +1,5 @@
 import type { AssistantImages, ImagesApi, ImagesContext, ImagesFunction, ImagesModel, ImagesOptions } from "./types.ts";
+import { traceAiOperation } from "./telemetry.ts";
 
 export type ImagesApiFunction = (
 	model: ImagesModel<ImagesApi>,
@@ -31,7 +32,9 @@ function wrapGenerateImages<TApi extends ImagesApi, TOptions extends ImagesOptio
 		if (model.api !== api) {
 			throw new Error(`Mismatched api: ${model.api} expected ${api}`);
 		}
-		return generateImages(model as ImagesModel<TApi>, context, options as TOptions);
+		return traceAiOperation(options?.telemetryContext, model, "generate_images", (telemetryContext) =>
+			generateImages(model as ImagesModel<TApi>, context, { ...options, telemetryContext } as TOptions),
+		);
 	};
 }
 

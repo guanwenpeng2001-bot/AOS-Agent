@@ -19,6 +19,9 @@ export type {
 	TelemetryAttributeMetadata,
 	TelemetryAttributeType,
 	TelemetryContext,
+	OtlpHttpTelemetryDiagnostic,
+	OtlpHttpTelemetryOptions,
+	OtlpHttpTelemetryStats,
 	TelemetryEventAttributeDefinition,
 	TelemetryEventDefinition,
 	TelemetryParentDefinition,
@@ -39,6 +42,7 @@ export {
 	defineTelemetrySchema,
 	InMemoryTelemetryContext,
 	NOOP_TELEMETRY_CONTEXT,
+	OtlpHttpTelemetryContext,
 } from "@aos-agent/telemetry";
 export * from "./agent.ts";
 // Loop functions

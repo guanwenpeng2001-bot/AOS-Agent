@@ -22,6 +22,12 @@ export interface TelemetrySpan extends TelemetryContext {
 }
 
 export { NOOP_TELEMETRY_CONTEXT } from "./noop.ts";
+export type {
+	OtlpHttpTelemetryDiagnostic,
+	OtlpHttpTelemetryOptions,
+	OtlpHttpTelemetryStats,
+} from "./otlp-http.ts";
+export { OtlpHttpTelemetryContext } from "./otlp-http.ts";
 
 export type TelemetryAttributeType = "string" | "number" | "boolean" | "string[]" | "number[]" | "boolean[]";
 
