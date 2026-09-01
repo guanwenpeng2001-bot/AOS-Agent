@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Toggling thinking visibility no longer clears partial output from running Bash tools.
 - Context-only custom messages arriving during tool execution are now persisted after that turn's tool results.
 - Repeated truncated-response recovery now reports truncation instead of mislabeling it as context overflow.
 - Extensions now receive `session_compact_failed` when compaction fails or is aborted.
