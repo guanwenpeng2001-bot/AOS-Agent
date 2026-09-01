@@ -77,6 +77,7 @@
 ### Fixed
 
 - Print-mode prompts now continue after recoverable tool failures and settle successfully when a later model or tool step recovers.
+- Fixed session selector discovery and marker search for canonical sessions in explicit session directories.
 - Made Cursor login and logout report the committed credential state, explain empty model catalogs, and provide `/reload` or `/model` recovery paths after local synchronization or CLI probe failures.
 - 只读搜索超时不再误报未知副作用.
 - Fixed overlapping model-catalog refreshes dropping persisted provider caches, and retried hung catalog HTTP attempts within the refresh deadline.

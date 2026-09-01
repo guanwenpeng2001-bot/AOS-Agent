@@ -854,7 +854,86 @@ function extractTextContent(message: Message): string {
 		.join(" ");
 }
 
-function getMessageActivityTime(entry: SessionMessageEntry): number | undefined {
+const FOUNDATION_ENTRY_CUSTOM_TYPE = "__aos.foundation.entry.v1";
+const FOUNDATION_FACT_CUSTOM_TYPE = "__aos.foundation.fact.v1";
+const FOUNDATION_SCHEMA_VERSION = 1;
+
+interface SessionInfoMessageEntry {
+	type: "message";
+	message: AgentMessage;
+	timestamp: string | number;
+}
+
+type SessionInfoScanEntry = FileEntry | SessionInfoMessageEntry;
+
+interface SessionInfoScanResult {
+	entry: SessionInfoScanEntry | null;
+	nameFact: boolean;
+	name?: string;
+}
+
+/**
+ * Decode the logical message/name entries stored by the canonical Foundation
+ * writer. Legacy sessions store these entries directly, while canonical
+ * sessions wrap them in reserved custom entries in the same JSONL file.
+ */
+function parseSessionInfoLine(line: string): SessionInfoScanResult | null {
+	const physicalEntry = parseSessionEntryLine(line);
+	if (!physicalEntry) return null;
+	if (physicalEntry.type !== "custom") {
+		return { entry: physicalEntry, nameFact: false };
+	}
+
+	const data = physicalEntry.data;
+	if (!isRecord(data) || data.schemaVersion !== FOUNDATION_SCHEMA_VERSION) {
+		return { entry: physicalEntry, nameFact: false };
+	}
+
+	if (
+		physicalEntry.customType === FOUNDATION_ENTRY_CUSTOM_TYPE &&
+		data.kind === "entry" &&
+		isRecord(data.entry)
+	) {
+		const canonicalEntry = data.entry;
+		if (
+			canonicalEntry.type !== "message" ||
+			!isRecord(canonicalEntry.message) ||
+			typeof canonicalEntry.message.role !== "string" ||
+			!("content" in canonicalEntry.message)
+		) {
+			return { entry: null, nameFact: false };
+		}
+
+		const timestamp =
+			typeof canonicalEntry.timestamp === "number" || typeof canonicalEntry.timestamp === "string"
+				? canonicalEntry.timestamp
+				: physicalEntry.timestamp;
+		return {
+			entry: {
+				type: "message",
+				message: canonicalEntry.message as unknown as AgentMessage,
+				timestamp,
+			},
+			nameFact: false,
+		};
+	}
+
+	if (
+		physicalEntry.customType === FOUNDATION_FACT_CUSTOM_TYPE &&
+		data.kind === "name" &&
+		(data.name === undefined || typeof data.name === "string")
+	) {
+		return {
+			entry: null,
+			nameFact: true,
+			name: typeof data.name === "string" ? data.name.trim() || undefined : undefined,
+		};
+	}
+
+	return { entry: physicalEntry, nameFact: false };
+}
+
+function getMessageActivityTime(entry: { message: AgentMessage; timestamp: string | number }): number | undefined {
 	const message = entry.message;
 	if (!isMessageWithContent(message)) return undefined;
 	if (message.role !== "user" && message.role !== "assistant") return undefined;
@@ -884,7 +963,12 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 		});
 
 		for await (const line of rl) {
-			const entry = parseSessionEntryLine(line);
+			const scanned = parseSessionInfoLine(line);
+			if (!scanned) continue;
+			if (scanned.nameFact) {
+				name = scanned.name;
+			}
+			const entry = scanned.entry;
 			if (!entry) continue;
 
 			if (!header) {
