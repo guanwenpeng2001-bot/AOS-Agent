@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- The Cerebras default now references the current `gpt-oss-120b` catalog model.
 - Z.AI Coding Plan defaults now reference the current GLM model IDs.
 - `models.json` now accepts the documented `compat.supportsFinishReason` override.
 - JSON and RPC `toolcall_start` updates now include the tool-call ID and name without cumulative snapshots.
