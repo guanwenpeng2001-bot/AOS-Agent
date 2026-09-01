@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- GitHub Copilot login now catalogs first, enables only eligible models sequentially, and retries bounded 429 responses.
 - Kimi Coding requests now use the service-compatible pi runtime user agent while Codex requests retain AOS branding.
 - DeepSeek-compatible base URLs are now detected case-insensitively.
 - Google Generative AI and Vertex now honor model-specific `thinkingLevelMap` values.

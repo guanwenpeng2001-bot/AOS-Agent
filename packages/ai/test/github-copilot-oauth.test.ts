@@ -239,6 +239,53 @@ describe("GitHub Copilot OAuth device flow", () => {
 		await loginPromise;
 	});
 
+	it("retries throttled policy updates only for eligible catalog models", async () => {
+		vi.useFakeTimers();
+		let policyAttempts = 0;
+		const policyUrls: string[] = [];
+		vi.stubGlobal("fetch", vi.fn(async (input: unknown): Promise<Response> => {
+			const url = getUrl(input);
+			if (url.endsWith("/login/device/code")) {
+				return jsonResponse({
+					device_code: "device-code",
+					user_code: "ABCD-EFGH",
+					verification_uri: "https://github.com/login/device",
+					interval: 1,
+					expires_in: 900,
+				});
+			}
+			if (url.endsWith("/login/oauth/access_token")) return jsonResponse({ access_token: "ghu_refresh_token" });
+			if (url.includes("/copilot_internal/v2/token")) {
+				return jsonResponse({
+					token: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;",
+					expires_at: 9999999999,
+				});
+			}
+			if (url.endsWith("/models")) {
+				return jsonResponse({ data: [
+					{ id: "gpt-4.1", model_picker_enabled: true, policy: { state: "unconfigured" }, capabilities: { supports: { tool_calls: true } } },
+					{ id: "unknown-model", model_picker_enabled: true, policy: { state: "unconfigured" }, capabilities: { supports: { tool_calls: true } } },
+				] });
+			}
+			if (url.endsWith("/models/gpt-4.1/policy")) {
+				policyUrls.push(url);
+				policyAttempts += 1;
+				return policyAttempts === 1
+					? new Response(null, { status: 429, headers: { "retry-after": "0" } })
+					: new Response("", { status: 200 });
+			}
+			throw new Error(`Unexpected fetch URL: ${url}`);
+		}));
+
+		const loginPromise = loginGitHubCopilotForTest({ onDeviceCode: vi.fn(), onPrompt: async () => "" });
+		await vi.advanceTimersByTimeAsync(1000);
+		await vi.advanceTimersByTimeAsync(0);
+		const credential = await loginPromise;
+
+		expect(policyUrls).toHaveLength(2);
+		expect(credential.availableModelIds).toEqual(["gpt-4.1", "unknown-model"]);
+	});
+
 	it("rejects a non-http(s) verification_uri before it reaches onDeviceCode", async () => {
 		// A malicious enterprise OAuth server could return a verification_uri that
 		// the browser launcher would otherwise hand to the OS. Ensure such values
