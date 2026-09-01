@@ -76,6 +76,7 @@
 
 ### Fixed
 
+- Extension flags now reject defaults whose runtime type does not match the declaration.
 - Default keybindings now avoid Windows and WSL terminal conflicts while remaining configurable.
 - Model selectors now sort the current model first and the configured default second.
 - Model selector searches now match prefixes of `default`, and settings labels allow wider alignment.
