@@ -2504,6 +2504,16 @@ export default function(api) { aagent.registerTool({ name: "test", description: 
 			]);
 		});
 
+		it("does not report a registry downgrade as an update", async () => {
+			const installedPath = join(tempDir, ".aos-agent", "npm", "node_modules", "example");
+			mkdirSync(installedPath, { recursive: true });
+			writeFileSync(join(installedPath, "package.json"), JSON.stringify({ name: "example", version: "2.0.0" }));
+			settingsManager.setProjectPackages(["npm:example"]);
+			vi.spyOn(packageManager as any, "runCommandCapture").mockResolvedValue('"1.9.0"');
+
+			expect(await packageManager.checkForAvailableUpdates()).toEqual([]);
+		});
+
 		it("should skip pinned packages when checking for updates", async () => {
 			const installedNpmPath = join(tempDir, ".aos-agent", "npm", "node_modules", "example");
 			mkdirSync(installedNpmPath, { recursive: true });
