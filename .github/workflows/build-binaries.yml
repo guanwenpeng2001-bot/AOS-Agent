@@ -283,6 +283,7 @@ jobs:
             existing_assets="$(gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json assets --jq '.assets[].name')"
             existing_assets_dir="${RUNNER_TEMP}/existing-release-assets"
             mkdir -p "${existing_assets_dir}"
+            existing_archive_count=0
 
             for asset in "${assets[@]}"; do
               if grep -Fxq "${asset}" <<< "${existing_assets}"; then
@@ -291,6 +292,9 @@ jobs:
                   --pattern "${asset}" \
                   --dir "${existing_assets_dir}"
                 test -f "${existing_assets_dir}/${asset}"
+                if [[ "${asset}" != "SHA256SUMS" ]]; then
+                  existing_archive_count=$((existing_archive_count + 1))
+                fi
               fi
             done
 
@@ -301,10 +305,14 @@ jobs:
               fi
             fi
 
-            (
-              cd "${existing_assets_dir}"
-              sha256sum --check --ignore-missing "${GITHUB_WORKSPACE}/release-assets/SHA256SUMS"
-            )
+            if (( existing_archive_count > 0 )); then
+              (
+                cd "${existing_assets_dir}"
+                sha256sum --check --ignore-missing "${GITHUB_WORKSPACE}/release-assets/SHA256SUMS"
+              )
+            else
+              echo "No expected published archive assets are present; skipping old asset checksum validation."
+            fi
 
             for asset in "${assets[@]}"; do
               if grep -Fxq "${asset}" <<< "${existing_assets}"; then
