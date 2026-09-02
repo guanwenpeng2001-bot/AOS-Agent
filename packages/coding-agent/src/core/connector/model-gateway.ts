@@ -9,6 +9,8 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	ModelsApiStreamOptions,
+	ModelsSimpleStreamOptions,
 	TextContent,
 	ThinkingLevel,
 	Tool,
@@ -56,6 +58,7 @@ interface ActiveGatewayCapability {
 	readonly capability: ExternalModelGatewayCapability;
 	readonly projection: ExternalResolvedModelProjection;
 	readonly references: Readonly<Record<string, string>>;
+	readonly serviceTier?: GatewayServiceTier;
 }
 
 interface ActiveGatewayReference {
@@ -63,6 +66,32 @@ interface ActiveGatewayReference {
 	readonly bindingId: string;
 	readonly references: Readonly<Record<string, string>>;
 }
+
+interface ActiveGatewayRequest {
+	readonly authorization: string;
+	readonly leaseId: string;
+	readonly cancellation: AbortController;
+	readonly settled: Promise<void>;
+	readonly settle: () => void;
+	expiryTimer?: ReturnType<typeof setTimeout>;
+}
+
+interface PendingGatewayRevocation {
+	readonly grantId: string;
+	readonly bindingId: string;
+	readonly targetId?: string;
+}
+
+type GatewayServiceTier = NonNullable<ModelsApiStreamOptions<"openai-responses">["serviceTier"]>;
+
+const GATEWAY_SERVICE_TIERS = Object.freeze([
+	"auto",
+	"default",
+	"flex",
+	"scale",
+	"priority",
+] as const satisfies readonly GatewayServiceTier[]);
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 type GatewayProtocol = "anthropic" | "openai";
 
@@ -133,6 +162,16 @@ function zeroUsage(): AssistantMessage["usage"] {
 		totalTokens: 0,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
+}
+
+function modelGatewayServiceTier(model: Model<Api>, serviceTier: string): GatewayServiceTier | null | undefined {
+	if (serviceTier === "none") return undefined;
+	const supportedApi =
+		(model.provider === "openai" && model.api === "openai-responses") ||
+		(model.provider === "openai-codex" && model.api === "openai-codex-responses");
+	return supportedApi && GATEWAY_SERVICE_TIERS.includes(serviceTier as GatewayServiceTier)
+		? serviceTier as GatewayServiceTier
+		: null;
 }
 
 function assistantHistory(
@@ -566,7 +605,7 @@ function openAIResponse(result: AssistantMessage, projection: ExternalResolvedMo
 		max_output_tokens: null,
 		previous_response_id: null,
 		reasoning: { effort: projection.effort, summary: null },
-		service_tier: projection.serviceTier,
+		service_tier: projection.serviceTier === "none" ? null : projection.serviceTier,
 		store: false,
 		text: { format: { type: "text" } },
 		truncation: "disabled",
@@ -658,7 +697,7 @@ function writeOpenAIStream(
 
 function providerReceipt(
 	request: { readonly leaseId: string; readonly grantId: string; readonly bindingId: string },
-	status: "renewed" | "revoked",
+	status: "renewed" | "revoked" | "revocation_unknown",
 ): TaskCredentialProviderReceipt {
 	return serializeTaskCredentialProviderReceipt({
 		schemaVersion: TASK_CREDENTIAL_SCHEMA_VERSION,
@@ -677,8 +716,9 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 	readonly #vault: LocalCredentialVault;
 	readonly #now: () => number;
 	readonly #references = new Map<string, ActiveGatewayReference>();
+	readonly #revocations = new Map<string, PendingGatewayRevocation>();
 	readonly #capabilities = new Map<string, ActiveGatewayCapability>();
-	readonly #requests = new Set<AbortController>();
+	readonly #requests = new Set<ActiveGatewayRequest>();
 	#server: Server | undefined;
 	#endpoint: string | undefined;
 
@@ -714,6 +754,7 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 		const references = Object.freeze({ ...request.references });
 		const succeeded =
 			request.targetId === this.#targetId &&
+			!this.#revocations.has(request.leaseId) &&
 			Object.keys(references).length > 0 &&
 			(existing === undefined ||
 				(existing.grantId === request.grantId &&
@@ -743,6 +784,7 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 		if (
 			request.targetId !== this.#targetId ||
 			reference === undefined ||
+			this.#revocations.has(request.leaseId) ||
 			reference.grantId !== request.grantId ||
 			reference.bindingId !== request.bindingId
 		) throw new TypeError("External model gateway lease renewal is unknown");
@@ -751,16 +793,34 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 
 	revoke(request: TaskCredentialTargetRevokeRequest): TaskCredentialProviderReceipt {
 		const reference = this.#references.get(request.leaseId);
+		const pending = this.#revocations.get(request.leaseId);
 		if (
 			request.targetId !== this.#targetId ||
 			reference === undefined ||
 			reference.grantId !== request.grantId ||
-			reference.bindingId !== request.bindingId
+			reference.bindingId !== request.bindingId ||
+			(pending !== undefined &&
+				(pending.grantId !== request.grantId ||
+					pending.bindingId !== request.bindingId ||
+					pending.targetId !== request.targetId))
 		) throw new TypeError("External model gateway lease revocation is unknown");
-		this.#references.delete(request.leaseId);
+		this.#revocations.set(request.leaseId, Object.freeze({
+			grantId: request.grantId,
+			bindingId: request.bindingId,
+			...(request.targetId === undefined ? {} : { targetId: request.targetId }),
+		}));
 		for (const [authorization, active] of this.#capabilities) {
 			if (active.capability.leaseId === request.leaseId) this.#capabilities.delete(authorization);
 		}
+		this.#abortRequests(
+			(candidate) => candidate.leaseId === request.leaseId,
+			new DOMException("Model gateway lease revoked", "AbortError"),
+		);
+		if ([...this.#requests].some((candidate) => candidate.leaseId === request.leaseId)) {
+			return providerReceipt(request, "revocation_unknown");
+		}
+		this.#references.delete(request.leaseId);
+		this.#revocations.delete(request.leaseId);
 		return providerReceipt(request, "revoked");
 	}
 
@@ -772,10 +832,15 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 		const reference = this.#references.get(lease.leaseId);
 		if (
 			reference === undefined ||
+			this.#revocations.has(lease.leaseId) ||
 			reference.grantId !== lease.grantId ||
 			reference.bindingId !== lease.bindingId ||
 			reference.references[projection.provider] === undefined
 		) return undefined;
+		const model = this.#runtime.getModel(projection.provider, projection.model);
+		if (model === undefined) return undefined;
+		const serviceTier = modelGatewayServiceTier(model, projection.serviceTier);
+		if (serviceTier === null) return undefined;
 		await this.#listen();
 		const authorization = `Bearer aos_gateway_${randomUUID().replaceAll("-", "")}`;
 		const capability = Object.freeze({
@@ -786,7 +851,12 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 			modelBindingDigest: projection.bindingDigest.value,
 			expiresAt: lease.expiresAt,
 		});
-		this.#capabilities.set(authorization, { capability, projection, references: reference.references });
+		this.#capabilities.set(authorization, {
+			capability,
+			projection,
+			references: reference.references,
+			...(serviceTier === undefined ? {} : { serviceTier }),
+		});
 		return capability;
 	}
 
@@ -800,14 +870,23 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 			active.capability.expiresAt !== capability.expiresAt
 		) return false;
 		this.#capabilities.delete(capability.authorization);
+		this.#abortRequests(
+			(candidate) => candidate.authorization === capability.authorization,
+			new DOMException("Model gateway capability closed", "AbortError"),
+		);
 		return true;
 	}
 
 	async dispose(): Promise<void> {
-		for (const request of this.#requests) request.abort(new DOMException("Model gateway disposed", "AbortError"));
-		this.#requests.clear();
+		const requests = [...this.#requests];
 		this.#capabilities.clear();
 		this.#references.clear();
+		this.#revocations.clear();
+		this.#abortRequests(
+			() => true,
+			new DOMException("Model gateway disposed", "AbortError"),
+		);
+		await Promise.all(requests.map((request) => request.settled));
 		const server = this.#server;
 		this.#server = undefined;
 		this.#endpoint = undefined;
@@ -832,8 +911,17 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 
 	async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		const authorization = request.headers.authorization;
-		const active = authorization === undefined ? undefined : this.#capabilities.get(authorization);
-		if (active === undefined || Date.parse(active.capability.expiresAt) <= this.#now()) {
+		if (authorization === undefined) {
+			response.writeHead(401).end();
+			return;
+		}
+		const active = this.#capabilities.get(authorization);
+		if (active === undefined) {
+			response.writeHead(401).end();
+			return;
+		}
+		if (Date.parse(active.capability.expiresAt) <= this.#now()) {
+			this.#expireCapability(authorization, active);
 			response.writeHead(401).end();
 			return;
 		}
@@ -852,7 +940,19 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 			return;
 		}
 		const cancellation = new AbortController();
-		this.#requests.add(cancellation);
+		let settleRequest: () => void = () => undefined;
+		const settled = new Promise<void>((resolve) => {
+			settleRequest = resolve;
+		});
+		const trackedRequest: ActiveGatewayRequest = {
+			authorization,
+			leaseId: active.capability.leaseId,
+			cancellation,
+			settled,
+			settle: settleRequest,
+		};
+		this.#requests.add(trackedRequest);
+		this.#scheduleRequestExpiry(trackedRequest, active);
 		const abort = (): void => cancellation.abort(new DOMException("Gateway request was cancelled", "AbortError"));
 		const close = (): void => {
 			if (!response.writableEnded) abort();
@@ -875,17 +975,40 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 			const effort = active.projection.effort === "off"
 				? undefined
 				: active.projection.effort as ThinkingLevel;
-			const runtimeOptions = {
+			const commonOptions = {
 				...this.#authOptions(credential),
 				signal: cancellation.signal,
-				...(effort === undefined ? {} : { reasoning: effort }),
 				...(parsed.maxTokens === undefined ? {} : { maxTokens: parsed.maxTokens }),
-				serviceTier: active.projection.serviceTier,
-				// OpenAI-compatible adapters merge samplingParams into the final payload.
-				// Other provider adapters retain this safe route fact for their own mapping.
-				samplingParams: { service_tier: active.projection.serviceTier },
 			};
-			const result = await this.#runtime.streamSimple(model, parsed.context, runtimeOptions).result();
+			let result: AssistantMessage;
+			if (active.serviceTier !== undefined && model.api === "openai-responses") {
+				result = await this.#runtime.stream(
+					model as Model<"openai-responses">,
+					parsed.context,
+					{
+						...commonOptions,
+						...(effort === undefined ? {} : { reasoningEffort: effort }),
+						serviceTier: active.serviceTier,
+					} satisfies ModelsApiStreamOptions<"openai-responses">,
+				).result();
+			} else if (active.serviceTier !== undefined && model.api === "openai-codex-responses") {
+				result = await this.#runtime.stream(
+					model as Model<"openai-codex-responses">,
+					parsed.context,
+					{
+						...commonOptions,
+						...(effort === undefined ? {} : { reasoningEffort: effort }),
+						serviceTier: active.serviceTier,
+					} satisfies ModelsApiStreamOptions<"openai-codex-responses">,
+				).result();
+			} else if (active.serviceTier === undefined) {
+				result = await this.#runtime.streamSimple(model, parsed.context, {
+					...commonOptions,
+					...(effort === undefined ? {} : { reasoning: effort }),
+				} satisfies ModelsSimpleStreamOptions).result();
+			} else {
+				throw new Error("Model runtime service-tier support drifted after capability admission");
+			}
 			validateAssistantResult(result, active.projection);
 			if (parsed.stream) {
 				response.writeHead(200, {
@@ -907,8 +1030,37 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 		} finally {
 			request.off("aborted", abort);
 			response.off("close", close);
-			this.#requests.delete(cancellation);
+			if (trackedRequest.expiryTimer !== undefined) clearTimeout(trackedRequest.expiryTimer);
+			this.#requests.delete(trackedRequest);
+			trackedRequest.settle();
 		}
+	}
+
+	#abortRequests(predicate: (request: ActiveGatewayRequest) => boolean, reason: DOMException): void {
+		for (const request of this.#requests) {
+			if (predicate(request) && !request.cancellation.signal.aborted) request.cancellation.abort(reason);
+		}
+	}
+
+	#expireCapability(authorization: string, active: ActiveGatewayCapability): void {
+		if (this.#capabilities.get(authorization) === active) this.#capabilities.delete(authorization);
+		this.#abortRequests(
+			(request) => request.authorization === authorization,
+			new DOMException("Model gateway capability expired", "AbortError"),
+		);
+	}
+
+	#scheduleRequestExpiry(request: ActiveGatewayRequest, active: ActiveGatewayCapability): void {
+		const schedule = (): void => {
+			const remaining = Date.parse(active.capability.expiresAt) - this.#now();
+			if (remaining <= 0) {
+				this.#expireCapability(request.authorization, active);
+				return;
+			}
+			request.expiryTimer = setTimeout(schedule, Math.min(remaining, MAX_TIMER_DELAY_MS));
+			request.expiryTimer.unref?.();
+		};
+		schedule();
 	}
 
 	#authOptions(credential: Credential): { readonly apiKey?: string; readonly env?: Record<string, string> } {

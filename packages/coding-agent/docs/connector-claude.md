@@ -11,8 +11,9 @@ This page records the settings registration and private driver contract. The thr
    run, and produce durable receipts; real authentication remains a separate
    certification step.
 3. Model-access boundary: settings-selected Claude targets may use
-   `aos_gateway` with an exact ModelBroker route whose provider is `bedrock`.
-   Generic JSONL and ACP targets remain rejected.
+   `aos_gateway` with an exact ModelBroker route whose canonical provider is
+   `amazon-bedrock`. The private driver translates only Claude's provider
+   selector to `bedrock`. Generic JSONL and ACP targets remain rejected.
 
 The capability matrix below is enforced when the settings target is composed.
 
@@ -54,10 +55,10 @@ For `aos_gateway`, keep the model in `modelBroker`, not in the connector target:
     "routes": {
       "claude-bedrock": {
         "candidates": [{
-          "provider": "bedrock",
+          "provider": "amazon-bedrock",
           "modelId": "<AOS_BEDROCK_MODEL_ID>",
           "thinkingLevel": "high",
-          "serviceTier": "priority"
+          "serviceTier": "none"
         }]
       }
     }
@@ -90,7 +91,7 @@ For `aos_gateway`, keep the model in `modelBroker`, not in the connector target:
 ```
 
 Select `claude-bedrock` with `run.start.modelRoute` or as the ModelBroker default.
-The consumed quota belongs to the AOS `bedrock` credential, not a Claude login.
+The consumed quota belongs to the AOS `amazon-bedrock` credential, not a Claude login.
 
 The exact file-hash commands are documented in
 [`external-agent-connector.md`](external-agent-connector.md). `modulePath`
@@ -110,7 +111,7 @@ process group or Windows Job Object. The default SDK spawn path is not used.
 | File artifacts | version-limited | The pinned message type accepts document blocks. The connector supports base64 PDF and strict UTF-8 `text/plain` documents. Other canonical file media, including JSON, Markdown, and octet-stream, are explicitly unsupported at this version. |
 | Model | supported | `Options.model` accepts an exact model string. The init message reports the applied model and the connector verifies it for `aos_gateway` runs. |
 | Effort | supported | `Options.effort` accepts `low`, `medium`, `high`, `xhigh`, or `max`. The init message reports the applied effort and the connector verifies it. |
-| Service tier | version-limited | The pinned runtime accepts `ANTHROPIC_BEDROCK_SERVICE_TIER`. Exact service-tier projection is therefore declared only when the projected provider is `bedrock`; other providers fail model-matrix admission. |
+| Service tier | unsupported | The stock AOS Bedrock adapter does not apply a service-tier option. Claude gateway routes must use the explicit `none` sentinel, which is omitted from the ModelRuntime request; values such as `priority` fail before vendor spawn. |
 | Resume | version-limited | `Options.resume` can load a Claude session, but the current durable connector cannot prove the persisted vendor transcript and fork point after host recovery. The capability remains `resume: false`, and reconnect without a live operation fails with `external_resume_unsupported`. |
 
 ## Artifact translation
@@ -119,6 +120,6 @@ The Host admits metadata-only canonical Artifact references before driver spawn.
 
 ## `aos_gateway` boundary
 
-The exact support matrix maps provider, model, effort, service tier, fallback decision, and ModelBinding digest to distinct private companion fields. Version `0.3.246` accepts only the canonical `bedrock` provider. Spawn requires both a material-free lease and a Host-created loopback gateway capability. The companion receives only the loopback endpoint and short-lived capability; the original Bedrock credential remains inside the Credential/ModelRuntime boundary.
+The exact support matrix maps provider, model, effort, service tier, fallback decision, and ModelBinding digest to distinct private companion fields. Version `0.3.246` accepts the canonical AOS provider `amazon-bedrock` and translates only the Claude-facing selector to `bedrock`. Spawn requires both a material-free lease and a Host-created loopback gateway capability. The companion receives only the loopback endpoint and short-lived capability; the original Bedrock credential remains inside the Credential/ModelRuntime boundary.
 
 The driver recomputes the Host translation and compares the complete canonical translation before invoking the companion. It verifies init model/effort and requires one matching final model-usage observation before emitting `effectiveModel`. Unsupported values, a remote configured endpoint, missing/expired capability, translation drift, or observation drift fail closed.

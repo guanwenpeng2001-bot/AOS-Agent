@@ -61,7 +61,8 @@ export const PRIVATE_CLAUDE_AGENT_SDK_VERSION = PRIVATE_EXTERNAL_CONNECTOR_VENDO
 const CLAUDE_PROTOCOL_NAME = "claude-agent-sdk";
 const CLAUDE_PERMISSION_TOOL = "claude.permission.request";
 const CLAUDE_NAMESPACE = "claude";
-const CLAUDE_AOS_GATEWAY_PROVIDER = "bedrock";
+const CLAUDE_AOS_GATEWAY_PROVIDER = "amazon-bedrock";
+const CLAUDE_AOS_GATEWAY_SELECTOR = "bedrock";
 const CLAUDE_EFFORT_LEVELS = Object.freeze(["low", "medium", "high", "xhigh", "max"] as const);
 const CLAUDE_IMAGE_MEDIA_TYPES = Object.freeze(["image/gif", "image/jpeg", "image/png", "image/webp"] as const);
 const CLAUDE_FILE_MEDIA_TYPES = Object.freeze(["application/pdf", "text/plain"] as const);
@@ -72,7 +73,7 @@ export const PRIVATE_CLAUDE_AGENT_SDK_CAPABILITIES = Object.freeze({
 	files: Object.freeze({ status: "version-limited" as const, mediaTypes: CLAUDE_FILE_MEDIA_TYPES }),
 	model: Object.freeze({ status: "supported" as const }),
 	effort: Object.freeze({ status: "supported" as const, values: CLAUDE_EFFORT_LEVELS }),
-	serviceTier: Object.freeze({ status: "version-limited" as const, provider: CLAUDE_AOS_GATEWAY_PROVIDER }),
+	serviceTier: Object.freeze({ status: "unsupported" as const, provider: CLAUDE_AOS_GATEWAY_PROVIDER }),
 	resume: Object.freeze({ status: "version-limited" as const, connectorEnabled: false }),
 });
 
@@ -102,7 +103,9 @@ export interface PrivateClaudeNativePrompt {
 }
 
 export interface PrivateClaudeModelSelection {
-	readonly provider: typeof CLAUDE_AOS_GATEWAY_PROVIDER;
+	/** Claude-facing selector; the canonical AOS provider remains `canonicalProvider`. */
+	readonly provider: typeof CLAUDE_AOS_GATEWAY_SELECTOR;
+	readonly canonicalProvider: typeof CLAUDE_AOS_GATEWAY_PROVIDER;
 	readonly model: string;
 	readonly effort: PrivateClaudeEffortLevel;
 	readonly serviceTier: string;
@@ -113,12 +116,15 @@ export interface PrivateClaudeModelSelection {
 function exactModelSupport(
 	targetField: string,
 	accepts: (value: string) => boolean,
+	translateValue: (value: string) => string = (value) => value,
 ): ExternalModelFieldSupport {
 	return Object.freeze({
 		supported: true,
 		targetField,
 		accepts,
-		translate: (value: string) => accepts(value) ? Object.freeze({ kind: "exact" as const, value }) : undefined,
+		translate: (value: string) => accepts(value)
+			? Object.freeze({ kind: "exact" as const, value: translateValue(value) })
+			: undefined,
 	});
 }
 
@@ -132,10 +138,14 @@ function acceptsCanonicalObject(value: string): boolean {
 }
 
 export const PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX: ExternalModelSupportMatrix = Object.freeze({
-	provider: exactModelSupport("apiProvider", (value) => value === CLAUDE_AOS_GATEWAY_PROVIDER),
+	provider: exactModelSupport(
+		"apiProvider",
+		(value) => value === CLAUDE_AOS_GATEWAY_PROVIDER,
+		() => CLAUDE_AOS_GATEWAY_SELECTOR,
+	),
 	model: exactModelSupport("model", (value) => value.length > 0),
 	effort: exactModelSupport("effort", (value) => CLAUDE_EFFORT_LEVELS.includes(value as PrivateClaudeEffortLevel)),
-	serviceTier: exactModelSupport("serviceTier", (value) => value.length > 0),
+	serviceTier: exactModelSupport("serviceTier", (value) => value === "none"),
 	fallbackDecision: exactModelSupport("fallbackDecision", acceptsCanonicalObject),
 	bindingDigest: exactModelSupport("bindingDigest", acceptsCanonicalObject),
 });
@@ -519,7 +529,7 @@ function resolveModelSelection(
 	const fields = request.modelTranslation.fields;
 	if (
 		fields.provider.targetField !== "apiProvider" ||
-		fields.provider.value !== CLAUDE_AOS_GATEWAY_PROVIDER ||
+		fields.provider.value !== CLAUDE_AOS_GATEWAY_SELECTOR ||
 		fields.model.targetField !== "model" ||
 		fields.effort.targetField !== "effort" ||
 		!CLAUDE_EFFORT_LEVELS.includes(fields.effort.value as PrivateClaudeEffortLevel) ||
@@ -530,7 +540,8 @@ function resolveModelSelection(
 		throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
 	}
 	return Object.freeze({
-		provider: CLAUDE_AOS_GATEWAY_PROVIDER,
+		provider: CLAUDE_AOS_GATEWAY_SELECTOR,
+		canonicalProvider: CLAUDE_AOS_GATEWAY_PROVIDER,
 		model: fields.model.value,
 		effort: fields.effort.value as PrivateClaudeEffortLevel,
 		serviceTier: fields.serviceTier.value,
@@ -771,7 +782,7 @@ function effectiveModelEvidence(
 		throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
 	}
 	return Object.freeze({
-		provider: model.provider,
+		provider: model.canonicalProvider,
 		model: model.model,
 		bindingDigest,
 		observedAt,

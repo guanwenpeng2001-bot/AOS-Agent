@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Model, Provider } from "@aos-agent/ai";
+import type { Api, Model, Provider } from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAgentCanonicalSession } from "../../src/core/session/facade.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
@@ -11,6 +11,7 @@ import { createTaskCredentialLocalVaultProvider } from "../../src/core/policy/ta
 import { ExternalConnectorModelGateway } from "../../src/core/connector/model-gateway.ts";
 import { packagedExternalAgentDriverProcessModulePath } from "../../src/core/connector/packaged-driver.ts";
 import { createPackagedExternalConnectorRegistryFactory } from "../../src/core/connector/packaged-runtime.ts";
+import { preflightExternalConnectorProductRecovery } from "../../src/core/connector/product-run.ts";
 import type { PrivateExternalConnectorVendorAdapterOverrides } from "../../src/core/connector/vendor/composition.ts";
 import type { PrivateExternalConnectorVendorDriver } from "../../src/core/connector/vendor/identity.ts";
 import {
@@ -214,12 +215,17 @@ async function createRuntime(
 
 async function gatewayRuntime(cwd: string, targetId: string, captures?: VendorAdapterFixtureCaptures) {
 	const credentials = AuthStorage.create(join(cwd, "auth.json"));
-	await credentials.modify("bedrock", async () => ({ type: "api_key", key: "gateway-bedrock-canary" }));
+	await credentials.modify("amazon-bedrock", async () => ({ type: "api_key", key: "gateway-bedrock-canary" }));
 	await credentials.modify("openai", async () => ({ type: "api_key", key: "gateway-openai-canary" }));
 	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
-	for (const providerId of ["bedrock", "openai"] as const) {
-		const gatewayModel: Model<"anthropic-messages"> = { ...DEFAULT_MODEL, id: "gateway-model", provider: providerId };
-		const provider: Provider<"anthropic-messages"> = {
+	for (const providerId of ["amazon-bedrock", "openai"] as const) {
+		const gatewayModel: Model<Api> = {
+			...DEFAULT_MODEL,
+			id: "gateway-model",
+			provider: providerId,
+			api: providerId === "amazon-bedrock" ? "bedrock-converse-stream" : "openai-responses",
+		};
+		const provider: Provider = {
 			id: providerId,
 			name: providerId,
 			auth: {},
@@ -299,7 +305,9 @@ function vendorSettings(
 		...overrides,
 	};
 	return SettingsManager.inMemory({
-		...(modelAccess === "aos_gateway" ? { executionPolicy: externalCredentialPolicySettings(["bedrock", "openai"]) } : {}),
+		...(modelAccess === "aos_gateway"
+			? { executionPolicy: externalCredentialPolicySettings(["amazon-bedrock", "openai"]) }
+			: {}),
 		externalConnectors: {
 			schemaVersion: 1,
 			targetId: target.targetId,
@@ -470,10 +478,10 @@ describe("External Connector product entry composition", () => {
 					capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
 				},
 				modelRoute: [{
-					provider: driver === "claude" ? "bedrock" : "openai",
+					provider: driver === "claude" ? "amazon-bedrock" : "openai",
 					modelId: "gateway-model",
 					thinkingLevel: "high",
-					serviceTier: "priority",
+					serviceTier: driver === "claude" ? "none" : "priority",
 				}],
 			});
 			await vi.waitFor(() => expect(records.some((record) =>
@@ -502,7 +510,7 @@ describe("External Connector product entry composition", () => {
 				throw new Error(`${driver} gateway run was not accepted`);
 			}
 			expect(accepted.data.projectedModel).toMatchObject({
-				provider: driver === "claude" ? "bedrock" : "openai",
+				provider: driver === "claude" ? "amazon-bedrock" : "openai",
 				model: "gateway-model",
 				modelBindingDigest: { algorithm: "sha256" },
 			});
@@ -517,7 +525,7 @@ describe("External Connector product entry composition", () => {
 				payload: {
 					status: "succeeded",
 					effectiveModel: {
-						provider: driver === "claude" ? "bedrock" : "openai",
+						provider: driver === "claude" ? "amazon-bedrock" : "openai",
 						model: "gateway-model",
 						bindingDigest: accepted.data.projectedModel?.modelBindingDigest,
 					},
@@ -532,6 +540,45 @@ describe("External Connector product entry composition", () => {
 			const grants = runtime.session.getTaskCredentialService()?.getByRunId(accepted.data.runId) ?? [];
 			expect(grants).toHaveLength(1);
 			expect(grants[0]?.status).toBe("settled");
+			if (driver === "codex") {
+				const registry = runtime.runtimeComposition.externalConnectorRegistry;
+				const modelBindingDigest = accepted.data.projectedModel?.modelBindingDigest;
+				if (registry === undefined || modelBindingDigest === undefined) {
+					throw new Error("Codex recovery projection authority is missing");
+				}
+				const recovery = {
+					session,
+					registry,
+					runId: accepted.data.runId,
+					providerId: descriptor.providerId,
+					selection: {
+						providerId: descriptor.providerId,
+						revision: descriptor.revision,
+						capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+					},
+					expectedCanonicalInput: {
+						schemaVersion: 1 as const,
+						text: "execute the codex gateway connector",
+						artifacts: [],
+					},
+					expectedGatewayModelRoute: {
+						provider: "openai",
+						model: "gateway-model",
+						effort: "high",
+						serviceTier: "priority",
+						fallbackDecision: { kind: "primary" as const, reason: "fallback_not_used" as const },
+						bindingDigest: modelBindingDigest,
+					},
+				};
+				await expect(preflightExternalConnectorProductRecovery(recovery)).resolves.toBeUndefined();
+				await expect(preflightExternalConnectorProductRecovery({
+					...recovery,
+					expectedGatewayModelRoute: {
+						...recovery.expectedGatewayModelRoute,
+						bindingDigest: { algorithm: "sha256", value: "0".repeat(64) },
+					},
+				})).rejects.toMatchObject({ code: "external_binding_invalid" });
+			}
 		} finally {
 			await controller.shutdown();
 		}

@@ -108,7 +108,7 @@ Vendor targets add the exact `driver` field and must use these pins and protocol
 
 | driver | target `version` | `resume` | `toolGateway` | `modelAccess` |
 | --- | --- | --- | --- | --- |
-| `claude` | `0.3.246` | `false` | `true` | `none`, `agent_owned`, or exclusive `aos_gateway` (`bedrock` only) |
+| `claude` | `0.3.246` | `false` | `true` | `none`, `agent_owned`, or exclusive `aos_gateway` (`amazon-bedrock` only; translated to Claude selector `bedrock`) |
 | `codex` | `0.149.0` | `true` | `true` | `none`, `agent_owned`, or exclusive `aos_gateway` |
 | `acp` | `1.4.0` | `true` | `true` | `none` or `agent_owned` |
 
@@ -401,8 +401,13 @@ references into its loopback model gateway. The vendor receives a short-lived
 loopback endpoint and capability bound to lease, ModelBinding digest, and
 expiry. Each upstream request resolves the reference inside ModelRuntime. A
 remote configured endpoint or vendor-login fallback cannot satisfy
-`aos_gateway`. Revocation must be confirmed before success; unknown revocation
-quarantines the target and settles as `side_effect_unknown`.
+`aos_gateway`. Non-`none` service tiers are admitted only for the stock
+`openai`/`openai-responses` and `openai-codex`/`openai-codex-responses` pairs;
+the typed provider option is applied to the final request payload. Other APIs,
+including Amazon Bedrock, reject a tier before vendor spawn. Revocation aborts
+the exact lease's active requests and must observe their settlement before
+reporting success; an unsettled request returns unknown revocation, quarantines
+the target, and settles as `side_effect_unknown`.
 
 ### Provenance and lifecycle
 

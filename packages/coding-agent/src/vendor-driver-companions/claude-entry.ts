@@ -130,7 +130,6 @@ function environmentFor(request: PrivateClaudeCompanionQueryRequest): Record<str
 		CLAUDE_CODE_USE_GATEWAY: "1",
 		CLAUDE_CODE_USE_MANTLE: "0",
 		CLAUDE_CODE_USE_VERTEX: "0",
-		ANTHROPIC_BEDROCK_SERVICE_TIER: request.model.serviceTier,
 		ANTHROPIC_BASE_URL: gatewayOrigin,
 		ANTHROPIC_AUTH_TOKEN: request.modelGateway.authorization.replace(/^Bearer /, ""),
 	};

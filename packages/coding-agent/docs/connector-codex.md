@@ -52,7 +52,10 @@ Capability matrix and pinned version for the private Codex app-server connector.
 For `aos_gateway`, declare provider/model/effort/service tier and fallback in a
 ModelBroker route, set the target's model access to only `aos_gateway`, and add
 an opaque `accountReference`. Select that route with `run.start.modelRoute` or
-as the default route. The model route is not copied into the connector target.
+as the default route. Use `none` when the selected AOS provider API has no tier.
+Non-`none` tiers are currently admitted only for the stock
+`openai`/`openai-responses` and `openai-codex`/`openai-codex-responses` pairs.
+The model route is not copied into the connector target.
 
 The exact file-hash commands are documented in
 [`external-agent-connector.md`](external-agent-connector.md). Install the pinned
@@ -66,7 +69,7 @@ The driver uses `initialize`, `thread/start`, `turn/start`, `turn/interrupt`, an
 | File artifacts | version-limited | `TurnStartParams.input` accepts `mention` with a name and path. Canonical trusted `workspace_relative` JSON, octet-stream, PDF, Markdown, and plain-text references map to `mention`. Opaque `artifact_store` handles and other media types fail closed. |
 | Model | supported | `ThreadStartParams` accepts `modelProvider`, `model`, and `allowProviderModelFallback`; `TurnStartParams` accepts `model`. The driver sets `allowProviderModelFallback: false`, checks the thread response echo, and never silently substitutes a model. |
 | Effort | supported | `TurnStartParams.effort` accepts the model-advertised non-empty reasoning-effort string. The exact translated value is sent on `turn/start`; an RPC rejection fails the start. |
-| Service tier | supported | `ThreadStartParams.serviceTier` and `TurnStartParams.serviceTier` accept the exact string. The driver checks the thread response echo and sends the same value on the turn. |
+| Service tier | version-limited | `ThreadStartParams.serviceTier` and `TurnStartParams.serviceTier` carry the exact route value and the driver checks the thread echo. The Host accepts a non-`none` value only when the selected stock ModelRuntime API applies that typed option to its final payload; unsupported provider/API pairs fail before spawn. |
 | Resume | supported | `thread/resume` accepts the durable thread id and returns the pinned thread response shape. The driver requires exact thread identity and otherwise fails closed. |
 
 For `aos_gateway`, the private driver rechecks the exact translation, requires a material-free lease plus a Host-owned loopback gateway capability, and points the app-server's OpenAI-compatible transport at that loopback endpoint with only the short-lived capability. The original AOS provider credential is resolved inside ModelRuntime for each gateway request and never enters app-server JSONL, process arguments, or durable records. A verified `thread/start` echo produces the receipt's `effectiveModel`; the consumed quota belongs to the projected AOS provider, not the Codex subscription.

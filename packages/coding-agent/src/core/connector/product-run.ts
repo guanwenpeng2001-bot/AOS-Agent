@@ -1078,23 +1078,10 @@ function validateExternalConnectorRecoveryExpectedInput(
 	}
 	if (input.expectedGatewayModelRoute !== undefined) {
 		const expectedModelProjection = exactModelProjection(input.expectedGatewayModelRoute);
-		const expectedRoute = {
-			provider: expectedModelProjection.provider,
-			model: expectedModelProjection.model,
-			effort: expectedModelProjection.effort,
-			serviceTier: expectedModelProjection.serviceTier,
-			fallbackDecision: expectedModelProjection.fallbackDecision,
-		};
-		const durableRoute = durableExecutionInput.modelProjection === undefined ? undefined : {
-			provider: durableExecutionInput.modelProjection.provider,
-			model: durableExecutionInput.modelProjection.model,
-			effort: durableExecutionInput.modelProjection.effort,
-			serviceTier: durableExecutionInput.modelProjection.serviceTier,
-			fallbackDecision: durableExecutionInput.modelProjection.fallbackDecision,
-		};
 		if (
-			durableRoute === undefined ||
-			canonicalFoundationJson(durableRoute) !== canonicalFoundationJson(expectedRoute)
+			durableExecutionInput.modelProjection === undefined ||
+			canonicalFoundationJson(durableExecutionInput.modelProjection) !==
+				canonicalFoundationJson(expectedModelProjection)
 		) {
 			throw new ExternalConnectorProductError(
 				"external_binding_invalid",

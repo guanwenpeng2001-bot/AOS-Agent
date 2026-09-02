@@ -1065,7 +1065,7 @@ function parseProfile(value: unknown, expectedId?: string): ExecutionPolicyProfi
 	const networkAction = parseAction(value.network.action);
 	const networkDestinations = parseStringArray(value.network.allowDestinations, isNetworkDestinationPattern);
 	const credentialsAction = parseAction(value.credentials.action);
-	const credentialNames = parseStringArray(value.credentials.allowNames, isEnvironmentName);
+	const credentialNames = parseStringArray(value.credentials.allowNames, isTaskCredentialIdentifier);
 	if (networkAction === undefined || networkDestinations === undefined || credentialsAction === undefined || credentialNames === undefined) {
 		return undefined;
 	}
@@ -1194,7 +1194,7 @@ function parseNarrowing(value: unknown): PolicyProfileNarrowing | undefined {
 			credentials.action = action;
 		}
 		if (value.credentials.allowNames !== undefined) {
-			const names = parseStringArray(value.credentials.allowNames, isEnvironmentName);
+			const names = parseStringArray(value.credentials.allowNames, isTaskCredentialIdentifier);
 			if (names === undefined) return undefined;
 			credentials.allowNames = names;
 		}
@@ -2028,7 +2028,7 @@ function validateOperation(value: unknown): PolicyOperationRequest | undefined {
 	const sandboxed = value.sandboxed;
 	const sandboxProviderId = value.sandboxProviderId;
 	const parsedCredentialNames =
-		credentialNames === undefined ? undefined : parseStringArray(credentialNames, isEnvironmentName);
+		credentialNames === undefined ? undefined : parseStringArray(credentialNames, isTaskCredentialIdentifier);
 	const parsedEnvironmentNames =
 		environmentNames === undefined ? undefined : parseStringArray(environmentNames, isEnvironmentName);
 	if (credentialNames !== undefined && parsedCredentialNames === undefined) return undefined;
@@ -2715,7 +2715,7 @@ function validTaskCredentialDecision(value: unknown): value is PolicyDecision {
 		(POLICY_DECISION_OUTCOMES as readonly string[]).includes(value.outcome as string) &&
 		(value.reasonCode === undefined || (POLICY_ERROR_CODES as readonly string[]).includes(value.reasonCode as string)) &&
 		(value.credentialNames === undefined ||
-			(Array.isArray(value.credentialNames) && value.credentialNames.every(isEnvironmentName))) &&
+			(Array.isArray(value.credentialNames) && value.credentialNames.every(isTaskCredentialIdentifier))) &&
 		(value.targetId === undefined || isSafeOpaqueId(value.targetId)) &&
 		(value.ttlMs === undefined || isPositiveInteger(value.ttlMs))
 	);

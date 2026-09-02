@@ -1,14 +1,18 @@
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	createAssistantMessageEventStream,
+	type Api,
 	type AssistantMessage,
 	type Context,
 	type Model,
 	type Provider,
 	type SimpleStreamOptions,
 } from "@aos-agent/ai";
+import { stream as streamOpenAIResponses } from "../../../ai/src/api/openai-responses.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import { LocalCredentialVault } from "../../src/core/policy/credential-vault.ts";
@@ -21,17 +25,19 @@ import type { ExternalResolvedModelProjection } from "../../src/core/connector/m
 
 const directories: string[] = [];
 const gateways: ExternalConnectorModelGateway[] = [];
+const servers: Server[] = [];
 
 afterEach(async () => {
 	await Promise.allSettled(gateways.splice(0).map((gateway) => gateway.dispose()));
+	await Promise.allSettled(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-const MODEL: Model<"anthropic-messages"> = {
-	id: "gpt-test",
+const MODEL: Model<"bedrock-converse-stream"> = {
+	id: "anthropic.claude-sonnet-fixture-v1:0",
 	name: "Gateway Test Model",
-	api: "anthropic-messages",
-	provider: "gateway-provider",
+	api: "bedrock-converse-stream",
+	provider: "amazon-bedrock",
 	baseUrl: "https://provider.invalid",
 	reasoning: true,
 	input: ["text", "image"],
@@ -45,7 +51,7 @@ const PROJECTION: ExternalResolvedModelProjection = {
 	provider: MODEL.provider,
 	model: MODEL.id,
 	effort: "high",
-	serviceTier: "priority",
+	serviceTier: "none",
 	fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
 	bindingDigest: { algorithm: "sha256", value: "a".repeat(64) },
 };
@@ -108,17 +114,22 @@ interface GatewayFixture {
 async function gatewayFixture(options: {
 	readonly result?: AssistantMessage;
 	readonly now?: () => number;
-	readonly provider?: Provider<"anthropic-messages">;
+	readonly provider?: Provider;
+	readonly model?: Model<Api>;
+	readonly projection?: ExternalResolvedModelProjection;
+	readonly leaseTtlMs?: number;
 } = {}): Promise<GatewayFixture> {
+	const model = options.model ?? MODEL;
+	const projection = options.projection ?? PROJECTION;
 	const directory = mkdtempSync(join(tmpdir(), "aos-model-gateway-"));
 	directories.push(directory);
 	const authPath = join(directory, "auth.json");
 	const credentials = AuthStorage.create(authPath);
-	await credentials.modify(MODEL.provider, async () => ({ type: "api_key", key: "model-gateway-secret-canary" }));
+	await credentials.modify(model.provider, async () => ({ type: "api_key", key: "model-gateway-secret-canary" }));
 	const requests: Array<{ context: Context; options: SimpleStreamOptions | undefined }> = [];
 	const result = options.result ?? assistant();
-	const provider: Provider<"anthropic-messages"> = options.provider ?? {
-		id: MODEL.provider,
+	const provider: Provider = options.provider ?? {
+		id: model.provider,
 		name: "Gateway Test Provider",
 		auth: {
 			apiKey: {
@@ -126,7 +137,7 @@ async function gatewayFixture(options: {
 				resolve: async () => ({ auth: { apiKey: "provider-default" }, source: "test" }),
 			},
 		},
-		getModels: () => [MODEL],
+		getModels: () => [model],
 		stream: (_model, context, streamOptions) => {
 			requests.push({ context, options: streamOptions });
 			return completedStream(result);
@@ -147,21 +158,24 @@ async function gatewayFixture(options: {
 		...(options.now === undefined ? {} : { now: options.now }),
 	});
 	gateways.push(gateway);
+	const issuedAt = options.now?.() ?? Date.now();
+	const leaseTtlMs = options.leaseTtlMs ?? 60_000;
 	const lease = {
 		schemaVersion: 1 as const,
 		leaseId: "lease-model-gateway",
 		grantId: "grant-model-gateway",
 		bindingId: "binding-model-gateway",
 		scopeDigest: `sha256:${"b".repeat(64)}` as const,
-		expiresAt: new Date(Date.now() + 60_000).toISOString(),
+		expiresAt: new Date(issuedAt + leaseTtlMs).toISOString(),
 		clientRequestId: "request-model-gateway",
 	};
 	const references = vault.issue({
 		leaseId: lease.leaseId,
 		grantId: lease.grantId,
 		bindingId: lease.bindingId,
-		credentialNames: [MODEL.provider],
-		requestedTtlMs: 60_000,
+		credentialNames: [model.provider],
+		requestedTtlMs: leaseTtlMs,
+		issuedAtMs: issuedAt,
 	});
 	const projected = gateway.project({
 		schemaVersion: 1,
@@ -173,7 +187,7 @@ async function gatewayFixture(options: {
 		projectedAt: new Date().toISOString(),
 	});
 	if (projected.status !== "succeeded") throw new Error("Gateway reference projection failed");
-	const capability = await gateway.open(lease, PROJECTION);
+	const capability = await gateway.open(lease, projection);
 	if (capability === undefined) throw new Error("Model gateway capability was not created");
 	return {
 		gateway,
@@ -208,6 +222,49 @@ function gatewayFetch(
 	});
 }
 
+function activeProviderFixture(): {
+	readonly provider: Provider<"bedrock-converse-stream">;
+	readonly started: Promise<void>;
+	readonly aborted: Promise<void>;
+	readonly settled: Promise<void>;
+} {
+	let markStarted: () => void = () => undefined;
+	let markAborted: () => void = () => undefined;
+	let markSettled: () => void = () => undefined;
+	const started = new Promise<void>((resolve) => { markStarted = resolve; });
+	const aborted = new Promise<void>((resolve) => { markAborted = resolve; });
+	const settled = new Promise<void>((resolve) => { markSettled = resolve; });
+	const provider: Provider<"bedrock-converse-stream"> = {
+		id: MODEL.provider,
+		name: "Active Gateway Provider",
+		auth: {
+			apiKey: {
+				name: "Gateway active-request test key",
+				resolve: async () => ({ auth: { apiKey: "provider-default" }, source: "test" }),
+			},
+		},
+		getModels: () => [MODEL],
+		stream: () => createAssistantMessageEventStream(),
+		streamSimple: (_model, _context, options) => {
+			const stream = createAssistantMessageEventStream();
+			const signal = options?.signal;
+			if (signal === undefined) throw new Error("Gateway active request omitted cancellation");
+			markStarted();
+			const abort = (): void => {
+				markAborted();
+				const error = assistant({ content: [], stopReason: "aborted", errorMessage: "aborted" });
+				stream.push({ type: "error", reason: "aborted", error });
+				stream.end();
+				markSettled();
+			};
+			if (signal.aborted) abort();
+			else signal.addEventListener("abort", abort, { once: true });
+			return stream;
+		},
+	};
+	return { provider, started, aborted, settled };
+}
+
 describe("External Connector model gateway", () => {
 	it("opens only an exact live loopback capability and fails closed on unknown revoke", async () => {
 		const fixture = await gatewayFixture();
@@ -223,13 +280,18 @@ describe("External Connector model gateway", () => {
 		expect(fixture.gateway.revoke(fixture.revoke)).toMatchObject({ status: "revoked" });
 		expect(() => fixture.gateway.revoke(fixture.revoke)).toThrow("revocation is unknown");
 		expect(await fixture.gateway.open(fixture.lease, PROJECTION)).toBeUndefined();
+		const unsupported = await gatewayFixture();
+		expect(await unsupported.gateway.open(unsupported.lease, {
+			...PROJECTION,
+			serviceTier: "priority",
+		})).toBeUndefined();
 		expect(await fixture.gateway.open(
 			{ ...fixture.lease, expiresAt: new Date(Date.now() - 1).toISOString() },
 			PROJECTION,
 		)).toBeUndefined();
 	});
 
-	it("adapts OpenAI Responses streaming with roles, tools, tool results, effort, and tier", async () => {
+	it("adapts OpenAI Responses streaming with roles, tools, tool results, and effort", async () => {
 		const fixture = await gatewayFixture();
 		const response = await gatewayFetch(fixture, "responses", JSON.stringify({
 			model: MODEL.id,
@@ -241,7 +303,7 @@ describe("External Connector model gateway", () => {
 			],
 			tools: [{ type: "function", name: "lookup", description: "Look up data", parameters: { type: "object" } }],
 			reasoning: { effort: "high" },
-			service_tier: "priority",
+			service_tier: "none",
 			stream: true,
 		}));
 		expect(response.status).toBe(200);
@@ -250,7 +312,7 @@ describe("External Connector model gateway", () => {
 		expect(body).toContain("event: response.created");
 		expect(body).toContain("event: response.function_call_arguments.done");
 		expect(body).toContain("event: response.completed");
-		expect(body).toContain('"service_tier":"priority"');
+		expect(body).toContain('"service_tier":null');
 		const captured = fixture.requests[0];
 		expect(captured?.context.systemPrompt).toBe("system policy");
 		expect(captured?.context.messages).toMatchObject([
@@ -261,9 +323,9 @@ describe("External Connector model gateway", () => {
 		expect(captured?.context.tools).toMatchObject([{ name: "lookup", parameters: { type: "object" } }]);
 		expect(captured?.options).toMatchObject({
 			reasoning: "high",
-			serviceTier: "priority",
-			samplingParams: { service_tier: "priority" },
 		});
+		expect(captured?.options).not.toHaveProperty("serviceTier");
+		expect(captured?.options).not.toHaveProperty("samplingParams");
 	});
 
 	it("adapts Anthropic Messages streaming with roles, tools, and tool results", async () => {
@@ -279,7 +341,7 @@ describe("External Connector model gateway", () => {
 			],
 			tools: [{ name: "lookup", description: "Look up data", input_schema: { type: "object" } }],
 			output_config: { effort: "high" },
-			service_tier: "priority",
+			service_tier: "none",
 			stream: true,
 		}));
 		expect(response.status).toBe(200);
@@ -296,7 +358,69 @@ describe("External Connector model gateway", () => {
 			toolCallId: "call-1",
 			toolName: "lookup",
 		});
-		expect(captured?.options).toMatchObject({ reasoning: "high", maxTokens: 512, serviceTier: "priority" });
+		expect(captured?.options).toMatchObject({ reasoning: "high", maxTokens: 512 });
+		expect(captured?.options).not.toHaveProperty("serviceTier");
+	});
+
+	it("applies an admitted service tier in the final stock OpenAI Responses payload", async () => {
+		let receiveBody: (body: string) => void = () => undefined;
+		const receivedBody = new Promise<string>((resolve) => { receiveBody = resolve; });
+		const server = createServer((request, response) => {
+			void (async () => {
+				const chunks: Buffer[] = [];
+				for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+				receiveBody(Buffer.concat(chunks).toString("utf8"));
+				response.writeHead(500).end();
+			})();
+		});
+		servers.push(server);
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(0, "127.0.0.1", () => {
+				server.off("error", reject);
+				resolve();
+			});
+		});
+		const address = server.address() as AddressInfo;
+		const model: Model<"openai-responses"> = {
+			...MODEL,
+			id: "gpt-stock-service-tier",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: `http://127.0.0.1:${address.port}/v1`,
+		};
+		const projection: ExternalResolvedModelProjection = {
+			...PROJECTION,
+			provider: model.provider,
+			model: model.id,
+			serviceTier: "priority",
+		};
+		const provider: Provider<"openai-responses"> = {
+			id: model.provider,
+			name: "Stock OpenAI Responses Gateway Provider",
+			auth: {
+				apiKey: {
+					name: "Gateway stock-adapter test key",
+					resolve: async () => ({ auth: { apiKey: "provider-default" }, source: "test" }),
+				},
+			},
+			getModels: () => [model],
+			stream: streamOpenAIResponses,
+			streamSimple: () => { throw new Error("Gateway must use the typed stock stream options"); },
+		};
+		const fixture = await gatewayFixture({ model, projection, provider });
+		const response = await gatewayFetch(fixture, "responses", JSON.stringify({
+			model: model.id,
+			input: "apply priority",
+			reasoning: { effort: "high" },
+			service_tier: "priority",
+		}));
+		expect(response.status).toBe(502);
+		expect(JSON.parse(await receivedBody)).toMatchObject({
+			model: model.id,
+			reasoning: { effort: "high" },
+			service_tier: "priority",
+		});
 	});
 
 	it("rejects malformed, oversized, expired, request-mismatched, and result-mismatched cases", async () => {
@@ -328,7 +452,7 @@ describe("External Connector model gateway", () => {
 		let aborted = false;
 		let markStarted: (() => void) | undefined;
 		const started = new Promise<void>((resolve) => { markStarted = resolve; });
-		const provider: Provider<"anthropic-messages"> = {
+		const provider: Provider<"bedrock-converse-stream"> = {
 			id: MODEL.provider,
 			name: "Cancelling Gateway Provider",
 			auth: {
@@ -361,5 +485,54 @@ describe("External Connector model gateway", () => {
 		controller.abort();
 		await expect(request).rejects.toThrow();
 		await vi.waitFor(() => expect(aborted).toBe(true));
+	});
+
+	it("aborts the exact active bearer request when its capability closes", async () => {
+		const active = activeProviderFixture();
+		const fixture = await gatewayFixture({ provider: active.provider });
+		const request = gatewayFetch(fixture, "responses", JSON.stringify({ model: MODEL.id, input: "wait" }));
+		await active.started;
+
+		expect(fixture.gateway.close(fixture.capability)).toBe(true);
+		await active.aborted;
+		expect((await request).status).toBe(502);
+		expect(fixture.gateway.revoke(fixture.revoke)).toMatchObject({ status: "revoked" });
+	});
+
+	it("reports revocation unknown until the exact lease request settles", async () => {
+		const active = activeProviderFixture();
+		const fixture = await gatewayFixture({ provider: active.provider });
+		const request = gatewayFetch(fixture, "responses", JSON.stringify({ model: MODEL.id, input: "wait" }));
+		await active.started;
+
+		expect(fixture.gateway.revoke(fixture.revoke)).toMatchObject({ status: "revocation_unknown" });
+		await active.aborted;
+		expect((await request).status).toBe(502);
+		expect(fixture.gateway.revoke(fixture.revoke)).toMatchObject({ status: "revoked" });
+	});
+
+	it("aborts an active request at the exact capability expiry", async () => {
+		const active = activeProviderFixture();
+		const fixture = await gatewayFixture({ provider: active.provider, leaseTtlMs: 1_000 });
+		const request = gatewayFetch(fixture, "responses", JSON.stringify({ model: MODEL.id, input: "wait" }));
+		await active.started;
+
+		await active.aborted;
+		expect((await request).status).toBe(502);
+		expect(fixture.gateway.close(fixture.capability)).toBe(false);
+		expect(fixture.gateway.revoke(fixture.revoke)).toMatchObject({ status: "revoked" });
+	}, 5_000);
+
+	it("waits for an active request to settle during session disposal", async () => {
+		const active = activeProviderFixture();
+		const fixture = await gatewayFixture({ provider: active.provider });
+		const request = gatewayFetch(fixture, "responses", JSON.stringify({ model: MODEL.id, input: "wait" }));
+		await active.started;
+
+		const disposed = fixture.gateway.dispose();
+		await active.aborted;
+		await active.settled;
+		await disposed;
+		expect((await request).status).toBe(502);
 	});
 });
