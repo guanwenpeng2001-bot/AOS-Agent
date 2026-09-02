@@ -376,6 +376,15 @@ absolute `executablePath`, absolute `modulePath`, absolute `cwd`, `version`,
 `executableIdentity`, `moduleIdentity`, and `capabilityCeiling`. An optional
 `accountReference` contains only `{schemaVersion, namespace, accountId}`.
 
+In v0.85.0, this settings path reaches only generic JSONL targets with
+`modelAccess` `none` or `agent_owned`; the packaged `aos.fake-connector` is the
+covered registration -> run -> receipt example. The private Claude, Codex, and
+ACP vendor drivers are not referenced by product composition and cannot be
+registered or selected from settings; vendor wiring is in progress. Their
+pinned handshakes are protocol evidence only, not product availability.
+`aos_gateway` is an internal Host and Scheduler path and generic settings
+targets reject it with `capability_widened`.
+
 Project settings cannot define targets. A trusted project may provide
 `{schemaVersion: 1, targetId?, capabilityCeiling?, role?}` to select a global
 target and narrow its ceiling. Project and `role` selections are rejected when

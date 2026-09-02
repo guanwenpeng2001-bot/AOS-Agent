@@ -44,7 +44,7 @@ The installable package is `aos-agent`, and it exposes the `aos` executable. The
 
 This repository contains the source for the published `0.84.3` package set. Hosted services and generated model catalogs remain outside the release boundary.
 
-Settings-based External Connector entry composition is implemented. Line 13 promotion evidence includes Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release upgrade/restart, deterministic soak, pinned vendor handshake (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, ACP SDK 1.4.0), and Codex subscription print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully certified. Lines 14 and 15 remain later work.
+Settings-based External Connector entry composition for generic JSONL targets is implemented. In v0.85.0, the user-reachable modes are `none` and `agent_owned`, and the packaged `aos.fake-connector` is the covered registration -> run -> receipt example. Line 13 promotion evidence includes Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release upgrade/restart, deterministic soak, pinned vendor handshakes (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, and ACP SDK 1.4.0), and Codex subscription print/SDK/TUI. Those handshakes exercise pinned private vendor packages only; they are protocol evidence, not product availability. The private Claude, Codex, and ACP drivers are not wired into product composition and cannot be registered or selected; vendor wiring is in progress. `aos_gateway` is internal-only and rejected for generic settings targets. Lines 14 and 15 remain later work.
 
 The root `./test.sh` script runs non-e2e product tests.
 

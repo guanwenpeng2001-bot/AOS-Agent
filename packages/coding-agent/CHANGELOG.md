@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected External Connector documentation to distinguish v0.85.0 generic JSONL target reachability (`none`/`agent_owned` plus the packaged fake) from private vendor handshake evidence; documented that Claude/Codex/ACP drivers are not wired for registration and that `aos_gateway` is internal-only.
+
 ## [0.85.0] - 2026-09-02
 
 ### Breaking Changes

@@ -2,7 +2,7 @@
 
 ## Status
 
-Settings-based External Connector entry composition is implemented. Line 13 promotion evidence includes Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release upgrade/restart, deterministic soak, pinned vendor handshake (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, ACP SDK 1.4.0), and Codex subscription print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully certified. Lines 14 and 15 remain later work.
+Settings-based External Connector entry composition for generic JSONL targets is implemented. In v0.85.0, the user-reachable modes are `modelAccess: "none"` and `"agent_owned"`; the packaged `aos.fake-connector` is the covered example, with its registration -> run -> receipt path verified. Line 13 promotion evidence includes Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release upgrade/restart, deterministic soak, pinned vendor handshakes (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, and ACP SDK 1.4.0), and Codex subscription print/SDK/TUI. Those handshakes exercise pinned private vendor packages only; they are protocol evidence, not product availability. The private Claude, Codex, and ACP drivers are not referenced by a product composition path in v0.85.0, so users cannot register or select those connectors; vendor wiring is in progress. `aos_gateway` is internal-only, and a generic settings target selecting it is rejected with `capability_widened`. Lines 14 and 15 remain later work.
 
 `ExternalAgentConnector` is the only public execution contract for an external
 agent. It implements the shared `TaskExecutorProvider` boundary and therefore
@@ -84,7 +84,12 @@ identity; credentials, environment values, headers, and tokens are never stored
 in this schema.
 
 The selected target may be the packaged fake or a generic JSONL process target.
-For a generic target, the Host starts `executablePath` with `modulePath` as its
+In v0.85.0, this settings path reaches only the generic JSONL modes `none` and
+`agent_owned`; the packaged `aos.fake-connector` is the shipped example with
+registration -> run -> receipt coverage. The private Claude, Codex, and ACP
+vendor drivers are not selected by this path and cannot be registered as
+product targets; their wiring is in progress. For a generic target, the Host
+starts `executablePath` with `modulePath` as its
 module argument (when the paths differ), then connects the resulting process to
 the private JSONL driver adapter. It does not dynamically import a settings
 module or let the target choose a private vendor driver. Every target is still
@@ -92,9 +97,10 @@ constructed through production provenance checks, process containment,
 supervision, and the durable connector runtime; a target that fails those checks
 remains fail-closed. A generic target whose selected capability ceiling resolves
 to `modelAccess: "aos_gateway"` is rejected with
-`external_connector_config_invalid`; generic settings targets may advertise only
+`capability_widened`; generic settings targets may advertise only
 `none` or `agent_owned`, so no generic JSONL driver consumes a Host model
-projection or translation.
+projection or translation. The `aos_gateway` projection and credential-lease
+mechanism serves internal Host and Scheduler paths only.
 
 The descriptor pins `providerId`, `providerClass: "external_connector"`,
 `revision`, and the capability snapshot digest. A selection must repeat those

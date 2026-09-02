@@ -13,6 +13,23 @@ Capability matrix and pinned version for the private ACP stable-v1 connector. Th
 }
 ```
 
+## Evidence status
+
+1. Pin and handshake evidence: the pin above is the official
+   `@agentclientprotocol/sdk` `1.4.0` stable-v1 schema; the v0.85.0 handshake
+   check exercises that pinned protocol only.
+2. Product reachability: v0.85.0 does not compose this driver into the
+   settings target or registry path. Users cannot register or select an ACP
+   connector; vendor wiring is in progress.
+3. Real-backend spike: Claude ACP, Codex ACP, and Gemini candidates did not
+   satisfy the product's exact `capability` / `authMethods` contract. ACP
+   therefore remains handshake-level evidence, not product availability.
+
+The capability matrix below describes private stable-v1 driver behavior only.
+`aos_gateway` is an internal Host and Scheduler path; generic JSONL settings
+targets cannot select it and the packaged runtime rejects it with
+`capability_widened`.
+
 | Capability | Status | Stable-v1 evidence | Driver decision |
 | --- | --- | --- | --- |
 | Text prompt blocks | supported | `ContentBlock::Text` is baseline prompt functionality. | The canonical prompt text is always sent as the first `text` block. |
@@ -36,7 +53,7 @@ Canonical Artifact Store references do not cross the wire as local paths or opaq
 
 The embedded resource identity is the content-addressed `urn:sha256:<digest>` URI. Workspace-relative read handles remain unsupported because their contract explicitly leaves path resolution with the Host and ACP stable-v1 provides no opaque Host read-handle field.
 
-## `aos_gateway` stance
+## `aos_gateway` stance (private implementation evidence)
 
 Problem: the Host projection requires exact provider, model, effort, service tier, fallback decision, and binding digest consumption. For example, selecting a returned config option whose category is `model` cannot prove which provider owns the model or preserve an exact service tier.
 

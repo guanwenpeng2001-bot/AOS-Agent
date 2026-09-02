@@ -7,6 +7,22 @@ Capability matrix and pinned version for the private Codex app-server connector.
 - Schema source: `codex-cli 0.149.0 app-server generate-json-schema --experimental`
 - Hashed bundle: `codex_app_server_protocol.v2.schemas.json`
 
+## Evidence status
+
+1. Pin and handshake evidence: the machine-readable identity above pins Codex
+   CLI `0.149.0` and its schema digest; the v0.85.0 handshake check exercises
+   that pinned app-server protocol.
+2. Product reachability: v0.85.0 does not compose this driver into the
+   settings target or registry path. Users cannot register or select a Codex
+   connector; vendor wiring is in progress.
+3. Model-access boundary: `aos_gateway` is an internal Host and Scheduler
+   path. Generic JSONL settings targets cannot select it; the packaged runtime
+   rejects that selection with `capability_widened`.
+
+The capability matrix below describes private driver behavior only. Pin and
+handshake evidence does not turn this driver into a product-available
+connector.
+
 The driver uses `initialize`, `thread/start`, `turn/start`, `turn/interrupt`, and `thread/resume`. It also handles the pinned private server-request routes for command approval, file-change approval, permissions approval, MCP elicitation, user input, and selected dynamic tools.
 
 | Capability | Status | Pinned protocol evidence and driver behavior |
@@ -18,6 +34,6 @@ The driver uses `initialize`, `thread/start`, `turn/start`, `turn/interrupt`, an
 | Service tier | supported | `ThreadStartParams.serviceTier` and `TurnStartParams.serviceTier` accept the exact string. The driver checks the thread response echo and sends the same value on the turn. |
 | Resume | supported | `thread/resume` accepts the durable thread id and returns the pinned thread response shape. The driver requires exact thread identity and otherwise fails closed. |
 
-For `aos_gateway`, the driver declares an exact `modelSupportMatrix` for provider, model, effort, service tier, fallback decision, and binding digest. It rechecks the Host translation against the source projection, requires a valid material-free `SafeLeaseProjection`, passes only that projection to transport activation, and never places lease identity or provider credential material on the app-server JSONL wire.
+For the private driver's `aos_gateway` behavior, it declares an exact `modelSupportMatrix` for provider, model, effort, service tier, fallback decision, and binding digest. It rechecks the Host translation against the source projection, requires a valid material-free `SafeLeaseProjection`, passes only that projection to transport activation, and never places lease identity or provider credential material on the app-server JSONL wire. This behavior is not reachable from v0.85.0 generic settings targets.
 
 The source restriction on artifact input is necessary because the canonical contract deliberately exposes opaque Artifact Store handles rather than local paths or URLs. Supporting those handles would require a new Host materialization contract; this driver does not guess a location or widen the existing wire shape.
