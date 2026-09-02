@@ -249,7 +249,11 @@ for platform in "${PLATFORMS[@]}"; do
     if [[ "$platform" == windows-* ]]; then
         # Windows (zip)
         echo "Creating aos-$platform.zip..."
-        (cd "$platform" && zip -r ../aos-$platform.zip .)
+        if command -v zip >/dev/null 2>&1; then
+            (cd "$platform" && zip -r ../aos-$platform.zip .)
+        else
+            (cd "$platform" && powershell -NoProfile -Command "Compress-Archive -Path '*' -DestinationPath '../aos-$platform.zip' -Force")
+        fi
     else
         # Unix platforms (tar.gz) - use wrapper directory for mise compatibility
         echo "Creating aos-$platform.tar.gz..."
@@ -262,7 +266,12 @@ echo "==> Extracting archives for testing..."
 for platform in "${PLATFORMS[@]}"; do
     rm -rf "$platform"
     if [[ "$platform" == windows-* ]]; then
-        mkdir -p "$platform" && (cd "$platform" && unzip -q ../aos-$platform.zip)
+        mkdir -p "$platform"
+        if command -v unzip >/dev/null 2>&1; then
+            (cd "$platform" && unzip -q ../aos-$platform.zip)
+        else
+            (cd "$platform" && powershell -NoProfile -Command "Expand-Archive -Path '../aos-$platform.zip' -DestinationPath '.' -Force")
+        fi
     else
         tar -xzf aos-$platform.tar.gz && mv aos "$platform"
     fi

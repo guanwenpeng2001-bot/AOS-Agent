@@ -148,13 +148,18 @@ function currentBinaryPlatform() {
 	throw new Error(`Unsupported binary platform: ${process.platform} ${process.arch}`);
 }
 
+function toMsysPath(value) {
+	return value.replace(/^([A-Za-z]):[\\/]/u, (_, drive) => `/${drive.toLowerCase()}/`).replaceAll("\\", "/");
+}
+
 function buildBunBinaryRelease(targetDirectory, archiveDirectory) {
 	if (!commandExists("bun")) {
 		throw new Error("Bun is required for the local binary release build.");
 	}
 	const platform = currentBinaryPlatform();
 	const binaryBuildDirectory = join(archiveDirectory, "binary-build");
-	run("./scripts/build-binaries.sh", [
+	const buildScript = "./scripts/build-binaries.sh";
+	const buildArgs = [
 		"--skip-install",
 		"--skip-deps",
 		"--skip-build",
@@ -162,7 +167,12 @@ function buildBunBinaryRelease(targetDirectory, archiveDirectory) {
 		platform,
 		"--out",
 		binaryBuildDirectory,
-	]);
+	];
+	if (process.platform === "win32") {
+		run("bash", [buildScript, ...buildArgs.slice(0, -1), toMsysPath(binaryBuildDirectory)]);
+	} else {
+		run(buildScript, buildArgs);
+	}
 	rmSync(targetDirectory, { force: true, recursive: true });
 	cpSync(join(binaryBuildDirectory, platform), targetDirectory, { recursive: true });
 	const archiveName = platform.startsWith("windows-") ? `aos-${platform}.zip` : `aos-${platform}.tar.gz`;
@@ -231,7 +241,11 @@ for (const pkg of packages) {
 }
 
 if (!options.skipTest) {
-	run("./test.sh", [], { cwd: repoRoot });
+	if (process.platform === "win32") {
+		run("bash", ["./test.sh"], { cwd: repoRoot });
+	} else {
+		run("./test.sh", [], { cwd: repoRoot });
+	}
 }
 
 const tarballs = new Map();
