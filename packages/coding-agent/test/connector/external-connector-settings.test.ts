@@ -159,6 +159,72 @@ describe("External Connector settings", () => {
 		});
 	});
 
+	it("rejects aos_gateway in an unselected generic catalog target", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-connector-unselected-gateway-"));
+		directories.push(cwd);
+		const unsafe = target(cwd, "unsafe", "external.unsafe");
+		const storage = new InMemorySettingsStorage();
+		writeSettings(storage, "global", {
+			externalConnectors: {
+				schemaVersion: 1,
+				targets: [
+					target(cwd, "selected-safe", "external.safe"),
+					{
+						...unsafe,
+						capabilityCeiling: { ...unsafe.capabilityCeiling, modelAccess: ["aos_gateway"] },
+					},
+				],
+				targetId: "selected-safe",
+			},
+		});
+
+		expect(() => SettingsManager.fromStorage(storage).getExternalConnectorTargetSettings()).toThrow(
+			expect.objectContaining({
+				reason: "capability_widened",
+				path: "$.global.targets[1].capabilityCeiling.modelAccess",
+			}),
+		);
+	});
+
+	it("rejects aos_gateway before trusted project or Role narrowing", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-connector-narrowed-gateway-"));
+		directories.push(cwd);
+		const unsafe = target(cwd, "narrowed", "external.narrowed");
+		const storage = new InMemorySettingsStorage();
+		writeSettings(storage, "global", {
+			externalConnectors: {
+				schemaVersion: 1,
+				targets: [{
+					...unsafe,
+					capabilityCeiling: {
+						...unsafe.capabilityCeiling,
+						modelAccess: ["none", "aos_gateway"],
+					},
+				}],
+				targetId: "narrowed",
+			},
+		});
+		writeSettings(storage, "project", {
+			externalConnectors: {
+				schemaVersion: 1,
+				targetId: "narrowed",
+				capabilityCeiling: { modelAccess: ["none"] },
+				role: {
+					schemaVersion: 1,
+					targetId: "narrowed",
+					capabilityCeiling: { modelAccess: ["none"] },
+				},
+			},
+		});
+
+		expect(() =>
+			SettingsManager.fromStorage(storage, { projectTrusted: true }).getExternalConnectorTargetSettings(),
+		).toThrow(expect.objectContaining({
+			reason: "capability_widened",
+			path: "$.global.targets[0].capabilityCeiling.modelAccess",
+		}));
+	});
+
 	it("rejects project selection when the existing project trust decision is false", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-connector-project-trust-"));
 		directories.push(cwd);

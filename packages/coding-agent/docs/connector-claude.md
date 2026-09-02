@@ -11,8 +11,9 @@ This page records the settings registration and private driver contract. The thr
    run, and produce durable receipts; real authentication remains a separate
    certification step.
 3. Model-access boundary: `aos_gateway` is an internal Host and Scheduler path.
-   Generic JSONL settings targets cannot select it; the packaged runtime
-   rejects that selection with `capability_widened`.
+   The settings catalog parser rejects any generic target that contains it,
+   before target selection or project/Role narrowing, with
+   `capability_widened`.
 
 The capability matrix below is enforced when the settings target is composed.
 
@@ -29,7 +30,7 @@ The capability matrix below is enforced when the settings target is composed.
       "providerId": "claude-local",
       "driver": "claude",
       "executablePath": "<ABSOLUTE_EXECUTABLE_PATH>",
-      "modulePath": "<ABSOLUTE_PINNED_COMPANION_PATH>",
+      "modulePath": "<ABSOLUTE_CLAUDE_CODE_CLI_ENTRY_MODULE_PATH>",
       "cwd": "<ABSOLUTE_WORKSPACE_PATH>",
       "version": "0.3.246",
       "executableIdentity": "sha256:<64_HEX>",
@@ -47,8 +48,10 @@ The capability matrix below is enforced when the settings target is composed.
 ```
 
 The exact file-hash commands are documented in
-[`external-agent-connector.md`](external-agent-connector.md). The executable,
-companion, and optional SDK must be installed before use; see the
+[`external-agent-connector.md`](external-agent-connector.md). `modulePath`
+identifies the Claude Code CLI entry module that the pinned Agent SDK asks the
+Host spawn hook to execute; it is not the SDK companion module. The executable,
+Claude Code CLI, and optional SDK must be installed before use; see the
 [Claude Code setup guide](https://code.claude.com/docs/en/getting-started).
 The Host passes `Options.spawnClaudeCodeProcess` to the pinned SDK. That hook
 validates the SDK command, module, cwd, bounded argv, and secret-free

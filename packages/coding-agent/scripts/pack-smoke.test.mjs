@@ -39,6 +39,14 @@ const processModulePath = join(
 	"assets",
 	"fake-connector-process.mjs",
 );
+const claudeProcessBridgePath = join(
+	packageDirectory,
+	"src",
+	"core",
+	"connector",
+	"assets",
+	"claude-process-bridge.mjs",
+);
 const loaderPath = join(packageDirectory, "src", "core", "connector", "packaged-driver.ts");
 const headSha = "0123456789abcdef0123456789abcdef01234567";
 
@@ -160,6 +168,7 @@ function createStagedPackage(root) {
 	);
 	copyFileSync(fixturePath, join(assets, "fake-connector.json"));
 	copyFileSync(processModulePath, join(assets, "fake-connector-process.mjs"));
+	copyFileSync(claudeProcessBridgePath, join(assets, "claude-process-bridge.mjs"));
 	writeFileSync(join(staged, "npm-shrinkwrap.json"), '{"name":"aos-agent","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"aos-agent","version":"1.0.0"}}}\n');
 	writeFileSync(
 		join(staged, "package.json"),
@@ -189,7 +198,7 @@ function createStagedPackage(root) {
 	return staged;
 }
 
-test("package metadata owns the CLI, SDK, External Connector exports, and both asset copies", () => {
+test("package metadata owns the CLI, SDK, External Connector exports, and production asset copies", () => {
 	const packageJson = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"));
 	assert.equal(packageJson.bin.aos, "dist/launcher.js");
 	assert.deepEqual(packageJson.exports["."], {
@@ -210,6 +219,9 @@ test("package metadata owns the CLI, SDK, External Connector exports, and both a
 	assert.match(packageJson.scripts["copy-assets"], /fake-connector-process\.mjs/u);
 	assert.match(packageJson.scripts["copy-binary-assets"], /fake-connector-process\.mjs/u);
 	assert.ok(existsSync(processModulePath));
+	assert.match(packageJson.scripts["copy-assets"], /claude-process-bridge\.mjs/u);
+	assert.match(packageJson.scripts["copy-binary-assets"], /claude-process-bridge\.mjs/u);
+	assert.ok(existsSync(claudeProcessBridgePath));
 });
 
 test("package-content validation catches missing public exports and assets", () => {
@@ -226,6 +238,7 @@ test("package-content validation catches missing public exports and assets", () 
 		"dist/core/connector/packaged-driver.d.ts",
 		"dist/core/connector/assets/fake-connector.json",
 		"dist/core/connector/assets/fake-connector-process.mjs",
+		"dist/core/connector/assets/claude-process-bridge.mjs",
 		"package.json",
 		"npm-shrinkwrap.json",
 	].map((path) => ({ path }));
@@ -237,6 +250,10 @@ test("package-content validation catches missing public exports and assets", () 
 	assert.throws(
 		() => assertPackageContents({ files: files.filter(({ path }) => !path.endsWith("fake-connector-process.mjs")) }),
 		/missing package\/dist\/core\/connector\/assets\/fake-connector-process\.mjs/u,
+	);
+	assert.throws(
+		() => assertPackageContents({ files: files.filter(({ path }) => !path.endsWith("claude-process-bridge.mjs")) }),
+		/missing package\/dist\/core\/connector\/assets\/claude-process-bridge\.mjs/u,
 	);
 });
 
@@ -361,6 +378,10 @@ test("external npm install boots the CLI and SDK before executing the test-suppo
 			copyFileSync(
 				join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "fake-connector-process.mjs"),
 				join(compiledDirectory, "external-connector-assets", "fake-connector-process.mjs"),
+			);
+			copyFileSync(
+				join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "claude-process-bridge.mjs"),
+				join(compiledDirectory, "external-connector-assets", "claude-process-bridge.mjs"),
 			);
 			assertExecutedTrace(JSON.parse(run(executable, [], compiledDirectory)).trace);
 		}

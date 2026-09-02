@@ -10,9 +10,13 @@ import type {
 } from "./claude.ts";
 
 const MAX_CHUNK_BYTES = 64 * 1024;
+const MAX_STDOUT_QUEUE_BYTES = 256 * 1024;
+const MAX_STDOUT_TOTAL_BYTES = 4 * 1024 * 1024;
 const MAX_ARGUMENTS = 256;
 const MAX_ENVIRONMENT_KEYS = 256;
 const SENSITIVE_ENVIRONMENT_KEY = /(auth|credential|password|secret|token|api_?key)/iu;
+const BRIDGE_FAILURE_MESSAGE = "Claude Code supervised process bridge failed";
+const STDOUT_LIMIT_MESSAGE = "Claude Code supervised process bridge stdout limit exceeded";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -24,12 +28,20 @@ function writeMessage(channel: ExternalConnectorProcessChannel, value: unknown):
 
 class ContainedClaudeProcess extends EventEmitter implements PrivateClaudeSpawnedProcess {
 	readonly stdin: Writable;
-	readonly stdout = new PassThrough();
+	readonly stdout = new PassThrough({
+		readableHighWaterMark: MAX_CHUNK_BYTES,
+		writableHighWaterMark: MAX_CHUNK_BYTES,
+	});
 	#killed = false;
 	#exitCode: number | null = null;
 	#signalCode: NodeJS.Signals | null = null;
 	#settled = false;
+	#discardStdout = false;
+	#stdoutBytes = 0;
+	#releaseBackpressure: (() => void) | undefined;
 	readonly #channel: ExternalConnectorProcessChannel;
+	readonly #signal: AbortSignal;
+	readonly #abort: () => void;
 
 	constructor(channel: ExternalConnectorProcessChannel, launch: {
 		readonly command: string;
@@ -39,6 +51,7 @@ class ContainedClaudeProcess extends EventEmitter implements PrivateClaudeSpawne
 	}, signal: AbortSignal) {
 		super();
 		this.#channel = channel;
+		this.#signal = signal;
 		this.stdin = new Writable({
 			write(chunk: Buffer | string, _encoding, callback) {
 				try {
@@ -64,12 +77,15 @@ class ContainedClaudeProcess extends EventEmitter implements PrivateClaudeSpawne
 			},
 		});
 		writeMessage(channel, { type: "launch", ...launch });
-		const abort = (): void => {
+		this.#abort = (): void => {
+			this.#discardStdout = true;
+			this.#releaseBackpressure?.();
+			this.stdout.resume();
 			this.kill("SIGTERM");
 		};
-		if (signal.aborted) abort();
-		else signal.addEventListener("abort", abort, { once: true });
-		void this.#read(channel).finally(() => signal.removeEventListener("abort", abort));
+		if (signal.aborted) this.#abort();
+		else signal.addEventListener("abort", this.#abort, { once: true });
+		void this.#read(channel);
 	}
 
 	get killed(): boolean {
@@ -103,10 +119,25 @@ class ContainedClaudeProcess extends EventEmitter implements PrivateClaudeSpawne
 				const message: unknown = JSON.parse(line);
 				if (!isRecord(message) || typeof message.type !== "string") throw new Error("Claude bridge response is invalid");
 				if (message.type === "stdout" && typeof message.data === "string") {
-					this.stdout.write(Buffer.from(message.data, "base64"));
+					const bytes = Buffer.from(message.data, "base64");
+					if (
+						bytes.byteLength > MAX_CHUNK_BYTES ||
+						bytes.toString("base64") !== message.data
+					) throw new Error("Claude bridge response is invalid");
+					this.#stdoutBytes += bytes.byteLength;
+					if (
+						this.#stdoutBytes > MAX_STDOUT_TOTAL_BYTES ||
+						this.stdout.readableLength + this.stdout.writableLength + bytes.byteLength > MAX_STDOUT_QUEUE_BYTES
+					) throw new Error(STDOUT_LIMIT_MESSAGE);
+					if (!this.#discardStdout && !this.stdout.destroyed) await this.#writeStdout(bytes);
+					writeMessage(channel, { type: "stdout_ack" });
 					continue;
 				}
-				if (message.type === "error") throw new Error("Claude Code process failed to start");
+				if (message.type === "error") {
+					throw new Error(message.code === "stdout_limit_exceeded"
+						? STDOUT_LIMIT_MESSAGE
+						: "Claude Code process failed to start");
+				}
 				if (
 					message.type !== "exit" ||
 					(message.code !== null && (!Number.isSafeInteger(message.code) || (message.code as number) < 0)) ||
@@ -115,16 +146,46 @@ class ContainedClaudeProcess extends EventEmitter implements PrivateClaudeSpawne
 				this.#settled = true;
 				this.#exitCode = message.code as number | null;
 				this.#signalCode = message.signal as NodeJS.Signals | null;
+				this.#cleanup();
 				this.stdout.end();
 				this.emit("exit", this.#exitCode, this.#signalCode);
 				return;
 			}
-		} catch {
+		} catch (error) {
 			if (this.#settled) return;
 			this.#settled = true;
+			this.#killed = true;
+			try {
+				writeMessage(this.#channel, { type: "kill", signal: "SIGKILL" });
+			} catch {
+				// The supervisor still owns containment if the process channel has closed.
+			}
+			this.#cleanup();
 			this.stdout.destroy();
-			this.emit("error", new Error("Claude Code supervised process bridge failed"));
+			this.emit("error", new Error(error instanceof Error && error.message === STDOUT_LIMIT_MESSAGE
+				? STDOUT_LIMIT_MESSAGE
+				: BRIDGE_FAILURE_MESSAGE));
 		}
+	}
+
+	async #writeStdout(bytes: Buffer): Promise<void> {
+		if (this.stdout.write(bytes)) return;
+		await new Promise<void>((resolve) => {
+			const release = (): void => {
+				this.stdout.off("drain", release);
+				this.stdout.off("close", release);
+				if (this.#releaseBackpressure === release) this.#releaseBackpressure = undefined;
+				resolve();
+			};
+			this.#releaseBackpressure = release;
+			this.stdout.once("drain", release);
+			this.stdout.once("close", release);
+		});
+	}
+
+	#cleanup(): void {
+		this.#signal.removeEventListener("abort", this.#abort);
+		this.#releaseBackpressure?.();
 	}
 }
 

@@ -1,6 +1,10 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildExternalConnectorTargetConfig } from "../../src/core/connector/target-config.ts";
 import { ProductionClaudeProcessBridge } from "../../src/core/connector/vendor/claude-process-bridge.ts";
@@ -8,6 +12,7 @@ import type { ExternalConnectorProcessChannel, ExternalConnectorProcessControlle
 
 const directories: string[] = [];
 const identity = `sha256:${"0".repeat(64)}`;
+const processBridgeModule = new URL("../../src/core/connector/assets/claude-process-bridge.mjs", import.meta.url);
 
 afterEach(() => {
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -15,6 +20,7 @@ afterEach(() => {
 
 class FakeChannel implements ExternalConnectorProcessChannel {
 	readonly writes: string[] = [];
+	readCount = 0;
 	readonly #reads: string[];
 
 	constructor(reads: readonly unknown[]) {
@@ -26,8 +32,34 @@ class FakeChannel implements ExternalConnectorProcessChannel {
 	}
 
 	readLine(): Promise<string | undefined> {
+		this.readCount += 1;
 		return Promise.resolve(this.#reads.shift());
 	}
+}
+
+function nextTurn(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
+
+function waitForExit(
+	spawned: ReturnType<ProductionClaudeProcessBridge["spawn"]>,
+): Promise<readonly [number | null, NodeJS.Signals | null]> {
+	return new Promise((resolve, reject) => {
+		const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+			spawned.off("error", onError);
+			resolve([code, signal]);
+		};
+		const onError = (error: Error): void => {
+			spawned.off("exit", onExit);
+			reject(error);
+		};
+		spawned.once("exit", onExit);
+		spawned.once("error", onError);
+	});
+}
+
+function waitForError(spawned: ReturnType<ProductionClaudeProcessBridge["spawn"]>): Promise<Error> {
+	return new Promise((resolve) => spawned.once("error", resolve));
 }
 
 function target(cwd: string) {
@@ -93,6 +125,114 @@ describe("Claude supervised process bridge", () => {
 			args: ["--version"],
 			env: { SAFE_FLAG: "1" },
 		});
+		expect(channel.writes.map((line) => JSON.parse(line).type)).toEqual(["launch", "stdout_ack"]);
+	});
+
+	it("stops reading while stdout is backpressured, then resumes after drain", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-claude-bridge-backpressure-"));
+		directories.push(cwd);
+		const channel = new FakeChannel([
+			{ type: "stdout", data: Buffer.alloc(64 * 1024, 1).toString("base64") },
+			{ type: "exit", code: 0, signal: null },
+		]);
+		const spawned = bridge(cwd, channel).spawn(
+			{ supervisorRef: "supervisor", operationNonce: "nonce" },
+			{ command: process.execPath, args: [], cwd, env: {}, signal: new AbortController().signal },
+		);
+		await nextTurn();
+
+		expect(channel.readCount).toBe(1);
+		expect(channel.writes.map((line) => JSON.parse(line).type)).toEqual(["launch"]);
+
+		spawned.stdout.resume();
+		await waitForExit(spawned);
+		expect(channel.readCount).toBe(2);
+		expect(channel.writes.map((line) => JSON.parse(line).type)).toEqual(["launch", "stdout_ack"]);
+	});
+
+	it("discards backpressured output on abort and removes lifecycle listeners after exit", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-claude-bridge-abort-"));
+		directories.push(cwd);
+		const channel = new FakeChannel([
+			{ type: "stdout", data: Buffer.alloc(64 * 1024, 1).toString("base64") },
+			{ type: "exit", code: null, signal: "SIGTERM" },
+		]);
+		const abortController = new AbortController();
+		const spawned = bridge(cwd, channel).spawn(
+			{ supervisorRef: "supervisor", operationNonce: "nonce" },
+			{ command: process.execPath, args: [], cwd, env: {}, signal: abortController.signal },
+		);
+		await nextTurn();
+		abortController.abort();
+		const [code, signal] = await waitForExit(spawned);
+
+		expect([code, signal]).toEqual([null, "SIGTERM"]);
+		expect(channel.writes.map((line) => JSON.parse(line).type)).toEqual([
+			"launch",
+			"kill",
+			"stdout_ack",
+		]);
+		expect(spawned.kill("SIGTERM")).toBe(false);
+	});
+
+	it("terminates a noisy supervised stdout stream with a stable bounded error", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-claude-bridge-limit-"));
+		directories.push(cwd);
+		const channel = new FakeChannel(Array.from({ length: 65 }, () => ({
+			type: "stdout",
+			data: Buffer.alloc(64 * 1024, 1).toString("base64"),
+		})));
+		const spawned = bridge(cwd, channel).spawn(
+			{ supervisorRef: "supervisor", operationNonce: "nonce" },
+			{ command: process.execPath, args: [], cwd, env: {}, signal: new AbortController().signal },
+		);
+		spawned.stdout.resume();
+		const error = await waitForError(spawned);
+
+		expect(error).toEqual(new Error("Claude Code supervised process bridge stdout limit exceeded"));
+		expect(channel.writes.map((line) => JSON.parse(line))).toContainEqual({ type: "kill", signal: "SIGKILL" });
+		expect(spawned.killed).toBe(true);
+	});
+
+	it("bounds raw stdout from a high-speed child inside the packaged bridge", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-claude-raw-stdout-limit-"));
+		directories.push(cwd);
+		const helper = spawn(process.execPath, [fileURLToPath(processBridgeModule)], {
+			cwd,
+			stdio: ["pipe", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		helper.stderr.resume();
+		const lines = createInterface({ input: helper.stdout, crlfDelay: Infinity });
+		helper.stdin.write(`${JSON.stringify({
+			type: "launch",
+			command: process.execPath,
+			args: ["-e", "process.stdout.write(Buffer.alloc(5 * 1024 * 1024, 1))"],
+			cwd,
+			env: {},
+		})}\n`);
+		let rawBytes = 0;
+		let terminal: unknown;
+		try {
+			for await (const line of lines) {
+				const message: unknown = JSON.parse(line);
+				if (typeof message !== "object" || message === null || !("type" in message)) continue;
+				if (message.type === "stdout" && "data" in message && typeof message.data === "string") {
+					rawBytes += Buffer.from(message.data, "base64").byteLength;
+					helper.stdin.write(`${JSON.stringify({ type: "stdout_ack" })}\n`);
+					continue;
+				}
+				terminal = message;
+				break;
+			}
+		} finally {
+			lines.close();
+			helper.kill("SIGKILL");
+			await once(helper, "close");
+		}
+
+		expect(rawBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+		expect(terminal).toEqual({ type: "error", code: "stdout_limit_exceeded" });
 	});
 
 	it("rejects missing channels, command drift, sensitive environment, and oversized argv", () => {

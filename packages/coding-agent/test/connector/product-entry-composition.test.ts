@@ -514,7 +514,7 @@ describe("External Connector product entry composition", () => {
 			capabilityCeiling: { ...base, modelAccess: ["none", "aos_gateway"] },
 		}))).rejects.toMatchObject({
 			reason: "capability_widened",
-			path: "$.selectedTarget.capabilityCeiling.modelAccess",
+			path: "$.global.targets[0].capabilityCeiling.modelAccess",
 		});
 	});
 

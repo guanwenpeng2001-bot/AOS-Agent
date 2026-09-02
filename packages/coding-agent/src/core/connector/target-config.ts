@@ -348,11 +348,13 @@ function parseTargetDefinition(
 			`External Connector ${driver} driver requires version ${PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES[driver].version}.`,
 		);
 	}
-	if (driver !== undefined && capabilityCeiling.modelAccess.includes("aos_gateway")) {
+	if (capabilityCeiling.modelAccess.includes("aos_gateway")) {
 		fail(
 			"capability_widened",
 			`${path}.capabilityCeiling.modelAccess`,
-			"Settings-selected vendor drivers cannot use aos_gateway model access; support is planned for a later release.",
+			driver === undefined
+				? "Generic External Connector targets cannot use aos_gateway model access."
+				: "Settings-selected vendor drivers cannot use aos_gateway model access; support is planned for a later release.",
 		);
 	}
 	const requiredResume = driver !== "claude";
