@@ -14,6 +14,12 @@ This page records the settings registration and private driver contract. The thr
    `aos_gateway` with an exact ModelBroker route whose canonical provider is
    `amazon-bedrock`. The private driver translates only Claude's provider
    selector to `bedrock`. Generic JSONL and ACP targets remain rejected.
+4. PR-04 real-task result: the authorized isolated `agent_owned` attempt
+   failed with `agent_run_failed` before a reply, Tool Gateway exchange, or
+   durable `AttemptReceipt`. The `aos_gateway` attempt was not started because
+   the isolated AOS credential set had no `amazon-bedrock` credential; an
+   `openai-codex` credential cannot satisfy Claude's exact provider contract.
+   Neither mode is task-certified.
 
 The capability matrix below is enforced when the settings target is composed.
 

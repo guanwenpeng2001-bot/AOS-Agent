@@ -18,6 +18,12 @@ Capability matrix and pinned version for the private Codex app-server connector.
    real authentication remains a separate certification step.
 3. Model-access boundary: settings-selected Codex targets may use
    `aos_gateway`; generic JSONL and ACP targets remain rejected.
+4. PR-04 real-task result: both authorized isolated modes failed certification.
+   `agent_owned` and `aos_gateway` produced no terminal event, Tool Gateway
+   terminal record, or durable `AttemptReceipt` before the bounded timeout.
+   The gateway run persisted the requested `openai-codex/gpt-5.4-mini`
+   projection and ModelBinding digest, but no `effectiveModel`; therefore the
+   projected provider/model and digest were not certified as actually used.
 
 ## Settings registration
 

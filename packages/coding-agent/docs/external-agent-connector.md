@@ -4,6 +4,19 @@
 
 Settings-based composition supports generic JSONL targets and explicit private vendor drivers. Claude and Codex support `none`, `agent_owned`, and exclusive `aos_gateway`; generic JSONL and ACP continue to reject `aos_gateway`. Registration, capability negotiation, supervised activation, execution, and durable receipt settlement use the same connector path.
 
+The PR-04 authorized real-task attempt did not promote any vendor mode to
+task-certified status. Codex `agent_owned` and `aos_gateway` both timed out
+without a terminal event, Tool Gateway terminal record, or durable
+`AttemptReceipt`; the gateway attempt persisted the requested
+`openai-codex/gpt-5.4-mini` projection and ModelBinding digest, but no
+`effectiveModel` observation. Claude `agent_owned` failed with
+`agent_run_failed` before reply/tool/receipt evidence, while Claude
+`aos_gateway` was not started because the isolated AOS credential set had no
+`amazon-bedrock` credential. ACP remains handshake-only because the reviewed
+real backends fail the exact capability/authentication contract before session
+creation. These results describe certification evidence, not removal of the
+implemented settings capability.
+
 `ExternalAgentConnector` is the only public execution contract for an external
 agent. It implements the shared `TaskExecutorProvider` boundary and therefore
 enters the same executor pool as every other provider. An external run uses the

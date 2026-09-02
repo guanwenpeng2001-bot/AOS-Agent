@@ -24,6 +24,8 @@ Capability matrix and pinned version for the private ACP stable-v1 connector. Th
 3. Real-backend spike: Claude ACP, Codex ACP, and Gemini candidates did not
    satisfy the product's exact `capability` / `authMethods` contract. ACP
    therefore remains handshake-level evidence, not real-backend certification.
+4. PR-04 owner disposition: keep ACP handshake-only. No real backend task,
+   credential copy, provider request, or task-level receipt claim was made.
 
 ## Settings registration
 
