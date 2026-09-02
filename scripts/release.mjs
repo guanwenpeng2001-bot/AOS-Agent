@@ -265,7 +265,7 @@ run("npm run build:offline");
 console.log();
 
 console.log("Running tests...");
-run("./test.sh");
+run(process.platform === "win32" ? "bash ./test.sh" : "./test.sh");
 console.log();
 
 // 7. Commit and tag
