@@ -1,8 +1,23 @@
 # Claude connector
 
-Capability matrix and pinned version for the private Claude Agent SDK connector. The machine-readable pin is `PRIVATE_CLAUDE_AGENT_SDK_VERSION` (`0.3.246`) in `src/core/connector/vendor/claude.ts`; `PRIVATE_CLAUDE_AGENT_SDK_CAPABILITIES` records the supported values below.
+This page records private driver evidence, not a user-facing connector
+registration. The three layers are:
 
-| Capability | Status | Pinned behavior used by the connector |
+1. Pin and handshake evidence: the machine-readable pin is
+   `PRIVATE_CLAUDE_AGENT_SDK_VERSION` (`0.3.246`) in
+   `src/core/connector/vendor/claude.ts`; the v0.85.0 handshake check exercises
+   that pinned Claude Agent SDK protocol.
+2. Product reachability: v0.85.0 does not compose this driver into the
+   settings target or registry path. Users cannot register or select a Claude
+   connector; vendor wiring is in progress.
+3. Model-access boundary: `aos_gateway` is an internal Host and Scheduler path.
+   Generic JSONL settings targets cannot select it; the packaged runtime
+   rejects that selection with `capability_widened`.
+
+The capability matrix below describes private driver behavior only. It does
+not turn pin or handshake evidence into product availability.
+
+| Capability | Status | Pinned protocol evidence and private driver behavior |
 | --- | --- | --- |
 | Images | supported | `query()` accepts an `AsyncIterable<SDKUserMessage>`. Its user message accepts Anthropic image blocks with base64 JPEG, PNG, GIF, or WebP sources. The connector reads the content-addressed bytes from the injected Artifact Store and verifies size and SHA-256 before encoding. |
 | File artifacts | version-limited | The pinned message type accepts document blocks. The connector supports base64 PDF and strict UTF-8 `text/plain` documents. Other canonical file media, including JSON, Markdown, and octet-stream, are explicitly unsupported at this version. |
@@ -15,7 +30,11 @@ Capability matrix and pinned version for the private Claude Agent SDK connector.
 
 The Host admits metadata-only canonical Artifact references before driver spawn. The driver then uses its injected Artifact Store authority to load by `artifactId`, verifies `sizeBytes` and SHA-256, and creates one Claude user message containing the text block followed by native image or document blocks. Unsupported media and missing artifact authority fail with `external_protocol_unsupported`; unavailable, corrupt, or non-UTF-8 accepted content fails closed without sending a query.
 
-## `aos_gateway` boundary
+## `aos_gateway` boundary (private implementation evidence)
+
+The exact support matrix below is not reachable from v0.85.0 settings targets.
+The `aos_gateway` projection and credential-lease mechanism serves internal
+Host and Scheduler paths only.
 
 The exact support matrix maps provider, model, effort, service tier, fallback decision, and binding digest to distinct private companion fields. Version `0.3.246` can express the full set only for Bedrock: the companion selects Bedrock explicitly, passes the exact model and effort options, and sets the exact Bedrock service tier. Spawn also requires a valid material-free `SafeLeaseProjection`; no provider key is added to the driver protocol.
 
