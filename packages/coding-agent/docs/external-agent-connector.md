@@ -116,8 +116,8 @@ Compute each identity from the exact configured file, for example
 `sha256sum /absolute/path/to/file` on POSIX or
 `(Get-FileHash -Algorithm SHA256 C:\absolute\path\to\file).Hash.ToLower()` on
 PowerShell, then prefix the 64 hexadecimal characters with `sha256:`. Missing
-files, identity drift, version drift, unsupported capabilities, and
-`aos_gateway` all fail before vendor launch.
+files, identity drift, version drift, unsupported capabilities, and invalid or
+unsupported `aos_gateway` configurations all fail before vendor launch.
 
 The descriptor pins `providerId`, `providerClass: "external_connector"`,
 `revision`, and the capability snapshot digest. A selection must repeat those
