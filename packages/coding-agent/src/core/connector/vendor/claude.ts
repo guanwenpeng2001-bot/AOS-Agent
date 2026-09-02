@@ -9,6 +9,7 @@
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import type { Readable, Writable } from "node:stream";
 import {
 	Result,
 	canonicalFoundationJson,
@@ -53,8 +54,9 @@ import type {
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
 } from "./types.ts";
+import { PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES } from "./identity.ts";
 
-export const PRIVATE_CLAUDE_AGENT_SDK_VERSION = "0.3.246" as const;
+export const PRIVATE_CLAUDE_AGENT_SDK_VERSION = PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES.claude.version;
 const CLAUDE_PROTOCOL_NAME = "claude-agent-sdk";
 const CLAUDE_PERMISSION_TOOL = "claude.permission.request";
 const CLAUDE_NAMESPACE = "claude";
@@ -191,6 +193,7 @@ export interface PrivateClaudeCompanionQueryRequest {
 	readonly env: Readonly<Record<string, string>>;
 	readonly tools: readonly PrivateClaudeSelectedTool[];
 	readonly abortController: AbortController;
+	readonly spawnClaudeCodeProcess?: (options: PrivateClaudeSpawnOptions) => PrivateClaudeSpawnedProcess;
 	requestPermission(request: PrivateClaudePermissionRequest): Promise<"allow" | "deny">;
 	executeTool(request: PrivateClaudeToolRequest): Promise<PrivateClaudeToolResult>;
 	observeHook(eventName: "PreToolUse" | "PostToolUse" | "PostToolUseFailure", toolUseId?: string): void;
@@ -206,11 +209,43 @@ export interface PrivateClaudeAgentSdkCompanion {
 	query(request: PrivateClaudeCompanionQueryRequest): PrivateClaudeCompanionQuery;
 }
 
+export interface PrivateClaudeSpawnOptions {
+	readonly command: string;
+	readonly args: readonly string[];
+	readonly cwd?: string;
+	readonly env: Readonly<Record<string, string | undefined>>;
+	readonly signal: AbortSignal;
+}
+
+export interface PrivateClaudeSpawnedProcess {
+	readonly stdin: Writable;
+	readonly stdout: Readable;
+	readonly killed: boolean;
+	readonly exitCode: number | null;
+	readonly signalCode?: NodeJS.Signals | null;
+	kill(signal: NodeJS.Signals): boolean;
+	on(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
+	on(event: "error", listener: (error: Error) => void): void;
+	once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
+	once(event: "error", listener: (error: Error) => void): void;
+	off(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): void;
+	off(event: "error", listener: (error: Error) => void): void;
+}
+
+export interface PrivateClaudeProcessBridge {
+	spawn(
+		reference: { readonly supervisorRef: string; readonly operationNonce: string },
+		options: PrivateClaudeSpawnOptions,
+	): PrivateClaudeSpawnedProcess;
+}
+
 export interface PrivateClaudeAgentSdkDriverOptions {
 	readonly providerId: string;
 	readonly companion: PrivateClaudeAgentSdkCompanion;
 	readonly cwd: string;
-	readonly mcpSelection: McpSelection;
+	readonly processBridge?: PrivateClaudeProcessBridge;
+	/** Optional exact fixed selection. Stock settings bind each run's canonical selection instead. */
+	readonly mcpSelection?: McpSelection;
 	readonly artifactStore?: Pick<ArtifactStoreProvider, "get">;
 	/** Trusted, already-projected environment. Ambient process.env is never consulted. */
 	readonly env?: Readonly<Record<string, string>>;
@@ -745,13 +780,14 @@ function cancellationEvidence(
 /** @internal Package-private driver for the pinned Claude Agent SDK companion. */
 export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDriver {
 	readonly modelSupportMatrix = PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX;
-	readonly toolGatewayMcpSelection: McpSelection;
+	readonly toolGatewayMcpSelection?: McpSelection;
 	readonly #providerId: string;
 	readonly #companion: PrivateClaudeAgentSdkCompanion;
 	readonly #cwd: string;
 	readonly #env: Readonly<Record<string, string>>;
 	readonly #artifactStore: Pick<ArtifactStoreProvider, "get"> | undefined;
-	readonly #selectedTools: readonly PrivateClaudeSelectedTool[];
+	readonly #processBridge: PrivateClaudeProcessBridge | undefined;
+	readonly #selectedTools: readonly PrivateClaudeSelectedTool[] | undefined;
 	readonly #limits: PrivateClaudeAgentSdkLimits;
 	readonly #now: () => string;
 	readonly #operations = new Map<string, ClaudeOperation>();
@@ -763,15 +799,16 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
 		}
 		if (typeof options.cwd !== "string" || options.cwd.length === 0) throw new TypeError("Claude cwd is required");
-		const mcpSelection = validateMcpSelection(options.mcpSelection);
-		if (!mcpSelection.ok) throw new TypeError("Claude MCP selection is not canonical");
+		const mcpSelection = options.mcpSelection === undefined ? undefined : validateMcpSelection(options.mcpSelection);
+		if (mcpSelection !== undefined && !mcpSelection.ok) throw new TypeError("Claude MCP selection is not canonical");
 		this.#providerId = options.providerId;
 		this.#companion = options.companion;
 		this.#cwd = options.cwd;
 		this.#env = Object.freeze({ ...(options.env ?? {}) });
 		this.#artifactStore = options.artifactStore;
-		this.toolGatewayMcpSelection = mcpSelection.value;
-		this.#selectedTools = resolveTools(mcpSelection.value);
+		this.#processBridge = options.processBridge;
+		if (mcpSelection?.ok === true) this.toolGatewayMcpSelection = mcpSelection.value;
+		this.#selectedTools = mcpSelection?.ok === true ? resolveTools(mcpSelection.value) : undefined;
 		this.#limits = resolveLimits(options.limits);
 		this.#now = options.now ?? (() => new Date().toISOString());
 	}
@@ -789,9 +826,13 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		const mcpSelection = validateMcpSelection(request.mcpSelection);
 		if (
 			!mcpSelection.ok ||
-			canonicalFoundationJson(mcpSelection.value) !== canonicalFoundationJson(this.toolGatewayMcpSelection)
+			(this.toolGatewayMcpSelection !== undefined &&
+				canonicalFoundationJson(mcpSelection.value) !== canonicalFoundationJson(this.toolGatewayMcpSelection))
 		) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
-		const tools = intersectToolGatewayRoutes(this.#selectedTools, request.toolGatewayRoutes);
+		const tools = intersectToolGatewayRoutes(
+			this.#selectedTools ?? resolveTools(mcpSelection.value),
+			request.toolGatewayRoutes,
+		);
 		const operation = this.#openOperation({
 			prompt,
 			tools,
@@ -899,6 +940,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		if (input.signal?.aborted === true) abortController.abort();
 		else input.signal?.addEventListener("abort", () => abortController.abort(), { once: true });
 		let operation: ClaudeOperation | undefined;
+		const processBridge = this.#processBridge;
 		const query = this.#companion.query({
 			sdkVersion: PRIVATE_CLAUDE_AGENT_SDK_VERSION,
 			prompt: input.prompt,
@@ -908,6 +950,15 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			env: this.#env,
 			tools: input.tools,
 			abortController,
+			...(processBridge === undefined
+				? {}
+				: {
+					spawnClaudeCodeProcess: (options: PrivateClaudeSpawnOptions) =>
+						processBridge.spawn(
+							{ supervisorRef: input.supervisorRef, operationNonce: input.operationNonce },
+							options,
+						),
+				}),
 			requestPermission: (request) => this.#requestPermission(this.#requireLiveOperation(operation), request),
 			executeTool: (request) => this.#executeTool(this.#requireLiveOperation(operation), request),
 			observeHook: (eventName) => {

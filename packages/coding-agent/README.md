@@ -87,14 +87,13 @@ and packaged driver loader contracts. The model projection contract is
 Host-side; it does not make `aos_gateway` reachable from generic settings
 targets.
 
-In v0.85.0, settings-based product reachability is limited to generic JSONL
-targets with `none` or `agent_owned` model access; the packaged
-`aos.fake-connector` is the covered registration -> run -> receipt example.
-The private Claude, Codex, and ACP vendor drivers are not wired into product
-composition and cannot be registered or selected; vendor wiring is in progress.
-Their pinned handshakes (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, and ACP
-SDK 1.4.0) are protocol evidence only, not product availability.
-`aos_gateway` is internal-only and is rejected for generic settings targets.
+Settings-based product composition supports generic JSONL targets and explicit
+pinned `claude`, `codex`, and `acp` drivers with `none` or `agent_owned` model
+access. Vendor selection is declared by `driver`, never inferred from
+`providerId`; identity, version, and capability drift fail closed before
+launch. The packaged fake and injected vendor adapters cover registration ->
+run -> receipt. Real vendor authentication remains a later certification step,
+and `aos_gateway` is rejected for every settings target.
 
 `aos-agent/external-connector/testing` is test-support only. It exports
 `runPackagedExternalAgentDriverFixture` and `PackagedExternalAgentDriverTrace`
@@ -110,9 +109,9 @@ no-widen rules, passive connector runtime-status projection, and terminal
 or exact-head remote artifacts. Packaged smoke (Windows local plus Linux/macOS
 CI), previous-release upgrade/restart, deterministic soak, and pinned vendor
 handshakes are recorded for this Line 13 checkout. Codex subscription print,
-SDK, and TUI returned real replies. The handshakes cover pinned protocol
-packages only; they do not certify vendor connector product reachability. Lines
-14 and 15 remain later work.
+SDK, and TUI returned real replies. These records do not certify real vendor
+authentication through the settings composition. Lines 14 and 15 remain later
+work.
 
 ## Package contents
 

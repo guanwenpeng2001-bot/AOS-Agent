@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added explicit settings composition for pinned Claude, Codex, and ACP External Connector drivers in `none` and `agent_owned` modes, including fail-closed identity, version, and capability validation.
+
 ### Fixed
 
 - Corrected External Connector documentation to distinguish v0.85.0 generic JSONL target reachability (`none`/`agent_owned` plus the packaged fake) from private vendor handshake evidence; documented that Claude/Codex/ACP drivers are not wired for registration and that `aos_gateway` is internal-only.

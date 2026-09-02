@@ -5,17 +5,16 @@
  * It is intentionally absent from the package export map and default root.
  */
 
-import {
-	createSdkMcpServer,
-	query,
-	tool,
-	type HookCallback,
-	type McpServerConfig,
-	type Options,
-	type SDKUserMessage,
+import type * as ClaudeAgentSdk from "@anthropic-ai/claude-agent-sdk";
+import type {
+	HookCallback,
+	McpServerConfig,
+	Options,
+	SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { canonicalFoundationJson, type FoundationJsonValue } from "@aos-agent/agent-core";
+import { createJiti } from "jiti";
 import { z } from "zod/v4";
 import {
 	PRIVATE_CLAUDE_AGENT_SDK_VERSION,
@@ -43,8 +42,12 @@ function observationHook(
 	};
 }
 
-function sdkTool(request: PrivateClaudeCompanionQueryRequest, selected: PrivateClaudeSelectedTool) {
-	return tool(
+function sdkTool(
+	request: PrivateClaudeCompanionQueryRequest,
+	selected: PrivateClaudeSelectedTool,
+	sdk: typeof ClaudeAgentSdk,
+) {
+	return sdk.tool(
 		selected.toolName,
 		"Execute the exact host-selected AOS Tool Gateway route.",
 		{ input: z.record(z.string(), z.unknown()) },
@@ -71,7 +74,10 @@ function sdkTool(request: PrivateClaudeCompanionQueryRequest, selected: PrivateC
 	);
 }
 
-function mcpServers(request: PrivateClaudeCompanionQueryRequest): Record<string, McpServerConfig> {
+function mcpServers(
+	request: PrivateClaudeCompanionQueryRequest,
+	sdk: typeof ClaudeAgentSdk,
+): Record<string, McpServerConfig> {
 	const grouped = new Map<string, PrivateClaudeSelectedTool[]>();
 	for (const selected of request.tools) {
 		const tools = grouped.get(selected.serverName) ?? [];
@@ -80,11 +86,11 @@ function mcpServers(request: PrivateClaudeCompanionQueryRequest): Record<string,
 	}
 	return Object.fromEntries([...grouped.entries()].map(([serverName, tools]) => [
 		serverName,
-		createSdkMcpServer({
+		sdk.createSdkMcpServer({
 			name: serverName,
 			version: "1",
 			alwaysLoad: true,
-			tools: tools.map((selected) => sdkTool(request, selected)),
+			tools: tools.map((selected) => sdkTool(request, selected, sdk)),
 		}),
 	]));
 }
@@ -126,8 +132,13 @@ function environmentFor(request: PrivateClaudeCompanionQueryRequest): Record<str
 	};
 }
 
-function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
+function optionsFor(
+	request: PrivateClaudeCompanionQueryRequest,
+	executablePath: string | undefined,
+	sdk: typeof ClaudeAgentSdk,
+): Options {
 	const selectedNames = new Set(request.tools.map((selected) => selected.exposedToolName));
+	const spawnClaudeCodeProcess = request.spawnClaudeCodeProcess;
 	return {
 		abortController: request.abortController,
 		allowedTools: [],
@@ -143,13 +154,17 @@ function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
 			PostToolUse: [{ hooks: [observationHook(request, "PostToolUse")] }],
 			PostToolUseFailure: [{ hooks: [observationHook(request, "PostToolUseFailure")] }],
 		},
-		mcpServers: mcpServers(request),
+		mcpServers: mcpServers(request, sdk),
 		permissionMode: "default",
 		plugins: [],
+		...(executablePath === undefined ? {} : { pathToClaudeCodeExecutable: executablePath }),
 		settingSources: [],
 		skills: [],
 		strictMcpConfig: true,
 		tools: [],
+		...(spawnClaudeCodeProcess === undefined
+			? {}
+			: { spawnClaudeCodeProcess: (options) => spawnClaudeCodeProcess(options) }),
 		canUseTool: async (toolName, sourceInput, permission) => {
 			if (!selectedNames.has(toolName)) {
 				return { behavior: "deny", message: "Tool is not in the exact AOS MCP selection." };
@@ -174,12 +189,22 @@ function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
 	};
 }
 
-export function createPrivateClaudeAgentSdkCompanion(): PrivateClaudeAgentSdkCompanion {
+export async function createPrivateClaudeAgentSdkCompanion(
+	options: { readonly executablePath?: string } = {},
+): Promise<PrivateClaudeAgentSdkCompanion> {
+	let sdk: typeof ClaudeAgentSdk;
+	try {
+		sdk = await createJiti(import.meta.url).import<typeof ClaudeAgentSdk>("@anthropic-ai/claude-agent-sdk");
+	} catch {
+		throw new TypeError(
+			"The pinned Claude Agent SDK is missing. Install @anthropic-ai/claude-agent-sdk@0.3.246; see https://platform.claude.com/docs/en/agent-sdk/typescript.",
+		);
+	}
 	return Object.freeze({
 		sdkVersion: PRIVATE_CLAUDE_AGENT_SDK_VERSION,
-		query: (request: PrivateClaudeCompanionQueryRequest) => query({
+		query: (request: PrivateClaudeCompanionQueryRequest) => sdk.query({
 			prompt: promptFor(request),
-			options: optionsFor(request),
+			options: optionsFor(request, options.executablePath, sdk),
 		}),
 	});
 }

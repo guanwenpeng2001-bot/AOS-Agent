@@ -7,6 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAgentCanonicalSession } from "../../src/core/session/facade.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
 import { packagedExternalAgentDriverProcessModulePath } from "../../src/core/connector/packaged-driver.ts";
+import { createPackagedExternalConnectorRegistryFactory } from "../../src/core/connector/packaged-runtime.ts";
+import type { PrivateExternalConnectorVendorAdapterOverrides } from "../../src/core/connector/vendor/composition.ts";
+import type { PrivateExternalConnectorVendorDriver } from "../../src/core/connector/vendor/identity.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentRuntimeCompositionFactory,
@@ -20,6 +23,7 @@ import type { ExternalConnectorTargetDefinition } from "../../src/external-conne
 import { createRpcHostController } from "../../src/modes/rpc/rpc-host.ts";
 import type { RpcHostOutputRecord } from "../../src/modes/rpc/rpc-host.ts";
 import { crossLayerTargetDefinition } from "./fixtures/cross-layer.ts";
+import { vendorAdapterFixture } from "./fixtures/vendor-composition.ts";
 
 const directories: string[] = [];
 const DEFAULT_MODEL: Model<"anthropic-messages"> = {
@@ -114,8 +118,33 @@ async function createServices(
 	});
 }
 
-async function createRuntime(cwd: string, settingsManager: SettingsManager) {
-	const services = await createServices(cwd, settingsManager);
+async function createRuntime(
+	cwd: string,
+	settingsManager: SettingsManager,
+	vendorAdapters?: PrivateExternalConnectorVendorAdapterOverrides,
+) {
+	let runtimeComposition: ReturnType<typeof createAgentRuntimeCompositionFactory> | undefined;
+	if (vendorAdapters !== undefined) {
+		const targetConfig = settingsManager.getExternalConnectorTargetSettings();
+		const target = targetConfig?.selectedTarget;
+		if (targetConfig === undefined || target === undefined) throw new Error("Vendor target fixture is not selected");
+		const externalConnectorRegistry = await createPackagedExternalConnectorRegistryFactory({
+			target,
+			agentDir: cwd,
+			vendorAdapters,
+		});
+		runtimeComposition = createAgentRuntimeCompositionFactory({
+			toolGatewayCatalog: () => ({
+				gatewayId: `settings-vendor:${target.targetId}`,
+				builtinLocalProviders: [],
+				mcpProviders: [],
+				sandboxProviders: [],
+			}),
+			externalConnectorTargetConfig: targetConfig,
+			...(externalConnectorRegistry === undefined ? {} : { externalConnectorRegistry }),
+		});
+	}
+	const services = await createServices(cwd, settingsManager, runtimeComposition);
 	const factory: CreateAgentSessionRuntimeFactory = async (options) => {
 		const created = await createAgentSessionFromServices({
 			services,
@@ -133,7 +162,159 @@ async function createRuntime(cwd: string, settingsManager: SettingsManager) {
 	});
 }
 
+function vendorSettings(
+	cwd: string,
+	driver: PrivateExternalConnectorVendorDriver,
+	modelAccess: "agent_owned" | "none",
+	overrides: Partial<ExternalConnectorTargetDefinition> = {},
+): SettingsManager {
+	const modulePath = packagedExternalAgentDriverProcessModulePath("fake-connector");
+	const version = driver === "claude" ? "0.3.246" : driver === "codex" ? "0.149.0" : "1.4.0";
+	const target = {
+		schemaVersion: 1 as const,
+		targetId: `${driver}-${modelAccess}`,
+		providerId: `fixture.${driver}.${modelAccess}`,
+		driver,
+		executablePath: process.execPath,
+		modulePath,
+		cwd,
+		version,
+		executableIdentity: identity(process.execPath),
+		moduleIdentity: identity(modulePath),
+		capabilityCeiling: {
+			modelAccess: [modelAccess],
+			resume: driver !== "claude",
+			toolGateway: true,
+			artifacts: false,
+			images: false,
+		},
+		...overrides,
+	};
+	return SettingsManager.inMemory({
+		externalConnectors: {
+			schemaVersion: 1,
+			targetId: target.targetId,
+			targets: [target],
+		},
+	});
+}
+
 describe("External Connector product entry composition", () => {
+	it.each(["claude", "codex", "acp"] as const)("constructs the stock %s adapter without launching it", async (driver) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-stock-${driver}-`));
+		directories.push(cwd);
+		const runtime = await createRuntime(cwd, vendorSettings(cwd, driver, "agent_owned"));
+		const controller = createRpcHostController(runtime);
+		await controller.start();
+		try {
+			const initialized = await controller.dispatch({
+				id: `stock-${driver}`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			expect(initialized).toMatchObject({
+				success: true,
+				data: { externalConnectors: [{ providerId: `fixture.${driver}.agent_owned` }] },
+			});
+		} finally {
+			await controller.shutdown();
+		}
+	});
+
+	it.each([
+		["claude", "agent_owned"],
+		["claude", "none"],
+		["codex", "agent_owned"],
+		["codex", "none"],
+		["acp", "agent_owned"],
+		["acp", "none"],
+	] as const)("runs a settings-selected %s %s vendor through registration and durable receipt", async (driver, modelAccess) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-${driver}-`));
+		directories.push(cwd);
+		const settings = vendorSettings(cwd, driver, modelAccess);
+		const runtime = await createRuntime(cwd, settings, vendorAdapterFixture(driver, cwd));
+		const records: RpcHostOutputRecord[] = [];
+		const controller = createRpcHostController(runtime, { output: { publish: (record) => records.push(record) } });
+		await controller.start();
+		try {
+			const initialized = await controller.dispatch({
+				id: `${driver}-init`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			if (initialized === undefined || initialized.command !== "initialize" || !initialized.success) {
+				throw new Error(`${driver} settings entry did not initialize`);
+			}
+			const descriptor = initialized.data.externalConnectors?.[0];
+			if (descriptor === undefined) throw new Error(`${driver} descriptor is missing`);
+			await controller.handleCommand({
+				id: `${driver}-start`,
+				type: "run.start",
+				message: `execute the ${driver} settings connector`,
+				externalConnector: {
+					providerId: descriptor.providerId,
+					revision: descriptor.revision,
+					capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+				},
+			});
+			await vi.waitFor(() =>
+				expect(records.some((record) => record.type === "run.completed")).toBe(true),
+				{ timeout: 60_000 },
+			);
+			const session = getAgentCanonicalSession(runtime.session);
+			const receipts = await session.findFoundationRecords({ objectType: "attempt_receipt" });
+			expect(receipts).toHaveLength(1);
+			expect(receipts[0]).toMatchObject({
+				payload: {
+					providerId: `fixture.${driver}.${modelAccess}`,
+					status: "succeeded",
+					provenance: { producerKind: "external_connector" },
+				},
+			});
+		} finally {
+			await controller.shutdown();
+		}
+	}, 90_000);
+
+	it.each(["claude", "codex", "acp"] as const)("rejects %s aos_gateway settings before registration", async (driver) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-${driver}-gateway-`));
+		directories.push(cwd);
+		const base = vendorSettings(cwd, driver, "agent_owned").getExternalConnectorTargetSettings()?.selectedTarget;
+		if (base === undefined) throw new Error("Vendor gateway fixture target is missing");
+		const settings = vendorSettings(cwd, driver, "agent_owned", {
+			capabilityCeiling: { ...base.capabilityCeiling, modelAccess: ["aos_gateway"] },
+		});
+		await expect(createServices(cwd, settings)).rejects.toMatchObject({
+			reason: "capability_widened",
+			path: "$.global.targets[0].capabilityCeiling.modelAccess",
+		});
+	});
+
+	it.each([
+		{
+			name: "identity drift",
+			overrides: { moduleIdentity: `sha256:${"0".repeat(64)}` },
+			message: "trusted driver file identity does not match",
+		},
+		{
+			name: "version drift",
+			overrides: { version: "0.148.0" },
+			message: "requires version 0.149.0",
+		},
+		{
+			name: "missing executable",
+			overrides: {
+				executablePath: join(tmpdir(), "missing-codex-executable"),
+				executableIdentity: `sha256:${"1".repeat(64)}`,
+			},
+			message: "https://developers.openai.com/codex/cli",
+		},
+	])("rejects vendor $name before launch", async ({ overrides, message }) => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-vendor-invalid-"));
+		directories.push(cwd);
+		await expect(createServices(cwd, vendorSettings(cwd, "codex", "agent_owned", overrides))).rejects.toThrow(message);
+	});
+
 	it("uses a Host-explicit composition as a whole instead of merging settings", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-host-"));
 		directories.push(cwd);
@@ -323,6 +504,18 @@ describe("External Connector product entry composition", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-provenance-"));
 		directories.push(cwd);
 		await expect(createServices(cwd, genericSettings(cwd, overrides))).rejects.toThrow(message);
+	});
+
+	it("rejects aos_gateway anywhere in a generic settings ceiling", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-generic-gateway-"));
+		directories.push(cwd);
+		const base = crossLayerTargetDefinition(cwd).capabilityCeiling;
+		await expect(createServices(cwd, genericSettings(cwd, {
+			capabilityCeiling: { ...base, modelAccess: ["none", "aos_gateway"] },
+		}))).rejects.toMatchObject({
+			reason: "capability_widened",
+			path: "$.selectedTarget.capabilityCeiling.modelAccess",
+		});
 	});
 
 	it("keeps the empty fallback and unavailable error when settings omit connectors", async () => {

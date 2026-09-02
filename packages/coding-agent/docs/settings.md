@@ -372,18 +372,17 @@ Safety:
 `externalConnectors` registers trusted local connector targets for standard CLI,
 RPC, and SDK Sessions. The global object contains `schemaVersion: 1`, `targets`,
 and an optional selected `targetId`. Each target pins `targetId`, `providerId`,
+an optional `driver` (`claude`, `codex`, or `acp`),
 absolute `executablePath`, absolute `modulePath`, absolute `cwd`, `version`,
 `executableIdentity`, `moduleIdentity`, and `capabilityCeiling`. An optional
 `accountReference` contains only `{schemaVersion, namespace, accountId}`.
 
-In v0.85.0, this settings path reaches only generic JSONL targets with
-`modelAccess` `none` or `agent_owned`; the packaged `aos.fake-connector` is the
-covered registration -> run -> receipt example. The private Claude, Codex, and
-ACP vendor drivers are not referenced by product composition and cannot be
-registered or selected from settings; vendor wiring is in progress. Their
-pinned handshakes are protocol evidence only, not product availability.
-`aos_gateway` is an internal Host and Scheduler path and generic settings
-targets reject it with `capability_widened`.
+Omitting `driver` selects the generic JSONL adapter. An explicit vendor driver
+selects its pinned Host-private adapter; `providerId` is never used as a vendor
+switch. Generic and vendor targets support `modelAccess` `none` or
+`agent_owned`. Vendor version, identity, and protocol capability mismatches are
+rejected before launch. `aos_gateway` is an internal Host and Scheduler path
+and every settings target rejects it with `capability_widened`.
 
 Project settings cannot define targets. A trusted project may provide
 `{schemaVersion: 1, targetId?, capabilityCeiling?, role?}` to select a global
@@ -395,7 +394,8 @@ global ceiling.
 Settings are used only when the embedding Host omits `runtimeComposition`. A
 Host-explicit composition wins as one authority graph; settings fields are not
 merged into it. Settings may populate only the External Connector slice and
-never enable Scheduler, Worker, or Subagent composition. See
+the empty canonical Tool Gateway authority required by pinned vendor
+protocols; they never enable Scheduler, Worker, or Subagent composition. See
 [external-agent-connector.md](external-agent-connector.md#settings-registration)
 for the complete example and current packaged-driver boundary.
 

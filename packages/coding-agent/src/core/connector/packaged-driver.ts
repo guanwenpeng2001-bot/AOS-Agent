@@ -506,6 +506,11 @@ export function packagedExternalAgentDriverProcessModulePath(name: PackagedExter
 	return join(packagedAssetDirectory(), "fake-connector-process.mjs");
 }
 
+/** Host-private packaged bridge used to keep Claude SDK process spawning inside connector containment. */
+export function packagedClaudeProcessBridgeModulePath(): string {
+	return join(packagedAssetDirectory(), "claude-process-bridge.mjs");
+}
+
 /** Load an allowlisted packaged fixture without enabling a production Connector. */
 export function loadPackagedExternalAgentDriver(name: string): PackagedExternalAgentDriver {
 	if (name !== "fake-connector") {

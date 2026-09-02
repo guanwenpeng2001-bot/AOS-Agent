@@ -12,16 +12,47 @@ Capability matrix and pinned version for the private Codex app-server connector.
 1. Pin and handshake evidence: the machine-readable identity above pins Codex
    CLI `0.149.0` and its schema digest; the v0.85.0 handshake check exercises
    that pinned app-server protocol.
-2. Product reachability: v0.85.0 does not compose this driver into the
-   settings target or registry path. Users cannot register or select a Codex
-   connector; vendor wiring is in progress.
+2. Product reachability: a trusted global target with `driver: "codex"`
+   composes the pinned private connector and fixed `app-server` launch mode.
+   `none` and `agent_owned` can register, run, and produce durable receipts;
+   real authentication remains a separate certification step.
 3. Model-access boundary: `aos_gateway` is an internal Host and Scheduler
    path. Generic JSONL settings targets cannot select it; the packaged runtime
    rejects that selection with `capability_widened`.
 
-The capability matrix below describes private driver behavior only. Pin and
-handshake evidence does not turn this driver into a product-available
-connector.
+## Settings registration
+
+```json
+{
+  "externalConnectors": {
+    "schemaVersion": 1,
+    "targetId": "codex-local",
+    "targets": [{
+      "schemaVersion": 1,
+      "targetId": "codex-local",
+      "providerId": "codex-local",
+      "driver": "codex",
+      "executablePath": "<ABSOLUTE_CODEX_PATH>",
+      "modulePath": "<ABSOLUTE_CODEX_PATH>",
+      "cwd": "<ABSOLUTE_WORKSPACE_PATH>",
+      "version": "0.149.0",
+      "executableIdentity": "sha256:<64_HEX>",
+      "moduleIdentity": "sha256:<64_HEX>",
+      "capabilityCeiling": {
+        "modelAccess": ["agent_owned"],
+        "resume": true,
+        "toolGateway": true,
+        "artifacts": false,
+        "images": false
+      }
+    }]
+  }
+}
+```
+
+The exact file-hash commands are documented in
+[`external-agent-connector.md`](external-agent-connector.md). Install the pinned
+CLI before use; see the [Codex CLI guide](https://developers.openai.com/codex/cli).
 
 The driver uses `initialize`, `thread/start`, `turn/start`, `turn/interrupt`, and `thread/resume`. It also handles the pinned private server-request routes for command approval, file-change approval, permissions approval, MCP elicitation, user input, and selected dynamic tools.
 
@@ -34,6 +65,6 @@ The driver uses `initialize`, `thread/start`, `turn/start`, `turn/interrupt`, an
 | Service tier | supported | `ThreadStartParams.serviceTier` and `TurnStartParams.serviceTier` accept the exact string. The driver checks the thread response echo and sends the same value on the turn. |
 | Resume | supported | `thread/resume` accepts the durable thread id and returns the pinned thread response shape. The driver requires exact thread identity and otherwise fails closed. |
 
-For the private driver's `aos_gateway` behavior, it declares an exact `modelSupportMatrix` for provider, model, effort, service tier, fallback decision, and binding digest. It rechecks the Host translation against the source projection, requires a valid material-free `SafeLeaseProjection`, passes only that projection to transport activation, and never places lease identity or provider credential material on the app-server JSONL wire. This behavior is not reachable from v0.85.0 generic settings targets.
+For the private driver's `aos_gateway` behavior, it declares an exact `modelSupportMatrix` for provider, model, effort, service tier, fallback decision, and binding digest. It rechecks the Host translation against the source projection, requires a valid material-free `SafeLeaseProjection`, passes only that projection to transport activation, and never places lease identity or provider credential material on the app-server JSONL wire. This behavior is not reachable from settings targets in this release.
 
 The source restriction on artifact input is necessary because the canonical contract deliberately exposes opaque Artifact Store handles rather than local paths or URLs. Supporting those handles would require a new Host materialization contract; this driver does not guess a location or widen the existing wire shape.

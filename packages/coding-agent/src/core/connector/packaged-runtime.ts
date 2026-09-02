@@ -36,6 +36,10 @@ import {
 import { JsonlProcessExternalConnectorDriver } from "./vendor/jsonl-process-driver.ts";
 import type { ExternalConnectorVendorDriver } from "./vendor/types.ts";
 import {
+	createPrivateVendorExternalAgentConnector,
+	type PrivateExternalConnectorVendorAdapterOverrides,
+} from "./vendor/composition.ts";
+import {
 	bindExternalConnectorVendorBehaviorManifest,
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_REQUEST_EVENT,
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_RESULT_WRITE,
@@ -288,7 +292,7 @@ function packagedCapability(): ConnectorCapabilitySnapshot {
 function genericTargetCapability(target: ExternalConnectorResolvedTarget): ConnectorCapabilitySnapshot {
 	const modelAccess = target.capabilityCeiling.modelAccess[0];
 	if (modelAccess === undefined) throw new TypeError("External Connector target capability ceiling is empty");
-	if (modelAccess === "aos_gateway") {
+	if (target.capabilityCeiling.modelAccess.includes("aos_gateway")) {
 		throw new ExternalConnectorTargetConfigError(
 			"capability_widened",
 			"$.selectedTarget.capabilityCeiling.modelAccess",
@@ -320,15 +324,28 @@ function targetPrivateStatePath(target: ExternalConnectorResolvedTarget, agentDi
 export async function createPackagedExternalConnectorRegistryFactory(options: {
 	readonly target: ExternalConnectorResolvedTarget;
 	readonly agentDir: string;
+	/** Host-private deterministic adapter seam. Stock settings omit this. */
+	readonly vendorAdapters?: PrivateExternalConnectorVendorAdapterOverrides;
 }): Promise<ExternalConnectorRegistryFactory | undefined> {
 	const packaged = matchesPackagedTarget(options.target);
 	if (packaged) loadPackagedExternalAgentDriver("fake-connector");
 	const store = new SessionBoundExternalConnectorStore();
 	const credentialRuntime = new SessionBoundExternalConnectorCredentialRuntime();
-	const capability = packaged ? packagedCapability() : genericTargetCapability(options.target);
+	const privateStatePath = targetPrivateStatePath(options.target, options.agentDir);
+	const vendor = options.target.driver === undefined
+		? undefined
+		: await createPrivateVendorExternalAgentConnector({
+				target: options.target,
+				store,
+				privateStatePath,
+				...(options.vendorAdapters === undefined ? {} : { adapters: options.vendorAdapters }),
+			});
+	const capability = vendor?.capability ?? (packaged ? packagedCapability() : genericTargetCapability(options.target));
 	let jsonlDriver: JsonlProcessExternalConnectorDriver | undefined;
-	let driver: ExternalConnectorVendorDriver;
-	if (packaged) {
+	let driver: ExternalConnectorVendorDriver | undefined;
+	if (vendor !== undefined) {
+		driver = undefined;
+	} else if (packaged) {
 		driver = new PackagedExternalConnectorVendorDriver(store);
 	} else {
 		jsonlDriver = new JsonlProcessExternalConnectorDriver({
@@ -338,16 +355,20 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 		});
 		driver = jsonlDriver;
 	}
-	const connector = await createProductionExternalAgentConnector({
-		providerId: options.target.providerId,
-		capability,
-		capabilityProbe: async () => Result.ok(capability),
-		store,
-		driver,
-		privateStatePath: targetPrivateStatePath(options.target, options.agentDir),
-		target: options.target,
-		credential: credentialRuntime,
-	});
+	let connector = vendor?.connector;
+	if (connector === undefined) {
+		if (driver === undefined) throw new TypeError("Packaged External Connector driver is unavailable");
+		connector = await createProductionExternalAgentConnector({
+			providerId: options.target.providerId,
+			capability,
+			capabilityProbe: async () => Result.ok(capability),
+			store,
+			driver,
+			privateStatePath,
+			target: options.target,
+			credential: credentialRuntime,
+		});
+	}
 	return (context, toolGateway, target, authority, credential) => {
 		if (target !== options.target) {
 			throw new TypeError("Packaged External Connector factory target does not match its trusted target");

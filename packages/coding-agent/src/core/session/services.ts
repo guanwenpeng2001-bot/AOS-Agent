@@ -268,6 +268,20 @@ export async function createAgentSessionServices(
 			externalConnectorTargetConfig === undefined
 				? createAgentRuntimeCompositionFactory()
 				: createAgentRuntimeCompositionFactory({
+						...(externalConnectorTargetConfig.selectedTarget?.driver === undefined
+							? {}
+							: {
+								toolGatewayCatalog: () => {
+									const target = externalConnectorTargetConfig.selectedTarget;
+									if (target === undefined) throw new TypeError("Settings vendor target is unavailable");
+									return {
+										gatewayId: `settings-vendor:${target.targetId}`,
+										builtinLocalProviders: [],
+										mcpProviders: [],
+										sandboxProviders: [],
+									};
+								},
+							}),
 						externalConnectorTargetConfig,
 						...(externalConnectorRegistry === undefined ? {} : { externalConnectorRegistry }),
 					});

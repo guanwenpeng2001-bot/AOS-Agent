@@ -18,17 +18,51 @@ Capability matrix and pinned version for the private ACP stable-v1 connector. Th
 1. Pin and handshake evidence: the pin above is the official
    `@agentclientprotocol/sdk` `1.4.0` stable-v1 schema; the v0.85.0 handshake
    check exercises that pinned protocol only.
-2. Product reachability: v0.85.0 does not compose this driver into the
-   settings target or registry path. Users cannot register or select an ACP
-   connector; vendor wiring is in progress.
+2. Product reachability: a trusted global target with `driver: "acp"`
+   composes the pinned stable-v1 client. `none` and `agent_owned` can register,
+   run, and produce durable receipts with an injected compatible backend.
 3. Real-backend spike: Claude ACP, Codex ACP, and Gemini candidates did not
    satisfy the product's exact `capability` / `authMethods` contract. ACP
-   therefore remains handshake-level evidence, not product availability.
+   therefore remains handshake-level evidence, not real-backend certification.
 
-The capability matrix below describes private stable-v1 driver behavior only.
-`aos_gateway` is an internal Host and Scheduler path; generic JSONL settings
-targets cannot select it and the packaged runtime rejects it with
-`capability_widened`.
+## Settings registration
+
+```json
+{
+  "externalConnectors": {
+    "schemaVersion": 1,
+    "targetId": "acp-local",
+    "targets": [{
+      "schemaVersion": 1,
+      "targetId": "acp-local",
+      "providerId": "acp-local",
+      "driver": "acp",
+      "executablePath": "<ABSOLUTE_ACP_AGENT_PATH>",
+      "modulePath": "<ABSOLUTE_ACP_AGENT_PATH>",
+      "cwd": "<ABSOLUTE_WORKSPACE_PATH>",
+      "version": "1.4.0",
+      "executableIdentity": "sha256:<64_HEX>",
+      "moduleIdentity": "sha256:<64_HEX>",
+      "capabilityCeiling": {
+        "modelAccess": ["agent_owned"],
+        "resume": true,
+        "toolGateway": true,
+        "artifacts": false,
+        "images": false
+      }
+    }]
+  }
+}
+```
+
+The exact file-hash commands are documented in
+[`external-agent-connector.md`](external-agent-connector.md). The configured
+backend must satisfy the exact stable-v1 handshake below; discover agents in
+the [official ACP registry](https://agentclientprotocol.com/get-started/registry).
+
+The capability matrix below describes private stable-v1 driver behavior.
+`aos_gateway` is an internal Host and Scheduler path; settings targets cannot
+select it and composition rejects it with `capability_widened`.
 
 | Capability | Status | Stable-v1 evidence | Driver decision |
 | --- | --- | --- | --- |

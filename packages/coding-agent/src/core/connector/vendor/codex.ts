@@ -45,10 +45,11 @@ import type {
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
 } from "./types.ts";
+import { PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES } from "./identity.ts";
 
 /** Frozen against `codex-cli 0.149.0 app-server generate-json-schema --experimental`. */
 export const PRIVATE_CODEX_APP_SERVER_IDENTITY = Object.freeze({
-	cliVersion: "0.149.0",
+	cliVersion: PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES.codex.version,
 	schemaSha256: "6f76cce25156d405f1da54f205751e38f7b9eb42246ac0742b9958dd60275350",
 });
 

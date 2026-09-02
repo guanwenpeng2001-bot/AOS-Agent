@@ -5,6 +5,10 @@ import {
 	type ConnectorCapabilitySnapshot,
 } from "@aos-agent/agent-core";
 import type { ProductionExternalConnectorProcessWithProvenance } from "./process-controller.ts";
+import {
+	PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES,
+	type PrivateExternalConnectorVendorDriver,
+} from "./vendor/identity.ts";
 
 export const EXTERNAL_CONNECTOR_TARGET_CONFIG_SCHEMA_VERSION = 1 as const;
 
@@ -40,6 +44,8 @@ export interface ExternalConnectorTargetDefinition {
 	readonly schemaVersion: 1;
 	readonly targetId: string;
 	readonly providerId: string;
+	/** Explicit private vendor adapter. Omission selects the generic JSONL protocol. */
+	readonly driver?: PrivateExternalConnectorVendorDriver;
 	readonly executablePath: string;
 	readonly modulePath: string;
 	readonly cwd: string;
@@ -100,6 +106,7 @@ export type ExternalConnectorTargetConfigErrorReason =
 	| "ambiguous_target"
 	| "ambiguous_selection"
 	| "target_not_found"
+	| "driver_mismatch"
 	| "capability_widened";
 
 /** Safe configuration failure. `path` identifies a field but never contains its value. */
@@ -132,6 +139,7 @@ const TARGET_KEYS = new Set([
 	"schemaVersion",
 	"targetId",
 	"providerId",
+	"driver",
 	"executablePath",
 	"modulePath",
 	"cwd",
@@ -209,6 +217,14 @@ function parseAbsolutePath(value: unknown, path: string): string {
 function parseVersion(value: unknown, path: string): string {
 	if (typeof value !== "string" || !VERSION_PATTERN.test(value)) {
 		fail("invalid_shape", path, "External Connector target version is invalid.");
+	}
+	return value;
+}
+
+function parseDriver(value: unknown, path: string): PrivateExternalConnectorVendorDriver | undefined {
+	if (value === undefined) return undefined;
+	if (value !== "claude" && value !== "codex" && value !== "acp") {
+		fail("invalid_shape", path, "External Connector vendor driver is invalid.");
 	}
 	return value;
 }
@@ -322,19 +338,50 @@ function parseTargetDefinition(
 	requireSchemaVersion(record, path);
 	const endpoint = parseEndpoint(record.endpoint, `${path}.endpoint`);
 	const accountReference = parseAccountReference(record.accountReference, `${path}.accountReference`);
+	const driver = parseDriver(record.driver, `${path}.driver`);
+	const version = parseVersion(record.version, `${path}.version`);
+	const capabilityCeiling = parseCapabilityCeiling(record.capabilityCeiling, `${path}.capabilityCeiling`);
+	if (driver !== undefined && version !== PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES[driver].version) {
+		fail(
+			"driver_mismatch",
+			`${path}.version`,
+			`External Connector ${driver} driver requires version ${PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES[driver].version}.`,
+		);
+	}
+	if (driver !== undefined && capabilityCeiling.modelAccess.includes("aos_gateway")) {
+		fail(
+			"capability_widened",
+			`${path}.capabilityCeiling.modelAccess`,
+			"Settings-selected vendor drivers cannot use aos_gateway model access; support is planned for a later release.",
+		);
+	}
+	const requiredResume = driver !== "claude";
+	if (
+		driver !== undefined &&
+		(capabilityCeiling.resume !== requiredResume ||
+			capabilityCeiling.toolGateway !== true ||
+			(capabilityCeiling.images && !capabilityCeiling.artifacts))
+	) {
+		fail(
+			"capability_widened",
+			`${path}.capabilityCeiling`,
+			`External Connector ${driver} driver capability ceiling does not match its pinned protocol contract.`,
+		);
+	}
 	return Object.freeze({
 		schemaVersion: 1 as const,
 		targetId: parseIdentifier(record.targetId, `${path}.targetId`),
 		providerId: parseIdentifier(record.providerId, `${path}.providerId`),
+		...(driver === undefined ? {} : { driver }),
 		executablePath: parseAbsolutePath(record.executablePath, `${path}.executablePath`),
 		modulePath: parseAbsolutePath(record.modulePath, `${path}.modulePath`),
 		cwd: parseAbsolutePath(record.cwd, `${path}.cwd`),
-		version: parseVersion(record.version, `${path}.version`),
+		version,
 		executableIdentity: parseIdentity(record.executableIdentity, `${path}.executableIdentity`),
 		moduleIdentity: parseIdentity(record.moduleIdentity, `${path}.moduleIdentity`),
 		...(endpoint === undefined ? {} : { endpoint }),
 		...(accountReference === undefined ? {} : { accountReference }),
-		capabilityCeiling: parseCapabilityCeiling(record.capabilityCeiling, `${path}.capabilityCeiling`),
+		capabilityCeiling,
 		source,
 	});
 }
@@ -527,9 +574,11 @@ export function externalConnectorProcessForTarget(
 	if (!isTrustedExternalConnectorResolvedTarget(target)) {
 		fail("untrusted_source", "$.target", "External Connector target was not resolved by the trusted Host configuration.");
 	}
+	const moduleArguments = target.modulePath === target.executablePath ? [] : [target.modulePath];
+	const argumentsValue = target.driver === "codex" ? [...moduleArguments, "app-server"] : moduleArguments;
 	return Object.freeze({
 		executablePath: target.executablePath,
-		...(target.modulePath === target.executablePath ? {} : { arguments: Object.freeze([target.modulePath]) }),
+		...(argumentsValue.length === 0 ? {} : { arguments: Object.freeze(argumentsValue) }),
 		trustedProvenance: Object.freeze({
 			modulePath: target.modulePath,
 			cwd: target.cwd,

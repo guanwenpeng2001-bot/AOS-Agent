@@ -2,7 +2,7 @@
 
 ## Status
 
-Settings-based External Connector entry composition for generic JSONL targets is implemented. In v0.85.0, the user-reachable modes are `modelAccess: "none"` and `"agent_owned"`; the packaged `aos.fake-connector` is the covered example, with its registration -> run -> receipt path verified. Line 13 promotion evidence includes Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release upgrade/restart, deterministic soak, pinned vendor handshakes (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, and ACP SDK 1.4.0), and Codex subscription print/SDK/TUI. Those handshakes exercise pinned private vendor packages only; they are protocol evidence, not product availability. The private Claude, Codex, and ACP drivers are not referenced by a product composition path in v0.85.0, so users cannot register or select those connectors; vendor wiring is in progress. `aos_gateway` is internal-only, and a generic settings target selecting it is rejected with `capability_widened`. Lines 14 and 15 remain later work.
+Settings-based External Connector composition supports generic JSONL targets and explicit private vendor drivers. A target may set `driver` to `"claude"`, `"codex"`, or `"acp"`; omission keeps the generic JSONL behavior. The supported settings modes are `modelAccess: "none"` and `"agent_owned"`. Registration, capability negotiation, supervised activation, execution, and durable `AttemptReceipt` settlement use the same connector path for all four driver kinds. `aos_gateway` remains internal-only and every settings-selected vendor or generic target requesting it is rejected with `capability_widened`.
 
 `ExternalAgentConnector` is the only public execution contract for an external
 agent. It implements the shared `TaskExecutorProvider` boundary and therefore
@@ -83,12 +83,9 @@ trust decision is true. `accountReference`, when present, is an opaque account
 identity; credentials, environment values, headers, and tokens are never stored
 in this schema.
 
-The selected target may be the packaged fake or a generic JSONL process target.
-In v0.85.0, this settings path reaches only the generic JSONL modes `none` and
-`agent_owned`; the packaged `aos.fake-connector` is the shipped example with
-registration -> run -> receipt coverage. The private Claude, Codex, and ACP
-vendor drivers are not selected by this path and cannot be registered as
-product targets; their wiring is in progress. For a generic target, the Host
+The selected target may be the packaged fake, a generic JSONL process target,
+or an explicitly declared private vendor driver. The Host never infers a
+vendor from `providerId`. For a generic target, the Host
 starts `executablePath` with `modulePath` as its
 module argument (when the paths differ), then connects the resulting process to
 the private JSONL driver adapter. It does not dynamically import a settings
@@ -97,10 +94,25 @@ constructed through production provenance checks, process containment,
 supervision, and the durable connector runtime; a target that fails those checks
 remains fail-closed. A generic target whose selected capability ceiling resolves
 to `modelAccess: "aos_gateway"` is rejected with
-`capability_widened`; generic settings targets may advertise only
-`none` or `agent_owned`, so no generic JSONL driver consumes a Host model
+`capability_widened`; settings targets may advertise only
+`none` or `agent_owned`, so no settings-selected driver consumes a Host model
 projection or translation. The `aos_gateway` projection and credential-lease
 mechanism serves internal Host and Scheduler paths only.
+
+Vendor targets add the exact `driver` field and must use these pins and protocol flags:
+
+| driver | target `version` | `resume` | `toolGateway` | `modelAccess` |
+| --- | --- | --- | --- | --- |
+| `claude` | `0.3.246` | `false` | `true` | `none` or `agent_owned` |
+| `codex` | `0.149.0` | `true` | `true` | `none` or `agent_owned` |
+| `acp` | `1.4.0` | `true` | `true` | `none` or `agent_owned` |
+
+Compute each identity from the exact configured file, for example
+`sha256sum /absolute/path/to/file` on POSIX or
+`(Get-FileHash -Algorithm SHA256 C:\absolute\path\to\file).Hash.ToLower()` on
+PowerShell, then prefix the 64 hexadecimal characters with `sha256:`. Missing
+files, identity drift, version drift, unsupported capabilities, and
+`aos_gateway` all fail before vendor launch.
 
 The descriptor pins `providerId`, `providerClass: "external_connector"`,
 `revision`, and the capability snapshot digest. A selection must repeat those

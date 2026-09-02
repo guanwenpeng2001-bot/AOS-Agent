@@ -38,6 +38,91 @@ function writeSettings(storage: InMemorySettingsStorage, scope: "global" | "proj
 }
 
 describe("External Connector settings", () => {
+	it("parses an explicit vendor driver and preserves generic-target compatibility", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-connector-driver-"));
+		directories.push(cwd);
+		const vendor = { ...target(cwd, "claude", "external.claude"), driver: "claude", version: "0.3.246" };
+		vendor.capabilityCeiling = { ...vendor.capabilityCeiling, resume: false };
+		const storage = new InMemorySettingsStorage();
+		writeSettings(storage, "global", {
+			externalConnectors: { schemaVersion: 1, targets: [vendor], targetId: "claude" },
+		});
+		expect(SettingsManager.fromStorage(storage).getExternalConnectorTargetSettings()?.selectedTarget).toMatchObject({
+			driver: "claude",
+			version: "0.3.246",
+		});
+
+		writeSettings(storage, "global", {
+			externalConnectors: {
+				schemaVersion: 1,
+				targets: [target(cwd, "generic", "external.generic")],
+				targetId: "generic",
+			},
+		});
+		expect(SettingsManager.fromStorage(storage).getExternalConnectorTargetSettings()?.selectedTarget).not.toHaveProperty("driver");
+	});
+
+	it.each([
+		{
+			name: "unknown driver",
+			mutate: (value: Record<string, unknown>) => ({ ...value, driver: "generic" }),
+			reason: "invalid_shape",
+			path: "$.global.targets[0].driver",
+		},
+		{
+			name: "missing executable identity",
+			mutate: (value: Record<string, unknown>) => {
+				const { executableIdentity: _executableIdentity, ...rest } = value;
+				return rest;
+			},
+			reason: "invalid_shape",
+			path: "$.global.targets[0].executableIdentity",
+		},
+		{
+			name: "wrong pinned version",
+			mutate: (value: Record<string, unknown>) => ({ ...value, version: "0.3.245" }),
+			reason: "driver_mismatch",
+			path: "$.global.targets[0].version",
+		},
+		{
+			name: "aos gateway",
+			mutate: (value: Record<string, unknown>) => ({
+				...value,
+				capabilityCeiling: { ...(value.capabilityCeiling as Record<string, unknown>), modelAccess: ["aos_gateway"] },
+			}),
+			reason: "capability_widened",
+			path: "$.global.targets[0].capabilityCeiling.modelAccess",
+		},
+		{
+			name: "Claude resume widening",
+			mutate: (value: Record<string, unknown>) => ({
+				...value,
+				capabilityCeiling: { ...(value.capabilityCeiling as Record<string, unknown>), resume: true },
+			}),
+			reason: "capability_widened",
+			path: "$.global.targets[0].capabilityCeiling",
+		},
+	])("rejects vendor $name", ({ mutate, reason, path }) => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-connector-driver-invalid-"));
+		directories.push(cwd);
+		const base = {
+			...target(cwd, "claude", "external.claude"),
+			driver: "claude",
+			version: "0.3.246",
+			capabilityCeiling: {
+				...target(cwd, "claude", "external.claude").capabilityCeiling,
+				resume: false,
+			},
+		};
+		const storage = new InMemorySettingsStorage();
+		writeSettings(storage, "global", {
+			externalConnectors: { schemaVersion: 1, targets: [mutate(base)], targetId: "claude" },
+		});
+		expect(() => SettingsManager.fromStorage(storage).getExternalConnectorTargetSettings()).toThrow(
+			expect.objectContaining({ reason, path }),
+		);
+	});
+
 	it("resolves a global catalog through trusted project and Role narrowing", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-connector-settings-"));
 		directories.push(cwd);

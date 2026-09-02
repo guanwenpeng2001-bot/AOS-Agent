@@ -2771,17 +2771,13 @@ standard product composition using the packaged fake target and separately
 verifies RuntimeLimits, passive runtime-status projection, and terminal
 `side_effect_unknown` retry handling.
 Runtime status is projected in `initialize`; it adds no writable RPC command.
-Settings-based product entry composition for generic JSONL targets is
-implemented. In v0.85.0, the user-reachable modes are `none` and
-`agent_owned`, and the packaged `aos.fake-connector` is the covered
-registration -> run -> receipt example. Line 13 promotion evidence includes
-multi-OS packaged smoke, previous-release upgrade/restart, deterministic soak,
-pinned vendor handshakes, and Codex subscription print/SDK/TUI. Those handshakes
-exercise pinned private vendor packages only; they are protocol evidence, not
-product availability. The private Claude, Codex, and ACP drivers are not wired
-into product composition and cannot be registered or selected; vendor wiring is
-in progress. `aos_gateway` is internal-only and rejected for generic settings
-targets. Lines 14 and 15 remain later work.
+Settings-based product entry composition supports generic JSONL targets and
+explicit pinned `claude`, `codex`, and `acp` drivers. All use `none` or
+`agent_owned` model access and the canonical registration -> run -> receipt
+path. Vendor selection is declared by `driver`, never inferred from
+`providerId`; identity, version, and capability drift fail closed before
+launch. Real vendor authentication remains separate certification evidence.
+`aos_gateway` is internal-only and rejected for every settings target.
 
 ### Structured errors
 
