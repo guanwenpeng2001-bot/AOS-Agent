@@ -113,6 +113,7 @@ import type {
 	ExternalConnectorRegistry,
 } from "../connector/registry.ts";
 import { getExternalConnectorCredentialBinding } from "../connector/credential-binding.ts";
+import { waitForExternalConnectorRegistryInitialization } from "../connector/registry-initialization.ts";
 import type { SandboxHandle, SandboxProvider, SandboxSession } from "../policy/sandbox.ts";
 import { SandboxSession as ConcreteSandboxSession } from "../policy/sandbox.ts";
 import type { ToolDefinition, ExtensionRunner } from "../extensions/index.ts";
@@ -1930,6 +1931,7 @@ export class FoundationControlPlane {
 		if (this.disposed) throw new Error("Foundation control plane is disposed");
 		this.refreshToolSources();
 		try {
+			await waitForExternalConnectorRegistryInitialization(this.externalConnectorRegistry);
 			await this.scheduler?.whenInitialized();
 			if (this.capabilityBinding === undefined) {
 				this.resolveStaticBinding();

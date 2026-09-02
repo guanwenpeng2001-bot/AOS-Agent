@@ -23,6 +23,7 @@ import {
 	EXTERNAL_ERROR_CODES,
 	EXTERNAL_ERROR_MESSAGES,
 	type FoundationFactRecord,
+	type Fingerprint,
 	FoundationLedgerState,
 	type FoundationRecord,
 	invalidDurableRecord,
@@ -323,6 +324,12 @@ export interface RunModelReference {
 	thinkingLevel: ThinkingLevel;
 }
 
+export interface RunProjectedModelReference {
+	readonly provider: string;
+	readonly model: string;
+	readonly modelBindingDigest: Fingerprint;
+}
+
 /** Safe model identity used for the final selected candidate in a Run receipt. */
 export interface RunFinalModelReference {
 	provider: string;
@@ -411,6 +418,8 @@ export interface RunRecord {
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
+	/** Pre-spawn model intent. This is never effective-model evidence. */
+	projectedModel?: RunProjectedModelReference;
 	/** Final candidate and safe attempt/budget summaries are additive metadata. */
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
@@ -1019,6 +1028,7 @@ export interface AcceptOptions {
 	previousPolicyBindingId?: string;
 	attempt: number;
 	model: RunModelReference;
+	projectedModel?: RunProjectedModelReference;
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
@@ -1308,6 +1318,44 @@ function isRunMetadataText(value: unknown): value is string {
 		!value.includes("://") &&
 		!value.includes("@")
 	);
+}
+
+function canonicalRunProjectedModel(
+	value: unknown,
+	requireExactKeys: boolean,
+): RunProjectedModelReference | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const projected = value as Record<string, unknown>;
+	if (
+		(requireExactKeys &&
+			(Reflect.ownKeys(projected).length !== 3 ||
+				Reflect.ownKeys(projected).some((key) =>
+					typeof key !== "string" || !["provider", "model", "modelBindingDigest"].includes(key)))) ||
+		!isRunMetadataText(projected.provider) ||
+		!isRunMetadataText(projected.model) ||
+		typeof projected.modelBindingDigest !== "object" ||
+		projected.modelBindingDigest === null ||
+		Array.isArray(projected.modelBindingDigest)
+	) return undefined;
+	const digest = projected.modelBindingDigest as Record<string, unknown>;
+	if (
+		(requireExactKeys &&
+			(Reflect.ownKeys(digest).length !== 2 ||
+				Reflect.ownKeys(digest).some((key) =>
+					typeof key !== "string" || !["algorithm", "value"].includes(key)))) ||
+		digest.algorithm !== "sha256" ||
+		typeof digest.value !== "string" ||
+		!/^[a-f0-9]{64}$/u.test(digest.value)
+	) return undefined;
+	return {
+		provider: projected.provider,
+		model: projected.model,
+		modelBindingDigest: { algorithm: "sha256", value: digest.value },
+	};
+}
+
+function isRunProjectedModelReference(value: unknown): value is RunProjectedModelReference {
+	return canonicalRunProjectedModel(value, true) !== undefined;
 }
 
 function isRunFinalModelReference(value: unknown): value is RunFinalModelReference {
@@ -1709,6 +1757,7 @@ function isRunRecord(value: unknown): value is RunRecord {
 	if (typeof obj.attempt !== "number") return false;
 	if (!isRunStatus(obj.status)) return false;
 	if (!isRunModelReference(obj.model)) return false;
+	if (obj.projectedModel !== undefined && !isRunProjectedModelReference(obj.projectedModel)) return false;
 	if (obj.sourceRunId !== undefined && typeof obj.sourceRunId !== "string") return false;
 	if (obj.previousBindingId !== undefined && typeof obj.previousBindingId !== "string") return false;
 	if (obj.capabilityBindingId !== undefined && typeof obj.capabilityBindingId !== "string") return false;
@@ -1999,6 +2048,7 @@ export interface PublicRunRecord {
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
+	projectedModel?: RunProjectedModelReference;
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
@@ -2198,6 +2248,10 @@ export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
 		status: record.status,
 		model: { ...record.model },
 	};
+	if (record.projectedModel !== undefined) {
+		const projectedModel = canonicalRunProjectedModel(record.projectedModel, false);
+		if (projectedModel !== undefined) copy.projectedModel = projectedModel;
+	}
 	const requestRelation = requestRelationFromRecord(record);
 	if (requestRelation !== undefined) {
 		copy.requestScope = requestRelation.scope;
@@ -2732,6 +2786,11 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 		status: record.status,
 		model: { ...record.model },
 	};
+	if (record.projectedModel !== undefined) {
+		const projectedModel = canonicalRunProjectedModel(record.projectedModel, true);
+		if (projectedModel === undefined) throw new TypeError("Run projected model is invalid");
+		copy.projectedModel = projectedModel;
+	}
 	const requestRelation = requestRelationFromRecord(record);
 	if (requestRelation !== undefined) {
 		copy.requestScope = requestRelation.scope;
@@ -3155,6 +3214,13 @@ class RunHandleImpl implements RunHandle {
 			status: "accepted",
 			model: options.model,
 		};
+		if (options.projectedModel !== undefined) {
+			const projectedModel = canonicalRunProjectedModel(options.projectedModel, true);
+			if (projectedModel === undefined) {
+				throw createAutomationError("external_binding_invalid", "Run projected model is invalid.", false);
+			}
+			this._record.projectedModel = projectedModel;
+		}
 		if (requestIdentity !== undefined) {
 			this._record.requestScope = requestIdentity.scope;
 			this._record.clientRequestId = requestIdentity.clientRequestId;

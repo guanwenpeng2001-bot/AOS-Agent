@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added optional exact `AttemptReceipt.effectiveModel` evidence for verified external connector executions while preserving historical receipt replay.
+
 ## [0.85.0] - 2026-09-02
 
 ### Breaking Changes

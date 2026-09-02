@@ -544,7 +544,7 @@ export function createRecordingCredentialProvider(target = new RecordingCredenti
 	};
 }
 
-export function externalCredentialPolicySettings(): {
+export function externalCredentialPolicySettings(allowNames: readonly string[] = ["external_registry"]): {
 	readonly defaultProfile: string;
 	readonly profiles: Record<string, unknown>;
 } {
@@ -559,7 +559,7 @@ export function externalCredentialPolicySettings(): {
 				workspace: { read: ["workspace"], write: [], deny: ["credentials", "agent-internal"] },
 				process: { action: "deny", inheritEnvironment: false, allowEnvironment: [] },
 				network: { action: "deny", allowDestinations: [] },
-				credentials: { action: "allow", allowNames: ["external_registry"] },
+				credentials: { action: "allow", allowNames: [...allowNames] },
 				approvals: { writeOutsideWorkspace: "deny", network: "deny", process: "deny", credentials: "allow" },
 				rules: [],
 			},

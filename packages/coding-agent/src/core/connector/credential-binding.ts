@@ -1,6 +1,13 @@
-import { fingerprintFoundationValue, type AgentBinding, type Attempt } from "@aos-agent/agent-core";
+import {
+	fingerprintFoundationValue,
+	type AgentBinding,
+	type Attempt,
+	type ExecutionCorrelation,
+} from "@aos-agent/agent-core";
 import type { ExternalConnectorRegistry } from "./registry.ts";
 import type { ExternalConnectorResolvedTarget } from "./target-config.ts";
+import type { ExternalResolvedModelProjection } from "./model-projection.ts";
+import type { ExternalConnectorModelGateway } from "./model-gateway.ts";
 import type {
 	ExternalConnectorCredentialRuntime,
 	ExternalConnectorCredentialService,
@@ -15,6 +22,8 @@ import type {
 export type ExternalConnectorCredentialIssueContextResolver = (
 	attempt: Attempt,
 	binding: AgentBinding,
+	correlation?: ExecutionCorrelation,
+	modelProjection?: ExternalResolvedModelProjection,
 ) => TaskCredentialRunIssueContext | undefined;
 
 export interface ExternalConnectorCredentialBinding {
@@ -45,6 +54,7 @@ function unavailableService(): ExternalConnectorCredentialService {
 export function createExternalConnectorCredentialBinding(options: {
 	readonly target: ExternalConnectorResolvedTarget;
 	readonly resolveIssueContext: ExternalConnectorCredentialIssueContextResolver;
+	readonly modelGateway?: ExternalConnectorModelGateway;
 }): ExternalConnectorCredentialBinding {
 	let service: ExternalConnectorCredentialService = unavailableService();
 	let boundService: TaskCredentialService | undefined;
@@ -62,8 +72,29 @@ export function createExternalConnectorCredentialBinding(options: {
 	};
 	const runtime: ExternalConnectorCredentialRuntime = Object.freeze({
 		service: Object.freeze(runtimeService),
-		resolveIssueContext: (attempt: Attempt, binding: AgentBinding) => {
-			const context = options.resolveIssueContext(attempt, binding);
+		openModelGateway: (
+			lease: Parameters<NonNullable<ExternalConnectorCredentialRuntime["openModelGateway"]>>[0],
+			projection: Parameters<NonNullable<ExternalConnectorCredentialRuntime["openModelGateway"]>>[1],
+		) => options.modelGateway?.open(lease, projection),
+		closeModelGateway: (
+			capability: Parameters<NonNullable<ExternalConnectorCredentialRuntime["closeModelGateway"]>>[0],
+		) => options.modelGateway?.close(capability) ?? false,
+		modelGatewayEnvironment: (
+			capability: Parameters<NonNullable<ExternalConnectorCredentialRuntime["modelGatewayEnvironment"]>>[0],
+		) => target.driver === "codex"
+			? Object.freeze({
+				OPENAI_BASE_URL: capability.endpoint,
+				OPENAI_API_KEY: capability.authorization.replace(/^Bearer /, ""),
+			})
+			: Object.freeze({}),
+		disposeModelGateway: () => options.modelGateway?.dispose() ?? Promise.resolve(),
+		resolveIssueContext: (
+			attempt: Attempt,
+			binding: AgentBinding,
+			correlation?: ExecutionCorrelation,
+			modelProjection?: ExternalResolvedModelProjection,
+		) => {
+			const context = options.resolveIssueContext(attempt, binding, correlation, modelProjection);
 			if (context === undefined) return undefined;
 			return Object.freeze({
 				...context,

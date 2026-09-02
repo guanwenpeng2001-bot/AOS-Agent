@@ -2201,6 +2201,7 @@ export class RpcHostController {
 			if (publicRecord.modelBindingId !== undefined) data.modelBindingId = publicRecord.modelBindingId;
 			if (publicRecord.previousModelBindingId !== undefined)
 				data.previousModelBindingId = publicRecord.previousModelBindingId;
+			if (publicRecord.projectedModel !== undefined) data.projectedModel = publicRecord.projectedModel;
 			if (publicRecord.finalModel !== undefined) data.finalModel = publicRecord.finalModel;
 			if (publicRecord.modelAttempts !== undefined) data.modelAttempts = publicRecord.modelAttempts;
 			if (publicRecord.modelBudget !== undefined) data.modelBudget = publicRecord.modelBudget;
@@ -2972,10 +2973,18 @@ export class RpcHostController {
 						);
 					}
 					gatewayModelRoute = {
-						provider: resolution.reference.provider,
-						model: resolution.reference.id,
+						provider: resolution.candidatesConsidered[0]?.provider ?? resolution.reference.provider,
+						model: resolution.candidatesConsidered[0]?.id ?? resolution.reference.id,
 						effort,
 						serviceTier,
+						...(resolution.candidatesConsidered.length < 2
+							? {}
+							: {
+								fallback: resolution.candidatesConsidered.slice(1).map((candidate) => ({
+									provider: candidate.provider,
+									model: candidate.id,
+								})),
+							}),
 						fallbackDecision,
 						bindingDigest: fingerprintFoundationValue(resolution.binding),
 					};
@@ -3180,6 +3189,15 @@ export class RpcHostController {
 							id: authoritativeSelection.descriptor.providerId,
 							thinkingLevel: "off",
 						},
+						...(externalProductAdmission.modelProjection === undefined
+							? {}
+							: {
+								projectedModel: {
+									provider: externalProductAdmission.modelProjection.provider,
+									model: externalProductAdmission.modelProjection.model,
+									modelBindingDigest: externalProductAdmission.modelProjection.bindingDigest,
+								},
+							}),
 						capabilityBinding: runBinding.session.getActiveCapabilityBinding(),
 						policyBinding: runBinding.session.getActiveExecutionPolicyBinding(),
 						policySummary: runBinding.session.getActiveExecutionPolicySummary(),

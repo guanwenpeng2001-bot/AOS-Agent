@@ -61,7 +61,7 @@ backend must satisfy the exact stable-v1 handshake below; discover agents in
 the [official ACP registry](https://agentclientprotocol.com/get-started/registry).
 
 The capability matrix below describes private stable-v1 driver behavior.
-`aos_gateway` is an internal Host and Scheduler path; settings targets cannot
+`aos_gateway` is unsupported by ACP; ACP settings targets cannot
 select it and composition rejects it with `capability_widened`.
 
 | Capability | Status | Stable-v1 evidence | Driver decision |

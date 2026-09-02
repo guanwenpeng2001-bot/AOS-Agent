@@ -179,6 +179,7 @@ export interface ExternalConnectorDurableStore {
 	readBinding(bindingId: string): Promise<AgentBinding | undefined>;
 	readExecutionInput(taskId: string): Promise<ExternalConnectorExecutionInput | undefined>;
 	readOperation(attemptId: string): Promise<ExternalConnectorOperation | undefined>;
+	listOperations?(): Promise<readonly ExternalConnectorOperation[]>;
 	writeOperation(operation: ExternalConnectorOperation): Promise<ExternalConnectorOperation>;
 	readMapping(attemptId: string): Promise<CanonicalExternalConnectorMapping | undefined>;
 	writeMapping(
@@ -1107,6 +1108,22 @@ export class SessionExternalConnectorDurableStore implements ExternalConnectorDu
 			});
 		}
 		return operation;
+	}
+
+	async listOperations(): Promise<readonly ExternalConnectorOperation[]> {
+		const records = await this.#ledger.find({
+			kind: "fact",
+			objectType: EXTERNAL_CONNECTOR_OPERATION_OBJECT_TYPE,
+			includePruned: true,
+			order: "oldestFirst",
+		});
+		const latest = new Map<string, ExternalConnectorOperation>();
+		for (const record of records) {
+			if (record.kind !== "fact") continue;
+			const operation = cloneExternalConnectorOperation(record.payload);
+			latest.set(operation.attemptId, operation);
+		}
+		return Object.freeze([...latest.values()]);
 	}
 
 	async writeOperation(operation: ExternalConnectorOperation): Promise<ExternalConnectorOperation> {

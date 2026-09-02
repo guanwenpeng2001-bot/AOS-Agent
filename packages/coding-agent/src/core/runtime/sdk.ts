@@ -37,6 +37,7 @@ import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { DefaultResourceLoader, type ResourceLoader } from "./resource-loader.ts";
 import type { SandboxProvider } from "../policy/sandbox.ts";
 import { resolveDlpPolicy } from "../policy/execution.ts";
+import type { TaskCredentialProviderAvailability } from "../policy/task-credential-provider.ts";
 import { SessionManager, type SessionListOptions } from "../session/manager.ts";
 import { createSessionManagerForOptions, type SessionCreationOptions } from "../session/creation.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -76,6 +77,7 @@ export type {
 	AgentRuntimeCompositionOptions,
 	ExternalConnectorProductAuthority,
 	ExternalConnectorRegistryFactory,
+	ExternalConnectorModelGatewayFactory,
 	SchedulerCompositionFactory,
 	SchedulerRuntimeOptions,
 	SubagentCompositionFactory,
@@ -169,6 +171,8 @@ export interface CreateAgentSessionOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
+	/** @internal Safe reachability facts for a trusted Task Credential composition. */
+	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
 }
 
 /** Result from createAgentSession */
@@ -660,6 +664,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			mcpAuthProvider: options.mcpAuthProvider,
 			mcpAuthManagerOptions,
 			sandboxProviders: options.sandboxProviders,
+			taskCredentialProviderAvailability: options.taskCredentialProviderAvailability,
 			policyProfile: options.policyProfile,
 			dlpCredentialMaterials,
 			noTools: options.noTools,

@@ -229,7 +229,8 @@ export class ProductionClaudeProcessBridge implements PrivateClaudeProcessBridge
 		if (
 			environmentEntries.length > MAX_ENVIRONMENT_KEYS ||
 			environmentEntries.some(([key, value]) =>
-				SENSITIVE_ENVIRONMENT_KEY.test(key) ||
+				(SENSITIVE_ENVIRONMENT_KEY.test(key) &&
+					!(key === "ANTHROPIC_AUTH_TOKEN" && /^aos_gateway_[A-Fa-f0-9]{32}$/.test(value ?? ""))) ||
 				value === undefined ||
 				key.includes("=") ||
 				key.includes("\0") ||

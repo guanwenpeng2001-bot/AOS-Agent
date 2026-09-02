@@ -119,7 +119,7 @@ export interface ExternalConnectorProcessController {
 	/** Launch inactive inside the requested non-detached process group or Windows Job containment. */
 	launch(
 		request: ExternalConnectorProcessLaunchRequest,
-		options?: { readonly signal?: AbortSignal },
+		options?: { readonly signal?: AbortSignal; readonly environment?: Readonly<Record<string, string>> },
 	): Promise<ExternalConnectorProcessHandle>;
 	/** Resolve the channel for one exact supervisor reference after activation. */
 	readonly channelFor?: (
@@ -681,6 +681,7 @@ export class ExternalConnectorBoundedSupervisor {
 	async launch(
 		persistBeforeActivation: (state: ExternalConnectorSupervisorPrivateState) => Promise<void>,
 		sourceSignal?: AbortSignal,
+		environment?: Readonly<Record<string, string>>,
 	): Promise<ExternalConnectorSupervisorPrivateState> {
 		if (this.#processHandle !== undefined || this.#phase !== "idle") {
 			throw new Error("External Connector supervisor is single-use");
@@ -699,7 +700,10 @@ export class ExternalConnectorBoundedSupervisor {
 		const launch = async (): Promise<ExternalConnectorSupervisorPrivateState> => {
 			let handle: ExternalConnectorProcessHandle;
 			try {
-				handle = await this.#processController.launch(this.#launchRequest(), { signal: controller.signal });
+				handle = await this.#processController.launch(this.#launchRequest(), {
+					signal: controller.signal,
+					...(environment === undefined ? {} : { environment }),
+				});
 			} catch {
 				this.#quarantined = true;
 				throw new ExternalConnectorSupervisorError("reconcile_required", "start", false);
