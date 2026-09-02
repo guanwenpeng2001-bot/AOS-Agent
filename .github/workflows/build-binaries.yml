@@ -1,0 +1,328 @@
+name: Build Bun binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build binaries for (e.g. v0.85.0)"
+        required: true
+        type: string
+      attach_to_release:
+        description: "Attach assets to the GitHub release for this tag (create draft if missing)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: build-binaries-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build six platform archives
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.x
+          cache: npm
+
+      - name: Verify source version
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_version="${RELEASE_TAG#v}"
+          package_version="$(node -p "require('./packages/coding-agent/package.json').version")"
+          if [[ "${RELEASE_TAG}" != v* || "${package_version}" != "${expected_version}" ]]; then
+            echo "::error::Tag ${RELEASE_TAG} does not match package version ${package_version}."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build packages
+        run: npm run build
+
+      - name: Build binary archives
+        # The full matrix needs the script to stage native clipboard bindings
+        # for every target; --skip-deps is only safe for a single host target.
+        run: bash ./scripts/build-binaries.sh --skip-install --skip-build --out ./binary-dist
+
+      - name: Create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd binary-dist
+          archives=(
+            aos-darwin-arm64.tar.gz
+            aos-darwin-x64.tar.gz
+            aos-linux-x64.tar.gz
+            aos-linux-arm64.tar.gz
+            aos-windows-x64.zip
+            aos-windows-arm64.zip
+          )
+          for archive in "${archives[@]}"; do
+            test -f "${archive}"
+          done
+          sha256sum "${archives[@]}" > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Upload binary archives
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets-${{ env.RELEASE_TAG }}
+          path: |
+            binary-dist/*.tar.gz
+            binary-dist/*.zip
+            binary-dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    name: Smoke ${{ matrix.platform }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux-x64
+          - runner: macos-latest
+            platform: darwin-arm64
+          - runner: windows-latest
+            platform: windows-x64
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Download binary archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets-${{ env.RELEASE_TAG }}
+          path: release-assets
+
+      - name: Smoke Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          extract_dir="${RUNNER_TEMP}/aos binary smoke/${{ matrix.platform }}"
+          mkdir -p "${extract_dir}"
+          tar -xzf "release-assets/aos-${{ matrix.platform }}.tar.gz" -C "${extract_dir}"
+          binary="${extract_dir}/aos/aos"
+          "${binary}" --help
+          actual_version="$("${binary}" --version)"
+          expected_version="${RELEASE_TAG#v}"
+          if [[ "${actual_version}" != "${expected_version}" ]]; then
+            echo "::error::Expected ${expected_version}, got ${actual_version}."
+            exit 1
+          fi
+
+      - name: Smoke Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $extractDir = Join-Path $env:RUNNER_TEMP "aos binary smoke/${{ matrix.platform }}"
+          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+          Expand-Archive -LiteralPath "release-assets/aos-${{ matrix.platform }}.zip" -DestinationPath $extractDir -Force
+          $binary = Join-Path $extractDir "aos.exe"
+          & $binary --help
+          if ($LASTEXITCODE -ne 0) {
+            throw "aos.exe --help failed with exit code $LASTEXITCODE"
+          }
+          $actualVersion = (& $binary --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "aos.exe --version failed with exit code $LASTEXITCODE"
+          }
+          $expectedVersion = $env:RELEASE_TAG -replace '^v', ''
+          if ($actualVersion -cne $expectedVersion) {
+            throw "Expected $expectedVersion, got $actualVersion."
+          }
+
+  release-assets:
+    name: Attach release assets
+    needs: smoke
+    if: ${{ github.event_name == 'push' || inputs.attach_to_release == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      ATTACH_TO_RELEASE: ${{ inputs.attach_to_release || false }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Download binary archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets-${{ env.RELEASE_TAG }}
+          path: release-assets
+
+      - name: Validate release payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum --check SHA256SUMS
+
+      - name: Select release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          release_error="${RUNNER_TEMP}/release-view-error.txt"
+          if release_state="$(gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json isDraft --jq .isDraft 2>"${release_error}")"; then
+            :
+          elif grep -Eqi 'release not found|HTTP 404' "${release_error}"; then
+            release_state=""
+          else
+            cat "${release_error}" >&2
+            exit 1
+          fi
+          if [[ "${release_state}" == "false" && "${ATTACH_TO_RELEASE}" != "true" ]]; then
+            echo "GitHub Release ${RELEASE_TAG} is already published; leaving it unchanged."
+            echo "upload=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ -z "${release_state}" ]]; then
+            node scripts/release-notes.mjs extract \
+              --repo "${GH_REPO}" \
+              --tag "${RELEASE_TAG}" \
+              --out release-assets/RELEASE_NOTES.md
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GH_REPO}" \
+              --verify-tag \
+              --draft \
+              --title "${RELEASE_TAG}" \
+              --notes-file release-assets/RELEASE_NOTES.md
+            echo "Created draft GitHub Release ${RELEASE_TAG}."
+            release_state="true"
+          elif [[ "${release_state}" == "true" ]]; then
+            echo "Using existing draft GitHub Release ${RELEASE_TAG}."
+          elif [[ "${release_state}" == "false" ]]; then
+            echo "Backfilling assets on published GitHub Release ${RELEASE_TAG}; release notes will not be changed."
+          else
+            echo "::error::Unexpected release state for ${RELEASE_TAG}: ${release_state}"
+            exit 1
+          fi
+          echo "is_draft=${release_state}" >> "${GITHUB_OUTPUT}"
+          echo "upload=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload release assets
+        if: steps.release.outputs.upload == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          IS_DRAFT: ${{ steps.release.outputs.is_draft }}
+        run: |
+          set -euo pipefail
+
+          archives=(
+            aos-darwin-arm64.tar.gz
+            aos-darwin-x64.tar.gz
+            aos-linux-x64.tar.gz
+            aos-linux-arm64.tar.gz
+            aos-windows-x64.zip
+            aos-windows-arm64.zip
+          )
+          assets=(
+            "${archives[@]}"
+            SHA256SUMS
+          )
+
+          if [[ "${IS_DRAFT}" == "true" ]]; then
+            echo "Replacing all draft release assets from the validated build artifact."
+            asset_paths=()
+            for asset in "${assets[@]}"; do
+              asset_paths+=("release-assets/${asset}")
+            done
+            gh release upload "${RELEASE_TAG}" \
+              --repo "${GH_REPO}" \
+              --clobber \
+              "${asset_paths[@]}"
+          elif [[ "${IS_DRAFT}" == "false" ]]; then
+            echo "Validating existing published release assets before adding missing assets."
+            existing_assets="$(gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json assets --jq '.assets[].name')"
+            existing_assets_dir="${RUNNER_TEMP}/existing-release-assets"
+            mkdir -p "${existing_assets_dir}"
+
+            for asset in "${assets[@]}"; do
+              if grep -Fxq "${asset}" <<< "${existing_assets}"; then
+                gh release download "${RELEASE_TAG}" \
+                  --repo "${GH_REPO}" \
+                  --pattern "${asset}" \
+                  --dir "${existing_assets_dir}"
+                test -f "${existing_assets_dir}/${asset}"
+              fi
+            done
+
+            if [[ -f "${existing_assets_dir}/SHA256SUMS" ]]; then
+              if ! cmp --silent "release-assets/SHA256SUMS" "${existing_assets_dir}/SHA256SUMS"; then
+                echo "::error::Published release ${RELEASE_TAG} has a SHA256SUMS asset from a different build; refusing to modify it."
+                exit 1
+              fi
+            fi
+
+            (
+              cd "${existing_assets_dir}"
+              sha256sum --check --ignore-missing "${GITHUB_WORKSPACE}/release-assets/SHA256SUMS"
+            )
+
+            for asset in "${assets[@]}"; do
+              if grep -Fxq "${asset}" <<< "${existing_assets}"; then
+                echo "Keeping verified existing published release asset ${asset}."
+              else
+                gh release upload "${RELEASE_TAG}" \
+                  --repo "${GH_REPO}" \
+                  "release-assets/${asset}"
+              fi
+            done
+          else
+            echo "::error::Unexpected release draft state: ${IS_DRAFT}"
+            exit 1
+          fi
+
+          printf '%s\n' "${assets[@]}" | sort > "${RUNNER_TEMP}/expected-assets.txt"
+          gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json assets --jq '.assets[].name' | sort > "${RUNNER_TEMP}/actual-assets.txt"
+          if ! diff -u "${RUNNER_TEMP}/expected-assets.txt" "${RUNNER_TEMP}/actual-assets.txt"; then
+            echo "::error::GitHub Release ${RELEASE_TAG} does not contain exactly the seven expected binary assets."
+            exit 1
+          fi

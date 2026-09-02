@@ -15,6 +15,8 @@ npm install --global aos-agent@0.84.3
 aos --help
 ```
 
+Standalone archives for macOS, Linux, and Windows are available on the [GitHub Releases page](https://github.com/guanwenpeng2001-bot/AOS-Agent/releases) and do not require Node.js.
+
 For source development, build and install the checkout instead:
 
 ```sh
