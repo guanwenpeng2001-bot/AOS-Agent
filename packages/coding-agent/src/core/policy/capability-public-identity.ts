@@ -95,18 +95,18 @@ async function acquireStateLock(statePath: string): Promise<() => Promise<void>>
 
 function acquireStateLockSync(statePath: string): () => void {
 	mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
-	for (let attempt = 1; attempt <= 20; attempt++) {
+	for (let attempt = 1; attempt <= 50; attempt++) {
 		try {
-			return lockfile.lockSync(statePath, { realpath: false });
+			return lockfile.lockSync(statePath, { realpath: false, stale: 30_000 });
 		} catch (error) {
 			const code =
 				typeof error === "object" && error !== null && "code" in error
 					? String((error as { code?: unknown }).code)
 					: undefined;
-			if (code !== "ELOCKED" || attempt === 20) {
+			if (code !== "ELOCKED" || attempt === 50) {
 				throw new Error("Failed to lock capability identity state");
 			}
-			const waitUntil = Date.now() + 10;
+			const waitUntil = Date.now() + Math.min(10 * attempt, 100);
 			while (Date.now() < waitUntil) {
 				// The synchronous Registry construction path cannot await the async lock.
 			}
