@@ -15,7 +15,9 @@ const identity = `sha256:${"0".repeat(64)}`;
 const processBridgeModule = new URL("../../src/core/connector/assets/claude-process-bridge.mjs", import.meta.url);
 
 afterEach(() => {
-	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+	for (const directory of directories.splice(0)) {
+		rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+	}
 });
 
 class FakeChannel implements ExternalConnectorProcessChannel {
