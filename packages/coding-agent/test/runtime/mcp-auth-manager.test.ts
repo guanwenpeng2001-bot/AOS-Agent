@@ -21,11 +21,16 @@ interface FakeInteractionResult {
 	interaction: AuthInteraction;
 	events: AuthEvent[];
 	prompts: AuthPrompt[];
+	authUrl: Promise<URL>;
 }
 
 function createFakeInteraction(options: { confirm?: "allow" | "cancel" } = {}): FakeInteractionResult {
 	const events: AuthEvent[] = [];
 	const prompts: AuthPrompt[] = [];
+	let resolveAuthUrl!: (url: URL) => void;
+	const authUrl = new Promise<URL>((resolve) => {
+		resolveAuthUrl = resolve;
+	});
 	const interaction: AuthInteraction = {
 		async prompt(prompt) {
 			prompts.push(prompt);
@@ -39,25 +44,15 @@ function createFakeInteraction(options: { confirm?: "allow" | "cancel" } = {}): 
 		},
 		notify(event) {
 			events.push(event);
+			if (event.type === "auth_url") resolveAuthUrl(new URL(event.url));
 		},
 	};
-	return { interaction, events, prompts };
+	return { interaction, events, prompts, authUrl };
 }
 
 function authUrlFrom(events: AuthEvent[]): URL | undefined {
 	const event = events.find((event) => event.type === "auth_url");
 	return event !== undefined && event.type === "auth_url" ? new URL(event.url) : undefined;
-}
-
-async function waitForAuthUrl(events: AuthEvent[], timeoutMs = 5_000): Promise<URL> {
-	const start = Date.now();
-	while (authUrlFrom(events) === undefined) {
-		if (Date.now() - start > timeoutMs) {
-			throw new Error("waitForAuthUrl timed out");
-		}
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	return authUrlFrom(events) as URL;
 }
 
 /** Simulates the user agent completing the authorization redirect. */
@@ -228,10 +223,14 @@ async function waitForAuthorize(
 	serverId: string,
 	serverUrl: string,
 ): Promise<{ result: MCPAuthStartResult; prompts: AuthPrompt[]; events: AuthEvent[] }> {
-	const { interaction, prompts, events } = createFakeInteraction();
+	const { interaction, prompts, events, authUrl } = createFakeInteraction();
 	const promise = manager.start(serverId, serverUrl, { interaction });
-	const authUrl = await waitForAuthUrl(events);
-	await completeBrowserStep(authUrl);
+	const first = await Promise.race([
+		authUrl.then((url) => ({ type: "auth_url" as const, url })),
+		promise.then((result) => ({ type: "result" as const, result })),
+	]);
+	if (first.type === "result") return { result: first.result, prompts, events };
+	await completeBrowserStep(first.url);
 	const result = await promise;
 	return { result, prompts, events };
 }
