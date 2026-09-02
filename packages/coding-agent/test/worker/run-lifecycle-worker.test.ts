@@ -15,7 +15,7 @@ import {
 	type TaskResult,
 	type WorkerReceipt,
 } from "../../../agent/src/internal.ts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	createRunLifecycleCoordinator,
 	registerRunWorkerLifecycleHooks,
@@ -256,7 +256,13 @@ describe("Run lifecycle Operation Worker wiring", () => {
 				attemptId: "attempt-1",
 			},
 		});
-		const execution = await execute("operation-1");
+		vi.useFakeTimers({
+			now: Date.now(),
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		const execution = await execute("operation-1").finally(() => {
+			vi.useRealTimers();
+		});
 		expect(execution).toMatchObject({ ok: true, value: { ok: true, sideEffectState: "none" } });
 		if (!execution.ok || execution.value.toolReceiptRef === undefined) throw new Error("Expected ToolGateway WorkerReceipt reference");
 		const worker = workerProvider.getWorkerReceipt(execution.value.toolReceiptRef);
