@@ -35,6 +35,9 @@ test("synchronizes private dependencies without touching registry aliases, gener
 		await writeManifest(root, "packages/coding-agent", {
 			name: "aos-agent",
 			version: "2.0.0",
+			optionalDependencies: {
+				"@aos-agent/ai": "^1.0.0",
+			},
 		});
 		await writeManifest(root, "packages/evals", {
 			name: "@aos-agent/evals",
@@ -57,6 +60,8 @@ test("synchronizes private dependencies without touching registry aliases, gener
 		const result = runSyncVersions(root);
 		assert.equal(result.status, 0, result.stderr);
 
+		const codingAgentManifest = await readManifest(root, "packages/coding-agent");
+		assert.equal(codingAgentManifest.optionalDependencies["@aos-agent/ai"], "^2.0.0");
 		const evalsManifest = await readManifest(root, "packages/evals");
 		assert.equal(evalsManifest.dependencies["aos-agent"], "^2.0.0");
 		assert.equal(evalsManifest.dependencies["@aos-agent/ai"], "npm:@aos-agent/ai@1.0.0");

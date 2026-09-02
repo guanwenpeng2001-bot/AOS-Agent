@@ -116,6 +116,26 @@ function shellQuote(value) {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function resolveWindowsGitBash() {
+	const candidates = [
+		join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe"),
+		join(process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)", "Git", "bin", "bash.exe"),
+	];
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) {
+			return candidate;
+		}
+	}
+	throw new Error("Git Bash is required to run ./test.sh on Windows. Install Git for Windows or invoke Git Bash explicitly.");
+}
+
+function testCommand() {
+	if (process.platform !== "win32") {
+		return "./test.sh";
+	}
+	return `"${resolveWindowsGitBash()}" ./test.sh`;
+}
+
 function removeStaleWorkspaceLockEntries() {
 	const workspaceVersions = new Map(
 		getPublicWorkspacePackages().map((pkg) => [pkg.name, pkg.version]),
@@ -265,7 +285,7 @@ run("npm run build:offline");
 console.log();
 
 console.log("Running tests...");
-run(process.platform === "win32" ? "bash ./test.sh" : "./test.sh");
+run(testCommand());
 console.log();
 
 // 7. Commit and tag

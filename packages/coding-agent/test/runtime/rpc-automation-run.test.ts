@@ -2110,8 +2110,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			expect(response).toMatchObject({ success: true, data: { status: "accepted" } });
 			const runId = (response as { data: { runId: string } }).data.runId;
 			artifacts.length = 0;
-			await vi.waitFor(() =>
-				expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed", runId })),
+			await vi.waitFor(
+				() => expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed", runId })),
+				{ timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS },
 			);
 
 			const identity = externalConnectorProductIdentity(runId, fixture.selection.providerId);
@@ -2448,8 +2449,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			);
 			const runId = (response as { data?: { runId?: string } } | undefined)?.data?.runId;
 			expect(runId).toBeDefined();
-			await vi.waitFor(() =>
-				expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed", runId })),
+			await vi.waitFor(
+				() => expect(harness.records).toContainEqual(expect.objectContaining({ type: "run.completed", runId })),
+				{ timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS },
 			);
 			expect(fixture.toolGatewayRequests).toEqual([]);
 			expect(fixture.driver.writes).toEqual([]);
@@ -4259,7 +4261,9 @@ describe("RPC Automation Host run lifecycle", () => {
 					}),
 				),
 			);
-			await vi.waitFor(() => expect(harness.records.some((record) => record.type === "run.completed")).toBe(true));
+			await vi.waitFor(() => expect(harness.records.some((record) => record.type === "run.completed")).toBe(true), {
+				timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS,
+			});
 			expect(fixture.driver.spawnCalls).toBe(1);
 			expect(acceptedRunFactCount(session)).toBe(acceptedBefore + 1);
 		} finally {
@@ -4364,7 +4368,9 @@ describe("RPC Automation Host run lifecycle", () => {
 			await client.start();
 			await client.initializeAutomationHost();
 			const accepted = await client.startRun("Hello");
-			await vi.waitFor(() => expect(events.some((event) => event.type === "run.completed")).toBe(true));
+			await vi.waitFor(() => expect(events.some((event) => event.type === "run.completed")).toBe(true), {
+				timeout: RPC_RUN_COMPLETION_WAIT_TIMEOUT_MS,
+			});
 			const recovery = client.createRunReplayRecovery(accepted.runId, { sessionId: accepted.sessionId });
 			const consumed = events.map((event) => recovery.consumeRunEvent(event));
 

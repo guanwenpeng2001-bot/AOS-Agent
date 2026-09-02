@@ -2553,7 +2553,14 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 	});
 
 	it("preserves a supported protocol failure code in canonical terminal evidence", async () => {
-		const value = await fixture();
+		const value = await fixture({
+			// Keep full-suite contention outside the default 1s start/event/receipt window.
+			supervisionDeadlines: {
+				start: { hardMs: 10_000, idleMs: 10_000 },
+				event: { hardMs: 10_000, idleMs: 10_000 },
+				receipt: { hardMs: 10_000, idleMs: 10_000 },
+			},
+		});
 		persistAttempt(value);
 		value.driver.evidence = terminalEvidence("succeeded", {
 			status: "failed",

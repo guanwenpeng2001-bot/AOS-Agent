@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.85.0] - 2026-09-02
 
 ### Breaking Changes
 
@@ -153,6 +153,10 @@
 - Crash-resume composition and Worker fail-closed/cancel tests wait for the terminal marker or record instead of a one-second poll.
 - Protocol drain waits until the deterministic clock has a pending timer before advancing it.
 - Local binary release on Windows now archives through PowerShell when `zip`/`unzip` are missing and invokes the shell build through bash.
+- Version lockstep now rewrites workspace `optionalDependencies`, so the Node SQLite Session backend tracks the current package version in the installer lock.
+- Release tests on Windows now run `./test.sh` through Git Bash instead of the WSL `bash` launcher.
+- RPC run-completion waits and the post-tool compaction regression now keep the existing full-suite timeout budget on Windows.
+- External Connector protocol-failure evidence now keeps a 10s start/event/receipt budget so Windows full-suite contention cannot turn an immediate fixture reply into a deadline failure.
 - Theme FSWatcher regression waits until the watcher handle exists before emitting the simulated error.
 - MCP auth abort waits for the auth URL with a bounded timeout and observes the authorization promise before aborting.
 - Installed packages now boot successfully through the CLI and SDK entrypoints.

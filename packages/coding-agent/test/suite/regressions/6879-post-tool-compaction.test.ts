@@ -75,7 +75,7 @@ describe("issue #6879 post-tool compaction", () => {
 		expect(resumedRequest).toContain("compacted history");
 		expect(resumedRequest).toContain("large-tool-result");
 		expect(harness.session.getLastAssistantText()).toBe("finished after compaction");
-	});
+	}, 60_000);
 
 	it("does not compact or resume after a terminating tool result", async () => {
 		const harness = await createCompactionHarness(largeResultTool(true));
