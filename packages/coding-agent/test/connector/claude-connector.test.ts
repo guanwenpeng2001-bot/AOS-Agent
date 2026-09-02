@@ -528,6 +528,56 @@ describe("private Claude Agent SDK connector driver", () => {
 		await connector.dispose();
 	});
 
+	it("rejects duplicate or mixed Claude model usage for a gateway result", async () => {
+		const projection: ExternalResolvedModelProjection = {
+			schemaVersion: 1,
+			provider: "bedrock",
+			model: "anthropic.claude-sonnet-fixture-v1:0",
+			effort: "high",
+			serviceTier: "priority",
+			fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+			bindingDigest: { algorithm: "sha256", value: "d".repeat(64) },
+		};
+		const translated = translateExternalModelProjection(projection, PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX);
+		if (!translated.ok) throw new Error(translated.error.reasonCode);
+		const credential = {
+			schemaVersion: 1 as const,
+			leaseId: "lease-claude-model-ambiguous",
+			grantId: "grant-claude-model-ambiguous",
+			bindingId: attempt.bindingId,
+			scopeDigest: `sha256:${"e".repeat(64)}`,
+			expiresAt: "2026-08-28T01:00:00.000Z",
+			clientRequestId: "request-claude-model-ambiguous",
+		};
+		const modelGateway = {
+			schemaVersion: 1 as const,
+			endpoint: "http://127.0.0.1:43123/v1",
+			authorization: "Bearer aos_gateway_0123456789abcdef0123456789abcdef",
+			leaseId: credential.leaseId,
+			modelBindingDigest: projection.bindingDigest.value,
+			expiresAt: credential.expiresAt,
+		};
+		const matchingUsage = { ...usage, canonicalModel: projection.model, provider: projection.provider };
+		for (const modelUsage of [
+			{ first: matchingUsage, second: matchingUsage },
+			{ first: matchingUsage, second: { ...matchingUsage, canonicalModel: "different-model" } },
+		]) {
+			const connector = driver(new FakeCompanion(async function* () {
+				yield { ...init(), model: projection.model, effort: projection.effort };
+				yield result("success", { modelUsage });
+			}));
+			const handle = await connector.spawn(spawnRequest({
+				capability: capabilityFor({ modelAccess: "aos_gateway" }),
+				modelProjection: projection,
+				modelTranslation: translated.translation,
+				credential,
+				modelGateway,
+			}));
+			await expect(connector.read(handle)).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+			await connector.dispose();
+		}
+	});
+
 	it("rejects malformed or stale MCP selections and intersects exact Tool Gateway routes", async () => {
 		const companion = new FakeCompanion(async function* (request) {
 			yield init(request.tools.map((tool) => tool.exposedToolName), request.tools.map((tool) => tool.serverName));

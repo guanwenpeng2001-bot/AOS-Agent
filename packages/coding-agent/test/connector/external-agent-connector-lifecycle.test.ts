@@ -1035,6 +1035,33 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(credentials.target.revocations).toHaveLength(1);
 	});
 
+	it("keeps cancellation-before-launch non-terminal when credential revocation is unknown", async () => {
+		const credentials = createCredentialHarness();
+		credentials.target.revokeUnknown = true;
+		const value = await fixture({ credential: credentials.runtime });
+		persistAttempt(value);
+		const controller = new AbortController();
+		credentials.target.onProject = () => controller.abort();
+
+		const cancelled = await value.connector.runAttempt(value.attempt, {
+			correlation,
+			signal: controller.signal,
+		});
+
+		expect(cancelled).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
+		const lease = value.store.operations.get(value.attempt.attemptId)?.credential;
+		if (lease === undefined) throw new Error("missing durable credential lease");
+		expect(credentials.service.get(lease.projection.leaseId)?.status).toBe("revocation_unknown");
+		expect(credentials.service.isTargetQuarantined(lease.targetId)).toBe(true);
+		expect(value.supervision.processController.launchCalls).toBe(0);
+		expect(value.driver.calls.spawn).toBe(0);
+	});
+
 	for (const terminalPath of ["launch_failure", "runner_throw", "cancel", "deadline", "dispose"] as const) {
 		it(`revokes and clears the external lease on ${terminalPath}`, async () => {
 			const credentials = createCredentialHarness();
@@ -1882,6 +1909,36 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		}
 	});
 
+	it("keeps failed-without-mapping non-terminal when credential revocation is unknown", async () => {
+		vi.useFakeTimers();
+		try {
+			const credentials = createCredentialHarness();
+			credentials.target.revokeUnknown = true;
+			const value = await fixture({ credential: credentials.runtime });
+			persistAttempt(value);
+			let markSpawnStarted: (() => void) | undefined;
+			const spawnStarted = new Promise<void>((resolve) => { markSpawnStarted = resolve; });
+			value.driver.onSpawn = () => markSpawnStarted?.();
+			value.driver.spawnGate = new Promise<never>(() => undefined);
+			const running = value.connector.runAttempt(value.attempt, { correlation });
+			await spawnStarted;
+
+			const cancellation = value.connector.cancelAttempt(value.attempt.attemptId);
+			for (let index = 0; index < 8; index += 1) await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(1_000);
+
+			await expect(cancellation).resolves.toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+			await expect(running).resolves.toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+			expect(value.store.receiptWrites).toBe(0);
+			expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+				status: "reconcile_required",
+				reconcileReason: "credential_unavailable",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("cancels idempotently after persisting cancelling", async () => {
 		const value = await fixture();
 		persistAttempt(value);
@@ -2165,6 +2222,34 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(value.supervision.processController.forceCalls).toBe(1);
 		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
 		await restarted.connector.dispose();
+	});
+
+	it("startup quarantines a reaped credential-bearing operation when revoke is unknown", async () => {
+		const credentials = createCredentialHarness();
+		const value = await fixture({ credential: credentials.runtime });
+		persistAttempt(value);
+		value.driver.readHangs = true;
+		value.driver.eventNextHangs = true;
+		const running = value.connector.runAttempt(value.attempt, { correlation });
+		void running.catch(() => undefined);
+		await expect.poll(() => value.driver.calls.read).toBe(1);
+		credentials.target.revokeUnknown = true;
+		const restarted = restartedConnector(value, undefined, credentials.runtime);
+
+		const recovered = await restarted.connector.recoverPrivateSupervisorState();
+
+		expect(recovered).toEqual([{ attemptId: value.attempt.attemptId, status: "quarantined" }]);
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "driver_failure",
+		});
+		const lease = value.store.operations.get(value.attempt.attemptId)?.credential;
+		if (lease === undefined) throw new Error("missing durable credential lease");
+		expect(credentials.service.get(lease.projection.leaseId)?.status).toBe("revocation_unknown");
+		expect(credentials.service.isTargetQuarantined(lease.targetId)).toBe(true);
+		await value.connector.dispose().catch(() => undefined);
+		await running;
 	});
 
 	it("startup quarantines not-found, PID-reused, and ambiguous identities without killing", async () => {

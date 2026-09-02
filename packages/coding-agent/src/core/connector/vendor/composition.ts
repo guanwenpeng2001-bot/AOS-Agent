@@ -2,11 +2,13 @@ import {
 	createConnectorCapabilitySnapshot,
 	type ArtifactStoreProvider,
 	type ConnectorCapabilitySnapshot,
-	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { ExternalAgentConnectorRuntimeOptions } from "../durable-connector.ts";
+import type {
+	DurableExternalAgentConnector,
+	ExternalAgentConnectorRuntimeOptions,
+} from "../durable-connector.ts";
 import type { ExternalConnectorDurableStore } from "../operation.ts";
 import { createProductionExternalConnectorSupervision } from "../production.ts";
 import { resolveProductionExternalConnectorDriverProvenance } from "../process-controller.ts";
@@ -133,7 +135,7 @@ export async function createPrivateVendorExternalAgentConnector(options: {
 	const capability = privateVendorCapability(options.target);
 	const supervision = options.adapters?.supervision ??
 		productionSupervision(options.target, options.privateStatePath);
-	let connector: ExternalAgentConnector;
+	let connector: DurableExternalAgentConnector;
 	if (driver === "claude") {
 		const productionProcessBridge = options.adapters?.supervision === undefined
 			? new ProductionClaudeProcessBridge(supervision.processController, options.target)

@@ -4,6 +4,7 @@ import type { Models } from "@aos-agent/ai";
 import type { CapabilityRegistry } from "../policy/capability-registry.ts";
 import { type ConnectorRetryPolicy, DEFAULT_CONNECTOR_RETRY_POLICY } from "../connector/retry-circuit.ts";
 import type { ExternalConnectorRegistry } from "../connector/registry.ts";
+import { waitForExternalConnectorRegistryInitialization } from "../connector/registry-initialization.ts";
 import {
 	bindExternalConnectorCredentialRegistry,
 	createExternalConnectorCredentialBinding,
@@ -591,6 +592,7 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 					...schedulerForInitialization,
 					initializeBeforeStart: async () => {
 						await schedulerForInitialization.initializeBeforeStart?.();
+						await waitForExternalConnectorRegistryInitialization(externalConnectorRegistry);
 						await registerSelectedExternalConnector({
 							registry: externalConnectorRegistry,
 							scheduler: schedulerForInitialization,

@@ -758,9 +758,12 @@ function effectiveModelEvidence(
 	const model = operation.model;
 	if (model === undefined) return undefined;
 	if (!isRecord(message.modelUsage)) throw eventInvalidError();
-	const observations = Object.values(message.modelUsage).flatMap((usage) =>
-		isRecord(usage) && usage.provider === model.provider && usage.canonicalModel === model.model ? [usage] : []);
-	if (observations.length !== 1) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+	const observations = Object.values(message.modelUsage);
+	if (
+		observations.length !== 1 ||
+		!observations.every((usage) =>
+			isRecord(usage) && usage.provider === model.provider && usage.canonicalModel === model.model)
+	) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
 	let bindingDigest: { algorithm: "sha256"; value: string };
 	try {
 		bindingDigest = JSON.parse(model.bindingDigest) as { algorithm: "sha256"; value: string };

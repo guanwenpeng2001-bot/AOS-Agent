@@ -16,6 +16,7 @@ import type { ModelBroker } from "../runtime/model-broker.ts";
 import { createModelBroker, ModelRuntime } from "../runtime/model-runtime.ts";
 import { createPackagedExternalConnectorRegistryFactory } from "../connector/packaged-runtime.ts";
 import { ExternalConnectorModelGateway } from "../connector/model-gateway.ts";
+import { waitForExternalConnectorRegistryInitialization } from "../connector/registry-initialization.ts";
 import { LocalCredentialVault } from "../policy/credential-vault.ts";
 import {
 	createTaskCredentialLocalVaultProvider,
@@ -377,7 +378,7 @@ export async function createAgentSessionServices(
 export async function createAgentSessionFromServices(
 	options: CreateAgentSessionFromServicesOptions,
 ): Promise<CreateAgentSessionResult> {
-	return createAgentSession({
+	const created = await createAgentSession({
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
 		modelRuntime: options.services.modelRuntime,
@@ -405,4 +406,11 @@ export async function createAgentSessionFromServices(
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
 	});
+	try {
+		await waitForExternalConnectorRegistryInitialization(created.runtimeComposition.externalConnectorRegistry);
+		return created;
+	} catch (error) {
+		await created.session.dispose().catch(() => undefined);
+		throw error;
+	}
 }

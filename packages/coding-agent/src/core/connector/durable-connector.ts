@@ -101,6 +101,7 @@ export interface ExternalConnectorCredentialRuntime {
 	readonly modelGatewayEnvironment?: (
 		capability: ExternalModelGatewayCapability,
 	) => Readonly<Record<string, string>>;
+	readonly disposeModelGateway?: () => Promise<void>;
 	/** Pure exact target/binding selection for this already durable Attempt. */
 	readonly resolveIssueContext: (
 		attempt: Attempt,
@@ -931,8 +932,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		const operations = await this.#store.listOperations?.() ?? [];
 		for (const operation of operations) {
 			if (operation.credential === undefined || privateAttempts.has(operation.attemptId)) continue;
-			const released = this.#releaseCredential(operation, "run_interrupted");
-			if (operation.status !== "terminal") await this.#markReconcile(operation, "driver_failure");
+			const released = operation.status === "terminal"
+				? this.#releaseCredential(operation, "run_interrupted")
+				: await this.#markReconcile(operation, "driver_failure");
 			results.push(Object.freeze({
 				attemptId: operation.attemptId,
 				status: released ? "reaped" : "quarantined",
@@ -972,17 +974,17 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			try {
 				await this.#supervision.privateStateStore.delete(entry.attemptId);
 			} catch {
-				await this.#markStartupReconcile(entry);
+				const released = await this.#markStartupReconcile(entry);
 				results.push(
 					Object.freeze({
 						attemptId: entry.attemptId,
-						status: "cleanup_confirmed_state_retained",
+						status: released ? "cleanup_confirmed_state_retained" : "quarantined",
 					}),
 				);
 				continue;
 			}
-			await this.#markStartupReconcile(entry);
-			results.push(Object.freeze({ attemptId: entry.attemptId, status: "reaped" }));
+			const released = await this.#markStartupReconcile(entry);
+			results.push(Object.freeze({ attemptId: entry.attemptId, status: released ? "reaped" : "quarantined" }));
 		}
 		return Object.freeze(results);
 	}
@@ -1206,6 +1208,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			});
 		} catch (error) {
 			disposalFailure ??= error;
+		}
+		try {
+			await this.#credentialRuntime?.disposeModelGateway?.();
+		} catch (error) {
+			disposalFailure ??= error;
 		} finally {
 			this.#supervisors.clear();
 			this.#driverHandles.clear();
@@ -1322,25 +1329,23 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		});
 	}
 
-	async #markStartupReconcile(entry: ExternalConnectorSupervisorPrivateStateEntry): Promise<void> {
+	async #markStartupReconcile(entry: ExternalConnectorSupervisorPrivateStateEntry): Promise<boolean> {
 		const operationValue = await this.#store.readOperation(entry.attemptId);
-		if (operationValue === undefined) return;
+		if (operationValue === undefined) return true;
 		let operation: ExternalConnectorOperation;
 		try {
 			operation = cloneExternalConnectorOperation(operationValue);
 		} catch {
-			return;
+			return false;
 		}
 		if (
 			operation.providerId !== this.providerId ||
 			operation.attemptId !== entry.attemptId ||
 			decodeRuntimeLimitsOperationNonce(operation.operationNonce)?.processNonce !==
-				entry.state.reference.operationNonce ||
-			operation.status === "terminal" ||
-			operation.status === "reconcile_required"
+				entry.state.reference.operationNonce
 		)
-			return;
-		await this.#markReconcile(operation, "driver_failure");
+			return false;
+		return this.#markReconcile(operation, "driver_failure");
 	}
 
 	async #runtimeLimitsForStartupEntry(
@@ -2717,10 +2722,18 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					),
 				);
 			}
-			this.#releaseCredential(
+			const credentialReleased = this.#releaseCredential(
 				operation,
 				credentialReasonForTerminal(checked.value.status, checked.value.error?.code),
 			);
+			if (!credentialReleased) {
+				await this.#markReconcile(operation, "credential_unavailable");
+				return Result.err(externalFailure(
+					"side_effect_unknown",
+					"External connector credential revocation could not be confirmed",
+					attempt.attemptId,
+				));
+			}
 			if (operation.status === "terminal") {
 				if (operation.receiptId !== receiptId) {
 					return Result.err(
@@ -2933,19 +2946,20 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	async #markReconcile(
 		operation: ExternalConnectorOperation,
 		reason: ExternalConnectorReconcileReason,
-	): Promise<void> {
-		this.#releaseCredential(operation, "run_interrupted");
+	): Promise<boolean> {
+		const credentialReleased = this.#releaseCredential(operation, "run_interrupted");
 		if (
 			operation.status === "terminal" ||
 			(operation.status === "reconcile_required" && operation.reconcileReason === reason)
 		)
-			return;
+			return credentialReleased;
 		await this.#store.writeOperation(
 			transitionExternalConnectorOperation(operation, "reconcile_required", {
 				now: this.#now(),
 				reconcileReason: reason,
 			}),
 		);
+		return credentialReleased;
 	}
 
 	async #settle(
@@ -3123,10 +3137,18 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			},
 		);
 		if (!checked.ok) return checked;
-		this.#releaseCredential(
+		const credentialReleased = this.#releaseCredential(
 			operation,
 			deadline ? "run_deadline_exceeded" : "run_cancelled",
 		);
+		if (!credentialReleased) {
+			if (operation !== undefined) await this.#markReconcile(operation, "credential_unavailable");
+			return Result.err(externalFailure(
+				"side_effect_unknown",
+				"External connector credential revocation could not be confirmed",
+				attempt.attemptId,
+			));
+		}
 		const persisted = await this.#store.writeReceipt(checked.value);
 		if (operation !== undefined && operation.status !== "terminal") {
 			await this.#store.writeOperation(
@@ -3184,10 +3206,18 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			},
 		);
 		if (!checked.ok) return checked;
-		this.#releaseCredential(
+		const credentialReleased = this.#releaseCredential(
 			operation,
 			deadline ? "run_deadline_exceeded" : "run_failed",
 		);
+		if (!credentialReleased) {
+			await this.#markReconcile(operation, "credential_unavailable");
+			return Result.err(externalFailure(
+				"side_effect_unknown",
+				"External connector credential revocation could not be confirmed",
+				attempt.attemptId,
+			));
+		}
 		const persisted = await this.#store.writeReceipt(checked.value);
 		await this.#store.writeOperation(
 			transitionExternalConnectorOperation(operation, "terminal", {
@@ -3247,7 +3277,14 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			{ providerId: this.providerId, providerClass: this.providerClass },
 		);
 		if (!checked.ok) return checked;
-		this.#releaseCredential(operation, "run_failed");
+		if (!this.#releaseCredential(operation, "run_failed")) {
+			await this.#markReconcile(operation, "credential_unavailable");
+			return Result.err(externalFailure(
+				"side_effect_unknown",
+				"External connector credential revocation could not be confirmed",
+				attempt.attemptId,
+			));
+		}
 		const persisted = await this.#store.writeReceipt(checked.value);
 		await this.#store.writeOperation(
 			transitionExternalConnectorOperation(operation, "terminal", {

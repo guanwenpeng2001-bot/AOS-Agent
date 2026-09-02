@@ -231,6 +231,7 @@ async function gatewayRuntime(cwd: string, targetId: string, captures?: VendorAd
 	}
 	const vault = new LocalCredentialVault({ authPath: join(cwd, "auth.json") });
 	const gateway = new ExternalConnectorModelGateway({ targetId, runtime, vault });
+	if (captures !== undefined) captures.modelGateway = gateway;
 	const provider = createTaskCredentialLocalVaultProvider({ vault, target: gateway });
 	const recordingProvider = {
 		issuer: {
@@ -308,6 +309,64 @@ function vendorSettings(
 }
 
 describe("External Connector product entry composition", () => {
+	it("awaits settings-vendor startup recovery before registry readiness", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-recovery-"));
+		directories.push(cwd);
+		const captures: VendorAdapterFixtureCaptures = {};
+		const adapters = vendorAdapterFixture("codex", cwd, captures);
+		const supervision = captures.supervision;
+		if (supervision === undefined) throw new Error("Vendor supervision fixture is missing");
+		const reference = {
+			schemaVersion: 1 as const,
+			supervisorRef: "settings-recovery-supervisor",
+			operationNonce: "settings-recovery-nonce",
+		};
+		const handle = await supervision.processController.launch({
+			...reference,
+			detached: false,
+			containment: supervision.options.containment,
+		});
+		await handle.activate();
+		await supervision.privateStateStore.write("settings-recovery-attempt", {
+			schemaVersion: 1,
+			reference,
+			detached: false,
+			containment: supervision.options.containment,
+			processIdentity: handle.identity,
+		});
+		supervision.processController.launchCalls = 0;
+
+		const runtime = await createRuntime(cwd, vendorSettings(cwd, "codex", "agent_owned"), adapters, captures);
+		const controller = createRpcHostController(runtime);
+		await controller.start();
+		try {
+			await runtime.session.whenCapabilitiesReady();
+			expect(supervision.processController.launchCalls).toBe(0);
+			expect(supervision.processController.forceCalls).toBe(1);
+			expect(await supervision.privateStateStore.read("settings-recovery-attempt")).toBeUndefined();
+			expect(runtime.runtimeComposition.externalConnectorRegistry?.readiness()).toMatchObject([
+				{ providerId: "fixture.codex.agent_owned", status: "ready" },
+			]);
+		} finally {
+			await controller.shutdown();
+		}
+	});
+
+	it("keeps settings-vendor readiness unavailable when startup recovery cannot enumerate state", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-recovery-failure-"));
+		directories.push(cwd);
+		const captures: VendorAdapterFixtureCaptures = {};
+		const adapters = vendorAdapterFixture("codex", cwd, captures);
+		const supervision = captures.supervision;
+		if (supervision === undefined) throw new Error("Vendor supervision fixture is missing");
+		supervision.privateStateStore.failLists = 1;
+
+		await expect(
+			createRuntime(cwd, vendorSettings(cwd, "codex", "agent_owned"), adapters, captures),
+		).rejects.toThrow("list failure");
+		expect(supervision.processController.forceCalls).toBe(0);
+	});
+
 	it.each(["claude", "codex", "acp"] as const)("constructs the stock %s adapter without launching it", async (driver) => {
 		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-stock-${driver}-`));
 		directories.push(cwd);
@@ -477,6 +536,86 @@ describe("External Connector product entry composition", () => {
 			await controller.shutdown();
 		}
 	}, 90_000);
+
+	it("disposes gateway listeners, capabilities, and references across repeated session cycles", async () => {
+		const endpoints: string[] = [];
+		for (let cycle = 0; cycle < 2; cycle += 1) {
+			const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-gateway-cycle-${cycle}-`));
+			directories.push(cwd);
+			const captures: VendorAdapterFixtureCaptures = { credentialEvents: [] };
+			const settings = vendorSettings(cwd, "codex", "aos_gateway");
+			const runtime = await createRuntime(cwd, settings, vendorAdapterFixture("codex", cwd, captures), captures);
+			const records: RpcHostOutputRecord[] = [];
+			const controller = createRpcHostController(runtime, { output: { publish: (record) => records.push(record) } });
+			await controller.start();
+			const initialized = await controller.dispatch({
+				id: `cycle-${cycle}-init`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			if (initialized === undefined || initialized.command !== "initialize" || !initialized.success) {
+				throw new Error("Gateway cycle did not initialize");
+			}
+			const descriptor = initialized.data.externalConnectors?.[0];
+			if (descriptor === undefined) throw new Error("Gateway cycle descriptor is missing");
+			await controller.handleCommand({
+				id: `cycle-${cycle}-start`,
+				type: "run.start",
+				message: "execute gateway cycle",
+				externalConnector: {
+					providerId: descriptor.providerId,
+					revision: descriptor.revision,
+					capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+				},
+				modelRoute: [{
+					provider: "openai",
+					modelId: "gateway-model",
+					thinkingLevel: "high",
+					serviceTier: "priority",
+				}],
+			});
+			await vi.waitFor(() => expect(records.some((record) => record.type === "run.completed")).toBe(true), {
+				timeout: 60_000,
+			});
+			const credential = captures.codexTransport?.credential;
+			const gateway = captures.modelGateway;
+			const environment = captures.supervision?.processController.launchOptions.at(-1)?.environment;
+			if (credential === undefined || gateway === undefined || environment === undefined) {
+				throw new Error("Gateway cycle did not capture its capability");
+			}
+			const endpoint = environment.AOS_MODEL_GATEWAY_ENDPOINT;
+			const authorization = environment.AOS_MODEL_GATEWAY_AUTHORIZATION;
+			const modelBindingDigest = environment.AOS_MODEL_GATEWAY_BINDING_DIGEST;
+			if (endpoint === undefined || authorization === undefined || modelBindingDigest === undefined) {
+				throw new Error("Gateway cycle environment is incomplete");
+			}
+			const capability = {
+				schemaVersion: 1 as const,
+				endpoint,
+				authorization,
+				leaseId: credential.leaseId,
+				modelBindingDigest,
+				expiresAt: credential.expiresAt,
+			};
+			endpoints.push(capability.endpoint);
+			await controller.shutdown();
+			expect(gateway.close(capability)).toBe(false);
+			expect(() => gateway.revoke({
+				schemaVersion: 1,
+				leaseId: credential.leaseId,
+				grantId: credential.grantId,
+				bindingId: credential.bindingId,
+				targetId: "codex-aos_gateway",
+				requestedAt: new Date().toISOString(),
+			})).toThrow("revocation is unknown");
+			await expect(fetch(`${capability.endpoint}/responses`, {
+				method: "POST",
+				headers: { authorization: capability.authorization, "content-type": "application/json" },
+				body: JSON.stringify({ model: "gateway-model", input: "after shutdown" }),
+			})).rejects.toThrow();
+		}
+		expect(new Set(endpoints).size).toBe(2);
+	}, 180_000);
 
 	it("rejects acp aos_gateway settings before registration", async () => {
 		const driver = "acp" as const;

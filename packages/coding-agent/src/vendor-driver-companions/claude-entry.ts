@@ -119,6 +119,7 @@ function promptFor(request: PrivateClaudeCompanionQueryRequest): AsyncIterable<S
 function environmentFor(request: PrivateClaudeCompanionQueryRequest): Record<string, string> {
 	if (request.model === undefined) return { ...request.env };
 	if (request.modelGateway === undefined) throw new TypeError("Claude gateway model capability is missing");
+	const gatewayOrigin = new URL(request.modelGateway.endpoint).origin;
 	return {
 		...request.env,
 		CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "1",
@@ -130,7 +131,7 @@ function environmentFor(request: PrivateClaudeCompanionQueryRequest): Record<str
 		CLAUDE_CODE_USE_MANTLE: "0",
 		CLAUDE_CODE_USE_VERTEX: "0",
 		ANTHROPIC_BEDROCK_SERVICE_TIER: request.model.serviceTier,
-		ANTHROPIC_BASE_URL: request.modelGateway.endpoint,
+		ANTHROPIC_BASE_URL: gatewayOrigin,
 		ANTHROPIC_AUTH_TOKEN: request.modelGateway.authorization.replace(/^Bearer /, ""),
 	};
 }

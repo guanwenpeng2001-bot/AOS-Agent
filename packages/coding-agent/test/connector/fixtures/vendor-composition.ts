@@ -17,6 +17,7 @@ import {
 } from "../../../src/core/connector/vendor/codex.ts";
 import type { PrivateExternalConnectorVendorAdapterOverrides } from "../../../src/core/connector/vendor/composition.ts";
 import type { PrivateExternalConnectorVendorDriver } from "../../../src/core/connector/vendor/identity.ts";
+import type { ExternalConnectorModelGateway } from "../../../src/core/connector/model-gateway.ts";
 import { createExternalConnectorTestSupervision } from "../external-connector-test-supervision.ts";
 
 const encoder = new TextEncoder();
@@ -26,6 +27,8 @@ export interface VendorAdapterFixtureCaptures {
 	claudeQuery?: PrivateClaudeCompanionQueryRequest;
 	codexTransport?: PrivateCodexAppServerTransportRequest;
 	credentialEvents?: string[];
+	modelGateway?: ExternalConnectorModelGateway;
+	supervision?: ReturnType<typeof createExternalConnectorTestSupervision>;
 }
 
 function claudeCompanion(captures?: VendorAdapterFixtureCaptures): PrivateClaudeAgentSdkCompanion {
@@ -211,7 +214,9 @@ export function vendorAdapterFixture(
 	cwd: string,
 	captures?: VendorAdapterFixtureCaptures,
 ): PrivateExternalConnectorVendorAdapterOverrides {
-	const supervision = createExternalConnectorTestSupervision().options;
+	const supervisionFixture = createExternalConnectorTestSupervision();
+	if (captures !== undefined) captures.supervision = supervisionFixture;
+	const supervision = supervisionFixture.options;
 	if (driver === "claude") return { supervision, claudeCompanion: claudeCompanion(captures) };
 	if (driver === "codex") return {
 		supervision,

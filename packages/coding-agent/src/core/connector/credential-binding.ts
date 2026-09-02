@@ -87,6 +87,7 @@ export function createExternalConnectorCredentialBinding(options: {
 				OPENAI_API_KEY: capability.authorization.replace(/^Bearer /, ""),
 			})
 			: Object.freeze({}),
+		disposeModelGateway: () => options.modelGateway?.dispose() ?? Promise.resolve(),
 		resolveIssueContext: (
 			attempt: Attempt,
 			binding: AgentBinding,

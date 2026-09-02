@@ -7,8 +7,10 @@ import {
 	type ConnectorCapabilitySnapshot,
 	createConnectorCapabilitySnapshot,
 	type FoundationJsonValue,
+	FoundationError,
 	Result,
 	SessionLedger,
+	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
 import { PROVIDER_CLASS } from "./provider-class.ts";
 import type {
@@ -28,6 +30,7 @@ import type {
 	ExternalConnectorCredentialService,
 } from "./durable-connector.ts";
 import { createExternalConnectorRegistry } from "./registry.ts";
+import { bindExternalConnectorRegistryInitialization } from "./registry-initialization.ts";
 import { createProductionExternalAgentConnector } from "./production.ts";
 import {
 	ExternalConnectorTargetConfigError,
@@ -200,6 +203,10 @@ class SessionBoundExternalConnectorCredentialRuntime implements ExternalConnecto
 
 	modelGatewayEnvironment(capability: ExternalModelGatewayCapability): Readonly<Record<string, string>> {
 		return this.#delegate?.modelGatewayEnvironment?.(capability) ?? Object.freeze({});
+	}
+
+	disposeModelGateway(): Promise<void> {
+		return this.#delegate?.disposeModelGateway?.() ?? Promise.resolve();
 	}
 
 	resolveIssueContext(
@@ -384,7 +391,7 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 		});
 		driver = jsonlDriver;
 	}
-	let connector = vendor?.connector;
+	let connector: ExternalAgentConnector | undefined = vendor?.connector;
 	if (connector === undefined) {
 		if (driver === undefined) throw new TypeError("Packaged External Connector driver is unavailable");
 		connector = await createProductionExternalAgentConnector({
@@ -398,6 +405,7 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 			credential: credentialRuntime,
 		});
 	}
+	const preparedConnector = connector;
 	return (context, toolGateway, target, authority, credential) => {
 		if (target !== options.target) {
 			throw new TypeError("Packaged External Connector factory target does not match its trusted target");
@@ -421,22 +429,43 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 					: [],
 			}));
 		}
-		const registered = registry.registerPrepared(
-			{
+		const registration = {
 				descriptor: {
-					schemaVersion: 1,
+					schemaVersion: 1 as const,
 					providerId: options.target.providerId,
 					providerClass: PROVIDER_CLASS.externalConnector,
 					revision: capability.revision,
 					capabilitySnapshotDigest: capability.digest,
 				},
-				connector,
-			},
-			capability,
-		);
-		if (!registered.ok) {
-			void connector.dispose();
-			throw registered.error;
+				connector: preparedConnector,
+			};
+		const registerPrepared = (): void => {
+			const registered = registry.registerPrepared(registration, capability);
+			if (!registered.ok) throw registered.error;
+		};
+		if (vendor === undefined) {
+			try {
+				registerPrepared();
+			} catch (error) {
+				void preparedConnector.dispose();
+				throw error;
+			}
+		} else {
+			bindExternalConnectorRegistryInitialization(registry, async () => {
+				try {
+					const recovery = await vendor.connector.recoverPrivateSupervisorState();
+					if (recovery.some((result) => result.status === "quarantined")) {
+						throw new FoundationError(
+							"external_connector_not_ready",
+							"Settings External Connector startup recovery requires reconciliation",
+						);
+					}
+					registerPrepared();
+				} catch (error) {
+					await preparedConnector.dispose().catch(() => undefined);
+					throw error;
+				}
+			});
 		}
 		return registry;
 	};
