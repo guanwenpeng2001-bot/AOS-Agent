@@ -24,7 +24,7 @@
 - AgentHarness compatibility lifecycle: durable user/assistant/tool event ordering, extension tool and compaction hooks, bounded retry cancellation, automatic overflow compaction continuations, and model invocation context-snapshot provenance.
 - Recovery and migration safety: atomic v4-to-v5 rollback, torn-tail refolding, single-writer fencing, duplicate-request rejection, semantic corruption detection, and fail-closed handling of unknown schemas.
 - Workflow quality and recovery coverage now include local evaluation datasets and versioned quality, cost, and recovery regression snapshots, with implementation evidence for the Foundation capabilities covered by this release.
-- Sandbox Operation Worker support: capabilities 74–87, 135, and 136 are implemented, worker execution consumes the required Foundation capabilities, and capabilities still outside this release remain explicitly owned without being treated as complete.
+- Sandbox Operation Worker support is implemented for worker execution over the required Foundation capabilities; remaining worker capabilities stay explicitly owned and are not treated as complete.
 
 ### Changed
 
@@ -32,7 +32,7 @@
 - Task result diffs now reference content-addressed workspace changes derived from durable receipts and artifact-store writes.
 - Package author metadata is AOS Agent.
 - Session artifacts now use the `.context-artifacts` directory suffix for new blobs, while reads and removals fall back per blob to existing legacy artifact directories.
-- The External Agent Connector contract, architecture convergence, and product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) are implemented. Line 13 promotion evidence includes multi-OS packaged smoke, previous-release upgrade/restart, deterministic soak, pinned vendor handshake, and Codex subscription print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully certified. Lines 14 and 15 remain later work.
+- The External Agent Connector contract, architecture convergence, and product entry wiring (default CLI/RPC/SDK composition and settings-based connector registration) are implemented. Promotion evidence includes multi-OS packaged smoke, previous-release upgrade/restart, deterministic soak, pinned vendor handshake, and Codex subscription print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully certified.
 - Clarified that higher-level connector retry circuits must preserve the terminal `side_effect_unknown` no-replay boundary.
 - Tool Gateway results can carry a bounded JSON-safe structured result separately from their canonical receipt reference.
 - Restricted current Native Subagent lifecycle events and capability metadata to Native provider kinds; external protocols use the separate External Agent Connector contract.

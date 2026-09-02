@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Shared Session ledger migrations for Foundation records and explicit writer take-over history used by cross-Host fencing.
+
 ### Changed
 
 - Package author metadata is AOS Agent.

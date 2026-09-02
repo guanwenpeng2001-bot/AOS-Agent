@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Optional OTLP/HTTP JSON span export with bounded batching and failure-contained diagnostics.
+
 ### Changed
 
 - Package author metadata is AOS Agent.
