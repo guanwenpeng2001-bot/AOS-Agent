@@ -17,7 +17,6 @@ export function acquireWriterLease(
 	db: SqliteDatabase,
 	sessionId: string,
 	ownerId: string,
-	now: number,
 	expiresAtMs: number,
 ) {
 	const row = sql`INSERT INTO writer_leases (session_id, owner_id, fence, expires_at_ms)
@@ -26,9 +25,34 @@ export function acquireWriterLease(
 			owner_id = excluded.owner_id,
 			fence = writer_leases.fence + 1,
 			expires_at_ms = excluded.expires_at_ms
-		WHERE writer_leases.expires_at_ms <= ${now}
+		WHERE writer_leases.expires_at_ms = 0
 		RETURNING owner_id, fence, expires_at_ms`.get<WriterLeaseRow>(db);
 	return row === undefined ? undefined : { ownerId: row.owner_id, fence: row.fence, expiresAtMs: row.expires_at_ms };
+}
+
+export function readWriterLease(db: SqliteDatabase, sessionId: string): WriterLease | undefined {
+	const row = sql`SELECT owner_id, fence, expires_at_ms
+		FROM writer_leases
+		WHERE session_id = ${sessionId}`.get<WriterLeaseRow>(db);
+	return row === undefined ? undefined : { ownerId: row.owner_id, fence: row.fence, expiresAtMs: row.expires_at_ms };
+}
+
+/** Explicitly replaces the current writer and increments its fencing generation. */
+export function takeOverWriterLease(
+	db: SqliteDatabase,
+	sessionId: string,
+	ownerId: string,
+	expiresAtMs: number,
+): WriterLease {
+	const row = sql`INSERT INTO writer_leases (session_id, owner_id, fence, expires_at_ms)
+		VALUES (${sessionId}, ${ownerId}, 1, ${expiresAtMs})
+		ON CONFLICT(session_id) DO UPDATE SET
+			owner_id = excluded.owner_id,
+			fence = writer_leases.fence + 1,
+			expires_at_ms = excluded.expires_at_ms
+		RETURNING owner_id, fence, expires_at_ms`.get<WriterLeaseRow>(db);
+	if (row === undefined) throw new Error(`Failed to take over SQLite writer lease for ${sessionId}`);
+	return { ownerId: row.owner_id, fence: row.fence, expiresAtMs: row.expires_at_ms };
 }
 
 export function renewWriterLease(
@@ -48,9 +72,11 @@ export function renewWriterLease(
 	return result.changes === 1;
 }
 
-export function releaseWriterLease(db: SqliteDatabase, sessionId: string, lease: WriterLease) {
-	sql`DELETE FROM writer_leases
+export function releaseWriterLease(db: SqliteDatabase, sessionId: string, lease: WriterLease): boolean {
+	const result = sql`UPDATE writer_leases
+		SET expires_at_ms = 0
 		WHERE session_id = ${sessionId} AND owner_id = ${lease.ownerId} AND fence = ${lease.fence}`.run(db);
+	return result.changes === 1;
 }
 
 export function deleteWriterLease(db: SqliteDatabase, sessionId: string) {

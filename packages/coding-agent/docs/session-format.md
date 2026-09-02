@@ -30,6 +30,34 @@ leaf state matters: the lock serializes bytes, but each process keeps its own
 Read-only SessionManager access and execution audit/replay do not acquire the
 write lock. They can inspect a Session while another process is appending.
 
+### Shared SQLite storage
+
+`aos-agent/sqlite-session` is the optional Node-only production entry point for
+the SQLite Session backend. SQLite uses a per-Session database writer lease in
+addition to transactional writes. Two Hosts opening the same Session for
+writing are mutually exclusive. An explicit `takeOver` increments the fence;
+the replaced Host cannot renew its lease or commit another write.
+
+A clean close retains the last fence and marks its lease released, so the next
+writer advances rather than resetting that generation. A crashed Host retains
+its positive deadline. Once it expires, a new Host must still explicitly call
+`takeOver`; ordinary writer open never performs automatic failover. The fence
+advance and its `writer_takeovers` audit row commit atomically. Audit rows retain
+the previous/current Host ids, previous/current fences, prior deadline,
+timestamp, and `forced` or `expired` reason.
+
+`access: "follower"` opens a read-only projection without taking the writer
+lease. Reads return the latest committed state visible in that SQLite replica.
+A copied replica can therefore be stale by the copier's delay, but it cannot
+write; obtaining write authority requires opening the canonical database as a
+writer or explicitly taking it over. This is single-writer replication, not a
+conflict-free concurrent-write protocol.
+
+`importJsonl()` and `exportJsonl()` migrate the logical Session between the v3
+JSONL representation and SQLite. The migration preserves durable Session
+identity and topology but reassigns backend-local sequence, timestamp, wrapper,
+and fencing data. Existing migration targets are never overwritten.
+
 ## Deleting Sessions
 
 Sessions can be removed by deleting their `.jsonl` files under `~/.aos-agent/agent/sessions/`.

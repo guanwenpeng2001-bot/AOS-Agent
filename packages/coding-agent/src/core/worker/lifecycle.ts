@@ -39,6 +39,16 @@ export type WorkerExecutionTerminalStatus = (typeof WORKER_EXECUTION_TERMINAL_ST
 export const WORKER_RECLAIM_TERMINAL_STATUSES = ["reclaimed", "reclaim_unknown"] as const;
 export type WorkerReclaimTerminalStatus = (typeof WORKER_RECLAIM_TERMINAL_STATUSES)[number];
 
+/** Static pool membership copied into each assigned Operation Worker record. */
+export interface WorkerPoolBinding {
+	readonly schemaVersion: 1;
+	readonly poolId: string;
+	readonly workerId: string;
+	readonly machineId: string;
+	readonly locality: "local" | "remote";
+	readonly maxConcurrency: number;
+}
+
 /** Immutable safe identity frozen before Worker activation. */
 export interface WorkerBinding {
 	readonly schemaVersion: 1;
@@ -56,6 +66,7 @@ export interface WorkerBinding {
 	readonly deadlineAt?: number;
 	readonly credentialTargetRefs: readonly string[];
 	readonly requestFingerprint: string;
+	readonly pool?: WorkerPoolBinding;
 }
 
 /** Durable/public-safe Worker snapshot. Execution resources never enter it. */
@@ -78,6 +89,7 @@ export interface WorkerRecord {
 	readonly lastHeartbeatAt?: string;
 	readonly activeOperationId?: string;
 	readonly receiptId?: string;
+	readonly pool?: WorkerPoolBinding;
 }
 
 /** One revision-checked mutation request. The binding is an identity echo. */
@@ -149,6 +161,7 @@ const BINDING_KEYS = new Set([
 	"deadlineAt",
 	"credentialTargetRefs",
 	"requestFingerprint",
+	"pool",
 ]);
 const RECORD_KEYS = new Set([
 	"schemaVersion",
@@ -169,6 +182,7 @@ const RECORD_KEYS = new Set([
 	"lastHeartbeatAt",
 	"activeOperationId",
 	"receiptId",
+	"pool",
 ]);
 const TRANSITION_KEYS = new Set([
 	"schemaVersion",
@@ -289,6 +303,32 @@ function isIdentifierArray(value: unknown): value is readonly string[] {
 	);
 }
 
+const WORKER_POOL_BINDING_KEYS = new Set([
+	"schemaVersion",
+	"poolId",
+	"workerId",
+	"machineId",
+	"locality",
+	"maxConcurrency",
+]);
+
+function validateWorkerPoolBinding(value: unknown): value is WorkerPoolBinding {
+	return (
+		isRecord(value) &&
+		hasOnlyKeys(value, WORKER_POOL_BINDING_KEYS) &&
+		value.schemaVersion === WORKER_SCHEMA_VERSION &&
+		isSafeIdentifier(value.poolId) &&
+		isSafeIdentifier(value.workerId) &&
+		isSafeIdentifier(value.machineId) &&
+		(value.locality === "local" || value.locality === "remote") &&
+		isPositiveInteger(value.maxConcurrency)
+	);
+}
+
+function clonePoolBinding(value: WorkerPoolBinding): WorkerPoolBinding {
+	return Object.freeze({ ...value });
+}
+
 function hasForbiddenWorkerField(value: unknown, seen = new WeakSet<object>()): boolean {
 	if (value === null || typeof value !== "object") return false;
 	if (seen.has(value)) return true;
@@ -318,6 +358,7 @@ function cloneBinding(value: WorkerBinding): WorkerBinding {
 		...(value.deadlineAt === undefined ? {} : { deadlineAt: value.deadlineAt }),
 		credentialTargetRefs: Object.freeze([...value.credentialTargetRefs]),
 		requestFingerprint: value.requestFingerprint,
+		...(value.pool === undefined ? {} : { pool: clonePoolBinding(value.pool) }),
 	});
 }
 
@@ -341,6 +382,7 @@ function cloneRecord(value: WorkerRecord): WorkerRecord {
 		...(value.lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt: value.lastHeartbeatAt }),
 		...(value.activeOperationId === undefined ? {} : { activeOperationId: value.activeOperationId }),
 		...(value.receiptId === undefined ? {} : { receiptId: value.receiptId }),
+		...(value.pool === undefined ? {} : { pool: clonePoolBinding(value.pool) }),
 	});
 }
 
@@ -381,7 +423,8 @@ export function validateWorkerBinding(value: unknown): value is WorkerBinding {
 		(value.deadlineAt === undefined || isPositiveInteger(value.deadlineAt)) &&
 		isIdentifierArray(value.credentialTargetRefs) &&
 		typeof value.requestFingerprint === "string" &&
-		DIGEST_PATTERN.test(value.requestFingerprint)
+		DIGEST_PATTERN.test(value.requestFingerprint) &&
+		(value.pool === undefined || validateWorkerPoolBinding(value.pool))
 	);
 }
 
@@ -437,7 +480,8 @@ export function validateWorkerRecord(value: unknown): value is WorkerRecord {
 		(value.endedAt !== undefined && !isCanonicalTimestamp(value.endedAt)) ||
 		(value.lastHeartbeatAt !== undefined && !isCanonicalTimestamp(value.lastHeartbeatAt)) ||
 		!isOptionalIdentifier(value.activeOperationId) ||
-		!isOptionalIdentifier(value.receiptId)
+		!isOptionalIdentifier(value.receiptId) ||
+		(value.pool !== undefined && !validateWorkerPoolBinding(value.pool))
 	) {
 		return false;
 	}
@@ -484,7 +528,8 @@ function recordMatchesBinding(record: WorkerRecord, binding: WorkerBinding): boo
 		record.bindingId === binding.bindingId &&
 		record.bindingEpochId === binding.bindingEpochId &&
 		record.attemptId === binding.attemptId &&
-		record.profileId === binding.profileId
+		record.profileId === binding.profileId &&
+		canonicalFoundationJson(record.pool ?? null) === canonicalFoundationJson(binding.pool ?? null)
 	);
 }
 
@@ -559,6 +604,7 @@ function nextRecord(current: WorkerRecord, input: WorkerTransition): WorkerRecor
 			: current.receiptId === undefined
 				? {}
 				: { receiptId: current.receiptId }),
+		...(current.pool === undefined ? {} : { pool: clonePoolBinding(current.pool) }),
 	};
 	return cloneRecord(next);
 }
@@ -578,6 +624,7 @@ function initialRecord(binding: WorkerBinding, createdAt: string): WorkerRecord 
 		status: "new",
 		revision: 0,
 		createdAt,
+		...(binding.pool === undefined ? {} : { pool: clonePoolBinding(binding.pool) }),
 	});
 }
 

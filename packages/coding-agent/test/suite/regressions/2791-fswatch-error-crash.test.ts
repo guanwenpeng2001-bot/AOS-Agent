@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +22,7 @@ import { sourceProcessArgs, sourceProcessEnv } from "../../cli-process.ts";
  */
 describe("issue #2791 fs.watch error event crashes process", () => {
 	let tempRoot: string;
+	const activeChildren = new Set<ChildProcessWithoutNullStreams>();
 
 	beforeEach(() => {
 		tempRoot = mkdtempSync(join(tmpdir(), "aos-2791-"));
@@ -36,11 +37,20 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 		writeFileSync(join(themesDir, "custom-test.json"), JSON.stringify(darkTheme, null, 2));
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		await Promise.all(
+			[...activeChildren].map(
+				(child) =>
+					new Promise<void>((resolve) => {
+						child.once("close", () => resolve());
+						child.kill();
+					}),
+			),
+		);
 		rmSync(tempRoot, { recursive: true, force: true });
 	});
 
-	it("process should survive an error event on the theme FSWatcher", () => {
+	it("process should survive an error event on the theme FSWatcher", async () => {
 		const themeModulePath = pathToFileURL(join(__dirname, "../../../src/modes/interactive/theme/theme.ts")).href;
 		const agentDir = join(tempRoot, "agent").replace(/\\/g, "/");
 
@@ -57,18 +67,11 @@ process.env.AOS_AGENT_DIR = "${agentDir}";
 
 setTheme("custom-test", true);
 
-const started = Date.now();
 let fsWatcher;
-while (Date.now() - started < 30_000) {
+while (!fsWatcher) {
 	const handles = (process as any)._getActiveHandles();
 	fsWatcher = handles.find((h: any) => h.constructor?.name === "FSWatcher");
-	if (fsWatcher) break;
-	await new Promise((resolve) => setTimeout(resolve, 10));
-}
-
-if (!fsWatcher) {
-	process.stderr.write("no FSWatcher found among active handles\\n");
-	process.exit(2);
+	if (!fsWatcher) await new Promise((resolve) => setImmediate(resolve));
 }
 
 const errorListenerCount = fsWatcher.listenerCount("error");
@@ -90,25 +93,21 @@ process.exit(0);
 `,
 		);
 
-		let _stdout = "";
 		let stderr = "";
-		let exitCode: number;
-		try {
-			// The child exits after every assertion outcome. Wait for that exit so
-			// concurrent source-mode startup cannot be mistaken for a watcher crash.
-			_stdout = execFileSync(process.execPath, sourceProcessArgs(scriptPath), {
-				encoding: "utf-8",
-				env: { ...sourceProcessEnv(), AOS_AGENT_DIR: agentDir },
-				stdio: ["pipe", "pipe", "pipe"],
-				timeout: 45_000,
-			});
-			exitCode = 0;
-		} catch (err: unknown) {
-			const e = err as { status: number; stdout: string; stderr: string };
-			_stdout = e.stdout ?? "";
-			stderr = e.stderr ?? "";
-			exitCode = e.status ?? 1;
-		}
+		const child = spawn(process.execPath, sourceProcessArgs(scriptPath), {
+			env: { ...sourceProcessEnv(), AOS_AGENT_DIR: agentDir },
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		activeChildren.add(child);
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk.toString();
+		});
+		const exitCode = await new Promise<number | null>((resolve, reject) => {
+			child.once("error", reject);
+			child.once("close", resolve);
+		}).finally(() => {
+			activeChildren.delete(child);
+		});
 
 		expect(exitCode, `Child crashed (exit ${exitCode}). stderr: ${stderr.trim()}`).toBe(0);
 	}, 60_000);

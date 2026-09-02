@@ -25,6 +25,12 @@ These are the product-specific variables:
 
 Provider credentials such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and cloud-provider configuration are listed in [Providers](providers.md#environment-variables-or-auth-file).
 
+## Local credential projections and rotation
+
+Task Credential delivery can use the local credential vault to project an opaque reference instead of the long-lived value stored in `auth.json`. The reference is bound to the existing lease, credential revision, and TTL. Expiry is terminal even if the system clock moves backward, and lease revocation invalidates the reference immediately.
+
+Credential rotation atomically installs a new active `auth.json` value while retaining the previous revision for a bounded transition window. Existing references can resolve the previous revision only during that window; new references bind to the new revision. Explicitly revoking the previous revision ends the window immediately. Rotation metadata is stored with `auth.json` through the control-plane atomic storage path, while `credential-vault.json` stores reference and lifecycle metadata only, never projected plaintext. This local mechanism does not contact a managed vault or remote credential broker and has no environment-variable switch.
+
 ## External OAuth dependency
 
 The Radius OAuth client uses the upstream-issued `pi-gateway` client ID, and the default Radius gateway (`https://radius.pi.dev`) is operated by the same issuer, so the out-of-box identity and address match. This is a standing external dependency, not a pending task: only that operator can register an AOS replacement client ID. If you run your own gateway, register an AOS client ID on its authorization server first, then update `OAUTH_CLIENT_ID` in `packages/ai/src/auth/oauth/radius.ts`, `DEFAULT_RADIUS_GATEWAY` in `packages/ai/src/providers/radius-config.ts`, and the matching test assertions together.

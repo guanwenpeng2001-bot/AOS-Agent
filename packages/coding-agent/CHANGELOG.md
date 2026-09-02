@@ -20,6 +20,13 @@
 
 ### Added
 
+- Shared-ledger cross-Host executor registration, heartbeat discovery, offline filtering, explicit durable handoff targeting, and lost-executor reclaim through the existing Scheduler queue recovery path.
+- Shared SQLite Session fencing now stays monotonic across Host handoffs, requires explicit take-over after crash expiry, rejects revived stale writers, and records atomic take-over audit history.
+- Added a lightweight self-hosted Worker pool with local/remote membership heartbeats, Scheduler reservation-backed concurrency, lost-claim reconciliation, and safe pool fields on Worker RPC records.
+- Added a loopback Role/Mode Studio with confirmed Role and ModelProfile writes, tighten-only permission inspection, and side-effect-free resolved AgentBinding previews through the production Resolver.
+- Local short-lived credential projections now reuse Task Credential lease and target lifecycle semantics with opaque references, terminal TTL expiry, immediate revocation, restart-safe metadata, and atomic `auth.json` dual-credential rotation windows.
+- Optional Node SQLite Session ledger with cross-Host writer fencing, explicit take-over, read-only followers, and JSONL migration.
+- Durable GitHub PR delivery results with check conclusions, explicit `gh` PR creation and status refresh RPC paths, and read-only Web diff, artifact, test, and check claims.
 - Remote-neutral operation binding for remote Workers, including bounded WorkerReceipt projection, lease renewal after cross-host ping/pong liveness proof, and fail-closed reclaim when transport loss makes remote termination unprovable.
 - Remote Operation Workers can connect through the shared bearer/mTLS WebSocket transport configuration, carrying the existing bounded stdio frame contract over WS/TLS without changing Worker protocol records.
 - RPC TCP and WebSocket listeners now support bearer authentication, TLS termination, mTLS client certificates, secured non-loopback binding, and matching `RpcClient` credentials.
@@ -30,6 +37,7 @@
 - Added a read-only Web Task Graph board with a self-drawn SVG DAG, derived node availability, Run/Attempt and Worker linkage, and a parent/Child Agent status tree.
 - Added confirmed Web controls for Task Gate approval/rejection and Run cancellation/resume through an exact four-method write allowlist with safe error mapping.
 - Added a loopback-only `--mode web` dashboard for read-only run, task graph, and audit inspection through an allowlisted RPC proxy.
+- Added Web usage and recorded-cost summary cards with server-side Session, model, and UTC-day aggregation from audit and Run receipt projections.
 - Public Automation Host Run receipts now expose validated TaskResult summary, artifact references, and test results through RPC, SDK, terminal events, and replay.
 - Optional OTLP/HTTP JSON span export and derived run, model-call, and tool metrics through the default-off `telemetry` settings section, with bounded batching and failure containment.
 - Added tamper-evident audit hash chains, configurable cursor secrets, physical Foundation retention, and proof-bearing `audit.export` JSONL.
@@ -65,6 +73,7 @@
 
 ### Changed
 
+- Network egress policy now supports exact hosts, `*.suffix` wildcards, optional port constraints, explicit default-deny allowlists, and the same fail-closed audited decision in sandbox Operation Workers.
 - Product prompts and external connectors now populate task-result summaries, tests, and artifacts from durable execution records.
 - Product prompts, harness settlement, and external connectors now share durable workspace-diff aggregation for `TaskResult.diff`.
 - Windows full-load regression coverage now bounds and terminates a stalled invalid-session source child and makes reftable watcher changes observable without weakening behavior assertions.

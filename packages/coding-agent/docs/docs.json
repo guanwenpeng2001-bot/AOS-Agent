@@ -56,6 +56,10 @@
           "path": "capabilities.md"
         },
         {
+          "title": "Role configuration",
+          "path": "roles.md"
+        },
+        {
           "title": "Compaction",
           "path": "compaction.md"
         }
@@ -161,6 +165,10 @@
         {
           "title": "Web Surface",
           "path": "web-surface.md"
+        },
+        {
+          "title": "Role Studio",
+          "path": "role-studio.md"
         },
         {
           "title": "JSON Event Stream Mode",

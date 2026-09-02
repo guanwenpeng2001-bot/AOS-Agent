@@ -21,6 +21,66 @@ For the JSONL file format and SessionManager API, see [Session Format](session-f
 
 Context Engine freezes **metadata-only** `context.snapshot` custom entries before real model calls. Those entries never enter LLM context via `buildSessionContext`. See [Context Engine](context.md).
 
+## Optional Shared SQLite Ledger
+
+Node integrations can opt into the `aos-agent/sqlite-session` entry point. This
+keeps the default CLI on JSONL while allowing a user or small team to put one
+Session ledger in a SQLite database on storage that every Host can access.
+
+```ts
+import { SqliteSharedSessionLedger } from "aos-agent/sqlite-session";
+
+await using ledger = new SqliteSharedSessionLedger({
+  databasePath: "/shared/aos/sessions.sqlite",
+  hostId: "build-host-1",
+  writerLease: { ttlMs: 30_000, heartbeatIntervalMs: 10_000 },
+});
+
+const writer = await ledger.open("session-id");
+const follower = await ledger.open("session-id", { access: "follower" });
+const replacement = await ledger.open("session-id", { takeOver: true });
+const takeovers = await ledger.getWriterTakeoverAudit("session-id");
+```
+
+Only a writer may mutate the Session. A follower does not acquire a writer
+lease, and every write through it fails. `takeOver: true` is an explicit
+ownership transfer: it advances the database fence immediately, so the old
+Host's next write fails even if its previous lease has not expired. The local
+processing lease remains a separate same-Host guard.
+
+Fence generations remain monotonic across clean Host handoffs and explicit
+take-overs. A clean close marks its lease released, so the next writer may open
+normally and advances the generation. A crashed Host leaves a positive lease
+deadline; after that deadline passes, ordinary `open()` still fails until a new
+Host explicitly requests `takeOver: true`. This prevents an availability probe
+from becoming automatic failover.
+
+Each explicit take-over commits one immutable database audit row in the same
+transaction as the new fence. `getWriterTakeoverAudit()` returns the Session,
+old and new non-secret Host ids, old and new fence generations, old deadline,
+take-over timestamp, and whether the old lease was active (`forced`) or expired
+(`expired`). Configure a stable `hostId` when those records must identify a
+deployment Host; otherwise the ledger creates a process-local UUID.
+
+A follower reads the latest state available in its local SQLite view. With one
+shared database this normally means committed state. If another system copies
+the database to a follower, that projection may lag until the copy is updated;
+the copied projection must remain read-only and must never be promoted by
+writing both replicas. The filesystem that hosts a shared writable database
+must provide coherent SQLite file locks and WAL behavior.
+
+JSONL migration is explicit and refuses to overwrite an existing target:
+
+```ts
+await ledger.importJsonl("./session.jsonl");
+await ledger.exportJsonl("session-id", "./roundtrip.jsonl");
+```
+
+Migration preserves Session ids, tree parent links, lane tips, operation
+records, names, labels, and durable Foundation objects. Physical JSONL wrapper
+ids, sequence numbers, timestamps, and historical fencing tokens are
+backend-local and are reassigned.
+
 ## Session Commands
 
 | Command | Description |

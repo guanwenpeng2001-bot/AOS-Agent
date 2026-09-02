@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { createConnection, createServer } from "node:net";
 import { PassThrough, type Readable, Writable } from "node:stream";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import {
 	BoundedProtocolWriter,
 	type BoundedProtocolError,
@@ -18,11 +18,51 @@ import {
 } from "../../src/modes/rpc/rpc-transport.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
 
-const DRAIN_WAIT_TIMEOUT_MS = 30_000;
-
 interface ControlledWrite {
 	readonly value: string;
 	resolve(): void;
+}
+
+class ObservedValues<T> {
+	readonly values: T[] = [];
+	private readonly waiters = new Map<number, Set<() => void>>();
+
+	push(value: T): void {
+		this.values.push(value);
+		for (const [length, waiters] of this.waiters) {
+			if (this.values.length < length) continue;
+			this.waiters.delete(length);
+			for (const resolve of waiters) resolve();
+		}
+	}
+
+	whenLength(length: number): Promise<void> {
+		if (this.values.length >= length) return Promise.resolve();
+		return new Promise<void>((resolve) => {
+			const waiters = this.waiters.get(length) ?? new Set<() => void>();
+			waiters.add(resolve);
+			this.waiters.set(length, waiters);
+		});
+	}
+}
+
+class ObservedClock extends DeterministicClock {
+	private readonly pendingWaiters = new Set<() => void>();
+
+	override setTimeout(
+		callback: () => void,
+		delayMs: number,
+	): ReturnType<DeterministicClock["setTimeout"]> {
+		const handle = super.setTimeout(callback, delayMs);
+		for (const resolve of this.pendingWaiters) resolve();
+		this.pendingWaiters.clear();
+		return handle;
+	}
+
+	whenPending(): Promise<void> {
+		if (this.pendingCount() > 0) return Promise.resolve();
+		return new Promise<void>((resolve) => this.pendingWaiters.add(resolve));
+	}
 }
 
 interface TestCommand {
@@ -38,7 +78,7 @@ interface TestOutput {
 describe("bounded protocol writer", () => {
 	test("admits exact byte and entry boundaries before failing closed", async () => {
 		const byteClock = new DeterministicClock();
-		const byteOperations: ControlledWrite[] = [];
+		const byteOperations = new ObservedValues<ControlledWrite>();
 		const byteWriter = controlledWriter(byteOperations, byteClock, {
 			maxPendingBytes: 4,
 			maxPendingEntries: 3,
@@ -51,14 +91,14 @@ describe("bounded protocol writer", () => {
 			actual: 5,
 			limit: 4,
 		});
-		byteOperations[0].resolve();
+		byteOperations.values[0].resolve();
 		await exactBytes;
 		await expect(byteWriter.close()).rejects.toMatchObject({ code: "protocol_pending_bytes_exceeded" });
 		expect(byteWriter.pendingBytes).toBe(0);
 		expect(byteClock.pendingCount()).toBe(0);
 
 		const entryClock = new DeterministicClock();
-		const entryOperations: ControlledWrite[] = [];
+		const entryOperations = new ObservedValues<ControlledWrite>();
 		const entryWriter = controlledWriter(entryOperations, entryClock, {
 			maxPendingBytes: 100,
 			maxPendingEntries: 2,
@@ -72,10 +112,10 @@ describe("bounded protocol writer", () => {
 			actual: 3,
 			limit: 2,
 		});
-		entryOperations[0].resolve();
+		entryOperations.values[0].resolve();
 		await first;
-		await vi.waitFor(() => expect(entryOperations).toHaveLength(2), { timeout: DRAIN_WAIT_TIMEOUT_MS });
-		entryOperations[1].resolve();
+		await entryOperations.whenLength(2);
+		entryOperations.values[1].resolve();
 		await second;
 		await expect(entryWriter.close()).rejects.toMatchObject({ code: "protocol_pending_entries_exceeded" });
 		expect(entryWriter.pendingEntries).toBe(0);
@@ -84,7 +124,7 @@ describe("bounded protocol writer", () => {
 
 	test("drains accepted entries FIFO before finalization and rejects a close race", async () => {
 		const clock = new DeterministicClock();
-		const operations: ControlledWrite[] = [];
+		const operations = new ObservedValues<ControlledWrite>();
 		const trace: string[] = [];
 		const writer = new BoundedProtocolWriter<string>({
 			maxPendingBytes: 32,
@@ -107,10 +147,10 @@ describe("bounded protocol writer", () => {
 		await expect(writer.write("late")).rejects.toMatchObject({ code: "protocol_closed" });
 		expect(trace).toEqual(["write:one"]);
 		for (let index = 0; index < accepted.length; index++) {
-			operations[index].resolve();
+			operations.values[index].resolve();
 			await accepted[index];
 			if (index + 1 < accepted.length) {
-				await vi.waitFor(() => expect(operations).toHaveLength(index + 2), { timeout: DRAIN_WAIT_TIMEOUT_MS });
+				await operations.whenLength(index + 2);
 			}
 		}
 		await closing;
@@ -216,7 +256,7 @@ describe("bounded JSONL resources", () => {
 
 	test("preserves admitted JSONL records through an exact pending-byte boundary", async () => {
 		const chunks: string[] = [];
-		const callbacks: Array<(error?: Error | null) => void> = [];
+		const callbacks = new ObservedValues<(error?: Error | null) => void>();
 		const stream = new Writable({
 			write(chunk, _encoding, callback) {
 				chunks.push(String(chunk));
@@ -233,10 +273,10 @@ describe("bounded JSONL resources", () => {
 		const second = writer.writeLine("b\n");
 
 		await expect(writer.writeLine("c\n")).rejects.toMatchObject({ code: "protocol_pending_bytes_exceeded" });
-		callbacks[0]();
+		callbacks.values[0]();
 		await first;
-		await vi.waitFor(() => expect(callbacks).toHaveLength(2), { timeout: DRAIN_WAIT_TIMEOUT_MS });
-		callbacks[1]();
+		await callbacks.whenLength(2);
+		callbacks.values[1]();
 		await second;
 		await expect(writer.close()).rejects.toMatchObject({ code: "protocol_pending_bytes_exceeded" });
 
@@ -333,7 +373,7 @@ describe.sequential("RPC protocol drain", () => {
 	});
 
 	test("times out a non-reading peer, settles pending writes, and clears the drain timer", async () => {
-		const clock = new DeterministicClock();
+		const clock = new ObservedClock();
 		const errors: RpcTransportError[] = [];
 		let writes: Promise<void>[] = [];
 		let closing: Promise<void> | undefined;
@@ -369,7 +409,8 @@ describe.sequential("RPC protocol drain", () => {
 			peer.pause();
 			peer.write('{"type":"flood"}\n');
 			await dispatched;
-			await vi.waitFor(() => expect(clock.pendingCount()).toBeGreaterThan(0), { timeout: DRAIN_WAIT_TIMEOUT_MS });
+			await clock.whenPending();
+			expect(clock.pendingCount()).toBeGreaterThan(0);
 			clock.advanceBy(25);
 			await closing;
 			const settlements = await Promise.allSettled(writes);
@@ -409,7 +450,7 @@ function collectJsonlRecords<T>(
 }
 
 function controlledWriter(
-	operations: ControlledWrite[],
+	operations: ObservedValues<ControlledWrite>,
 	clock: DeterministicClock,
 	limits: { readonly maxPendingBytes: number; readonly maxPendingEntries: number },
 ): BoundedProtocolWriter<string> {

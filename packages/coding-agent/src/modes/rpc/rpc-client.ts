@@ -9,40 +9,53 @@ import { readFile } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import type { Writable } from "node:stream";
 import { connect as createTlsConnection, type ConnectionOptions as TlsConnectionOptions } from "node:tls";
-import { PROTOCOL_VERSION, type AgentMessage, type ThinkingLevel } from "@aos-agent/agent-core";
+import type {
+	ModelProfile,
+	ResourceSelector,
+	RoleDefinition,
+	RoleDefinitionPatch,
+	RoleRegistryRecord,
+	RoleTombstone,
+} from "@aos-agent/agent-core";
+import { type AgentMessage, PROTOCOL_VERSION, type ThinkingLevel } from "@aos-agent/agent-core";
 import type { ImageContent } from "@aos-agent/ai";
 import { Agent as UndiciAgent, type MessageEvent as UndiciMessageEvent, WebSocket } from "undici";
-import type { BashResult } from "../../core/runtime/bash-executor.ts";
-import type { CompactionResult } from "../../core/compaction/index.ts";
-import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
-import type { MCPPromptListResult, MCPResourceListResult, MCPResourceTemplateListResult } from "../../core/runtime/mcp-types.ts";
-import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/policy/mcp-auth.ts";
-import type { ModelRoleSelection, ModelRouteSelection } from "../../core/runtime/model-broker.ts";
-import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/session/run-lifecycle.ts";
 import {
 	BoundedProtocolError,
 	BoundedProtocolWriter,
 	DEFAULT_BOUNDED_PROTOCOL_LIMITS,
 } from "../../core/bounded-protocol.ts";
+import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { CanonicalExternalAgentArtifactReference } from "../../core/connector/input.ts";
+import { MCP_OAUTH_DEFAULT_TIMEOUT_MS } from "../../core/policy/mcp-auth.ts";
+import type { BashResult } from "../../core/runtime/bash-executor.ts";
+import type {
+	MCPPromptListResult,
+	MCPResourceListResult,
+	MCPResourceTemplateListResult,
+} from "../../core/runtime/mcp-types.ts";
+import type { ModelRoleSelection, ModelRouteSelection } from "../../core/runtime/model-broker.ts";
+import type { PublicSessionEntry, PublicSessionTreeNode } from "../../core/session/run-lifecycle.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import {
 	attachJsonlLineReader,
 	createJsonlLineWriter,
 	DEFAULT_MAX_JSONL_FRAME_BYTES,
 	JsonlFrameError,
-	serializeJsonLine,
 	type JsonlLineWriter,
+	serializeJsonLine,
 } from "./jsonl.ts";
+import { RpcTransportError, type RpcTransportErrorCode, type RpcTransportErrorRecord } from "./rpc-transport.ts";
 import {
 	RPC_TRANSPORT_LOOPBACK_HOST,
 	RPC_WEBSOCKET_DEFAULT_PATH,
-	validateRpcTransportAddress,
 	RpcTransportAddressError,
+	validateRpcTransportAddress,
 } from "./rpc-transport-address.ts";
-import { RpcTransportError, type RpcTransportErrorCode, type RpcTransportErrorRecord } from "./rpc-transport.ts";
 
 export { RpcTransportError };
 export type { RpcTransportErrorCode, RpcTransportErrorRecord };
+
 import type {
 	AuditExportQuery,
 	AuditExportResult,
@@ -52,27 +65,33 @@ import type {
 	AuditReplayResult,
 	AutomationError,
 	AutomationErrorCode,
+	DeliveryArtifactData,
+	DeliveryData,
 	ExternalConnectorSelection,
 	GetCapabilitiesData,
 	GetContextData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
+	RoleStudioModelProfileDraft,
+	RoleStudioModelProfileListData,
+	RoleStudioPreviewData,
+	RoleStudioRoleListData,
 	RpcAutomationResponse,
-	RpcMcpAttachmentReceipt,
-	RpcMcpAuthError,
-	RpcMcpAuthErrorCode,
-	RpcMcpContentError,
-	RpcMcpContentErrorCode,
-	RpcMcpAuthListData,
-	RpcMcpAuthStartData,
-	RpcMcpAuthStatusData,
-	RpcMcpGetPromptReceipt,
-	RpcMcpMaskedCredential,
-	RpcMcpReadResourceReceipt,
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
+	RpcMcpAttachmentReceipt,
+	RpcMcpAuthError,
+	RpcMcpAuthErrorCode,
+	RpcMcpAuthListData,
+	RpcMcpAuthStartData,
+	RpcMcpAuthStatusData,
+	RpcMcpContentError,
+	RpcMcpContentErrorCode,
+	RpcMcpGetPromptReceipt,
+	RpcMcpMaskedCredential,
+	RpcMcpReadResourceReceipt,
 	RpcResponse,
 	RpcSessionInfo,
 	RpcSessionSearchOptions,
@@ -529,7 +548,9 @@ export class RpcClient {
 					try {
 						record = JSON.parse(line) as unknown;
 					} catch {
-						finish(new RpcTransportError("rpc_transport_connection_failed", "RPC authentication reply is invalid"));
+						finish(
+							new RpcTransportError("rpc_transport_connection_failed", "RPC authentication reply is invalid"),
+						);
 						return;
 					}
 					if (
@@ -1070,13 +1091,37 @@ export class RpcClient {
 		return this.getAutomationData<RunGetData>(response);
 	}
 
+	/** Create a GitHub pull request for a completed Run and persist its PR/check association. */
+	async createPullRequestDelivery(
+		runId: string,
+		options: {
+			branch: string;
+			title: string;
+			body: string;
+			base?: string;
+			clientRequestId: string;
+		},
+	): Promise<DeliveryData> {
+		const response = await this.sendAutomation({ type: "delivery.create-pr", runId, ...options });
+		return this.getAutomationData<DeliveryData>(response);
+	}
+
+	/** Read current GitHub checks for a completed Run and persist the refreshed conclusion. */
+	async refreshPullRequestDelivery(runId: string, clientRequestId: string): Promise<DeliveryData> {
+		const response = await this.sendAutomation({ type: "delivery.refresh", runId, clientRequestId });
+		return this.getAutomationData<DeliveryData>(response);
+	}
+
+	/** Read one artifact that belongs to a completed Run's canonical TaskResult. */
+	async getDeliveryArtifact(runId: string, artifactId: string): Promise<DeliveryArtifactData> {
+		const response = await this.sendAutomation({ type: "delivery.artifact.get", runId, artifactId });
+		return this.getAutomationData<DeliveryArtifactData>(response);
+	}
+
 	/** List safe task gates for the current session. */
-	async listTaskGates(filter: {
-		taskId?: string;
-		stageId?: string;
-		status?: TaskGateStatus;
-		limit?: number;
-	} = {}): Promise<TaskGateListData> {
+	async listTaskGates(
+		filter: { taskId?: string; stageId?: string; status?: TaskGateStatus; limit?: number } = {},
+	): Promise<TaskGateListData> {
 		const response = await this.sendAutomation({ type: "task.gate.list", ...filter });
 		return this.getAutomationData<TaskGateListData>(response);
 	}
@@ -1116,23 +1161,22 @@ export class RpcClient {
 	}
 
 	/** List safe task graph views for the current session. */
-	async listTaskGraphs(filter: {
-		taskId?: string;
-		graphRevision?: number;
-		status?: TaskGraphStatus;
-		limit?: number;
-	} = {}): Promise<TaskGraphListData> {
+	async listTaskGraphs(
+		filter: { taskId?: string; graphRevision?: number; status?: TaskGraphStatus; limit?: number } = {},
+	): Promise<TaskGraphListData> {
 		const response = await this.sendAutomation({ type: "task.graph.list", ...filter });
 		return this.getAutomationData<TaskGraphListData>(response);
 	}
 
 	/** List public-safe Operation Worker records for the current session. */
-	async listWorkers(filter: {
-		runId?: string;
-		status?: WorkerListData["workers"][number]["status"];
-		limit?: number;
-		cursor?: string;
-	} = {}): Promise<WorkerListData> {
+	async listWorkers(
+		filter: {
+			runId?: string;
+			status?: WorkerListData["workers"][number]["status"];
+			limit?: number;
+			cursor?: string;
+		} = {},
+	): Promise<WorkerListData> {
 		const response = await this.sendAutomation({ type: "worker.list", ...filter });
 		return this.getAutomationData<WorkerListData>(response);
 	}
@@ -1238,6 +1282,103 @@ export class RpcClient {
 	/** Reject a pending Execution Policy request for this session only. */
 	async rejectPolicy(requestId: string): Promise<void> {
 		await this.send({ type: "policy.reject", requestId });
+	}
+
+	/** List durable Global/Project Role records, including immutable revision history. */
+	async listRoles(
+		options: { scope?: "global" | "project"; includeTombstones?: boolean } = {},
+	): Promise<RoleStudioRoleListData> {
+		return this.getData(await this.send({ type: "role.list", ...options }));
+	}
+
+	/** Read one Role record. Project scope wins when scope is omitted. */
+	async getRole(
+		roleId: string,
+		options: { scope?: "global" | "project"; includeTombstone?: boolean } = {},
+	): Promise<RoleRegistryRecord> {
+		return this.getData(await this.send({ type: "role.get", roleId, ...options }));
+	}
+
+	async createRole(definition: RoleDefinition): Promise<RoleRegistryRecord> {
+		return this.getData(await this.send({ type: "role.create", definition }));
+	}
+
+	async editRole(
+		roleId: string,
+		scope: "global" | "project",
+		expectedRevision: number,
+		patch: RoleDefinitionPatch,
+	): Promise<RoleRegistryRecord> {
+		return this.getData(await this.send({ type: "role.edit", roleId, scope, expectedRevision, patch }));
+	}
+
+	async copyRole(
+		sourceRoleId: string,
+		sourceScope: "global" | "project",
+		targetRoleId: string,
+		targetScope: "global" | "project",
+		expectedRevision: number,
+	): Promise<RoleRegistryRecord> {
+		return this.getData(
+			await this.send({ type: "role.copy", sourceRoleId, sourceScope, targetRoleId, targetScope, expectedRevision }),
+		);
+	}
+
+	async deleteRole(
+		roleId: string,
+		scope: "global" | "project",
+		expectedRevision: number,
+		reason?: string,
+	): Promise<RoleTombstone> {
+		return this.getData(
+			await this.send({
+				type: "role.delete",
+				roleId,
+				scope,
+				expectedRevision,
+				...(reason === undefined ? {} : { reason }),
+			}),
+		);
+	}
+
+	/** Compute a resolved AgentBinding without writing Session facts. */
+	async previewRoleBinding(
+		definition: RoleDefinition,
+		modelProfile: ModelProfile,
+		parentCapabilitySelector?: ResourceSelector,
+	): Promise<RoleStudioPreviewData> {
+		return this.getData(
+			await this.send({
+				type: "role.preview",
+				definition,
+				modelProfile,
+				...(parentCapabilitySelector === undefined ? {} : { parentCapabilitySelector }),
+			}),
+		);
+	}
+
+	async listModelProfiles(): Promise<RoleStudioModelProfileListData> {
+		return this.getData(await this.send({ type: "model_profile.list" }));
+	}
+
+	async getModelProfile(modelProfileId: string, revision?: number): Promise<ModelProfile> {
+		return this.getData(
+			await this.send({
+				type: "model_profile.get",
+				modelProfileId,
+				...(revision === undefined ? {} : { revision }),
+			}),
+		);
+	}
+
+	async putModelProfile(profile: RoleStudioModelProfileDraft, expectedRevision?: number): Promise<ModelProfile> {
+		return this.getData(
+			await this.send({
+				type: "model_profile.put",
+				profile,
+				...(expectedRevision === undefined ? {} : { expectedRevision }),
+			}),
+		);
 	}
 
 	/** Read the redacted ModelBroker route/role catalog. */
@@ -1768,10 +1909,7 @@ export class RpcClient {
 			if (this.socket !== null) {
 				this.handleTcpSocketError(this.socket, toRpcTransportError(error, "rpc_transport_connection_failed"));
 			} else if (this.websocket !== null) {
-				this.handleWebsocketError(
-					this.websocket,
-					toRpcTransportError(error, "rpc_transport_connection_failed"),
-				);
+				this.handleWebsocketError(this.websocket, toRpcTransportError(error, "rpc_transport_connection_failed"));
 			}
 		}
 	}
@@ -1868,10 +2006,7 @@ export class RpcClient {
 			if (frameBytes > DEFAULT_MAX_JSONL_FRAME_BYTES) {
 				this.handleWebsocketError(
 					websocket,
-					new RpcTransportError(
-						"rpc_transport_frame_too_large",
-						"RPC JSONL frame exceeds the configured maximum",
-					),
+					new RpcTransportError("rpc_transport_frame_too_large", "RPC JSONL frame exceeds the configured maximum"),
 				);
 				return;
 			}
@@ -2129,14 +2264,15 @@ export class RpcClient {
 		try {
 			await writePromise;
 		} catch (error: unknown) {
-			const writeError = socket || websocket
-				? toRpcTransportError(
-						error,
-						error instanceof JsonlFrameError ? "rpc_transport_frame_too_large" : "rpc_transport_write_failed",
-					)
-				: error instanceof Error
-					? error
-					: new Error(String(error));
+			const writeError =
+				socket || websocket
+					? toRpcTransportError(
+							error,
+							error instanceof JsonlFrameError ? "rpc_transport_frame_too_large" : "rpc_transport_write_failed",
+						)
+					: error instanceof Error
+						? error
+						: new Error(String(error));
 			if (socket) this.handleTcpSocketError(socket, writeError);
 			else if (websocket) this.handleWebsocketError(websocket, writeError);
 			throw writeError;

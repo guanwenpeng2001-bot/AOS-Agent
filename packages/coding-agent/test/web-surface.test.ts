@@ -1,9 +1,16 @@
 import { request } from "node:http";
-import { fingerprintFoundationValue } from "@aos-agent/agent-core";
+import {
+	createModelProfileRevision,
+	createRoleRevision,
+	fingerprintFoundationValue,
+	type RoleDefinition,
+} from "@aos-agent/agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AutomationRpcError } from "../src/modes/rpc/rpc-client.ts";
 import type {
 	AuditQueryResult,
+	DeliveryArtifactData,
+	GetExecutionPolicyData,
 	RunGetData,
 	SubagentListData,
 	TaskGateListData,
@@ -12,13 +19,10 @@ import type {
 	TaskGraphListData,
 	WorkerListData,
 } from "../src/modes/rpc/rpc-types.ts";
-import type { WebReadOnlyRpcClient } from "../src/modes/web/read-only-rpc.ts";
 import type { WebOperationRpcClient } from "../src/modes/web/operations-rpc.ts";
-import {
-	startWebSurfaceServer,
-	type WebSurfaceServer,
-	WEB_SURFACE_HOST,
-} from "../src/modes/web/server.ts";
+import type { WebReadOnlyRpcClient } from "../src/modes/web/read-only-rpc.ts";
+import type { RoleStudioRpcClient } from "../src/modes/web/role-studio-rpc.ts";
+import { startWebSurfaceServer, WEB_SURFACE_HOST, type WebSurfaceServer } from "../src/modes/web/server.ts";
 
 interface HttpResult {
 	readonly statusCode: number;
@@ -34,6 +38,46 @@ const RUN: RunGetData = {
 		status: "completed",
 		model: { provider: "test", id: "model", thinkingLevel: "off" },
 	},
+	receipt: {
+		runId: "run-1",
+		sessionId: "session-1",
+		runReceiptId: "run-receipt-1",
+		taskResultId: "task-result-1",
+		summary: "Delivery ready",
+		artifacts: [],
+		diff: {
+			schemaVersion: 1,
+			artifactId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			mediaType: "text/x-diff",
+			digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		tests: [{ name: "test", required: true, status: "passed", summary: "All tests passed" }],
+		attemptReceiptIds: ["attempt-receipt-1"],
+		sideEffectState: "none",
+		status: "completed",
+		usage: { input: 1, output: 1, total: 2 },
+	},
+	delivery: {
+		schemaVersion: 1,
+		taskResultId: "task-result-1",
+		provider: "github",
+		repo: "example/project",
+		number: 42,
+		url: "https://github.com/example/project/pull/42",
+		branch: "feat/delivery",
+		checks: [{ name: "test", status: "completed", conclusion: "success" }],
+		conclusion: "success",
+		concludedAt: "2026-09-01T00:00:00.000Z",
+		updatedAt: "2026-09-01T00:00:00.000Z",
+	},
+};
+
+const CLAIMED_ARTIFACT: DeliveryArtifactData = {
+	artifactId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	mediaType: "text/x-diff",
+	digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	sizeBytes: 13,
+	base64: Buffer.from("diff content\n").toString("base64"),
 };
 
 const AUDIT: AuditQueryResult = {
@@ -130,6 +174,55 @@ const SUBAGENTS: SubagentListData = {
 	truncated: false,
 };
 
+const MODEL_PROFILE = createModelProfileRevision({
+	schemaVersion: 1,
+	modelProfileId: "profile-studio",
+	name: "Studio model",
+	provider: "test",
+	model: "model",
+	budget: {},
+	revision: 0,
+	createdAt: "2026-09-01T00:00:00.000Z",
+});
+
+const ROLE_DEFINITION: RoleDefinition = {
+	schemaVersion: 1,
+	roleId: "reviewer",
+	scope: "global",
+	slug: "reviewer",
+	name: "Reviewer",
+	description: "Reviews changes",
+	revision: 0,
+	persona: "Review carefully.",
+	modelProfileRef: { schemaVersion: 1, type: "model_profile", id: MODEL_PROFILE.modelProfileId, revision: 0 },
+	capabilitySelector: { policy: "named", named: ["read"] },
+	skillSelector: { policy: "all" },
+	mcpSelector: { policy: "none" },
+};
+
+const ROLE_REVISION = createRoleRevision({ definition: ROLE_DEFINITION, now: () => "2026-09-01T00:00:00.000Z" });
+const ROLE_RECORD = {
+	schemaVersion: 1 as const,
+	roleId: ROLE_DEFINITION.roleId,
+	scope: ROLE_DEFINITION.scope,
+	definition: ROLE_DEFINITION,
+	currentRevision: ROLE_REVISION,
+	revisions: [ROLE_REVISION],
+};
+
+const POLICY: GetExecutionPolicyData = {
+	summary: {
+		bindingId: "policy-binding",
+		profileId: "default",
+		profileRevision: "1",
+		projectTrust: "trusted",
+		enforcement: "host",
+		sandboxStatus: "not_required",
+		sandboxCapabilities: { filesystem: false, process: false, network: false, credentialIsolation: false },
+	},
+	pendingApprovals: [],
+};
+
 describe("web operations surface", () => {
 	let surface: WebSurfaceServer | undefined;
 
@@ -157,12 +250,17 @@ describe("web operations surface", () => {
 		expect(html.headers["content-security-policy"]).toContain("default-src 'none'");
 		expect(html.body).toContain("AOS Agent Web Surface");
 		expect(html.body).toContain("Task graph board");
+		expect(html.body).toContain("Usage and cost");
 		expect(html.body).toContain('src="/app.js"');
 		expect(html.body).toContain("Pending gates");
 		expect(script.body).toContain("createElementNS(SVG_NS");
 		expect(script.body).toContain("Parent / Child tree");
+		expect(script.body).toContain("Delivery results");
+		expect(script.body).toContain("/api/delivery/artifacts/");
 		expect(script.body).toContain("window.confirm(confirmation)");
 		expect(script.body).toContain('callApi("/api/ops"');
+		expect(script.body).toContain('rpc("usage.summary",{})');
+		expect(script.body).toContain("usageBreakdown");
 		for (const method of ["task.gate.approve", "task.gate.reject", "run.cancel", "run.resume"]) {
 			expect(script.body).toContain(`"${method}"`);
 		}
@@ -170,7 +268,77 @@ describe("web operations surface", () => {
 		expect(resources).not.toMatch(/https?:\/\/|(?:src|href)=["']\/\//u);
 	});
 
-	it("forwards only the seven allowlisted read methods", async () => {
+	it("serves Role Studio and forwards only its reviewed read and confirmed-write commands", async () => {
+		const fake = createFakeClient();
+		surface = await startWebSurfaceServer(fake.client);
+
+		const [html, script] = await Promise.all([
+			requestSurface(surface, "/role-studio"),
+			requestSurface(surface, "/role-studio.js"),
+		]);
+		expect(html.statusCode).toBe(200);
+		expect(html.body).toContain("Role / Mode Studio");
+		expect(script.body).toContain("window.confirm(message)");
+		expect(script.body).toContain("role.preview");
+
+		const listed = await postRoleStudioRead(surface, "role.list", { scope: "global" });
+		const profiles = await postRoleStudioRead(surface, "model_profile.list", {});
+		const policy = await postRoleStudioRead(surface, "policy.get", {});
+		const created = await postRoleStudioOperation(surface, "role.create", {
+			definition: ROLE_DEFINITION,
+			confirmed: true,
+		});
+		const edited = await postRoleStudioOperation(surface, "role.edit", {
+			roleId: "reviewer",
+			scope: "global",
+			expectedRevision: 1,
+			patch: { persona: "Updated" },
+			confirmed: true,
+		});
+		const copied = await postRoleStudioOperation(surface, "role.copy", {
+			sourceRoleId: "reviewer",
+			sourceScope: "global",
+			targetRoleId: "reviewer-copy",
+			targetScope: "project",
+			expectedRevision: 1,
+			confirmed: true,
+		});
+		const removed = await postRoleStudioOperation(surface, "role.delete", {
+			roleId: "reviewer",
+			scope: "global",
+			expectedRevision: 1,
+			confirmed: true,
+		});
+		const profile = await postRoleStudioOperation(surface, "model_profile.put", {
+			profile: { schemaVersion: 1, modelProfileId: "profile-studio", provider: "test", model: "model", budget: {} },
+			confirmed: true,
+		});
+
+		expect([
+			listed.statusCode,
+			profiles.statusCode,
+			policy.statusCode,
+			created.statusCode,
+			edited.statusCode,
+			copied.statusCode,
+			removed.statusCode,
+			profile.statusCode,
+		]).toEqual([200, 200, 200, 200, 200, 200, 200, 200]);
+		expect(fake.listRoles).toHaveBeenCalledWith({ scope: "global" });
+		expect(fake.createRole).toHaveBeenCalledWith(ROLE_DEFINITION);
+		expect(fake.editRole).toHaveBeenCalledWith("reviewer", "global", 1, { persona: "Updated" });
+		expect(fake.copyRole).toHaveBeenCalledWith("reviewer", "global", "reviewer-copy", "project", 1);
+		expect(fake.deleteRole).toHaveBeenCalledWith("reviewer", "global", 1, undefined);
+		expect(fake.putModelProfile).toHaveBeenCalledOnce();
+
+		expect((await postRoleStudioOperation(surface, "role.create", { definition: ROLE_DEFINITION })).statusCode).toBe(
+			400,
+		);
+		expect((await postRoleStudioOperation(surface, "run.start", { confirmed: true })).statusCode).toBe(403);
+		expect((await postRoleStudioRead(surface, "run.get", { runId: "run-1" })).statusCode).toBe(403);
+	});
+
+	it("forwards the allowlisted read methods, including usage summary and delivery artifacts", async () => {
 		const fake = createFakeClient();
 		surface = await startWebSurfaceServer(fake.client);
 
@@ -186,6 +354,11 @@ describe("web operations surface", () => {
 			status: "running",
 			limit: 10,
 		});
+		const usage = await postRpc(surface, "usage.summary", {});
+		const artifact = await postRpc(surface, "delivery.artifact.get", {
+			runId: "run-1",
+			artifactId: CLAIMED_ARTIFACT.artifactId,
+		});
 
 		expect([
 			run.statusCode,
@@ -195,7 +368,9 @@ describe("web operations surface", () => {
 			graphs.statusCode,
 			workers.statusCode,
 			subagents.statusCode,
-		]).toEqual([200, 200, 200, 200, 200, 200, 200]);
+			usage.statusCode,
+			artifact.statusCode,
+		]).toEqual([200, 200, 200, 200, 200, 200, 200, 200, 200]);
 		expect(fake.getRun).toHaveBeenCalledWith("run-1");
 		expect(fake.auditQuery).toHaveBeenCalledWith({ scope: "current-session", limit: 25 });
 		expect(fake.listTaskGates).toHaveBeenCalledWith({ status: "pending", limit: 10 });
@@ -207,6 +382,35 @@ describe("web operations surface", () => {
 			status: "running",
 			limit: 10,
 		});
+		expect(fake.auditQuery).toHaveBeenCalledWith({
+			scope: "session-directory",
+			types: ["run.completed", "run.failed", "run.cancelled", "model.attempt"],
+			limit: 200,
+		});
+		expect(JSON.parse(usage.body).data.totals).toEqual({
+			runCount: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			totalTokens: 0,
+			costUsd: 0,
+		});
+		expect(fake.getDeliveryArtifact).toHaveBeenCalledWith("run-1", CLAIMED_ARTIFACT.artifactId);
+	});
+
+	it("claims a TaskResult diff through the artifact store download path", async () => {
+		const fake = createFakeClient();
+		surface = await startWebSurfaceServer(fake.client);
+
+		const result = await requestSurface(
+			surface,
+			`/api/delivery/artifacts/run-1/${CLAIMED_ARTIFACT.artifactId}`,
+		);
+
+		expect(result.statusCode).toBe(200);
+		expect(result.headers["content-type"]).toBe("text/x-diff");
+		expect(result.headers["content-disposition"]).toContain(CLAIMED_ARTIFACT.artifactId);
+		expect(result.body).toBe("diff content\n");
+		expect(fake.getDeliveryArtifact).toHaveBeenCalledWith("run-1", CLAIMED_ARTIFACT.artifactId);
 	});
 
 	it("assembles graph, Run, Attempt, Worker, and Child projections for the board", async () => {
@@ -346,6 +550,7 @@ describe("web operations surface", () => {
 		expect((await postRpc(surface, "audit.query", { scope: "global" })).statusCode).toBe(400);
 		expect((await postRpc(surface, "worker.list", { status: "unknown" })).statusCode).toBe(400);
 		expect((await postRpc(surface, "subagent.list", { limit: 10 })).statusCode).toBe(400);
+		expect((await postRpc(surface, "usage.summary", { from: "2026-09-01" })).statusCode).toBe(400);
 		expect((await requestSurface(surface, "/api/rpc")).statusCode).toBe(405);
 		expect((await requestSurface(surface, "/api/ops")).statusCode).toBe(405);
 		expect((await requestSurface(surface, "/missing")).statusCode).toBe(404);
@@ -353,7 +558,7 @@ describe("web operations surface", () => {
 });
 
 function createFakeClient(): {
-	readonly client: WebReadOnlyRpcClient & WebOperationRpcClient;
+	readonly client: WebReadOnlyRpcClient & WebOperationRpcClient & RoleStudioRpcClient;
 	readonly getRun: ReturnType<typeof vi.fn>;
 	readonly auditQuery: ReturnType<typeof vi.fn>;
 	readonly listTaskGates: ReturnType<typeof vi.fn>;
@@ -365,6 +570,13 @@ function createFakeClient(): {
 	readonly listTaskGraphs: ReturnType<typeof vi.fn>;
 	readonly listWorkers: ReturnType<typeof vi.fn>;
 	readonly listSubagents: ReturnType<typeof vi.fn>;
+	readonly listRoles: ReturnType<typeof vi.fn>;
+	readonly createRole: ReturnType<typeof vi.fn>;
+	readonly editRole: ReturnType<typeof vi.fn>;
+	readonly copyRole: ReturnType<typeof vi.fn>;
+	readonly deleteRole: ReturnType<typeof vi.fn>;
+	readonly putModelProfile: ReturnType<typeof vi.fn>;
+	readonly getDeliveryArtifact: ReturnType<typeof vi.fn>;
 } {
 	const getRun = vi.fn(async (): Promise<RunGetData> => RUN);
 	const auditQuery = vi.fn(async (): Promise<AuditQueryResult> => AUDIT);
@@ -392,6 +604,39 @@ function createFakeClient(): {
 	const listTaskGraphs = vi.fn(async (): Promise<TaskGraphListData> => ({ graphs: [GRAPH], truncated: false }));
 	const listWorkers = vi.fn(async (): Promise<WorkerListData> => WORKERS);
 	const listSubagents = vi.fn(async (): Promise<SubagentListData> => SUBAGENTS);
+	const listRoles = vi.fn(async () => ({ records: [ROLE_RECORD] }));
+	const getRole = vi.fn(async () => ROLE_RECORD);
+	const createRole = vi.fn(async () => ROLE_RECORD);
+	const editRole = vi.fn(async () => ROLE_RECORD);
+	const copyRole = vi.fn(async () => ROLE_RECORD);
+	const deleteRole = vi.fn(async () => ({
+		schemaVersion: 1 as const,
+		roleId: "reviewer",
+		scope: "global" as const,
+		deletedRevision: 1,
+		deletedAt: "2026-09-01T00:00:00.000Z",
+	}));
+	const previewRoleBinding = vi.fn(async () => ({
+		permission: {
+			parent: { policy: "all" as const },
+			requested: { policy: "named" as const, named: ["read"] },
+			tightens: true,
+		},
+	}));
+	const listModelProfiles = vi.fn(async () => ({
+		records: [
+			{
+				schemaVersion: 1 as const,
+				modelProfileId: MODEL_PROFILE.modelProfileId,
+				currentRevision: MODEL_PROFILE,
+				revisions: [MODEL_PROFILE],
+			},
+		],
+	}));
+	const getModelProfile = vi.fn(async () => MODEL_PROFILE);
+	const putModelProfile = vi.fn(async () => MODEL_PROFILE);
+	const getExecutionPolicy = vi.fn(async () => POLICY);
+	const getDeliveryArtifact = vi.fn(async (): Promise<DeliveryArtifactData> => CLAIMED_ARTIFACT);
 	return {
 		client: {
 			getRun,
@@ -405,6 +650,18 @@ function createFakeClient(): {
 			listTaskGraphs,
 			listWorkers,
 			listSubagents,
+			listRoles,
+			getRole,
+			createRole,
+			editRole,
+			copyRole,
+			deleteRole,
+			previewRoleBinding,
+			listModelProfiles,
+			getModelProfile,
+			putModelProfile,
+			getExecutionPolicy,
+			getDeliveryArtifact,
 		},
 		getRun,
 		auditQuery,
@@ -417,6 +674,13 @@ function createFakeClient(): {
 		listTaskGraphs,
 		listWorkers,
 		listSubagents,
+		listRoles,
+		createRole,
+		editRole,
+		copyRole,
+		deleteRole,
+		putModelProfile,
+		getDeliveryArtifact,
 	};
 }
 
@@ -430,6 +694,22 @@ function postRpc(surface: WebSurfaceServer, method: string, params: unknown): Pr
 
 function postOperation(surface: WebSurfaceServer, method: string, params: unknown): Promise<HttpResult> {
 	return requestSurface(surface, "/api/ops", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ method, params }),
+	});
+}
+
+function postRoleStudioRead(surface: WebSurfaceServer, method: string, params: unknown): Promise<HttpResult> {
+	return requestSurface(surface, "/api/role-studio/rpc", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ method, params }),
+	});
+}
+
+function postRoleStudioOperation(surface: WebSurfaceServer, method: string, params: unknown): Promise<HttpResult> {
+	return requestSurface(surface, "/api/role-studio/ops", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ method, params }),

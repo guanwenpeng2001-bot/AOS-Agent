@@ -16,6 +16,9 @@ import { dirname } from "node:path";
 import {
 	AgentOperationError,
 	type CanonicalRunResult,
+	createModelProfileRevision,
+	DurableModelProfileStore,
+	DurableRoleRegistry,
 	type EndpointKind,
 	type EndpointSecurityVerdict,
 	type FoundationError,
@@ -28,35 +31,14 @@ import {
 	type ResultValue,
 	type ThinkingLevel,
 } from "@aos-agent/agent-core";
-import { PROVIDER_CLASS } from "../../core/connector/provider-class.ts";
 import type { AuthInteraction, ImageContent } from "@aos-agent/ai";
-import type { AgentSession, AgentSessionEvent, ExtensionBindings, SessionStats } from "../../core/session/agent-session.ts";
-import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/session/facade.ts";
-import type { AgentSessionRuntime } from "../../core/session/runtime.ts";
-import { CapabilityError } from "../../core/policy/capability-registry.ts";
-import type { PreparedSessionScopeRebind } from "../../core/session/current-scope.ts";
-import { ExecutionAuditError, projectSubagentAuditSource } from "../../core/session/execution-audit.ts";
-import { ExecutionAuditQuery } from "../../core/session/execution-audit-query.ts";
-import type { TaskCredentialGatePreflight } from "../../core/policy/execution.ts";
-import { PolicyError } from "../../core/policy/execution.ts";
-import type {
-	ExtensionUIContext,
-	ExtensionUIDialogOptions,
-	ExtensionWidgetOptions,
-	WorkingIndicatorOptions,
-} from "../../core/extensions/index.ts";
 import {
 	type CanonicalExternalAgentArtifactReference,
 	type CanonicalExternalAgentInput,
 	type ExternalAgentArtifactInspection,
 	gateCanonicalExternalAgentInputBeforeAcceptance,
 } from "../../core/connector/input.ts";
-import {
-	type ExternalConnectorResolvedSelection,
-	type ExternalConnectorSelection,
-	isExternalConnectorSelection,
-	serializeExternalConnectorSelection,
-} from "../../core/connector/registry.ts";
+import type { ExternalModelFallbackDecision } from "../../core/connector/model-projection.ts";
 import {
 	type ExternalConnectorProductAdmission,
 	executePreparedExternalConnectorProductRun,
@@ -67,11 +49,44 @@ import {
 	prepareExternalConnectorProductRun,
 	recoverExternalConnectorProductRun,
 } from "../../core/connector/product-run.ts";
-import type { ExternalModelFallbackDecision } from "../../core/connector/model-projection.ts";
-import type { McpAttachment } from "../../core/runtime/mcp-attachment.ts";
+import { PROVIDER_CLASS } from "../../core/connector/provider-class.ts";
+import {
+	type ExternalConnectorResolvedSelection,
+	type ExternalConnectorSelection,
+	isExternalConnectorSelection,
+	serializeExternalConnectorSelection,
+} from "../../core/connector/registry.ts";
+import type {
+	ExtensionUIContext,
+	ExtensionUIDialogOptions,
+	ExtensionWidgetOptions,
+	WorkingIndicatorOptions,
+} from "../../core/extensions/index.ts";
+import { CapabilityError } from "../../core/policy/capability-registry.ts";
+import type { TaskCredentialGatePreflight } from "../../core/policy/execution.ts";
+import { PolicyError } from "../../core/policy/execution.ts";
 import { MCP_OAUTH_DEFAULT_TIMEOUT_MS, MCPAuthError } from "../../core/policy/mcp-auth.ts";
 import { MCPAuthStorageError, type MCPCredentialStatus } from "../../core/policy/mcp-auth-storage.ts";
-import type { MCPGetPromptResult, MCPNormalizedContentBlock, MCPReadResourceResult } from "../../core/runtime/mcp-content.ts";
+import {
+	isTaskCredentialScope,
+	serializeTaskCredentialDeliveryReceipt,
+	serializeTaskCredentialGrant,
+	TASK_CREDENTIAL_MAX_SCOPES,
+	TASK_CREDENTIAL_MAX_TTL_MS,
+	TASK_CREDENTIAL_MIN_TTL_MS,
+	TASK_CREDENTIAL_STATUS,
+	TaskCredentialError,
+	type TaskCredentialScope,
+	type TaskCredentialStatus,
+} from "../../core/policy/task-credential-lease.ts";
+import type { TaskCredentialService } from "../../core/policy/task-credential-service.ts";
+import { createTaskGateStore, TaskGateError, type TaskGateStore } from "../../core/policy/task-gate.ts";
+import type { McpAttachment } from "../../core/runtime/mcp-attachment.ts";
+import type {
+	MCPGetPromptResult,
+	MCPNormalizedContentBlock,
+	MCPReadResourceResult,
+} from "../../core/runtime/mcp-content.ts";
 import { MCPContentError } from "../../core/runtime/mcp-content.ts";
 import { mcpAuthErrorPublicCode, mcpContentErrorPublicCode } from "../../core/runtime/mcp-error-codes.ts";
 import { MCPError, type MCPServerConfigView } from "../../core/runtime/mcp-types.ts";
@@ -81,6 +96,31 @@ import type {
 	ModelRouteSelection,
 } from "../../core/runtime/model-broker.ts";
 import { foldModelBrokerLedger, type ModelBindingLedgerRecord } from "../../core/runtime/model-broker-ledger.ts";
+import { createRoleStudioPreview } from "../../core/runtime/role-studio.ts";
+import {
+	createTaskGraphStore,
+	TaskGraphError,
+	type TaskGraphErrorCode,
+	type TaskGraphNodeView,
+	type TaskGraphRecord,
+	type TaskGraphStore,
+} from "../../core/scheduler/task-graph.ts";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+	ExtensionBindings,
+	SessionStats,
+} from "../../core/session/agent-session.ts";
+import type { PreparedSessionScopeRebind } from "../../core/session/current-scope.ts";
+import { ExecutionAuditError, projectSubagentAuditSource } from "../../core/session/execution-audit.ts";
+import { ExecutionAuditQuery } from "../../core/session/execution-audit-query.ts";
+import { getAgentCanonicalSession, getAgentSessionLedger } from "../../core/session/facade.ts";
+import {
+	loadEntriesFromFile,
+	type SessionEntry,
+	type SessionInfo,
+	SessionManager,
+} from "../../core/session/manager.ts";
 import type {
 	AutomationError,
 	PublicRunStreamEvent,
@@ -119,37 +159,10 @@ import {
 	serializePublicSessionEvent,
 	serializePublicSessionTreeNode,
 } from "../../core/session/run-lifecycle.ts";
-import {
-	loadEntriesFromFile,
-	SessionManager,
-	type SessionEntry,
-	type SessionInfo,
-} from "../../core/session/manager.ts";
+import type { AgentSessionRuntime } from "../../core/session/runtime.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
-import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import type { SafeSubagentLifecycleProjection } from "../../core/subagent/composition.ts";
-import {
-	isTaskCredentialScope,
-	serializeTaskCredentialDeliveryReceipt,
-	serializeTaskCredentialGrant,
-	TASK_CREDENTIAL_MAX_SCOPES,
-	TASK_CREDENTIAL_MAX_TTL_MS,
-	TASK_CREDENTIAL_MIN_TTL_MS,
-	TASK_CREDENTIAL_STATUS,
-	TaskCredentialError,
-	type TaskCredentialScope,
-	type TaskCredentialStatus,
-} from "../../core/policy/task-credential-lease.ts";
-import type { TaskCredentialService } from "../../core/policy/task-credential-service.ts";
-import { createTaskGateStore, TaskGateError, type TaskGateStore } from "../../core/policy/task-gate.ts";
-import {
-	createTaskGraphStore,
-	TaskGraphError,
-	type TaskGraphErrorCode,
-	type TaskGraphNodeView,
-	type TaskGraphRecord,
-	type TaskGraphStore,
-} from "../../core/scheduler/task-graph.ts";
+import { CHILD_LIFECYCLE_STATUSES, type ChildLifecycleStatus } from "../../core/subagent/lifecycle.ts";
 import {
 	validateWorkerRecord,
 	WORKER_LIFECYCLE_STATUSES,
@@ -157,6 +170,10 @@ import {
 	type WorkerRecord,
 } from "../../core/worker/lifecycle.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
+import {
+	GithubDeliveryError,
+	GithubDeliveryService,
+} from "../../core/delivery/github-delivery.ts";
 import { filterAndSortSessions } from "../interactive/components/session-selector-search.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { type JsonAgentSessionEvent, toJsonEvent } from "../json-event.ts";
@@ -167,12 +184,18 @@ import type {
 	AuditQueryData,
 	AuditReplayData,
 	AuditReplayQuery,
+	DeliveryArtifactData,
+	DeliveryData,
 	GetCapabilitiesData,
 	GetExecutionPolicyData,
 	GetModelRoutesData,
 	InitializeData,
+	RoleStudioModelProfileListData,
+	RoleStudioPreviewData,
+	RoleStudioRoleListData,
 	RpcAutomationCommandType,
 	RpcAutomationResponse,
+	RpcDeliveryCommandType,
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
@@ -192,8 +215,8 @@ import type {
 	RpcMcpReadResourceReceipt,
 	RpcResponse,
 	RpcSchedulerResponse,
-	RpcSessionState,
 	RpcSessionInfo,
+	RpcSessionState,
 	RpcSessionStats,
 	RpcSlashCommand,
 	RpcSourceInfo,
@@ -604,6 +627,7 @@ function toRpcWorkerRecord(record: WorkerRecord): RpcWorkerRecord {
 		...(record.endedAt === undefined ? {} : { endedAt: record.endedAt }),
 		...(record.lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt: record.lastHeartbeatAt }),
 		...(record.activeOperationId === undefined ? {} : { activeOperationId: record.activeOperationId }),
+		...(record.pool === undefined ? {} : { pool: Object.freeze({ ...record.pool }) }),
 	};
 }
 
@@ -823,9 +847,7 @@ export class RpcHostController {
 		this.externalArtifactAuthority = options.externalArtifactAuthority;
 		const runtimeServices = (runtimeHost as { readonly services?: AgentSessionRuntime["services"] }).services;
 		this.auditCursorSecret =
-			options.auditCursorSecret ??
-			runtimeServices?.settingsManager.getAuditCursorSecret() ??
-			crypto.randomBytes(32);
+			options.auditCursorSecret ?? runtimeServices?.settingsManager.getAuditCursorSecret() ?? crypto.randomBytes(32);
 	}
 
 	private inspectExternalArtifact(
@@ -920,6 +942,7 @@ export class RpcHostController {
 		interface RpcSessionBinding {
 			session: AgentSession;
 			coordinator?: RunLifecycleCoordinator;
+			deliveryService?: GithubDeliveryService;
 			taskGateStore?: TaskGateStore;
 			taskGraphStore?: TaskGraphStore;
 			taskCredentialService?: TaskCredentialService;
@@ -1318,16 +1341,7 @@ export class RpcHostController {
 			"cursor",
 			"limit",
 		]);
-		const AUDIT_EXPORT_COMMAND_KEYS = new Set([
-			"id",
-			"type",
-			"scope",
-			"sessionId",
-			"runId",
-			"types",
-			"from",
-			"to",
-		]);
+		const AUDIT_EXPORT_COMMAND_KEYS = new Set(["id", "type", "scope", "sessionId", "runId", "types", "from", "to"]);
 
 		const auditErrorMessage = (code: AuditAutomationCode): string => {
 			switch (code) {
@@ -1361,6 +1375,23 @@ export class RpcHostController {
 				"Automation Host is not initialized. Send initialize with protocolVersion 1 first.",
 				false,
 			);
+
+		const deliveryCommandError = (err: unknown, fallback: AutomationError["code"]): AutomationError => {
+			const code = err instanceof GithubDeliveryError ? err.code : fallback;
+			const message = err instanceof GithubDeliveryError ? err.message : "The delivery request failed.";
+			return createAutomationError(code, message, err instanceof GithubDeliveryError && err.retryable);
+		};
+
+		const DELIVERY_COMMAND_KEYS: Readonly<Record<RpcDeliveryCommandType, ReadonlySet<string>>> = {
+			"delivery.create-pr": new Set(["id", "type", "runId", "branch", "title", "body", "base", "clientRequestId"]),
+			"delivery.refresh": new Set(["id", "type", "runId", "clientRequestId"]),
+			"delivery.artifact.get": new Set(["id", "type", "runId", "artifactId"]),
+		};
+
+		const isDeliveryCommandShapeValid = (command: RpcCommand): boolean => {
+			const allowed = DELIVERY_COMMAND_KEYS[command.type as RpcDeliveryCommandType];
+			return allowed !== undefined && Object.keys(command).every((key) => allowed.has(key));
+		};
 
 		const taskGateErrorMessage = (code: TaskGateError["code"]): string => {
 			switch (code) {
@@ -1655,6 +1686,9 @@ export class RpcHostController {
 		 * task_credential_unavailable.
 		 */
 		const prepareAutomationStores = (binding: RpcSessionBinding): void => {
+			binding.deliveryService = new GithubDeliveryService(getAgentCanonicalSession(binding.session), {
+				writer: binding.session.agentRuntimeComposition.harness.ledger.writer,
+			});
 			binding.taskCredentialService = binding.session.getTaskCredentialService?.();
 			binding.coordinator = createRunLifecycleCoordinator(getAgentSessionLedger(binding.session), {
 				credentialHooks: {
@@ -3932,6 +3966,7 @@ export class RpcHostController {
 						protocolVersion: 1,
 						sessionId: currentBinding.session.sessionId,
 						runCommands: ["run.start", "run.get", "run.cancel", "run.resume"],
+						deliveryCommands: ["delivery.create-pr", "delivery.refresh", "delivery.artifact.get"],
 						...(networkProtocol === undefined ? {} : { protocol: networkProtocol }),
 						auditCommands: ["audit.query", "audit.replay", "audit.export"],
 						taskGateCommands: [
@@ -4307,9 +4342,7 @@ export class RpcHostController {
 					try {
 						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session), {
 							cursorSecret: this.auditCursorSecret,
-						}).query(
-							query,
-						) satisfies AuditQueryData;
+						}).query(query) satisfies AuditQueryData;
 						return { id, type: "response", command: "audit.query", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.query", auditCommandError(err, "audit_query_invalid"));
@@ -4336,9 +4369,7 @@ export class RpcHostController {
 					try {
 						const data = new ExecutionAuditQuery(getAgentSessionLedger(currentBinding.session), {
 							cursorSecret: this.auditCursorSecret,
-						}).replay(
-							query,
-						) satisfies AuditReplayData;
+						}).replay(query) satisfies AuditReplayData;
 						return { id, type: "response", command: "audit.replay", success: true, data };
 					} catch (err) {
 						return automationError(id, "audit.replay", auditCommandError(err, "audit_replay_incomplete"));
@@ -5136,6 +5167,10 @@ export class RpcHostController {
 					}
 					const getData: RunGetData = { run: serializePublicRunRecord(result.record) };
 					if (result.receipt !== undefined) getData.receipt = serializePublicRunReceipt(result.receipt);
+					if (result.receipt?.taskResultId !== undefined && currentBinding.deliveryService !== undefined) {
+						const delivery = await currentBinding.deliveryService.get(result.receipt.taskResultId);
+						if (delivery !== undefined) getData.delivery = delivery;
+					}
 					if (result.recovery !== undefined) getData.recovery = result.recovery;
 					const getResponse: RpcAutomationResponse = {
 						id,
@@ -5145,6 +5180,91 @@ export class RpcHostController {
 						data: getData,
 					};
 					return getResponse;
+				}
+
+				case "delivery.create-pr": {
+					if (!hostInitialized || currentBinding.coordinator === undefined || currentBinding.deliveryService === undefined) {
+						return automationError(id, "delivery.create-pr", hostNotInitializedError());
+					}
+					if (!isDeliveryCommandShapeValid(command) || !isRunClientRequestId(command.clientRequestId)) {
+						return automationError(id, "delivery.create-pr", deliveryCommandError(undefined, "delivery_invalid"));
+					}
+					const result = currentBinding.coordinator.getRun(command.runId);
+					if (result?.record.status !== "completed" || result.receipt?.taskResultId === undefined) {
+						return automationError(id, "delivery.create-pr", deliveryCommandError(undefined, "delivery_invalid"));
+					}
+					try {
+						const delivery = await currentBinding.deliveryService.createPullRequest({
+							taskResultId: result.receipt.taskResultId,
+							cwd: currentBinding.session.cwd,
+							branch: command.branch,
+							title: command.title,
+							body: command.body,
+							...(command.base === undefined ? {} : { base: command.base }),
+							clientRequestId: command.clientRequestId,
+						});
+						return { id, type: "response", command: "delivery.create-pr", success: true, data: { delivery } satisfies DeliveryData };
+					} catch (err) {
+						return automationError(id, "delivery.create-pr", deliveryCommandError(err, "gh_failed"));
+					}
+				}
+
+				case "delivery.refresh": {
+					if (!hostInitialized || currentBinding.coordinator === undefined || currentBinding.deliveryService === undefined) {
+						return automationError(id, "delivery.refresh", hostNotInitializedError());
+					}
+					if (!isDeliveryCommandShapeValid(command) || !isRunClientRequestId(command.clientRequestId)) {
+						return automationError(id, "delivery.refresh", deliveryCommandError(undefined, "delivery_invalid"));
+					}
+					const result = currentBinding.coordinator.getRun(command.runId);
+					if (result?.receipt?.taskResultId === undefined) {
+						return automationError(id, "delivery.refresh", deliveryCommandError(undefined, "delivery_not_found"));
+					}
+					try {
+						const delivery = await currentBinding.deliveryService.refresh(
+							result.receipt.taskResultId,
+							currentBinding.session.cwd,
+							command.clientRequestId,
+						);
+						return { id, type: "response", command: "delivery.refresh", success: true, data: { delivery } satisfies DeliveryData };
+					} catch (err) {
+						return automationError(id, "delivery.refresh", deliveryCommandError(err, "gh_failed"));
+					}
+				}
+
+				case "delivery.artifact.get": {
+					if (!hostInitialized || currentBinding.coordinator === undefined) {
+						return automationError(id, "delivery.artifact.get", hostNotInitializedError());
+					}
+					if (!isDeliveryCommandShapeValid(command)) {
+						return automationError(id, "delivery.artifact.get", deliveryCommandError(undefined, "delivery_invalid"));
+					}
+					const result = currentBinding.coordinator.getRun(command.runId);
+					const receipt = result?.receipt;
+					const claimable = [
+						...(receipt?.artifacts ?? []),
+						...(receipt?.diff === undefined ? [] : [receipt.diff]),
+						...(receipt?.tests ?? []).flatMap((test) => test.evidenceRefs ?? []),
+					].find((artifact) => artifact.artifactId === command.artifactId);
+					if (receipt?.taskResultId === undefined || claimable === undefined) {
+						return automationError(id, "delivery.artifact.get", deliveryCommandError(undefined, "delivery_artifact_not_claimable"));
+					}
+					try {
+						const artifact = await currentBinding.session.agentRuntimeComposition.harness.artifacts.get(command.artifactId);
+						if (artifact.metadata.digest !== claimable.digest || artifact.metadata.mediaType !== claimable.mediaType) {
+							return automationError(id, "delivery.artifact.get", deliveryCommandError(undefined, "delivery_artifact_read_failed"));
+						}
+						const data: DeliveryArtifactData = {
+							artifactId: artifact.metadata.artifactId,
+							mediaType: artifact.metadata.mediaType,
+							digest: artifact.metadata.digest,
+							sizeBytes: artifact.content.byteLength,
+							base64: Buffer.from(artifact.content).toString("base64"),
+						};
+						return { id, type: "response", command: "delivery.artifact.get", success: true, data };
+					} catch {
+						return automationError(id, "delivery.artifact.get", deliveryCommandError(undefined, "delivery_artifact_read_failed"));
+					}
 				}
 
 				case "run.cancel": {
@@ -6035,9 +6155,8 @@ export class RpcHostController {
 						command.sort ?? "relevance",
 						command.nameFilter ?? "all",
 					);
-					const limited = command.limit === undefined
-						? matches
-						: matches.slice(0, Math.max(0, Math.trunc(command.limit)));
+					const limited =
+						command.limit === undefined ? matches : matches.slice(0, Math.max(0, Math.trunc(command.limit)));
 					return success(id, "search_sessions", {
 						sessions: limited.map(serializeRpcSessionInfo),
 					});
@@ -6105,6 +6224,195 @@ export class RpcHostController {
 				case "policy.reject": {
 					currentBinding.session.rejectExecutionPolicyRequest(command.requestId, "rpc");
 					return success(id, "policy.reject");
+				}
+
+				case "role.list": {
+					const registry = await DurableRoleRegistry.create(getAgentCanonicalSession(currentBinding.session), {
+						ownerId: `rpc-role-studio:${currentBinding.session.sessionId}`,
+					});
+					try {
+						const result = await registry.list({
+							...(command.scope === undefined ? {} : { scope: command.scope }),
+							includeTombstones: command.includeTombstones,
+						});
+						return result.ok
+							? success(id, "role.list", { records: result.value } satisfies RoleStudioRoleListData)
+							: error(id, "role.list", result.error.message);
+					} finally {
+						await registry.release();
+					}
+				}
+
+				case "role.get": {
+					const registry = await DurableRoleRegistry.create(getAgentCanonicalSession(currentBinding.session), {
+						ownerId: `rpc-role-studio:${currentBinding.session.sessionId}`,
+					});
+					try {
+						const result = await registry.get({
+							roleId: command.roleId,
+							...(command.scope === undefined ? {} : { scope: command.scope }),
+							includeTombstone: command.includeTombstone,
+						});
+						return result.ok
+							? success(id, "role.get", result.value)
+							: error(id, "role.get", result.error.message);
+					} finally {
+						await registry.release();
+					}
+				}
+
+				case "role.create": {
+					const registry = await DurableRoleRegistry.create(getAgentCanonicalSession(currentBinding.session), {
+						ownerId: `rpc-role-studio:${currentBinding.session.sessionId}`,
+					});
+					try {
+						const result = await registry.create({ definition: command.definition });
+						return result.ok
+							? success(id, "role.create", result.value)
+							: error(id, "role.create", result.error.message);
+					} finally {
+						await registry.release();
+					}
+				}
+
+				case "role.edit": {
+					const registry = await DurableRoleRegistry.create(getAgentCanonicalSession(currentBinding.session), {
+						ownerId: `rpc-role-studio:${currentBinding.session.sessionId}`,
+					});
+					try {
+						const result = await registry.edit({
+							roleId: command.roleId,
+							scope: command.scope,
+							expectedRevision: command.expectedRevision,
+							patch: command.patch,
+						});
+						return result.ok
+							? success(id, "role.edit", result.value)
+							: error(id, "role.edit", result.error.message);
+					} finally {
+						await registry.release();
+					}
+				}
+
+				case "role.copy": {
+					const registry = await DurableRoleRegistry.create(getAgentCanonicalSession(currentBinding.session), {
+						ownerId: `rpc-role-studio:${currentBinding.session.sessionId}`,
+					});
+					try {
+						const result = await registry.copy({
+							sourceRoleId: command.sourceRoleId,
+							sourceScope: command.sourceScope,
+							targetRoleId: command.targetRoleId,
+							targetScope: command.targetScope,
+							expectedRevision: command.expectedRevision,
+						});
+						return result.ok
+							? success(id, "role.copy", result.value)
+							: error(id, "role.copy", result.error.message);
+					} finally {
+						await registry.release();
+					}
+				}
+
+				case "role.delete": {
+					const registry = await DurableRoleRegistry.create(getAgentCanonicalSession(currentBinding.session), {
+						ownerId: `rpc-role-studio:${currentBinding.session.sessionId}`,
+					});
+					try {
+						const result = await registry.delete({
+							roleId: command.roleId,
+							scope: command.scope,
+							expectedRevision: command.expectedRevision,
+							deletedAt: new Date().toISOString(),
+							deletedBy: "rpc-role-studio",
+							...(command.reason === undefined ? {} : { reason: command.reason }),
+						});
+						return result.ok
+							? success(id, "role.delete", result.value)
+							: error(id, "role.delete", result.error.message);
+					} finally {
+						await registry.release();
+					}
+				}
+
+				case "role.preview": {
+					try {
+						return success(
+							id,
+							"role.preview",
+							createRoleStudioPreview({
+								definition: command.definition,
+								modelProfile: command.modelProfile,
+								...(command.parentCapabilitySelector === undefined
+									? {}
+									: { parentCapabilitySelector: command.parentCapabilitySelector }),
+							}) satisfies RoleStudioPreviewData,
+						);
+					} catch (previewError: unknown) {
+						return error(
+							id,
+							"role.preview",
+							previewError instanceof Error ? previewError.message : "Role preview failed.",
+						);
+					}
+				}
+
+				case "model_profile.list": {
+					const store = await DurableModelProfileStore.create(getAgentCanonicalSession(currentBinding.session), {
+						ownerId: `rpc-role-studio:${currentBinding.session.sessionId}`,
+					});
+					try {
+						return success(id, "model_profile.list", {
+							records: await store.list(),
+						} satisfies RoleStudioModelProfileListData);
+					} finally {
+						await store.release();
+					}
+				}
+
+				case "model_profile.get": {
+					const store = await DurableModelProfileStore.create(getAgentCanonicalSession(currentBinding.session), {
+						ownerId: `rpc-role-studio:${currentBinding.session.sessionId}`,
+					});
+					try {
+						const result = await store.get({
+							modelProfileId: command.modelProfileId,
+							...(command.revision === undefined ? {} : { revision: command.revision }),
+						});
+						return result.ok
+							? success(id, "model_profile.get", result.value)
+							: error(id, "model_profile.get", result.error.message);
+					} finally {
+						await store.release();
+					}
+				}
+
+				case "model_profile.put": {
+					const store = await DurableModelProfileStore.create(getAgentCanonicalSession(currentBinding.session), {
+						ownerId: `rpc-role-studio:${currentBinding.session.sessionId}`,
+					});
+					try {
+						const existing = await store.get({ modelProfileId: command.profile.modelProfileId });
+						if (existing.ok && command.expectedRevision !== existing.value.revision)
+							return error(
+								id,
+								"model_profile.put",
+								"Model Profile revision does not match the expected revision",
+							);
+						if (!existing.ok && command.expectedRevision !== undefined)
+							return error(id, "model_profile.put", "Model Profile is not registered");
+						const profile = createModelProfileRevision({
+							...command.profile,
+							revision: existing.ok ? existing.value.revision + 1 : 0,
+							createdAt: new Date().toISOString(),
+						});
+						const result = await store.register({ profile });
+						return result.ok
+							? success(id, "model_profile.put", result.value)
+							: error(id, "model_profile.put", result.error.message);
+					} finally {
+						await store.release();
+					}
 				}
 
 				case "get_model_routes": {

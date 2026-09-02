@@ -24,6 +24,10 @@ export default mergeConfig(
 		resolve: {
 			alias: [
 				{
+					find: /^@aos-agent\/session-backend-sqlite-node$/,
+					replacement: fileURLToPath(new URL("../session-backends/sqlite-node/src/index.ts", import.meta.url)),
+				},
+				{
 					find: /^@aos-agent\/client$/,
 					replacement: fileURLToPath(new URL("../client/src/index.ts", import.meta.url)),
 				},
