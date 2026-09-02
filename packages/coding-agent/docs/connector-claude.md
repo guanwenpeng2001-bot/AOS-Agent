@@ -10,10 +10,9 @@ This page records the settings registration and private driver contract. The thr
    composes the pinned private connector. `none` and `agent_owned` can register,
    run, and produce durable receipts; real authentication remains a separate
    certification step.
-3. Model-access boundary: `aos_gateway` is an internal Host and Scheduler path.
-   The settings catalog parser rejects any generic target that contains it,
-   before target selection or project/Role narrowing, with
-   `capability_widened`.
+3. Model-access boundary: settings-selected Claude targets may use
+   `aos_gateway` with an exact ModelBroker route whose provider is `bedrock`.
+   Generic JSONL and ACP targets remain rejected.
 
 The capability matrix below is enforced when the settings target is composed.
 
@@ -47,6 +46,52 @@ The capability matrix below is enforced when the settings target is composed.
 }
 ```
 
+For `aos_gateway`, keep the model in `modelBroker`, not in the connector target:
+
+```json
+{
+  "modelBroker": {
+    "routes": {
+      "claude-bedrock": {
+        "candidates": [{
+          "provider": "bedrock",
+          "modelId": "<AOS_BEDROCK_MODEL_ID>",
+          "thinkingLevel": "high",
+          "serviceTier": "priority"
+        }]
+      }
+    }
+  },
+  "externalConnectors": {
+    "schemaVersion": 1,
+    "targetId": "claude-gateway",
+    "targets": [{
+      "schemaVersion": 1,
+      "targetId": "claude-gateway",
+      "providerId": "claude-gateway",
+      "driver": "claude",
+      "executablePath": "<ABSOLUTE_EXECUTABLE_PATH>",
+      "modulePath": "<ABSOLUTE_CLAUDE_CODE_CLI_ENTRY_MODULE_PATH>",
+      "cwd": "<ABSOLUTE_WORKSPACE_PATH>",
+      "version": "0.3.246",
+      "executableIdentity": "sha256:<64_HEX>",
+      "moduleIdentity": "sha256:<64_HEX>",
+      "accountReference": { "schemaVersion": 1, "namespace": "aos", "accountId": "model-runtime" },
+      "capabilityCeiling": {
+        "modelAccess": ["aos_gateway"],
+        "resume": false,
+        "toolGateway": true,
+        "artifacts": false,
+        "images": false
+      }
+    }]
+  }
+}
+```
+
+Select `claude-bedrock` with `run.start.modelRoute` or as the ModelBroker default.
+The consumed quota belongs to the AOS `bedrock` credential, not a Claude login.
+
 The exact file-hash commands are documented in
 [`external-agent-connector.md`](external-agent-connector.md). `modulePath`
 identifies the Claude Code CLI entry module that the pinned Agent SDK asks the
@@ -72,12 +117,8 @@ process group or Windows Job Object. The default SDK spawn path is not used.
 
 The Host admits metadata-only canonical Artifact references before driver spawn. The driver then uses its injected Artifact Store authority to load by `artifactId`, verifies `sizeBytes` and SHA-256, and creates one Claude user message containing the text block followed by native image or document blocks. Unsupported media and missing artifact authority fail with `external_protocol_unsupported`; unavailable, corrupt, or non-UTF-8 accepted content fails closed without sending a query.
 
-## `aos_gateway` boundary (private implementation evidence)
+## `aos_gateway` boundary
 
-The exact support matrix below is not reachable from settings targets. The
-`aos_gateway` projection and credential-lease mechanism serves internal Host
-and Scheduler paths only and is planned for a later composition change.
+The exact support matrix maps provider, model, effort, service tier, fallback decision, and ModelBinding digest to distinct private companion fields. Version `0.3.246` accepts only the canonical `bedrock` provider. Spawn requires both a material-free lease and a Host-created loopback gateway capability. The companion receives only the loopback endpoint and short-lived capability; the original Bedrock credential remains inside the Credential/ModelRuntime boundary.
 
-The exact support matrix maps provider, model, effort, service tier, fallback decision, and binding digest to distinct private companion fields. Version `0.3.246` can express the full set only for Bedrock: the companion selects Bedrock explicitly, passes the exact model and effort options, and sets the exact Bedrock service tier. Spawn also requires a valid material-free `SafeLeaseProjection`; no provider key is added to the driver protocol.
-
-The driver recomputes the Host translation and compares the complete canonical translation before invoking the companion. Unsupported providers or effort values and any projection/translation drift fail closed. The durable Host reports drift as `binding_required_fact`; a direct package-private driver call returns its stable `external_protocol_unsupported` vendor error.
+The driver recomputes the Host translation and compares the complete canonical translation before invoking the companion. It verifies init model/effort and requires one matching final model-usage observation before emitting `effectiveModel`. Unsupported values, a remote configured endpoint, missing/expired capability, translation drift, or observation drift fail closed.

@@ -135,6 +135,7 @@ export function createModelBroker(
 				id: candidate.modelId,
 				available: available.has(`${candidate.provider}\u0000${candidate.modelId}`),
 				...(candidate.thinkingLevel === undefined ? {} : { thinkingLevel: candidate.thinkingLevel }),
+				...(candidate.serviceTier === undefined ? {} : { serviceTier: candidate.serviceTier }),
 			})),
 		};
 	}

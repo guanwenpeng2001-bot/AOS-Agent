@@ -34,6 +34,7 @@ export interface ModelBrokerCandidateConfig {
 	provider: string;
 	modelId: string;
 	thinkingLevel?: ThinkingLevel;
+	serviceTier?: string;
 }
 
 /** Alias used by the broker core contract. */
@@ -176,7 +177,7 @@ const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "med
 const ROUTE_KEYS = new Set(["candidates", "fallback", "budget"]);
 const FALLBACK_KEYS = new Set(["maxAttempts", "on"]);
 const BUDGET_KEYS = new Set(["maxModelCalls", "maxInputTokens", "maxOutputTokens", "maxTotalTokens", "maxCostUsd"]);
-const CANDIDATE_KEYS = new Set(["provider", "modelId", "thinkingLevel"]);
+const CANDIDATE_KEYS = new Set(["provider", "modelId", "thinkingLevel", "serviceTier"]);
 const TOP_LEVEL_KEYS = new Set(["defaultRoute", "routes", "roleRoutes"]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -255,6 +256,14 @@ function parseCandidate(value: unknown, path: string): ModelBrokerCandidateConfi
 	if (value.thinkingLevel !== undefined) {
 		candidate.thinkingLevel = validateThinkingLevel(value.thinkingLevel, `${path}.thinkingLevel`);
 	}
+	if (
+		value.serviceTier !== undefined &&
+		(typeof value.serviceTier !== "string" || value.serviceTier.length === 0 || value.serviceTier.length > 128 ||
+			value.serviceTier.trim() !== value.serviceTier || /[\u0000-\u001f\u007f]/.test(value.serviceTier))
+	) {
+		fail("model_route_invalid", `${path}.serviceTier`, "serviceTier must be an explicit bounded string");
+	}
+	if (typeof value.serviceTier === "string") candidate.serviceTier = value.serviceTier;
 	return candidate;
 }
 

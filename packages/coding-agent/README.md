@@ -93,7 +93,7 @@ access. Vendor selection is declared by `driver`, never inferred from
 `providerId`; identity, version, and capability drift fail closed before
 launch. The packaged fake and injected vendor adapters cover registration ->
 run -> receipt. Real vendor authentication remains a later certification step,
-and `aos_gateway` is rejected for every settings target.
+while Claude/Codex may use exclusive `aos_gateway`; ACP and generic targets reject it.
 
 `aos-agent/external-connector/testing` is test-support only. It exports
 `runPackagedExternalAgentDriverFixture` and `PackagedExternalAgentDriverTrace`

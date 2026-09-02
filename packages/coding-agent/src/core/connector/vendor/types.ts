@@ -19,6 +19,7 @@ import {
 	type ConnectorCapabilitySnapshot,
 	type ExecutionCorrelation,
 	type FoundationJsonValue,
+	type Fingerprint,
 	type McpSelection,
 	type PublicExecutionError,
 	type SideEffectState,
@@ -38,6 +39,7 @@ import type {
 	ExternalTranslatedModelProjection,
 } from "../model-projection.ts";
 import type { SafeLeaseProjection } from "../../worker/protocol.ts";
+import type { ExternalModelGatewayCapability } from "../model-gateway.ts";
 
 export interface ExternalConnectorDriverHandle {
 	readonly externalSessionId: string;
@@ -64,6 +66,8 @@ export interface ExternalConnectorDriverSpawnRequest {
 	readonly bindingRevision: number;
 	/** Material-free, exact per-binding lease projection issued by the Host. */
 	readonly credential?: SafeLeaseProjection;
+	/** Short-lived loopback capability; never a provider credential. */
+	readonly modelGateway?: ExternalModelGatewayCapability;
 	/** Exact MCP authority from the durable AgentBinding for this Attempt. */
 	readonly mcpSelection?: McpSelection;
 	/** Policy-filtered, exact Tool Gateway visibility for this Attempt. */
@@ -131,9 +135,18 @@ export interface ExternalConnectorTerminalEvidence {
 	readonly status: "succeeded" | "failed" | "cancelled" | "suspended";
 	readonly artifacts?: readonly ArtifactRef[];
 	readonly usage?: AttemptReceiptUsage;
+	readonly effectiveModel?: ExternalConnectorEffectiveModel;
 	readonly error?: PublicExecutionError;
 	readonly sideEffectState: SideEffectState;
 	readonly producedAt: string;
+}
+
+export interface ExternalConnectorEffectiveModel {
+	readonly provider: string;
+	readonly model: string;
+	readonly bindingDigest: Fingerprint;
+	readonly observedAt: string;
+	readonly source: "claude_init_and_usage" | "codex_thread_start";
 }
 
 const EXTERNAL_CONNECTOR_TERMINAL_EVIDENCE_KEYS = new Set([
@@ -143,6 +156,7 @@ const EXTERNAL_CONNECTOR_TERMINAL_EVIDENCE_KEYS = new Set([
 	"status",
 	"artifacts",
 	"usage",
+	"effectiveModel",
 	"error",
 	"sideEffectState",
 	"producedAt",
@@ -470,6 +484,21 @@ export function isExternalConnectorTerminalEvidence(value: unknown): value is Ex
 	}
 	if (value.status === "cancelled" && value.sideEffectState !== "none") return false;
 	if (value.usage !== undefined && !validateAttemptReceiptUsage(value.usage).ok) return false;
+	if (value.effectiveModel !== undefined) {
+		const effective = value.effectiveModel;
+		if (
+			!isTerminalEvidenceRecord(effective) ||
+			Reflect.ownKeys(effective).some((key) => typeof key !== "string" || !["provider", "model", "bindingDigest", "observedAt", "source"].includes(key)) ||
+			typeof effective.provider !== "string" || effective.provider.length === 0 || effective.provider.length > 512 ||
+			typeof effective.model !== "string" || effective.model.length === 0 || effective.model.length > 512 ||
+			!isTerminalEvidenceRecord(effective.bindingDigest) ||
+			effective.bindingDigest.algorithm !== "sha256" ||
+			typeof effective.bindingDigest.value !== "string" || !/^[a-f0-9]{64}$/.test(effective.bindingDigest.value) ||
+			!isCanonicalExternalConnectorMappingTimestamp(effective.observedAt) ||
+			(effective.source !== "claude_init_and_usage" && effective.source !== "codex_thread_start")
+		) return false;
+	}
+	if ((value.status === "succeeded") !== (value.effectiveModel !== undefined) && value.effectiveModel !== undefined) return false;
 	return value.error === undefined || validatePublicExecutionError(value.error).ok;
 }
 
@@ -499,6 +528,12 @@ export function cloneExternalConnectorTerminalEvidence(value: unknown): External
 		status: value.status,
 		...(artifacts === undefined ? {} : { artifacts: Object.freeze(artifacts) }),
 		...(usage === undefined ? {} : { usage: Object.freeze({ ...usage.value }) }),
+		...(value.effectiveModel === undefined
+			? {}
+			: { effectiveModel: Object.freeze({
+				...value.effectiveModel,
+				bindingDigest: Object.freeze({ ...value.effectiveModel.bindingDigest }),
+			}) }),
 		...(error === undefined ? {} : { error: Object.freeze(error) }),
 		sideEffectState: value.sideEffectState,
 		producedAt: value.producedAt,

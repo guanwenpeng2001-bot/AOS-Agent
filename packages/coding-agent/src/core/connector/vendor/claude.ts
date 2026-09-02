@@ -54,6 +54,7 @@ import type {
 	ExternalConnectorTerminalEvidence,
 	ExternalConnectorVendorDriver,
 } from "./types.ts";
+import type { ExternalModelGatewayCapability } from "../model-gateway.ts";
 import { PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES } from "./identity.ts";
 
 export const PRIVATE_CLAUDE_AGENT_SDK_VERSION = PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES.claude.version;
@@ -189,6 +190,7 @@ export interface PrivateClaudeCompanionQueryRequest {
 	readonly prompt: PrivateClaudeNativePrompt;
 	readonly model?: PrivateClaudeModelSelection;
 	readonly credential?: SafeLeaseProjection;
+	readonly modelGateway?: ExternalModelGatewayCapability;
 	readonly cwd: string;
 	readonly env: Readonly<Record<string, string>>;
 	readonly tools: readonly PrivateClaudeSelectedTool[];
@@ -487,8 +489,21 @@ function resolveModelSelection(
 		request.modelProjection === undefined ||
 		request.modelTranslation === undefined ||
 		request.credential === undefined ||
-		!validateSafeLeaseProjection(request.credential)
+		!validateSafeLeaseProjection(request.credential) ||
+		request.modelGateway === undefined ||
+		request.modelGateway.leaseId !== request.credential.leaseId ||
+		request.modelGateway.modelBindingDigest !== request.modelProjection.bindingDigest.value ||
+		request.modelGateway.expiresAt !== request.credential.expiresAt ||
+		!request.modelGateway.authorization.startsWith("Bearer ")
 	) {
+		throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+	}
+	try {
+		const endpoint = new URL(request.modelGateway.endpoint);
+		if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1") {
+			throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+		}
+	} catch {
 		throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
 	}
 	const translated = translateExternalModelProjection(
@@ -735,6 +750,32 @@ function validateUsage(message: Record<string, unknown>): AttemptReceiptUsage {
 	});
 }
 
+function effectiveModelEvidence(
+	operation: ClaudeOperation,
+	message: Record<string, unknown>,
+	observedAt: string,
+): ExternalConnectorTerminalEvidence["effectiveModel"] {
+	const model = operation.model;
+	if (model === undefined) return undefined;
+	if (!isRecord(message.modelUsage)) throw eventInvalidError();
+	const observations = Object.values(message.modelUsage).flatMap((usage) =>
+		isRecord(usage) && usage.provider === model.provider && usage.canonicalModel === model.model ? [usage] : []);
+	if (observations.length !== 1) throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+	let bindingDigest: { algorithm: "sha256"; value: string };
+	try {
+		bindingDigest = JSON.parse(model.bindingDigest) as { algorithm: "sha256"; value: string };
+	} catch {
+		throw new PrivateClaudeAgentSdkError("external_protocol_unsupported");
+	}
+	return Object.freeze({
+		provider: model.provider,
+		model: model.model,
+		bindingDigest,
+		observedAt,
+		source: "claude_init_and_usage" as const,
+	});
+}
+
 function failedEvidence(
 	operation: ClaudeOperation,
 	now: () => string,
@@ -836,7 +877,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		const operation = this.#openOperation({
 			prompt,
 			tools,
-			...(model === undefined ? {} : { model, credential: request.credential }),
+			...(model === undefined ? {} : { model, credential: request.credential, modelGateway: request.modelGateway }),
 			supervisorRef: request.supervisorRef,
 			operationNonce: request.operationNonce,
 			externalTurnId: request.attempt.attemptId,
@@ -930,6 +971,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 		readonly tools: readonly PrivateClaudeSelectedTool[];
 		readonly model?: PrivateClaudeModelSelection;
 		readonly credential?: SafeLeaseProjection;
+		readonly modelGateway?: ExternalModelGatewayCapability;
 		readonly supervisorRef: string;
 		readonly operationNonce: string;
 		readonly externalTurnId?: string;
@@ -946,6 +988,7 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 			prompt: input.prompt,
 			...(input.model === undefined ? {} : { model: input.model }),
 			...(input.credential === undefined ? {} : { credential: input.credential }),
+			...(input.modelGateway === undefined ? {} : { modelGateway: input.modelGateway }),
 			cwd: this.#cwd,
 			env: this.#env,
 			tools: input.tools,
@@ -1122,6 +1165,8 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 				usage,
 			);
 		} else {
+			const observedAt = this.#now();
+			const effectiveModel = effectiveModelEvidence(operation, message, observedAt);
 			evidence = {
 				externalSessionId: operation.sessionId,
 				externalTurnId: operation.handle.externalTurnId,
@@ -1129,8 +1174,9 @@ export class PrivateClaudeAgentSdkDriver implements ExternalConnectorVendorDrive
 				status: "succeeded",
 				artifacts: [],
 				usage,
+				...(effectiveModel === undefined ? {} : { effectiveModel }),
 				sideEffectState: "none",
-				producedAt: this.#now(),
+				producedAt: observedAt,
 			};
 		}
 		operation.terminal.resolve(evidence);
@@ -1359,6 +1405,7 @@ export function createPrivateClaudeExternalAgentConnector(
 		store: options.store,
 		driver,
 		supervision: options.supervision,
+		...(options.credential === undefined ? {} : { credential: options.credential }),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.operationNonce === undefined ? {} : { operationNonce: options.operationNonce }),
 	});

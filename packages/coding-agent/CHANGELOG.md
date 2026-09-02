@@ -5,10 +5,11 @@
 ### Added
 
 - Added explicit settings composition for pinned Claude, Codex, and ACP External Connector drivers in `none` and `agent_owned` modes, including fail-closed identity, version, and capability validation.
+- Added Claude/Codex `aos_gateway` settings execution through exact ModelBroker projection, Host-owned loopback credential capabilities, durable projected/effective model evidence, confirmed terminal revocation, and crash cleanup; ACP and generic JSONL remain rejected.
 
 ### Fixed
 
-- Corrected External Connector documentation to distinguish v0.85.0 generic JSONL target reachability (`none`/`agent_owned` plus the packaged fake) from private vendor handshake evidence; documented that Claude/Codex/ACP drivers are not wired for registration and that `aos_gateway` is internal-only.
+- Corrected External Connector documentation to distinguish generic JSONL, pinned vendor, and `aos_gateway` reachability and credential ownership.
 
 ## [0.85.0] - 2026-09-02
 

@@ -2773,11 +2773,11 @@ verifies RuntimeLimits, passive runtime-status projection, and terminal
 Runtime status is projected in `initialize`; it adds no writable RPC command.
 Settings-based product entry composition supports generic JSONL targets and
 explicit pinned `claude`, `codex`, and `acp` drivers. All use `none` or
-`agent_owned` model access and the canonical registration -> run -> receipt
-path. Vendor selection is declared by `driver`, never inferred from
+`agent_owned`; pinned Claude/Codex also use exclusive `aos_gateway` through the
+canonical registration -> run -> receipt path. Vendor selection is declared by `driver`, never inferred from
 `providerId`; identity, version, and capability drift fail closed before
 launch. Real vendor authentication remains separate certification evidence.
-`aos_gateway` is internal-only and rejected for every settings target.
+`aos_gateway` is accepted only for pinned Claude/Codex settings targets; ACP and generic JSONL targets reject it.
 
 ### Structured errors
 

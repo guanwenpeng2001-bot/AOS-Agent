@@ -208,6 +208,7 @@ interface CodexOperation {
 	readonly respondedServerRequests: Set<string>;
 	readonly acceptedSideEffectingRequests: Set<string>;
 	readonly authority?: CodexExecutionAuthority;
+	effectiveModel?: ExternalConnectorTerminalEvidence["effectiveModel"];
 	readerTask?: Promise<void>;
 	stderrTask?: Promise<void>;
 	deadline?: ReturnType<typeof setTimeout>;
@@ -423,7 +424,12 @@ function exactModelField(
 
 /** Exact request fields proven by the pinned app-server v2 schema. */
 export const PRIVATE_CODEX_MODEL_SUPPORT_MATRIX = Object.freeze({
-	provider: exactModelField("modelProvider"),
+	provider: Object.freeze({
+		supported: true,
+		targetField: "modelProvider",
+		accepts: (value: string) => value.length > 0 && value.length <= 4_096 && !MODEL_VALUE_CONTROL_CHARACTER_PATTERN.test(value),
+		translate: (value: string) => value.length === 0 ? undefined : Object.freeze({ kind: "exact" as const, value: "openai" }),
+	}),
 	model: exactModelField("model"),
 	effort: exactModelField("effort"),
 	serviceTier: exactModelField("serviceTier"),
@@ -694,6 +700,7 @@ function terminalEvidence(
 		operationNonce: operation.handle.operationNonce,
 		status: "succeeded",
 		artifacts: [],
+		...(operation.effectiveModel === undefined ? {} : { effectiveModel: operation.effectiveModel }),
 		sideEffectState: operation.sideEffectState,
 		producedAt: now(),
 	};
@@ -1287,9 +1294,26 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 		if (
 			gatewayModel !== (request.modelProjection !== undefined) ||
 			gatewayModel !== (request.modelTranslation !== undefined) ||
-			gatewayModel !== (request.credential !== undefined)
+			gatewayModel !== (request.credential !== undefined) ||
+			gatewayModel !== (request.modelGateway !== undefined)
 		) {
 			throw new PrivateCodexAppServerError("external_protocol_unsupported");
+		}
+		if (gatewayModel) {
+			const gateway = request.modelGateway!;
+			const lease = request.credential!;
+			let endpoint: URL;
+			try {
+				endpoint = new URL(gateway.endpoint);
+			} catch {
+				throw new PrivateCodexAppServerError("external_protocol_unsupported");
+			}
+			if (
+				endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" ||
+				gateway.leaseId !== lease.leaseId || gateway.expiresAt !== lease.expiresAt ||
+				gateway.modelBindingDigest !== request.modelProjection!.bindingDigest.value ||
+				!gateway.authorization.startsWith("Bearer ")
+			) throw new PrivateCodexAppServerError("external_protocol_unsupported");
 		}
 		let modelRouting:
 			| {
@@ -1297,6 +1321,8 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 					readonly model: string;
 					readonly effort: string;
 					readonly serviceTier: string;
+					readonly effectiveProvider: string;
+					readonly bindingDigest: { readonly algorithm: "sha256"; readonly value: string };
 			  }
 			| undefined;
 		if (
@@ -1309,12 +1335,10 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 			const fields = translation.fields;
 			if (
 				!validateOperationWorkerLeaseProjection(request.credential) ||
-				request.credential.bindingId !== request.attempt.bindingId ||
-				projection.bindingDigest.value !== request.bindingDigest ||
 				canonicalFoundationJson(translation.sourceBindingDigest) !==
 					canonicalFoundationJson(projection.bindingDigest) ||
 				fields.provider.targetField !== PRIVATE_CODEX_MODEL_SUPPORT_MATRIX.provider.targetField ||
-				fields.provider.value !== projection.provider ||
+				fields.provider.value !== "openai" ||
 				fields.model.targetField !== PRIVATE_CODEX_MODEL_SUPPORT_MATRIX.model.targetField ||
 				fields.model.value !== projection.model ||
 				fields.effort.targetField !== PRIVATE_CODEX_MODEL_SUPPORT_MATRIX.effort.targetField ||
@@ -1334,6 +1358,8 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 				model: fields.model.value,
 				effort: fields.effort.value,
 				serviceTier: fields.serviceTier.value,
+				effectiveProvider: projection.provider,
+				bindingDigest: projection.bindingDigest,
 			};
 		}
 		const operation = await this.#openOperation({
@@ -1376,6 +1402,15 @@ export class PrivateCodexAppServerDriver implements ExternalConnectorVendorDrive
 					threadResponse.serviceTier !== modelRouting.serviceTier)
 			) {
 				throw new PrivateCodexAppServerError("external_protocol_unsupported");
+			}
+			if (modelRouting !== undefined) {
+				operation.effectiveModel = Object.freeze({
+					provider: modelRouting.effectiveProvider,
+					model: modelRouting.model,
+					bindingDigest: modelRouting.bindingDigest,
+					observedAt: this.#now(),
+					source: "codex_thread_start" as const,
+				});
 			}
 			const threadId = threadResponse.id;
 			operation.threadId = threadId;
@@ -2200,6 +2235,7 @@ export function createPrivateCodexExternalAgentConnector(options: PrivateCodexEx
 		store: options.store,
 		driver,
 		supervision: options.supervision,
+		...(options.credential === undefined ? {} : { credential: options.credential }),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.operationNonce === undefined ? {} : { operationNonce: options.operationNonce }),
 	});

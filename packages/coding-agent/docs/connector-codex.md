@@ -16,9 +16,8 @@ Capability matrix and pinned version for the private Codex app-server connector.
    composes the pinned private connector and fixed `app-server` launch mode.
    `none` and `agent_owned` can register, run, and produce durable receipts;
    real authentication remains a separate certification step.
-3. Model-access boundary: `aos_gateway` is an internal Host and Scheduler
-   path. Generic JSONL settings targets cannot select it; the packaged runtime
-   rejects that selection with `capability_widened`.
+3. Model-access boundary: settings-selected Codex targets may use
+   `aos_gateway`; generic JSONL and ACP targets remain rejected.
 
 ## Settings registration
 
@@ -50,6 +49,11 @@ Capability matrix and pinned version for the private Codex app-server connector.
 }
 ```
 
+For `aos_gateway`, declare provider/model/effort/service tier and fallback in a
+ModelBroker route, set the target's model access to only `aos_gateway`, and add
+an opaque `accountReference`. Select that route with `run.start.modelRoute` or
+as the default route. The model route is not copied into the connector target.
+
 The exact file-hash commands are documented in
 [`external-agent-connector.md`](external-agent-connector.md). Install the pinned
 CLI before use; see the [Codex CLI guide](https://developers.openai.com/codex/cli).
@@ -65,6 +69,6 @@ The driver uses `initialize`, `thread/start`, `turn/start`, `turn/interrupt`, an
 | Service tier | supported | `ThreadStartParams.serviceTier` and `TurnStartParams.serviceTier` accept the exact string. The driver checks the thread response echo and sends the same value on the turn. |
 | Resume | supported | `thread/resume` accepts the durable thread id and returns the pinned thread response shape. The driver requires exact thread identity and otherwise fails closed. |
 
-For the private driver's `aos_gateway` behavior, it declares an exact `modelSupportMatrix` for provider, model, effort, service tier, fallback decision, and binding digest. It rechecks the Host translation against the source projection, requires a valid material-free `SafeLeaseProjection`, passes only that projection to transport activation, and never places lease identity or provider credential material on the app-server JSONL wire. This behavior is not reachable from settings targets in this release.
+For `aos_gateway`, the private driver rechecks the exact translation, requires a material-free lease plus a Host-owned loopback gateway capability, and points the app-server's OpenAI-compatible transport at that loopback endpoint with only the short-lived capability. The original AOS provider credential is resolved inside ModelRuntime for each gateway request and never enters app-server JSONL, process arguments, or durable records. A verified `thread/start` echo produces the receipt's `effectiveModel`; the consumed quota belongs to the projected AOS provider, not the Codex subscription.
 
 The source restriction on artifact input is necessary because the canonical contract deliberately exposes opaque Artifact Store handles rather than local paths or URLs. Supporting those handles would require a new Host materialization contract; this driver does not guess a location or widen the existing wire shape.

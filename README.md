@@ -46,7 +46,7 @@ The installable package is `aos-agent`, and it exposes the `aos` executable. The
 
 This repository contains the source for the published `0.84.3` package set. Hosted services and generated model catalogs remain outside the release boundary.
 
-Settings-based External Connector composition supports generic JSONL targets and explicit pinned `claude`, `codex`, and `acp` drivers in `none` or `agent_owned` mode. Vendor selection is declared by the target's `driver` field and is never inferred from `providerId`; identity, version, and capability drift fail closed before launch. The packaged `aos.fake-connector` and injected vendor adapters cover registration -> run -> receipt. Real vendor authentication remains a later certification step, and `aos_gateway` is internal-only and rejected for every settings target.
+Settings-based External Connector composition supports generic JSONL targets and explicit pinned `claude`, `codex`, and `acp` drivers in `none` or `agent_owned` mode. Claude and Codex additionally support exclusive `aos_gateway` through ModelBroker projection and a Host-owned loopback credential gateway; ACP and generic targets reject it. Vendor selection is explicit, and identity, version, capability, translation, effective-model, and credential-revocation drift fail closed.
 
 The root `./test.sh` script runs non-e2e product tests.
 

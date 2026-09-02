@@ -17,8 +17,12 @@ import type {
 } from "../runtime/composition-factory.ts";
 import {
 	type ExternalConnectorDurableStore,
+	type ExternalConnectorOperation,
 	SessionExternalConnectorDurableStore,
 } from "./operation.ts";
+import type { ExternalResolvedModelProjection } from "./model-projection.ts";
+import type { ExternalModelGatewayCapability } from "./model-gateway.ts";
+import type { SafeLeaseProjection } from "../worker/protocol.ts";
 import type {
 	ExternalConnectorCredentialRuntime,
 	ExternalConnectorCredentialService,
@@ -86,6 +90,10 @@ class SessionBoundExternalConnectorStore implements ExternalConnectorDurableStor
 		...args: Parameters<ExternalConnectorDurableStore["readOperation"]>
 	): ReturnType<ExternalConnectorDurableStore["readOperation"]> {
 		return this.#delegate?.readOperation(...args) ?? Promise.resolve(undefined);
+	}
+
+	listOperations(): Promise<readonly ExternalConnectorOperation[]> {
+		return this.#delegate?.listOperations() ?? Promise.resolve([]);
 	}
 
 	writeOperation(
@@ -179,8 +187,28 @@ class SessionBoundExternalConnectorCredentialRuntime implements ExternalConnecto
 		this.#delegate = runtime;
 	}
 
-	resolveIssueContext(attempt: Attempt, binding: AgentBinding) {
-		return this.#delegate?.resolveIssueContext(attempt, binding);
+	openModelGateway(
+		lease: SafeLeaseProjection,
+		projection: ExternalResolvedModelProjection,
+	): Promise<ExternalModelGatewayCapability | undefined> | undefined {
+		return this.#delegate?.openModelGateway?.(lease, projection);
+	}
+
+	closeModelGateway(capability: ExternalModelGatewayCapability): boolean {
+		return this.#delegate?.closeModelGateway?.(capability) ?? false;
+	}
+
+	modelGatewayEnvironment(capability: ExternalModelGatewayCapability): Readonly<Record<string, string>> {
+		return this.#delegate?.modelGatewayEnvironment?.(capability) ?? Object.freeze({});
+	}
+
+	resolveIssueContext(
+		attempt: Attempt,
+		binding: AgentBinding,
+		correlation: Parameters<ExternalConnectorCredentialRuntime["resolveIssueContext"]>[2],
+		modelProjection: Parameters<ExternalConnectorCredentialRuntime["resolveIssueContext"]>[3],
+	) {
+		return this.#delegate?.resolveIssueContext(attempt, binding, correlation, modelProjection);
 	}
 }
 
@@ -338,6 +366,7 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 				target: options.target,
 				store,
 				privateStatePath,
+				credential: credentialRuntime,
 				...(options.vendorAdapters === undefined ? {} : { adapters: options.vendorAdapters }),
 			});
 	const capability = vendor?.capability ?? (packaged ? packagedCapability() : genericTargetCapability(options.target));

@@ -62,6 +62,53 @@ describe("External Connector settings", () => {
 		expect(SettingsManager.fromStorage(storage).getExternalConnectorTargetSettings()?.selectedTarget).not.toHaveProperty("driver");
 	});
 
+	it.each(["claude", "codex"] as const)("accepts %s aos_gateway while model routing stays separate", (driver) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-connector-${driver}-gateway-`));
+		directories.push(cwd);
+		const storage = new InMemorySettingsStorage();
+		const vendor = {
+			...target(cwd, driver, `external.${driver}`),
+			driver,
+			version: driver === "claude" ? "0.3.246" : "0.149.0",
+			accountReference: { schemaVersion: 1, namespace: "aos", accountId: "model-runtime" },
+			capabilityCeiling: {
+				...target(cwd, driver, `external.${driver}`).capabilityCeiling,
+				modelAccess: ["aos_gateway"],
+				resume: driver !== "claude",
+			},
+		};
+		writeSettings(storage, "global", {
+			externalConnectors: { schemaVersion: 1, targets: [vendor], targetId: driver },
+		});
+		expect(SettingsManager.fromStorage(storage).getExternalConnectorTargetSettings()?.selectedTarget).toMatchObject({
+			driver,
+			capabilityCeiling: { modelAccess: ["aos_gateway"] },
+		});
+	});
+
+	it("rejects a remote endpoint for a vendor aos_gateway target", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-connector-gateway-endpoint-"));
+		directories.push(cwd);
+		const storage = new InMemorySettingsStorage();
+		const vendor = {
+			...target(cwd, "codex-gateway", "external.codex"),
+			driver: "codex",
+			version: "0.149.0",
+			endpoint: "https://gateway.example.test/",
+			accountReference: { schemaVersion: 1, namespace: "aos", accountId: "model-runtime" },
+			capabilityCeiling: {
+				...target(cwd, "codex-gateway", "external.codex").capabilityCeiling,
+				modelAccess: ["aos_gateway"],
+			},
+		};
+		writeSettings(storage, "global", {
+			externalConnectors: { schemaVersion: 1, targets: [vendor], targetId: vendor.targetId },
+		});
+		expect(() => SettingsManager.fromStorage(storage).getExternalConnectorTargetSettings()).toThrow(
+			expect.objectContaining({ reason: "capability_widened", path: "$.global.targets[0].endpoint" }),
+		);
+	});
+
 	it.each([
 		{
 			name: "unknown driver",
@@ -83,15 +130,6 @@ describe("External Connector settings", () => {
 			mutate: (value: Record<string, unknown>) => ({ ...value, version: "0.3.245" }),
 			reason: "driver_mismatch",
 			path: "$.global.targets[0].version",
-		},
-		{
-			name: "aos gateway",
-			mutate: (value: Record<string, unknown>) => ({
-				...value,
-				capabilityCeiling: { ...(value.capabilityCeiling as Record<string, unknown>), modelAccess: ["aos_gateway"] },
-			}),
-			reason: "capability_widened",
-			path: "$.global.targets[0].capabilityCeiling.modelAccess",
 		},
 		{
 			name: "Claude resume widening",

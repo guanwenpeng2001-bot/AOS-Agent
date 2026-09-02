@@ -25,6 +25,13 @@ const PROTOCOL_LIMIT_BYTES = 4_096;
 const PROCESS_CHANNEL_MAX_LINE_BYTES = 256 * 1024;
 const NONCE_MARKER_PREFIX = "AOS_EXTERNAL_CONNECTOR_NONCE=";
 const PROVENANCE_DIGEST_CACHE = new Map<string, string>();
+const GATEWAY_ENVIRONMENT_KEYS = new Set([
+	"AOS_MODEL_GATEWAY_ENDPOINT",
+	"AOS_MODEL_GATEWAY_AUTHORIZATION",
+	"AOS_MODEL_GATEWAY_BINDING_DIGEST",
+	"OPENAI_BASE_URL",
+	"OPENAI_API_KEY",
+]);
 
 const POSIX_GUARDIAN_SOURCE = String.raw`
 const { spawn } = require("node:child_process");
@@ -1044,7 +1051,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 	readonly #launchStrategy: ExternalConnectorGuardianLaunchStrategy;
 	readonly #shellPath: string | undefined;
 	readonly #setsidPath: string | undefined;
-	readonly #processSpec: string;
+	readonly #process: ProductionExternalConnectorProcess;
 	readonly #clock: RuntimeClock;
 	readonly #channels = new Map<string, ExternalConnectorProcessChannel>();
 
@@ -1053,7 +1060,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 		this.#clock = options.clock ?? SYSTEM_RUNTIME_CLOCK;
 		this.#environment = externalConnectorMinimalEnvironment(this.#platform);
 		this.#launchStrategy = externalConnectorGuardianLaunchStrategy(this.#platform);
-		this.#processSpec = encodeProcessSpec(options.process, this.#environment);
+		this.#process = options.process;
 		if (this.#platform === "win32") {
 			this.#shellPath = powershellPath();
 			this.#setsidPath = undefined;
@@ -1074,9 +1081,15 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 
 	async launch(
 		request: ExternalConnectorProcessLaunchRequest,
-		options?: { readonly signal?: AbortSignal },
+		options?: { readonly signal?: AbortSignal; readonly environment?: Readonly<Record<string, string>> },
 	): Promise<ExternalConnectorProcessHandle> {
 		this.#validateRequest(request);
+		const gatewayEnvironment = options?.environment ?? {};
+		if (Object.entries(gatewayEnvironment).some(([key, value]) =>
+			!GATEWAY_ENVIRONMENT_KEYS.has(key) || value.length === 0 || value.length > 4096 || value.includes("\0"))) {
+			throw new Error("External Connector gateway process environment is invalid");
+		}
+		const processSpec = encodeProcessSpec(this.#process, { ...this.#environment, ...gatewayEnvironment });
 		if (options?.signal?.aborted === true) throw new Error("External Connector process launch was aborted");
 		const marker = nonceMarker(request.operationNonce);
 		const child = this.#spawnGuardian(marker);
@@ -1102,7 +1115,7 @@ export class ProductionExternalConnectorProcessController implements ExternalCon
 				activated: false,
 				activate: async () => {
 					const active = waitForProtocolLine(channel, `ACTIVE ${marker}`, options?.signal);
-					channel.writeLine(`ACTIVATE ${marker} ${this.#processSpec}`);
+					channel.writeLine(`ACTIVATE ${marker} ${processSpec}`);
 					await active;
 				},
 				forceTerminate: (termination) => this.#forceTerminate(identity, request.operationNonce, termination),

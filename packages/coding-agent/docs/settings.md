@@ -379,10 +379,10 @@ absolute `executablePath`, absolute `modulePath`, absolute `cwd`, `version`,
 
 Omitting `driver` selects the generic JSONL adapter. An explicit vendor driver
 selects its pinned Host-private adapter; `providerId` is never used as a vendor
-switch. Generic and vendor targets support `modelAccess` `none` or
-`agent_owned`. Vendor version, identity, and protocol capability mismatches are
-rejected before launch. `aos_gateway` is an internal Host and Scheduler path
-and every settings target rejects it with `capability_widened`.
+switch. All targets support `none` or `agent_owned`; pinned Claude/Codex targets
+also support exclusive `aos_gateway`. Vendor version, identity, protocol,
+model-translation, and credential-gateway mismatches are rejected before launch.
+ACP and generic JSONL gateway declarations fail with `capability_widened`.
 
 Project settings cannot define targets. A trusted project may provide
 `{schemaVersion: 1, targetId?, capabilityCeiling?, role?}` to select a global

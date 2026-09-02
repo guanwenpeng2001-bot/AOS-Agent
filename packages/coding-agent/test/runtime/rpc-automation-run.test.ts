@@ -34,7 +34,11 @@ import type { AgentSessionRuntime } from "../../src/core/session/runtime.ts";
 import { CapabilityError, type CapabilityBinding } from "../../src/core/policy/capability-registry.ts";
 import type { PreparedSessionScopeRebind } from "../../src/core/session/current-scope.ts";
 import { createExtensionRuntime } from "../../src/core/extensions/loader.ts";
-import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
+import {
+	createDurableExternalAgentConnector,
+	type ExternalConnectorCredentialRuntime,
+} from "../../src/core/connector/durable-connector.ts";
+import { calculateScopeDigest } from "../../src/core/policy/task-credential-lease.ts";
 import type {
 	CanonicalExternalAgentArtifactReference,
 	ExternalAgentArtifactInspection,
@@ -610,12 +614,20 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 	async read(handle: ExternalConnectorDriverHandle): Promise<ExternalConnectorTerminalEvidence> {
 		this.readCalls += 1;
 		if (this.#readHangs) await new Promise<void>(() => undefined);
+		const projection = this.spawnedRequest?.modelProjection;
 		return {
 			externalSessionId: handle.externalSessionId,
 			externalTurnId: handle.externalTurnId,
 			operationNonce: handle.operationNonce,
 			status: "succeeded",
 			artifacts: [],
+			...(projection === undefined ? {} : { effectiveModel: {
+				provider: projection.provider,
+				model: projection.model,
+				bindingDigest: projection.bindingDigest,
+				observedAt: "2026-08-27T00:00:00.000Z",
+				source: "codex_thread_start" as const,
+			} }),
 			sideEffectState: "none",
 			producedAt: "2026-08-27T00:00:00.000Z",
 		};
@@ -640,6 +652,77 @@ class RpcExternalConnectorDriver implements ExternalConnectorVendorDriver {
 		};
 	}
 	async dispose(): Promise<void> {}
+}
+
+function rpcGatewayCredentialRuntime(): ExternalConnectorCredentialRuntime {
+	const grant = (leaseId: string, grantId: string, bindingId: string, targetId: string, scopeDigest: string, status: "active" | "settled") => ({
+		schemaVersion: 1 as const,
+		grantId,
+		leaseId,
+		bindingId,
+		sessionId: "rpc-session",
+		taskId: "rpc-task",
+		graphRevision: 1,
+		nodeId: "rpc-node",
+		runId: "rpc-run",
+		scopeDigest,
+		scopeCount: 1,
+		status,
+		issuedAt: "2026-08-27T00:00:00.000Z",
+		expiresAt: "2026-08-27T01:00:00.000Z",
+		renewAfter: "2026-08-27T00:59:55.000Z",
+		heartbeatSequence: 0,
+		revision: status === "active" ? 1 : 3,
+		targetId,
+	});
+	return {
+		service: {
+			issueForTaskRun: (context) => {
+				const leaseId = `lease-${context.taskId}`;
+				const grantId = `grant-${context.taskId}`;
+				const bindingId = `credential-${context.taskId}`;
+				const targetId = context.targetId ?? "rpc-gateway-target";
+				return {
+					ok: true,
+					leaseId,
+					bindingId,
+					idempotent: false,
+					grant: grant(leaseId, grantId, bindingId, targetId, calculateScopeDigest(context.scopes), "active"),
+					delivery: { schemaVersion: 1, leaseId, grantId, bindingId, status: "succeeded", recordedAt: "2026-08-27T00:00:00.000Z", targetId },
+				};
+			},
+			lookupDeliveredLease: () => ({ ok: false, code: "task_credential_not_found" }),
+			releaseDeliveredLease: (input) => ({
+				ok: true,
+				idempotent: false,
+				grant: grant(input.reference.leaseId, input.reference.grantId, input.reference.bindingId, input.targetId, `sha256:${"a".repeat(64)}`, "settled"),
+			}),
+		},
+		resolveIssueContext: (attempt, binding, correlation, projection) => projection === undefined ? undefined : ({
+			taskId: attempt.taskId,
+			graphRevision: 1,
+			nodeId: attempt.taskId,
+			runId: correlation?.runId ?? attempt.attemptId,
+			capabilityBindingId: binding.capabilityRevision.id,
+			policyBindingId: binding.policyRevision.id,
+			targetId: "rpc-gateway-target",
+			targetKind: "external_connector",
+			scopes: [{ credentialName: projection.provider, purpose: "model", operations: ["read"], targetKinds: ["external_connector"] }],
+			requestedTtlMs: 60_000,
+			clientRequestId: attempt.attemptId,
+			nodeAttached: true,
+		}),
+		openModelGateway: async (lease, projection) => ({
+			schemaVersion: 1,
+			endpoint: "http://127.0.0.1:43126/v1",
+			authorization: "Bearer aos_gateway_0123456789abcdef0123456789abcdef",
+			leaseId: lease.leaseId,
+			modelBindingDigest: projection.bindingDigest.value,
+			expiresAt: lease.expiresAt,
+		}),
+		closeModelGateway: () => true,
+		modelGatewayEnvironment: () => ({}),
+	};
 }
 
 type RpcExternalConnectorSupervision = ReturnType<typeof createExternalConnectorTestSupervision>;
@@ -774,6 +857,7 @@ async function installRpcExternalConnector(
 		},
 		now: () => "2026-08-27T00:00:00.000Z",
 		operationNonce: () => "rpc-operation-nonce",
+		...(options.modelAccess === "aos_gateway" ? { credential: rpcGatewayCredentialRuntime() } : {}),
 	});
 	if (snapshot.toolGateway) {
 		bindExternalConnectorVendorBehaviorManifest(connector, () => ({

@@ -32,6 +32,7 @@ import {
 	type ToolGatewayRoute,
 } from "@aos-agent/agent-core";
 import { PROVIDER_CLASS } from "./provider-class.ts";
+import type { ExternalModelGatewayCapability } from "./model-gateway.ts";
 import {
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_EXECUTION_OBJECT_TYPE,
 	attachExternalConnectorCredentialLease,
@@ -92,10 +93,20 @@ export interface ExternalConnectorCredentialService {
 export interface ExternalConnectorCredentialRuntime {
 	/** Host-owned lifecycle authority; Connector code never receives material. */
 	readonly service: ExternalConnectorCredentialService;
+	readonly openModelGateway?: (
+		lease: SafeLeaseProjection,
+		projection: ExternalResolvedModelProjection,
+	) => Promise<ExternalModelGatewayCapability | undefined> | undefined;
+	readonly closeModelGateway?: (capability: ExternalModelGatewayCapability) => boolean;
+	readonly modelGatewayEnvironment?: (
+		capability: ExternalModelGatewayCapability,
+	) => Readonly<Record<string, string>>;
 	/** Pure exact target/binding selection for this already durable Attempt. */
 	readonly resolveIssueContext: (
 		attempt: Attempt,
 		binding: AgentBinding,
+		correlation?: ExecutionCorrelation,
+		modelProjection?: ExternalResolvedModelProjection,
 	) => TaskCredentialRunIssueContext | undefined;
 }
 import {
@@ -548,6 +559,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	readonly #toolGatewayConsumers = new Map<string, ExternalConnectorToolGatewayConsumer>();
 	readonly #toolGatewayInFlight = new Map<string, Map<string, string>>();
 	readonly #credentialLeases = new Map<string, ExternalConnectorCredentialLease>();
+	readonly #modelGatewayCapabilities = new Map<string, ExternalModelGatewayCapability>();
 	readonly #drainWaiters = new Set<() => void>();
 	#lifecycle: "accepting" | "draining" | "disposed" = "accepting";
 	#disposal: Promise<void> | undefined;
@@ -597,12 +609,14 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	#resolveCredentialPlan(
 		attempt: Attempt,
 		binding: AgentBinding,
+		correlation: ExecutionCorrelation,
+		modelProjection: ExternalResolvedModelProjection | undefined,
 	): ResultValue<ExternalConnectorCredentialPlan | undefined, FoundationError> {
 		const runtime = this.#credentialRuntime;
 		if (runtime === undefined) return Result.ok(undefined);
 		let context: TaskCredentialRunIssueContext | undefined;
 		try {
-			context = runtime.resolveIssueContext(attempt, binding);
+			context = runtime.resolveIssueContext(attempt, binding, correlation, modelProjection);
 		} catch {
 			return Result.err(
 				externalFailure(
@@ -820,15 +834,18 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		lease: ExternalConnectorCredentialLease,
 		reasonCode: TaskCredentialLifecycleReasonCode,
 	): boolean {
-		this.#credentialLeases.delete(attemptId);
 		const runtime = this.#credentialRuntime;
 		if (runtime === undefined) return false;
+		const gatewayCapability = this.#modelGatewayCapabilities.get(attemptId);
+		const gatewayClosed = gatewayCapability === undefined || runtime.closeModelGateway?.(gatewayCapability) === true;
+		if (gatewayClosed) this.#modelGatewayCapabilities.delete(attemptId);
 		const result = runtime.service.releaseDeliveredLease({
 			reference: externalConnectorCredentialReference(lease),
 			targetId: lease.targetId,
 			reasonCode,
 		});
-		return result.ok;
+		if (result.ok) this.#credentialLeases.delete(attemptId);
+		return gatewayClosed && result.ok;
 	}
 
 	#releaseCredential(
@@ -910,6 +927,17 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	async recoverPrivateSupervisorState(): Promise<readonly ExternalConnectorStartupRecoveryResult[]> {
 		const entries = await this.#supervision.privateStateStore.list();
 		const results: ExternalConnectorStartupRecoveryResult[] = [];
+		const privateAttempts = new Set(entries.map((entry) => entry.attemptId));
+		const operations = await this.#store.listOperations?.() ?? [];
+		for (const operation of operations) {
+			if (operation.credential === undefined || privateAttempts.has(operation.attemptId)) continue;
+			const released = this.#releaseCredential(operation, "run_interrupted");
+			if (operation.status !== "terminal") await this.#markReconcile(operation, "driver_failure");
+			results.push(Object.freeze({
+				attemptId: operation.attemptId,
+				status: released ? "reaped" : "quarantined",
+			}));
+		}
 		for (const entry of entries) {
 			if (this.#supervisors.has(entry.attemptId)) {
 				results.push(Object.freeze({ attemptId: entry.attemptId, status: "reattached" }));
@@ -1348,7 +1376,8 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			runtimeLimits === undefined ||
 			runtimeLimits.processNonce !== entry.state.reference.operationNonce ||
 			operation.status === "prepared" ||
-			operation.status === "terminal"
+			operation.status === "terminal" ||
+			operation.credential !== undefined
 		)
 			return false;
 		const mapping = await this.#store.readMapping(entry.attemptId);
@@ -1368,6 +1397,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	async #launchSupervisor(
 		operation: ExternalConnectorOperation,
 		signal?: AbortSignal,
+		environment?: Readonly<Record<string, string>>,
 	): Promise<ExternalConnectorBoundedSupervisor> {
 		const supervisor = this.#createSupervisor(operation);
 		let statePersisted = false;
@@ -1376,7 +1406,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			await supervisor.launch(async (state) => {
 				await this.#supervision.privateStateStore.write(operation.attemptId, state);
 				statePersisted = true;
-			}, signal);
+			}, signal, environment);
 			this.#supervisors.set(operation.attemptId, supervisor);
 			this.#notifyDrain();
 			return supervisor;
@@ -1568,7 +1598,12 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			}
 			modelTranslation = translated.translation;
 		}
-		const credentialPlan = this.#resolveCredentialPlan(attempt, binding.value);
+		const credentialPlan = this.#resolveCredentialPlan(
+			attempt,
+			binding.value,
+			correlation.value,
+			executionInput.modelProjection,
+		);
 		if (!credentialPlan.ok) return credentialPlan;
 
 		let operation = await this.#store.readOperation(attempt.attemptId);
@@ -1707,9 +1742,44 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		}
 		const operationNonce = frozen.value.processNonce;
 		const launchOperation = operation;
+		let modelGateway: ExternalModelGatewayCapability | undefined;
+		let gatewayEnvironment: Readonly<Record<string, string>> | undefined;
+		if (executionInput.modelProjection !== undefined) {
+			const runtime = this.#credentialRuntime;
+			const lease = launchOperation.credential?.projection;
+			if (
+				runtime === undefined ||
+				lease === undefined ||
+				runtime.openModelGateway === undefined ||
+				runtime.modelGatewayEnvironment === undefined
+			) {
+				await this.#markReconcile(operation, "credential_unavailable");
+				return Result.err(externalFailure(
+					"external_credential_unavailable",
+					"External model gateway credential authority is unavailable",
+					attempt.attemptId,
+				));
+			}
+			modelGateway = await runtime.openModelGateway(lease, executionInput.modelProjection);
+			if (modelGateway === undefined) {
+				await this.#markReconcile(operation, "credential_unavailable");
+				return Result.err(externalFailure(
+					"external_credential_unavailable",
+					"External model gateway capability could not be opened",
+					attempt.attemptId,
+				));
+			}
+			this.#modelGatewayCapabilities.set(attempt.attemptId, modelGateway);
+			gatewayEnvironment = Object.freeze({
+				AOS_MODEL_GATEWAY_ENDPOINT: modelGateway.endpoint,
+				AOS_MODEL_GATEWAY_AUTHORIZATION: modelGateway.authorization,
+				AOS_MODEL_GATEWAY_BINDING_DIGEST: modelGateway.modelBindingDigest,
+				...runtime.modelGatewayEnvironment(modelGateway),
+			});
+		}
 		let supervisor: ExternalConnectorBoundedSupervisor;
 		try {
-			supervisor = await this.#launchSupervisor(operation, options?.signal);
+			supervisor = await this.#launchSupervisor(operation, options?.signal, gatewayEnvironment);
 		} catch {
 			await this.#markReconcile(operation, "start_outcome_unknown");
 			return Result.err(
@@ -1759,6 +1829,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 						...(launchOperation.credential === undefined
 							? {}
 							: { credential: launchOperation.credential.projection }),
+						...(modelGateway === undefined ? {} : { modelGateway }),
 						mcpSelection: binding.value.mcpSelection,
 						...(mcpToolGatewayRoutes.value === undefined
 							? {}
@@ -2931,10 +3002,39 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				),
 			);
 		}
-		this.#releaseCredential(
+		const executionInput = await this.#store.readExecutionInput(attempt.taskId);
+		const effectiveProjection = executionInput?.modelProjection;
+		const observedModel = evidence.effectiveModel;
+		if (
+			(effectiveProjection === undefined) !== (this.#capability.modelAccess !== "aos_gateway") ||
+			(evidence.status === "succeeded" && effectiveProjection !== undefined &&
+				(observedModel === undefined ||
+					observedModel.provider !== effectiveProjection.provider ||
+					observedModel.model !== effectiveProjection.model ||
+					!sameFingerprint(observedModel.bindingDigest, effectiveProjection.bindingDigest))) ||
+			(effectiveProjection === undefined && observedModel !== undefined)
+		) {
+			await this.#markReconcile(operation, "binding_drift");
+			return Result.err(
+				externalFailure(
+					"binding_required_fact",
+					"External connector effective model does not match its frozen model binding",
+					attempt.attemptId,
+				),
+			);
+		}
+		const credentialReleased = this.#releaseCredential(
 			operation,
 			credentialReasonForTerminal(evidence.status, evidence.error?.code),
 		);
+		if (!credentialReleased) {
+			await this.#markReconcile(operation, "credential_unavailable");
+			return Result.err(externalFailure(
+				"side_effect_unknown",
+				"External connector credential revocation could not be confirmed",
+				attempt.attemptId,
+			));
+		}
 		const receiptId = `attempt_receipt_${attempt.attemptId}`;
 		const receipt: AttemptReceipt = {
 			schemaVersion: 1,
@@ -2949,6 +3049,9 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 			workerReceiptRefs: [],
 			artifacts: [...(evidence.artifacts ?? [])],
 			...(evidence.usage === undefined ? {} : { usage: evidence.usage }),
+			...(observedModel === undefined
+				? {}
+				: { effectiveModel: observedModel }),
 			...(evidence.error === undefined ? {} : { error: evidence.error }),
 			provenance: {
 				producerKind: "external_connector",

@@ -125,6 +125,7 @@ export async function createPrivateVendorExternalAgentConnector(options: {
 	readonly target: ExternalConnectorResolvedTarget;
 	readonly store: ExternalConnectorDurableStore;
 	readonly privateStatePath: string;
+	readonly credential?: ExternalAgentConnectorRuntimeOptions["credential"];
 	readonly adapters?: PrivateExternalConnectorVendorAdapterOverrides;
 }) {
 	const driver = options.target.driver;
@@ -147,6 +148,7 @@ export async function createPrivateVendorExternalAgentConnector(options: {
 			supervision,
 			companion,
 			cwd: options.target.cwd,
+			...(options.credential === undefined ? {} : { credential: options.credential }),
 			...(productionProcessBridge === undefined ? {} : { processBridge: productionProcessBridge }),
 			...(options.adapters?.artifactStore === undefined ? {} : { artifactStore: options.adapters.artifactStore }),
 		});
@@ -160,6 +162,7 @@ export async function createPrivateVendorExternalAgentConnector(options: {
 				createPrivateCodexProcessTransportFactory(supervision.processController),
 			cwd: options.target.cwd,
 			roots: { workspace: options.target.cwd },
+			...(options.credential === undefined ? {} : { credential: options.credential }),
 		});
 	} else {
 		connector = createPrivateAcpExternalAgentConnector({
@@ -171,6 +174,7 @@ export async function createPrivateVendorExternalAgentConnector(options: {
 				createPrivateAcpProcessTransportFactory(supervision.processController),
 			cwd: options.target.cwd,
 			roots: { workspace: options.target.cwd },
+			...(options.credential === undefined ? {} : { credential: options.credential }),
 			...(options.adapters?.artifactStore === undefined ? {} : { artifactStore: options.adapters.artifactStore }),
 		});
 	}

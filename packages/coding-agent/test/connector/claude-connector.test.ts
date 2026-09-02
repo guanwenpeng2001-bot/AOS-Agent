@@ -476,9 +476,17 @@ describe("private Claude Agent SDK connector driver", () => {
 			expiresAt: "2026-08-28T01:00:00.000Z",
 			clientRequestId: "request-claude-model-1",
 		};
+		const modelGateway = {
+			schemaVersion: 1 as const,
+			endpoint: "http://127.0.0.1:43123/v1",
+			authorization: "Bearer aos_gateway_0123456789abcdef0123456789abcdef",
+			leaseId: credential.leaseId,
+			modelBindingDigest: projection.bindingDigest.value,
+			expiresAt: credential.expiresAt,
+		};
 		const companion = new FakeCompanion(async function* () {
 			yield { ...init(), model: projection.model, effort: projection.effort };
-			yield result();
+			yield result("success", { modelUsage: { fixture: { ...usage, canonicalModel: projection.model, provider: projection.provider } } });
 		});
 		const connector = driver(companion);
 		const handle = await connector.spawn(spawnRequest({
@@ -486,6 +494,7 @@ describe("private Claude Agent SDK connector driver", () => {
 			modelProjection: projection,
 			modelTranslation: translated.translation,
 			credential,
+			modelGateway,
 		}));
 		await expect(connector.read(handle)).resolves.toMatchObject({ status: "succeeded" });
 		expect(companion.requests[0]).toMatchObject({
@@ -498,6 +507,7 @@ describe("private Claude Agent SDK connector driver", () => {
 				bindingDigest: JSON.stringify(projection.bindingDigest),
 			},
 			credential,
+			modelGateway,
 		});
 
 		const drifted = {
@@ -512,6 +522,7 @@ describe("private Claude Agent SDK connector driver", () => {
 			modelProjection: projection,
 			modelTranslation: drifted,
 			credential,
+			modelGateway,
 		}))).rejects.toMatchObject({ code: "external_protocol_unsupported" });
 		expect(companion.requests).toHaveLength(1);
 		await connector.dispose();

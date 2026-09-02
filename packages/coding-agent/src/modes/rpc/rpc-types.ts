@@ -75,6 +75,7 @@ import type {
 	RunFinalModelReference,
 	RunModelAttemptSummary,
 	RunModelBudgetSummary,
+	RunProjectedModelReference,
 	RunRecoveryState,
 	RunStatus,
 } from "../../core/session/run-lifecycle.ts";
@@ -1221,6 +1222,7 @@ export interface RunAcceptedData {
 	recovery?: RunRecoveryState;
 	modelBindingId?: string;
 	previousModelBindingId?: string;
+	projectedModel?: RunProjectedModelReference;
 	policyBindingId?: string;
 	previousPolicyBindingId?: string;
 	finalModel?: RunFinalModelReference;

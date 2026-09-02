@@ -348,14 +348,30 @@ function parseTargetDefinition(
 			`External Connector ${driver} driver requires version ${PRIVATE_EXTERNAL_CONNECTOR_VENDOR_IDENTITIES[driver].version}.`,
 		);
 	}
-	if (capabilityCeiling.modelAccess.includes("aos_gateway")) {
+	if (
+		capabilityCeiling.modelAccess.includes("aos_gateway") &&
+		(driver === undefined || driver === "acp")
+	) {
 		fail(
 			"capability_widened",
 			`${path}.capabilityCeiling.modelAccess`,
 			driver === undefined
 				? "Generic External Connector targets cannot use aos_gateway model access."
-				: "Settings-selected vendor drivers cannot use aos_gateway model access; support is planned for a later release.",
+				: "The ACP vendor driver cannot use aos_gateway model access.",
 		);
+	}
+	if (capabilityCeiling.modelAccess.includes("aos_gateway") && capabilityCeiling.modelAccess.length !== 1) {
+		fail(
+			"capability_widened",
+			`${path}.capabilityCeiling.modelAccess`,
+			"A vendor aos_gateway target must select that model-access mode exclusively.",
+		);
+	}
+	if (capabilityCeiling.modelAccess[0] === "aos_gateway" && accountReference === undefined) {
+		fail("invalid_shape", `${path}.accountReference`, "A vendor aos_gateway target requires an opaque AOS account reference.");
+	}
+	if (capabilityCeiling.modelAccess[0] === "aos_gateway" && endpoint !== undefined) {
+		fail("capability_widened", `${path}.endpoint`, "A vendor aos_gateway target uses only the Host-owned loopback endpoint.");
 	}
 	const requiredResume = driver !== "claude";
 	if (

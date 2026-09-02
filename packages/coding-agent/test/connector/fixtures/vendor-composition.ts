@@ -7,11 +7,13 @@ import type { FoundationJsonValue } from "../../../../agent/src/internal.ts";
 import {
 	PRIVATE_CLAUDE_AGENT_SDK_VERSION,
 	type PrivateClaudeAgentSdkCompanion,
+	type PrivateClaudeCompanionQueryRequest,
 	type PrivateClaudeCompanionQuery,
 } from "../../../src/core/connector/vendor/claude.ts";
 import {
 	PRIVATE_CODEX_APP_SERVER_IDENTITY,
 	type PrivateCodexAppServerTransport,
+	type PrivateCodexAppServerTransportRequest,
 } from "../../../src/core/connector/vendor/codex.ts";
 import type { PrivateExternalConnectorVendorAdapterOverrides } from "../../../src/core/connector/vendor/composition.ts";
 import type { PrivateExternalConnectorVendorDriver } from "../../../src/core/connector/vendor/identity.ts";
@@ -20,17 +22,25 @@ import { createExternalConnectorTestSupervision } from "../external-connector-te
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-function claudeCompanion(): PrivateClaudeAgentSdkCompanion {
+export interface VendorAdapterFixtureCaptures {
+	claudeQuery?: PrivateClaudeCompanionQueryRequest;
+	codexTransport?: PrivateCodexAppServerTransportRequest;
+	credentialEvents?: string[];
+}
+
+function claudeCompanion(captures?: VendorAdapterFixtureCaptures): PrivateClaudeAgentSdkCompanion {
 	return {
 		sdkVersion: PRIVATE_CLAUDE_AGENT_SDK_VERSION,
 		query: (request): PrivateClaudeCompanionQuery => ({
 			async *[Symbol.asyncIterator]() {
+				if (captures !== undefined) captures.claudeQuery = request;
 				yield {
 					type: "system",
 					subtype: "init",
 					session_id: "claude-product-session",
 					tools: request.tools.map((tool) => tool.exposedToolName),
 					mcp_servers: request.tools.map((tool) => ({ name: tool.serverName, status: "connected" })),
+					...(request.model === undefined ? {} : { model: request.model.model, effort: request.model.effort }),
 				};
 				yield {
 					type: "result",
@@ -49,6 +59,9 @@ function claudeCompanion(): PrivateClaudeAgentSdkCompanion {
 							costUSD: 0,
 							contextWindow: 1,
 							maxOutputTokens: 1,
+							...(request.model === undefined
+								? {}
+								: { canonicalModel: request.model.model, provider: request.model.provider }),
 						},
 					},
 				};
@@ -129,11 +142,12 @@ function codexTransport(cwd: string): PrivateCodexAppServerTransport {
 							platformOs: "fixture",
 						} })}\n`));
 					} else if (message.method === "thread/start") {
+						const params = message.params as Record<string, unknown>;
 						await writer.write(encoder.encode(`${JSON.stringify({ id, result: {
 							thread: codexThread(cwd),
-							model: "gpt-fixture",
-							modelProvider: "openai",
-							serviceTier: null,
+							model: params.model ?? "gpt-fixture",
+							modelProvider: params.modelProvider ?? "openai",
+							serviceTier: params.serviceTier ?? null,
 							cwd,
 							runtimeWorkspaceRoots: [cwd],
 							instructionSources: [],
@@ -195,9 +209,16 @@ function acpTransport() {
 export function vendorAdapterFixture(
 	driver: PrivateExternalConnectorVendorDriver,
 	cwd: string,
+	captures?: VendorAdapterFixtureCaptures,
 ): PrivateExternalConnectorVendorAdapterOverrides {
 	const supervision = createExternalConnectorTestSupervision().options;
-	if (driver === "claude") return { supervision, claudeCompanion: claudeCompanion() };
-	if (driver === "codex") return { supervision, codexTransportFactory: async () => codexTransport(cwd) };
+	if (driver === "claude") return { supervision, claudeCompanion: claudeCompanion(captures) };
+	if (driver === "codex") return {
+		supervision,
+		codexTransportFactory: async (request) => {
+			if (captures !== undefined) captures.codexTransport = request;
+			return codexTransport(cwd);
+		},
+	};
 	return { supervision, acpTransportFactory: acpTransport() };
 }

@@ -115,6 +115,15 @@ const safeLeaseProjection: SafeLeaseProjection = {
 	clientRequestId: "credential-codex-1",
 };
 
+const modelGateway = {
+	schemaVersion: 1 as const,
+	endpoint: "http://127.0.0.1:43124/v1",
+	authorization: "Bearer aos_gateway_0123456789abcdef0123456789abcdef",
+	leaseId: safeLeaseProjection.leaseId,
+	modelBindingDigest: modelProjection.bindingDigest.value,
+	expiresAt: safeLeaseProjection.expiresAt,
+};
+
 function digest(id: string): ArtifactDigest {
 	return `sha256:${id}`;
 }
@@ -169,6 +178,7 @@ function gatewaySpawnRequest(
 		modelProjection,
 		modelTranslation: translated.translation,
 		credential: safeLeaseProjection,
+		modelGateway,
 		...overrides,
 	});
 }

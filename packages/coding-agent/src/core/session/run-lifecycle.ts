@@ -23,6 +23,7 @@ import {
 	EXTERNAL_ERROR_CODES,
 	EXTERNAL_ERROR_MESSAGES,
 	type FoundationFactRecord,
+	type Fingerprint,
 	FoundationLedgerState,
 	type FoundationRecord,
 	invalidDurableRecord,
@@ -323,6 +324,12 @@ export interface RunModelReference {
 	thinkingLevel: ThinkingLevel;
 }
 
+export interface RunProjectedModelReference {
+	readonly provider: string;
+	readonly model: string;
+	readonly modelBindingDigest: Fingerprint;
+}
+
 /** Safe model identity used for the final selected candidate in a Run receipt. */
 export interface RunFinalModelReference {
 	provider: string;
@@ -411,6 +418,8 @@ export interface RunRecord {
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
+	/** Pre-spawn model intent. This is never effective-model evidence. */
+	projectedModel?: RunProjectedModelReference;
 	/** Final candidate and safe attempt/budget summaries are additive metadata. */
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
@@ -1019,6 +1028,7 @@ export interface AcceptOptions {
 	previousPolicyBindingId?: string;
 	attempt: number;
 	model: RunModelReference;
+	projectedModel?: RunProjectedModelReference;
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
@@ -1709,6 +1719,17 @@ function isRunRecord(value: unknown): value is RunRecord {
 	if (typeof obj.attempt !== "number") return false;
 	if (!isRunStatus(obj.status)) return false;
 	if (!isRunModelReference(obj.model)) return false;
+	if (
+		obj.projectedModel !== undefined &&
+		(typeof obj.projectedModel !== "object" || obj.projectedModel === null ||
+			typeof (obj.projectedModel as Record<string, unknown>).provider !== "string" ||
+			typeof (obj.projectedModel as Record<string, unknown>).model !== "string" ||
+			typeof (obj.projectedModel as Record<string, unknown>).modelBindingDigest !== "object" ||
+			(obj.projectedModel as Record<string, unknown>).modelBindingDigest === null ||
+			((obj.projectedModel as Record<string, unknown>).modelBindingDigest as Record<string, unknown>).algorithm !== "sha256" ||
+			typeof ((obj.projectedModel as Record<string, unknown>).modelBindingDigest as Record<string, unknown>).value !== "string" ||
+			!/^[a-f0-9]{64}$/.test(((obj.projectedModel as Record<string, unknown>).modelBindingDigest as Record<string, unknown>).value as string))
+	) return false;
 	if (obj.sourceRunId !== undefined && typeof obj.sourceRunId !== "string") return false;
 	if (obj.previousBindingId !== undefined && typeof obj.previousBindingId !== "string") return false;
 	if (obj.capabilityBindingId !== undefined && typeof obj.capabilityBindingId !== "string") return false;
@@ -1999,6 +2020,7 @@ export interface PublicRunRecord {
 	attempt: number;
 	status: RunStatus;
 	model: RunModelReference;
+	projectedModel?: RunProjectedModelReference;
 	finalModel?: RunFinalModelReference;
 	modelAttempts?: ReadonlyArray<RunModelAttemptSummary>;
 	modelBudget?: RunModelBudgetSummary;
@@ -2198,6 +2220,12 @@ export function serializePublicRunRecord(record: RunRecord): PublicRunRecord {
 		status: record.status,
 		model: { ...record.model },
 	};
+	if (record.projectedModel !== undefined) {
+		copy.projectedModel = {
+			...record.projectedModel,
+			modelBindingDigest: { ...record.projectedModel.modelBindingDigest },
+		};
+	}
 	const requestRelation = requestRelationFromRecord(record);
 	if (requestRelation !== undefined) {
 		copy.requestScope = requestRelation.scope;
@@ -2732,6 +2760,12 @@ function cloneRunRecord(record: RunRecord): RunRecord {
 		status: record.status,
 		model: { ...record.model },
 	};
+	if (record.projectedModel !== undefined) {
+		copy.projectedModel = {
+			...record.projectedModel,
+			modelBindingDigest: { ...record.projectedModel.modelBindingDigest },
+		};
+	}
 	const requestRelation = requestRelationFromRecord(record);
 	if (requestRelation !== undefined) {
 		copy.requestScope = requestRelation.scope;
@@ -3155,6 +3189,12 @@ class RunHandleImpl implements RunHandle {
 			status: "accepted",
 			model: options.model,
 		};
+		if (options.projectedModel !== undefined) {
+			this._record.projectedModel = {
+				...options.projectedModel,
+				modelBindingDigest: { ...options.projectedModel.modelBindingDigest },
+			};
+		}
 		if (requestIdentity !== undefined) {
 			this._record.requestScope = requestIdentity.scope;
 			this._record.clientRequestId = requestIdentity.clientRequestId;

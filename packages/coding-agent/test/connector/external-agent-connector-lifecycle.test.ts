@@ -1020,14 +1020,18 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 
 		const completed = await value.connector.runAttempt(value.attempt, { correlation });
 
-		expect(completed).toMatchObject({ ok: true, value: { status: "succeeded" } });
+		expect(completed).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
 		const lease = value.store.operations.get(value.attempt.attemptId)?.credential;
 		if (lease === undefined) throw new Error("missing durable credential lease");
 		expect(credentials.target.revocations).toHaveLength(1);
 		expect(credentials.service.get(lease.projection.leaseId)?.status).toBe("revocation_unknown");
 		expect(credentials.service.isTargetQuarantined(lease.targetId)).toBe(true);
 
-		expect(await value.connector.runAttempt(value.attempt, { correlation })).toEqual(completed);
+		expect(await value.connector.runAttempt(value.attempt, { correlation })).toMatchObject({ ok: false });
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
 		expect(credentials.target.revocations).toHaveLength(1);
 	});
 
