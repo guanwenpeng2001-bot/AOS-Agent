@@ -2,6 +2,7 @@
 import { APP_NAME } from "./config.ts";
 import { configureHttpDispatcher } from "./core/runtime/http-dispatcher.ts";
 import { main } from "./main.ts";
+import { createPrivateClaudeAgentSdkCompanion } from "./vendor-driver-companions/claude-entry.ts";
 
 process.title = `${APP_NAME}-rpc`;
 process.env.AOS_AGENT = "true";
@@ -10,4 +11,6 @@ process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 configureHttpDispatcher();
 
-main(["--mode", "rpc", ...process.argv.slice(2)]);
+main(["--mode", "rpc", ...process.argv.slice(2)], {
+	externalConnectorVendorCompanions: { claude: createPrivateClaudeAgentSdkCompanion },
+});

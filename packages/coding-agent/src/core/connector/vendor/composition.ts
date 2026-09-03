@@ -22,7 +22,6 @@ import {
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_REQUEST_EVENT,
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_RESULT_WRITE,
 } from "../tool-gateway-binding.ts";
-import { createPrivateClaudeAgentSdkCompanion } from "../../../vendor-driver-companions/claude-entry.ts";
 import {
 	createPrivateClaudeExternalAgentConnector,
 	type PrivateClaudeAgentSdkCompanion,
@@ -43,6 +42,15 @@ import {
 import { ProductionClaudeProcessBridge } from "./claude-process-bridge.ts";
 
 type Supervision = ExternalAgentConnectorRuntimeOptions["supervision"];
+
+export type PrivateClaudeAgentSdkCompanionFactory = (
+	options: { readonly executablePath?: string },
+) => Promise<PrivateClaudeAgentSdkCompanion>;
+
+/** Static vendor companions supplied only by a product entry that imports them. */
+export interface PrivateExternalConnectorVendorCompanions {
+	readonly claude?: PrivateClaudeAgentSdkCompanionFactory;
+}
 
 /** Host-private seam for deterministic product tests; stock composition omits it. */
 export interface PrivateExternalConnectorVendorAdapterOverrides {
@@ -129,6 +137,7 @@ export async function createPrivateVendorExternalAgentConnector(options: {
 	readonly privateStatePath: string;
 	readonly credential?: ExternalAgentConnectorRuntimeOptions["credential"];
 	readonly adapters?: PrivateExternalConnectorVendorAdapterOverrides;
+	readonly companions?: PrivateExternalConnectorVendorCompanions;
 }) {
 	const driver = options.target.driver;
 	if (driver === undefined) throw new TypeError("External Connector vendor driver is not declared");
@@ -140,9 +149,16 @@ export async function createPrivateVendorExternalAgentConnector(options: {
 		const productionProcessBridge = options.adapters?.supervision === undefined
 			? new ProductionClaudeProcessBridge(supervision.processController, options.target)
 			: undefined;
-		const companion = options.adapters?.claudeCompanion ?? await createPrivateClaudeAgentSdkCompanion({
-			executablePath: options.target.modulePath,
-		});
+		let companion = options.adapters?.claudeCompanion;
+		if (companion === undefined) {
+			const companionFactory = options.companions?.claude;
+			if (companionFactory === undefined) {
+				throw new TypeError(
+					"The Claude Agent SDK companion is unavailable. Install @anthropic-ai/claude-agent-sdk@0.3.246 and use the packaged aos entry, or provide an explicit runtime composition; see https://platform.claude.com/docs/en/agent-sdk/typescript.",
+				);
+			}
+			companion = await companionFactory({ executablePath: options.target.modulePath });
+		}
 		connector = createPrivateClaudeExternalAgentConnector({
 			providerId: options.target.providerId,
 			capability,

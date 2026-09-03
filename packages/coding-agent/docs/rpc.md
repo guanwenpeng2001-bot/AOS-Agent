@@ -2766,18 +2766,20 @@ There is no legacy product fallback. Connector evidence settles the canonical
 `AttemptReceipt`; it does not create a peer receipt or Run terminal writer.
 Current external traces never contain an `AgentInstance`.
 
-The local connector closure regression exercises this RPC selection through the
-standard product composition using the packaged fake target and separately
-verifies RuntimeLimits, passive runtime-status projection, and terminal
-`side_effect_unknown` retry handling.
-Runtime status is projected in `initialize`; it adds no writable RPC command.
-Settings-based product entry composition supports generic JSONL targets and
-explicit pinned `claude`, `codex`, and `acp` drivers. All use `none` or
-`agent_owned`; pinned Claude/Codex also use exclusive `aos_gateway` through the
-canonical registration -> run -> receipt path. Vendor selection is declared by `driver`, never inferred from
-`providerId`; identity, version, and capability drift fail closed before
-launch. Real vendor authentication remains separate certification evidence.
-`aos_gateway` is accepted only for pinned Claude/Codex settings targets; ACP and generic JSONL targets reject it.
+This RPC selection uses the standard product composition and preserves immutable
+RuntimeLimits, passive runtime-status projection, and terminal
+`side_effect_unknown` retry handling. Runtime status is projected in
+`initialize`; it adds no writable RPC command. Settings-based product entry
+composition supports generic JSONL targets and explicit pinned `claude`,
+`codex`, and `acp` drivers. All use `none` or `agent_owned`; pinned Claude/Codex
+also use exclusive `aos_gateway` through the canonical registration -> run ->
+receipt path. Vendor selection is declared by `driver`, never inferred from
+`providerId`; identity, version, capability, model projection/translation,
+credential gateway or lease, effective-model observation, and terminal evidence
+fail closed when required. `aos_gateway` is accepted only for pinned
+Claude/Codex settings targets; ACP and generic JSONL targets reject it. Protocol
+handshake and product-reachability evidence do not establish real-vendor task
+certification, and no external connector mode is currently task-certified.
 
 ### Structured errors
 

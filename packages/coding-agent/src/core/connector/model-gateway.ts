@@ -18,6 +18,7 @@ import type {
 } from "@aos-agent/ai";
 import type { LocalCredentialVault } from "../policy/credential-vault.ts";
 import {
+	isTaskCredentialTargetRenewRequest,
 	serializeTaskCredentialProviderReceipt,
 	serializeTaskCredentialTargetCapabilities,
 	type TaskCredentialProviderReceipt,
@@ -44,6 +45,7 @@ const MAX_GATEWAY_ACTIVE_REQUESTS = 64;
 const MAX_GATEWAY_FIELD_BYTES = 256 * 1024;
 const MAX_GATEWAY_IDENTITY_BYTES = 512;
 const MAX_GATEWAY_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_GATEWAY_BODY_READ_MS = 30_000;
 
 export interface ExternalModelGatewayCapability {
 	readonly schemaVersion: 1;
@@ -59,6 +61,7 @@ interface ActiveGatewayCapability {
 	readonly projection: ExternalResolvedModelProjection;
 	readonly references: Readonly<Record<string, string>>;
 	readonly serviceTier?: GatewayServiceTier;
+	expiresAtMs: number;
 }
 
 interface ActiveGatewayReference {
@@ -287,10 +290,20 @@ function parseAnthropicRequest(
 				if (block.type === "text") {
 					assistantContent.push({ type: "text", text: textValue(block.text, "assistant text") });
 				} else if (block.type === "thinking") {
+					if (!boundedString(block.signature) || block.signature.length === 0) {
+						throw new GatewayRequestError(400, "assistant thinking signature is required");
+					}
 					assistantContent.push({
 						type: "thinking",
 						thinking: requiredString(block.thinking, "assistant thinking"),
-						...(boundedString(block.signature) ? { thinkingSignature: block.signature } : {}),
+						thinkingSignature: block.signature,
+					});
+				} else if (block.type === "redacted_thinking") {
+					assistantContent.push({
+						type: "thinking",
+						thinking: "",
+						thinkingSignature: requiredString(block.data, "assistant redacted thinking"),
+						redacted: true,
 					});
 				} else if (block.type === "tool_use") {
 					const id = requiredIdentity(block.id, "tool use id");
@@ -379,6 +392,47 @@ function parseOpenAITools(value: unknown): Tool[] | undefined {
 	});
 }
 
+function parseOpenAIReasoningItem(value: unknown): {
+	readonly item: Record<string, unknown>;
+	readonly thinking: string;
+} {
+	const item = jsonObject(value, "reasoning item");
+	if (item.type !== "reasoning") throw new GatewayRequestError(400, "reasoning item is invalid");
+	requiredIdentity(item.id, "reasoning item id");
+	const summary = requestArray(item.summary ?? [], "reasoning summary", MAX_GATEWAY_CONTENT_BLOCKS)
+		.map((part) => jsonObject(part, "reasoning summary part"));
+	const summaryText = summary.map((part) => textValue(part.text, "reasoning summary text")).join("\n");
+	let contentText = "";
+	if (item.content !== undefined && item.content !== null) {
+		contentText = requestArray(item.content, "reasoning content", MAX_GATEWAY_CONTENT_BLOCKS)
+			.map((part) => jsonObject(part, "reasoning content part"))
+			.map((part) => textValue(part.text, "reasoning content text"))
+			.join("\n");
+	}
+	if (item.encrypted_content !== undefined && item.encrypted_content !== null && !boundedString(item.encrypted_content)) {
+		throw new GatewayRequestError(400, "reasoning encrypted content is invalid");
+	}
+	const serialized = JSON.stringify(item);
+	if (Buffer.byteLength(serialized, "utf8") > MAX_GATEWAY_FIELD_BYTES) {
+		throw new GatewayRequestError(400, "reasoning item is too large");
+	}
+	return { item, thinking: summaryText || contentText };
+}
+
+function replayOpenAIReasoningItem(signature: string): Record<string, unknown> {
+	let value: unknown;
+	try {
+		value = JSON.parse(signature);
+	} catch {
+		throw new Error("Model runtime reasoning signature is invalid");
+	}
+	try {
+		return parseOpenAIReasoningItem(value).item;
+	} catch {
+		throw new Error("Model runtime reasoning signature is invalid");
+	}
+}
+
 function parseOpenAIRequest(
 	value: unknown,
 	model: Model<Api>,
@@ -462,17 +516,12 @@ function parseOpenAIRequest(
 				timestamp,
 			});
 		} else if (type === "reasoning") {
-			const summary = requestArray(item.summary ?? [], "reasoning summary", MAX_GATEWAY_CONTENT_BLOCKS)
-				.map((part) => jsonObject(part, "reasoning summary part"))
-				.map((part) => textValue(part.text, "reasoning summary text"))
-				.join("\n");
-			if (summary.length > 0) {
-				messages.push(assistantHistory([{
-					type: "thinking",
-					thinking: summary,
-					...(boundedString(item.encrypted_content) ? { thinkingSignature: item.encrypted_content } : {}),
-				}], model, projection, timestamp));
-			}
+			const reasoningItem = parseOpenAIReasoningItem(item);
+			messages.push(assistantHistory([{
+				type: "thinking",
+				thinking: reasoningItem.thinking,
+				thinkingSignature: JSON.stringify(reasoningItem.item),
+			}], model, projection, timestamp));
 		} else {
 			throw new GatewayRequestError(400, "input item is unsupported");
 		}
@@ -513,6 +562,12 @@ function validateAssistantResult(
 	for (const block of result.content) {
 		if (block.type === "text" && !boundedString(block.text)) throw new Error("Model runtime text is invalid");
 		if (
+			block.type === "thinking" &&
+			(!boundedString(block.thinking) ||
+				(block.thinkingSignature !== undefined && !boundedString(block.thinkingSignature)) ||
+				(block.redacted === true && (block.thinkingSignature === undefined || block.thinkingSignature.length === 0)))
+		) throw new Error("Model runtime thinking is invalid");
+		if (
 			block.type === "toolCall" &&
 			(!boundedString(block.id) || block.id.length === 0 ||
 				!boundedString(block.name) || block.name.length === 0 || !isRecord(block.arguments))
@@ -530,6 +585,12 @@ function anthropicContent(result: AssistantMessage): ReadonlyArray<Record<string
 	const content: Record<string, unknown>[] = [];
 	for (const block of result.content) {
 		if (block.type === "text") content.push({ type: "text", text: block.text });
+		else if (block.type === "thinking") {
+			if (block.thinkingSignature === undefined) throw new Error("Anthropic thinking signature is required");
+			content.push(block.redacted === true
+				? { type: "redacted_thinking", data: block.thinkingSignature }
+				: { type: "thinking", thinking: block.thinking, signature: block.thinkingSignature });
+		}
 		else if (block.type === "toolCall") {
 			content.push({ type: "tool_use", id: block.id, name: block.name, input: block.arguments });
 		}
@@ -568,6 +629,11 @@ function openAIOutput(result: AssistantMessage): ReadonlyArray<Record<string, un
 				role: "assistant",
 				content: [{ type: "output_text", text: block.text, annotations: [], logprobs: [] }],
 			});
+		} else if (block.type === "thinking") {
+			if (block.redacted === true || block.thinkingSignature === undefined) {
+				throw new Error("OpenAI reasoning replay signature is invalid");
+			}
+			output.push(replayOpenAIReasoningItem(block.thinkingSignature));
 		} else if (block.type === "toolCall") {
 			output.push({
 				id: `fc_aos_${randomUUID().replaceAll("-", "")}`,
@@ -634,7 +700,13 @@ function writeAnthropicStream(
 		message: { ...message, content: [], stop_reason: null, usage: { ...message.usage, output_tokens: 0 } },
 	});
 	for (const [index, block] of message.content.entries()) {
-		const start = block.type === "text" ? { type: "text", text: "" } : { ...block, input: {} };
+		const start = block.type === "text"
+			? { type: "text", text: "" }
+			: block.type === "tool_use"
+				? { ...block, input: {} }
+				: block.type === "thinking"
+					? { type: "thinking", thinking: "", signature: "" }
+					: block;
 		writeSse(response, "content_block_start", { type: "content_block_start", index, content_block: start });
 		if (block.type === "text") {
 			writeSse(response, "content_block_delta", {
@@ -642,11 +714,22 @@ function writeAnthropicStream(
 				index,
 				delta: { type: "text_delta", text: block.text },
 			});
-		} else {
+		} else if (block.type === "tool_use") {
 			writeSse(response, "content_block_delta", {
 				type: "content_block_delta",
 				index,
 				delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) },
+			});
+		} else if (block.type === "thinking") {
+			writeSse(response, "content_block_delta", {
+				type: "content_block_delta",
+				index,
+				delta: { type: "thinking_delta", thinking: block.thinking },
+			});
+			writeSse(response, "content_block_delta", {
+				type: "content_block_delta",
+				index,
+				delta: { type: "signature_delta", signature: block.signature },
 			});
 		}
 		writeSse(response, "content_block_stop", { type: "content_block_stop", index });
@@ -675,16 +758,19 @@ function writeOpenAIStream(
 	emit("response.created", { response: inProgress });
 	emit("response.in_progress", { response: inProgress });
 	for (const [outputIndex, item] of completed.output.entries()) {
-		emit("response.output_item.added", { output_index: outputIndex, item: item.type === "message"
+		const addedItem = item.type === "message"
 			? { ...item, status: "in_progress", content: [] }
-			: { ...item, status: "in_progress", arguments: "" } });
+			: item.type === "function_call"
+				? { ...item, status: "in_progress", arguments: "" }
+				: { ...item, status: "in_progress" };
+		emit("response.output_item.added", { output_index: outputIndex, item: addedItem });
 		if (item.type === "message") {
 			const part = (item.content as ReadonlyArray<Record<string, unknown>>)[0]!;
 			emit("response.content_part.added", { item_id: item.id, output_index: outputIndex, content_index: 0, part: { ...part, text: "" } });
 			emit("response.output_text.delta", { item_id: item.id, output_index: outputIndex, content_index: 0, delta: part.text, logprobs: [] });
 			emit("response.output_text.done", { item_id: item.id, output_index: outputIndex, content_index: 0, text: part.text, logprobs: [] });
 			emit("response.content_part.done", { item_id: item.id, output_index: outputIndex, content_index: 0, part });
-		} else {
+		} else if (item.type === "function_call") {
 			emit("response.function_call_arguments.delta", { item_id: item.id, output_index: outputIndex, delta: item.arguments });
 			emit("response.function_call_arguments.done", { item_id: item.id, output_index: outputIndex, arguments: item.arguments });
 		}
@@ -782,12 +868,24 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 	renew(request: TaskCredentialTargetRenewRequest): TaskCredentialProviderReceipt {
 		const reference = this.#references.get(request.leaseId);
 		if (
+			!isTaskCredentialTargetRenewRequest(request) ||
 			request.targetId !== this.#targetId ||
 			reference === undefined ||
 			this.#revocations.has(request.leaseId) ||
 			reference.grantId !== request.grantId ||
 			reference.bindingId !== request.bindingId
 		) throw new TypeError("External model gateway lease renewal is unknown");
+		const requestedAtMs = Date.parse(request.requestedAt);
+		const expiresAtMs = requestedAtMs + request.requestedTtlMs;
+		const activeCapabilities = [...this.#capabilities.values()]
+			.filter((active) => active.capability.leaseId === request.leaseId);
+		if (
+			!Number.isSafeInteger(expiresAtMs) ||
+			activeCapabilities.length === 0 ||
+			activeCapabilities.some((active) =>
+				active.expiresAtMs <= requestedAtMs || active.expiresAtMs <= this.#now())
+		) throw new TypeError("External model gateway lease renewal is expired");
+		for (const active of activeCapabilities) active.expiresAtMs = expiresAtMs;
 		return providerReceipt(request, "renewed");
 	}
 
@@ -856,6 +954,7 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 			projection,
 			references: reference.references,
 			...(serviceTier === undefined ? {} : { serviceTier }),
+			expiresAtMs: Date.parse(lease.expiresAt),
 		});
 		return capability;
 	}
@@ -920,7 +1019,7 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 			response.writeHead(401).end();
 			return;
 		}
-		if (Date.parse(active.capability.expiresAt) <= this.#now()) {
+		if (active.expiresAtMs <= this.#now()) {
 			this.#expireCapability(authorization, active);
 			response.writeHead(401).end();
 			return;
@@ -960,7 +1059,7 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 		request.once("aborted", abort);
 		response.once("close", close);
 		try {
-			const body = await this.#readBody(request);
+			const body = await this.#readBody(request, response, cancellation.signal);
 			let value: unknown;
 			try {
 				value = JSON.parse(body);
@@ -1025,8 +1124,10 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 					: openAIResponse(result, active.projection)));
 			}
 		} catch (error) {
-			if (!response.headersSent) response.writeHead(error instanceof GatewayRequestError ? error.status : 502);
-			response.end();
+			if (!response.destroyed) {
+				if (!response.headersSent) response.writeHead(error instanceof GatewayRequestError ? error.status : 502);
+				response.end();
+			}
 		} finally {
 			request.off("aborted", abort);
 			response.off("close", close);
@@ -1052,7 +1153,7 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 
 	#scheduleRequestExpiry(request: ActiveGatewayRequest, active: ActiveGatewayCapability): void {
 		const schedule = (): void => {
-			const remaining = Date.parse(active.capability.expiresAt) - this.#now();
+			const remaining = active.expiresAtMs - this.#now();
 			if (remaining <= 0) {
 				this.#expireCapability(request.authorization, active);
 				return;
@@ -1072,17 +1173,64 @@ export class ExternalConnectorModelGateway implements TaskCredentialReferenceTar
 		};
 	}
 
-	async #readBody(request: IncomingMessage): Promise<string> {
+	async #readBody(request: IncomingMessage, response: ServerResponse, signal: AbortSignal): Promise<string> {
 		const chunks: Buffer[] = [];
 		let bytes = 0;
-		for await (const chunk of request) {
-			const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
-			bytes += value.byteLength;
-			if (bytes > MAX_GATEWAY_REQUEST_BYTES) {
-				throw new GatewayRequestError(413, "request is too large");
-			}
-			chunks.push(value);
-		}
-		return Buffer.concat(chunks, bytes).toString("utf8");
+		return await new Promise<string>((resolve, reject) => {
+			let settled = false;
+			const cleanup = (): void => {
+				clearTimeout(deadline);
+				signal.removeEventListener("abort", onSignalAbort);
+				request.off("data", onData);
+				request.off("end", onEnd);
+				request.off("error", onError);
+			};
+			const rejectBody = (error: Error, destroyRequest = false): void => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				if (!request.destroyed) {
+					if (destroyRequest) request.destroy();
+					else {
+						if (!response.destroyed && !response.headersSent) response.setHeader("connection", "close");
+						request.once("error", () => undefined);
+						request.resume();
+					}
+				}
+				reject(error);
+			};
+			const onData = (chunk: unknown): void => {
+				const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
+				bytes += value.byteLength;
+				if (bytes > MAX_GATEWAY_REQUEST_BYTES) {
+					rejectBody(new GatewayRequestError(413, "request is too large"));
+					return;
+				}
+				chunks.push(value);
+			};
+			const onEnd = (): void => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(Buffer.concat(chunks, bytes).toString("utf8"));
+			};
+			const onError = (error: Error): void => rejectBody(error);
+			const onSignalAbort = (): void => rejectBody(
+				signal.reason instanceof Error
+					? signal.reason
+					: new DOMException("Gateway request was cancelled", "AbortError"),
+				true,
+			);
+			const deadline = setTimeout(
+				() => rejectBody(new GatewayRequestError(408, "request body timed out")),
+				MAX_GATEWAY_BODY_READ_MS,
+			);
+			deadline.unref?.();
+			request.on("data", onData);
+			request.once("end", onEnd);
+			request.once("error", onError);
+			signal.addEventListener("abort", onSignalAbort, { once: true });
+			if (signal.aborted) onSignalAbort();
+		});
 	}
 }

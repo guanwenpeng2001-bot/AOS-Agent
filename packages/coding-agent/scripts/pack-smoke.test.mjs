@@ -50,6 +50,55 @@ const claudeProcessBridgePath = join(
 const loaderPath = join(packageDirectory, "src", "core", "connector", "packaged-driver.ts");
 const headSha = "0123456789abcdef0123456789abcdef01234567";
 
+function hasRuntimeImportClause(clause) {
+	if (clause === undefined || clause.isTypeOnly || clause.name !== undefined) return clause?.isTypeOnly !== true;
+	if (clause.namedBindings === undefined || ts.isNamespaceImport(clause.namedBindings)) return true;
+	return clause.namedBindings.elements.some((element) => !element.isTypeOnly);
+}
+
+function runtimeRelativeImports(path) {
+	const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+	const specifiers = [];
+	for (const statement of source.statements) {
+		if (
+			ts.isImportDeclaration(statement) &&
+			ts.isStringLiteral(statement.moduleSpecifier) &&
+			statement.moduleSpecifier.text.startsWith(".") &&
+			hasRuntimeImportClause(statement.importClause)
+		) {
+			specifiers.push(statement.moduleSpecifier.text);
+		}
+		if (
+			ts.isExportDeclaration(statement) &&
+			!statement.isTypeOnly &&
+			statement.moduleSpecifier !== undefined &&
+			ts.isStringLiteral(statement.moduleSpecifier) &&
+			statement.moduleSpecifier.text.startsWith(".") &&
+			(statement.exportClause === undefined ||
+				!ts.isNamedExports(statement.exportClause) ||
+				statement.exportClause.elements.some((element) => !element.isTypeOnly))
+		) {
+			specifiers.push(statement.moduleSpecifier.text);
+		}
+	}
+	return specifiers;
+}
+
+function sourceRuntimeGraph(entry) {
+	const pending = [realpathSync(entry)];
+	const visited = new Set();
+	while (pending.length > 0) {
+		const path = pending.pop();
+		if (path === undefined || visited.has(path)) continue;
+		visited.add(path);
+		for (const specifier of runtimeRelativeImports(path)) {
+			const dependency = realpathSync(resolve(dirname(path), specifier));
+			if (!visited.has(dependency)) pending.push(dependency);
+		}
+	}
+	return [...visited];
+}
+
 function npmCommand() {
 	return process.platform === "win32" ? "npm.cmd" : "npm";
 }
@@ -223,6 +272,24 @@ test("package metadata owns the CLI, SDK, External Connector exports, and produc
 	assert.match(packageJson.scripts["copy-binary-assets"], /claude-process-bridge\.mjs/u);
 	assert.ok(existsSync(claudeProcessBridgePath));
 });
+
+test("package-root runtime graph excludes the statically injected Claude SDK companion", () => {
+	const companionPath = realpathSync(join(packageDirectory, "src", "vendor-driver-companions", "claude-entry.ts"));
+	const rootGraph = sourceRuntimeGraph(join(packageDirectory, "src", "index.ts"));
+	const cliGraph = sourceRuntimeGraph(join(packageDirectory, "src", "cli.ts"));
+	expectGraph(rootGraph, companionPath, false);
+	expectGraph(cliGraph, companionPath, true);
+});
+
+function expectGraph(graph, companionPath, expected) {
+	assert.equal(
+		graph.includes(companionPath),
+		expected,
+		expected
+			? "CLI runtime graph must own the static Claude companion"
+			: "package-root runtime graph must not load the optional Claude companion",
+	);
+}
 
 test("package-content validation catches missing public exports and assets", () => {
 	const files = [

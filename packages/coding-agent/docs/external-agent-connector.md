@@ -4,18 +4,15 @@
 
 Settings-based composition supports generic JSONL targets and explicit private vendor drivers. Claude and Codex support `none`, `agent_owned`, and exclusive `aos_gateway`; generic JSONL and ACP continue to reject `aos_gateway`. Registration, capability negotiation, supervised activation, execution, and durable receipt settlement use the same connector path.
 
-The PR-04 authorized real-task attempt did not promote any vendor mode to
-task-certified status. Codex `agent_owned` and `aos_gateway` both timed out
-without a terminal event, Tool Gateway terminal record, or durable
-`AttemptReceipt`; the gateway attempt persisted the requested
-`openai-codex/gpt-5.4-mini` projection and ModelBinding digest, but no
-`effectiveModel` observation. Claude `agent_owned` failed with
-`agent_run_failed` before reply/tool/receipt evidence, while Claude
-`aos_gateway` was not started because the isolated AOS credential set had no
-`amazon-bedrock` credential. ACP remains handshake-only because the reviewed
-real backends fail the exact capability/authentication contract before session
-creation. These results describe certification evidence, not removal of the
-implemented settings capability.
+Protocol pins, handshakes, and product reachability are engineering evidence,
+not task certification. No external connector mode is currently task-certified
+for real vendor authentication and task completion. A task-certification claim
+requires canonical terminal evidence from a real vendor-authenticated task and,
+for `aos_gateway`, verified effective-model observation; requested model
+projection and ModelBinding digests record intent only. Missing or drifted
+identity, version, capability, model translation/projection, credential gateway
+or lease, effective-model observation, or terminal evidence fails closed when
+that evidence is required.
 
 `ExternalAgentConnector` is the only public execution contract for an external
 agent. It implements the shared `TaskExecutorProvider` boundary and therefore
@@ -518,17 +515,17 @@ installed package. The packaged fake driver is deterministic and disabled by
 default; a missing allowlisted asset fails with
 `external_agent_driver_asset_missing`.
 
-## Local closure and promotion boundary
+## Verification and certification boundary
 
-The ordinary local regressions cover the packaged Node owner above, the standard
+Engineering verification covers the packaged Node public subpath, the standard
 product composition across run/switch/fork/import/reload/cancel/restart,
 immutable RuntimeLimits and no-widen validation, passive runtime-status
-projection, and a durable terminal retry decision for `side_effect_unknown`.
-They do not substitute a scheduler-shaped fixture or inspect private Host
-fields.
+projection, and the durable terminal retry boundary for
+`side_effect_unknown`. These checks validate package reachability and connector
+lifecycle invariants; they do not create a second receipt authority or establish
+real-vendor task certification.
 
-The following remain outside this Line 13 closure: Bun compiled artifacts,
-exact-head remote artifacts, and full vendor certification beyond pinned
-handshake. Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release
-upgrade/restart, deterministic soak, and pinned Claude/Codex/ACP handshake are
-recorded. Codex subscription print, SDK, and TUI returned real replies.
+Pinned Claude, Codex, and ACP handshakes establish protocol compatibility at the
+documented versions. Task certification remains a separate evidence boundary:
+no external connector mode is currently task-certified for real vendor
+authentication and task completion.
