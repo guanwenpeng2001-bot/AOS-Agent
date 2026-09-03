@@ -25,6 +25,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
 
 SKIP_INSTALL=false
 SKIP_DEPS=false
@@ -173,9 +174,14 @@ for platform in "${PLATFORMS[@]}"; do
     # standalone binary before aos starts (see #7684).
     if [[ "$platform" == windows-* ]]; then
         bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile "$OUTPUT_DIR/$platform/aos.exe"
+        executable_path="$OUTPUT_DIR/$platform/aos.exe"
     else
         bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile "$OUTPUT_DIR/$platform/aos"
+        executable_path="$OUTPUT_DIR/$platform/aos"
     fi
+    node "$REPO_ROOT/packages/coding-agent/scripts/standalone-archive-assets.mjs" stage \
+        --source "$REPO_ROOT/packages/coding-agent/dist/core/connector/assets" \
+        --executable "$executable_path"
 done
 
 echo "==> Creating release archives..."
@@ -275,6 +281,13 @@ for platform in "${PLATFORMS[@]}"; do
     else
         tar -xzf aos-$platform.tar.gz && mv aos "$platform"
     fi
+    if [[ "$platform" == windows-* ]]; then
+        executable_path="$OUTPUT_DIR/$platform/aos.exe"
+    else
+        executable_path="$OUTPUT_DIR/$platform/aos"
+    fi
+    node "$REPO_ROOT/packages/coding-agent/scripts/standalone-archive-assets.mjs" verify \
+        --executable "$executable_path"
 done
 
 echo ""
