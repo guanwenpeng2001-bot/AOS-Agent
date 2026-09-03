@@ -378,7 +378,8 @@ describe("External Connector product entry composition", () => {
 	it.each(["claude", "codex", "acp"] as const)("constructs the stock %s adapter without launching it", async (driver) => {
 		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-stock-${driver}-`));
 		directories.push(cwd);
-		const runtime = await createRuntime(cwd, vendorSettings(cwd, driver, "agent_owned"));
+		const adapters = driver === "claude" ? vendorAdapterFixture(driver, cwd) : undefined;
+		const runtime = await createRuntime(cwd, vendorSettings(cwd, driver, "agent_owned"), adapters);
 		const controller = createRpcHostController(runtime);
 		await controller.start();
 		try {
@@ -394,6 +395,49 @@ describe("External Connector product entry composition", () => {
 		} finally {
 			await controller.shutdown();
 		}
+	});
+
+	it.each([
+		{ driver: "claude", resume: false, toolGateway: true },
+		{ driver: "codex", resume: true, toolGateway: true },
+		{ driver: "acp", resume: true, toolGateway: true },
+	] as const)("maps $driver settings into the exact registry capability contract", async ({ driver, resume, toolGateway }) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-capability-${driver}-`));
+		directories.push(cwd);
+		const runtime = await createRuntime(
+			cwd,
+			vendorSettings(cwd, driver, "agent_owned"),
+			vendorAdapterFixture(driver, cwd),
+		);
+		try {
+			const registry = runtime.runtimeComposition.externalConnectorRegistry;
+			const descriptor = registry?.list()[0];
+			if (registry === undefined || descriptor === undefined) throw new Error(`${driver} registry is unavailable`);
+			const selected = await registry.select({
+				providerId: descriptor.providerId,
+				revision: descriptor.revision,
+				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+			});
+			if (!selected.ok) throw selected.error;
+			expect(selected.value.capabilitySnapshot).toMatchObject({
+				providerId: `fixture.${driver}.agent_owned`,
+				modelAccess: "agent_owned",
+				resume,
+				toolGateway,
+				artifacts: false,
+				images: false,
+			});
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("reports an actionable missing Claude companion through the package-root service path", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-claude-companion-missing-"));
+		directories.push(cwd);
+		await expect(createServices(cwd, vendorSettings(cwd, "claude", "agent_owned"))).rejects.toThrow(
+			"Install @anthropic-ai/claude-agent-sdk@0.3.246 and use the packaged aos entry",
+		);
 	});
 
 	it.each([

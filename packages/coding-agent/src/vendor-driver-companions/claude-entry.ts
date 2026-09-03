@@ -5,7 +5,7 @@
  * It is intentionally absent from the package export map and default root.
  */
 
-import type * as ClaudeAgentSdk from "@anthropic-ai/claude-agent-sdk";
+import * as ClaudeAgentSdk from "@anthropic-ai/claude-agent-sdk";
 import type {
 	HookCallback,
 	McpServerConfig,
@@ -14,7 +14,6 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { canonicalFoundationJson, type FoundationJsonValue } from "@aos-agent/agent-core";
-import { createJiti } from "jiti";
 import { z } from "zod/v4";
 import {
 	PRIVATE_CLAUDE_AGENT_SDK_VERSION,
@@ -195,19 +194,11 @@ function optionsFor(
 export async function createPrivateClaudeAgentSdkCompanion(
 	options: { readonly executablePath?: string } = {},
 ): Promise<PrivateClaudeAgentSdkCompanion> {
-	let sdk: typeof ClaudeAgentSdk;
-	try {
-		sdk = await createJiti(import.meta.url).import<typeof ClaudeAgentSdk>("@anthropic-ai/claude-agent-sdk");
-	} catch {
-		throw new TypeError(
-			"The pinned Claude Agent SDK is missing. Install @anthropic-ai/claude-agent-sdk@0.3.246; see https://platform.claude.com/docs/en/agent-sdk/typescript.",
-		);
-	}
 	return Object.freeze({
 		sdkVersion: PRIVATE_CLAUDE_AGENT_SDK_VERSION,
-		query: (request: PrivateClaudeCompanionQueryRequest) => sdk.query({
+		query: (request: PrivateClaudeCompanionQueryRequest) => ClaudeAgentSdk.query({
 			prompt: promptFor(request),
-			options: optionsFor(request, options.executablePath, sdk),
+			options: optionsFor(request, options.executablePath, ClaudeAgentSdk),
 		}),
 	});
 }

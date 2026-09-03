@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExternalConnectorTargetDefinition } from "../../src/core/connector/target-config.ts";
+import type { PrivateExternalConnectorVendorDriver } from "../../src/core/connector/vendor/identity.ts";
 import { InMemorySettingsStorage, SettingsManager } from "../../src/core/runtime/settings-manager.ts";
 
 const directories: string[] = [];
@@ -29,6 +30,21 @@ function target(cwd: string, targetId: string, providerId: string): ExternalConn
 			toolGateway: true,
 			artifacts: false,
 			images: false,
+		},
+	};
+}
+
+function vendorTarget(
+	cwd: string,
+	driver: PrivateExternalConnectorVendorDriver,
+): ExternalConnectorTargetDefinition {
+	return {
+		...target(cwd, driver, `external.${driver}`),
+		driver,
+		version: driver === "claude" ? "0.3.246" : driver === "codex" ? "0.149.0" : "1.4.0",
+		capabilityCeiling: {
+			...target(cwd, driver, `external.${driver}`).capabilityCeiling,
+			resume: driver !== "claude",
 		},
 	};
 }
@@ -196,6 +212,52 @@ describe("External Connector settings", () => {
 			capabilityCeiling: { modelAccess: ["none"], toolGateway: false },
 		});
 	});
+
+	it.each([
+		{ driver: "claude", source: "project", capability: "toolGateway" },
+		{ driver: "claude", source: "role", capability: "toolGateway" },
+		{ driver: "codex", source: "project", capability: "resume" },
+		{ driver: "codex", source: "role", capability: "resume" },
+		{ driver: "codex", source: "project", capability: "toolGateway" },
+		{ driver: "codex", source: "role", capability: "toolGateway" },
+		{ driver: "acp", source: "project", capability: "resume" },
+		{ driver: "acp", source: "role", capability: "resume" },
+		{ driver: "acp", source: "project", capability: "toolGateway" },
+		{ driver: "acp", source: "role", capability: "toolGateway" },
+	] as const)(
+		"rejects $source $driver narrowing of protocol-required $capability at its settings path",
+		({ driver, source, capability }) => {
+			const cwd = mkdtempSync(join(tmpdir(), `aos-connector-${driver}-${source}-${capability}-`));
+			directories.push(cwd);
+			const selected = vendorTarget(cwd, driver);
+			const storage = new InMemorySettingsStorage();
+			writeSettings(storage, "global", {
+				externalConnectors: { schemaVersion: 1, targets: [selected], targetId: selected.targetId },
+			});
+			writeSettings(storage, "project", {
+				externalConnectors: {
+					schemaVersion: 1,
+					targetId: selected.targetId,
+					...(source === "project"
+						? { capabilityCeiling: { [capability]: false } }
+						: {
+							role: {
+								schemaVersion: 1,
+								targetId: selected.targetId,
+								capabilityCeiling: { [capability]: false },
+							},
+						}),
+				},
+			});
+
+			expect(() =>
+				SettingsManager.fromStorage(storage, { projectTrusted: true }).getExternalConnectorTargetSettings(),
+			).toThrow(expect.objectContaining({
+				reason: "capability_widened",
+				path: `$.${source}.capabilityCeiling.${capability}`,
+			}));
+		},
+	);
 
 	it("rejects aos_gateway in an unselected generic catalog target", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-connector-unselected-gateway-"));

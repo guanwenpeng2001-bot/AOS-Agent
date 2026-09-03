@@ -15,6 +15,7 @@ import type { MCPAuthProviderResolver, MCPTransportFactory } from "../runtime/mc
 import type { ModelBroker } from "../runtime/model-broker.ts";
 import { createModelBroker, ModelRuntime } from "../runtime/model-runtime.ts";
 import { createPackagedExternalConnectorRegistryFactory } from "../connector/packaged-runtime.ts";
+import type { PrivateExternalConnectorVendorCompanions } from "../connector/vendor/composition.ts";
 import { ExternalConnectorModelGateway } from "../connector/model-gateway.ts";
 import { waitForExternalConnectorRegistryInitialization } from "../connector/registry-initialization.ts";
 import { LocalCredentialVault } from "../policy/credential-vault.ts";
@@ -80,6 +81,8 @@ export interface CreateAgentSessionServicesOptions {
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Safe provider reachability facts for an explicit Host credential composition. */
 	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
+	/** Static optional vendor companions supplied by a concrete product entry. */
+	externalConnectorVendorCompanions?: PrivateExternalConnectorVendorCompanions;
 }
 
 /**
@@ -272,6 +275,9 @@ export async function createAgentSessionServices(
 				: await createPackagedExternalConnectorRegistryFactory({
 						target: externalConnectorTargetConfig.selectedTarget,
 						agentDir,
+						...(options.externalConnectorVendorCompanions === undefined
+							? {}
+							: { vendorCompanions: options.externalConnectorVendorCompanions }),
 					});
 		// The settings-derived composition is a complete fallback. An explicit Host
 		// composition above wins as a whole; authority fields are never merged.
