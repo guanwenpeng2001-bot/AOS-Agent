@@ -24,4 +24,32 @@ describe("ModelBroker service tier settings", () => {
 			},
 		})).toThrow("serviceTier must be an explicit bounded string");
 	});
+
+	it("enforces service tier length, exact whitespace, control characters, type, and candidate shape", () => {
+		const parseCandidate = (candidate: Record<string, unknown>) => parseModelBrokerSettings({
+			routes: {
+				gateway: {
+					candidates: [{ provider: "openai", modelId: "gpt-test", ...candidate }],
+				},
+			},
+		});
+		const boundary = "x".repeat(128);
+
+		expect(parseCandidate({ serviceTier: boundary }).routes?.gateway?.candidates[0]).toMatchObject({
+			serviceTier: boundary,
+		});
+		for (const serviceTier of [
+			"x".repeat(129),
+			" priority",
+			"priority ",
+			"pri\u0000ority",
+			"priority\u007f",
+			42,
+		]) {
+			expect(() => parseCandidate({ serviceTier })).toThrow("serviceTier must be an explicit bounded string");
+		}
+		expect(() => parseCandidate({ serviceTier: "priority", unexpected: true })).toThrow(
+			"unknown ModelBroker settings field",
+		);
+	});
 });
