@@ -90,6 +90,7 @@ function completedStream(message: AssistantMessage) {
 
 interface GatewayFixture {
 	readonly gateway: ExternalConnectorModelGateway;
+	readonly vault: LocalCredentialVault;
 	readonly capability: ExternalModelGatewayCapability;
 	readonly lease: {
 		readonly schemaVersion: 1;
@@ -150,7 +151,10 @@ async function gatewayFixture(options: {
 	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
 	runtime.registerNativeProvider(provider);
 	await runtime.refresh({ allowNetwork: false });
-	const vault = new LocalCredentialVault({ authPath });
+	const vault = new LocalCredentialVault({
+		authPath,
+		...(options.now === undefined ? {} : { now: options.now }),
+	});
 	const gateway = new ExternalConnectorModelGateway({
 		targetId: "codex-gateway",
 		runtime,
@@ -191,6 +195,7 @@ async function gatewayFixture(options: {
 	if (capability === undefined) throw new Error("Model gateway capability was not created");
 	return {
 		gateway,
+		vault,
 		capability,
 		lease,
 		revoke: {
@@ -335,6 +340,16 @@ describe("External Connector model gateway", () => {
 		const originalExpiry = Date.parse(fixture.capability.expiresAt);
 		const requestedAt = originalExpiry - 50;
 		const renewedExpiry = requestedAt + 1_000;
+		// Mirror the production renewal path: the provider wrapper renews the vault
+		// projection before the target (task-credential-provider.ts), so a renewed
+		// capability never outlives its credential projection.
+		fixture.vault.renew({
+			leaseId: fixture.lease.leaseId,
+			grantId: fixture.lease.grantId,
+			bindingId: fixture.lease.bindingId,
+			requestedTtlMs: 1_000,
+			renewedAtMs: requestedAt,
+		});
 		expect(fixture.gateway.renew({
 			schemaVersion: 1,
 			leaseId: fixture.lease.leaseId,
@@ -371,6 +386,14 @@ describe("External Connector model gateway", () => {
 		const active = activeProviderFixture();
 		const fixture = await gatewayFixture({ provider: active.provider, leaseTtlMs: 150 });
 		const requestedAt = Date.now();
+		// Mirror the production renewal path: vault projection first, then target.
+		fixture.vault.renew({
+			leaseId: fixture.lease.leaseId,
+			grantId: fixture.lease.grantId,
+			bindingId: fixture.lease.bindingId,
+			requestedTtlMs: 700,
+			renewedAtMs: requestedAt,
+		});
 		expect(fixture.gateway.renew({
 			schemaVersion: 1,
 			leaseId: fixture.lease.leaseId,
