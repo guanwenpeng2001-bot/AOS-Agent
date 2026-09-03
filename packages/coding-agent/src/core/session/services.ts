@@ -81,8 +81,6 @@ export interface CreateAgentSessionServicesOptions {
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
 	/** Safe provider reachability facts for an explicit Host credential composition. */
 	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
-	/** Static optional vendor companions supplied by a concrete product entry. */
-	externalConnectorVendorCompanions?: PrivateExternalConnectorVendorCompanions;
 }
 
 /**
@@ -200,6 +198,21 @@ function applyExtensionFlagValues(
 export async function createAgentSessionServices(
 	options: CreateAgentSessionServicesOptions,
 ): Promise<AgentSessionServices> {
+	return createAgentSessionServicesInternal(options);
+}
+
+/** @internal Product entry seam for static vendor companions; not a general services option. */
+export async function createAgentSessionServicesForProduct(
+	options: CreateAgentSessionServicesOptions,
+	vendorCompanions?: PrivateExternalConnectorVendorCompanions,
+): Promise<AgentSessionServices> {
+	return createAgentSessionServicesInternal(options, vendorCompanions);
+}
+
+async function createAgentSessionServicesInternal(
+	options: CreateAgentSessionServicesOptions,
+	vendorCompanions?: PrivateExternalConnectorVendorCompanions,
+): Promise<AgentSessionServices> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
 	const modelRuntime =
@@ -275,9 +288,9 @@ export async function createAgentSessionServices(
 				: await createPackagedExternalConnectorRegistryFactory({
 						target: externalConnectorTargetConfig.selectedTarget,
 						agentDir,
-						...(options.externalConnectorVendorCompanions === undefined
+						...(vendorCompanions === undefined
 							? {}
-							: { vendorCompanions: options.externalConnectorVendorCompanions }),
+							: { vendorCompanions }),
 					});
 		// The settings-derived composition is a complete fallback. An explicit Host
 		// composition above wins as a whole; authority fields are never merged.

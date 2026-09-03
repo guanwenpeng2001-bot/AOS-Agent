@@ -838,15 +838,28 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		const runtime = this.#credentialRuntime;
 		if (runtime === undefined) return false;
 		const gatewayCapability = this.#modelGatewayCapabilities.get(attemptId);
-		const gatewayClosed = gatewayCapability === undefined || runtime.closeModelGateway?.(gatewayCapability) === true;
+		let gatewayClosed = gatewayCapability === undefined;
+		if (gatewayCapability !== undefined) {
+			try {
+				gatewayClosed = runtime.closeModelGateway?.(gatewayCapability) === true;
+			} catch {
+				gatewayClosed = false;
+			}
+		}
 		if (gatewayClosed) this.#modelGatewayCapabilities.delete(attemptId);
-		const result = runtime.service.releaseDeliveredLease({
-			reference: externalConnectorCredentialReference(lease),
-			targetId: lease.targetId,
-			reasonCode,
-		});
-		if (result.ok) this.#credentialLeases.delete(attemptId);
-		return gatewayClosed && result.ok;
+		let leaseReleased = false;
+		try {
+			const result = runtime.service.releaseDeliveredLease({
+				reference: externalConnectorCredentialReference(lease),
+				targetId: lease.targetId,
+				reasonCode,
+			});
+			leaseReleased = result.ok;
+			if (gatewayClosed && result.ok) this.#credentialLeases.delete(attemptId);
+		} catch {
+			leaseReleased = false;
+		}
+		return gatewayClosed && leaseReleased;
 	}
 
 	#releaseCredential(
@@ -855,6 +868,20 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	): boolean {
 		if (operation?.credential === undefined) return true;
 		return this.#releaseCredentialLease(operation.attemptId, operation.credential, reasonCode);
+	}
+
+	async #failGatewaySetup(
+		operation: ExternalConnectorOperation,
+		message: string,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		const cleanupConfirmed = await this.#markReconcile(operation, "credential_unavailable");
+		return Result.err(
+			externalFailure(
+				cleanupConfirmed ? "external_credential_unavailable" : "side_effect_unknown",
+				cleanupConfirmed ? message : "External model gateway cleanup could not be confirmed",
+				operation.attemptId,
+			),
+		);
 	}
 
 	async #hasStartupCredentialAuthority(operation: ExternalConnectorOperation): Promise<boolean> {
@@ -1810,31 +1837,26 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				runtime.openModelGateway === undefined ||
 				runtime.modelGatewayEnvironment === undefined
 			) {
-				await this.#markReconcile(operation, "credential_unavailable");
-				return Result.err(externalFailure(
-					"external_credential_unavailable",
+				return this.#failGatewaySetup(
+					operation,
 					"External model gateway credential authority is unavailable",
-					attempt.attemptId,
-				));
+				);
 			}
 			try {
 				modelGateway = await runtime.openModelGateway(lease, executionInput.modelProjection);
 			} catch {
-				await this.#markReconcile(operation, "credential_unavailable");
-				return Result.err(externalFailure(
-					"external_credential_unavailable",
+				return this.#failGatewaySetup(
+					operation,
 					"External model gateway capability could not be opened",
-					attempt.attemptId,
-				));
+				);
 			}
 			if (modelGateway === undefined) {
-				await this.#markReconcile(operation, "credential_unavailable");
-				return Result.err(externalFailure(
-					"external_credential_unavailable",
+				return this.#failGatewaySetup(
+					operation,
 					"External model gateway capability could not be opened",
-					attempt.attemptId,
-				));
+				);
 			}
+			this.#modelGatewayCapabilities.set(attempt.attemptId, modelGateway);
 			try {
 				gatewayEnvironment = Object.freeze({
 					AOS_MODEL_GATEWAY_ENDPOINT: modelGateway.endpoint,
@@ -1843,19 +1865,11 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 					...runtime.modelGatewayEnvironment(modelGateway),
 				});
 			} catch {
-				try {
-					runtime.closeModelGateway?.(modelGateway);
-				} catch {
-					// Credential revocation below remains the authoritative cleanup fallback.
-				}
-				await this.#markReconcile(operation, "credential_unavailable");
-				return Result.err(externalFailure(
-					"external_credential_unavailable",
+				return this.#failGatewaySetup(
+					operation,
 					"External model gateway environment could not be derived",
-					attempt.attemptId,
-				));
+				);
 			}
-			this.#modelGatewayCapabilities.set(attempt.attemptId, modelGateway);
 		}
 		let supervisor: ExternalConnectorBoundedSupervisor;
 		try {

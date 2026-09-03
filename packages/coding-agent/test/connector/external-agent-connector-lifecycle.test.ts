@@ -1166,6 +1166,140 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("settled");
 	});
 
+	it("returns side_effect_unknown when gateway open throws and lease revocation is unknown", async () => {
+		const credentials = createCredentialHarness();
+		credentials.target.revokeUnknown = true;
+		let closeCalls = 0;
+		const runtime: ExternalConnectorCredentialRuntime = {
+			...credentials.runtime,
+			openModelGateway: async () => {
+				throw new Error("injected gateway open failure");
+			},
+			closeModelGateway: () => {
+				closeCalls += 1;
+				return false;
+			},
+			modelGatewayEnvironment: () => ({}),
+		};
+		const value = await fixture({
+			credential: runtime,
+			modelAccess: "aos_gateway",
+			modelProjection: gatewayModelProjection,
+		});
+		persistAttempt(value);
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
+		expect(closeCalls).toBe(0);
+		expect(credentials.target.revocations).toHaveLength(1);
+		const leaseId = value.store.operations.get(value.attempt.attemptId)?.credential?.projection.leaseId;
+		expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("revocation_unknown");
+		await value.connector.dispose().catch(() => undefined);
+	});
+
+	for (const closeOutcome of ["false", "throw"] as const) {
+		it(`returns side_effect_unknown when environment derivation fails and gateway close ${closeOutcome}`, async () => {
+			const credentials = createCredentialHarness();
+			let opened: ExternalModelGatewayCapability | undefined;
+			let closeCalls = 0;
+			const runtime: ExternalConnectorCredentialRuntime = {
+				...credentials.runtime,
+				openModelGateway: async (lease) => {
+					opened = Object.freeze({
+						schemaVersion: 1,
+						endpoint: "http://127.0.0.1:43124/v1",
+						authorization: "Bearer aos_gateway_fixture",
+						leaseId: lease.leaseId,
+						modelBindingDigest: gatewayModelProjection.bindingDigest.value,
+						expiresAt: lease.expiresAt,
+					});
+					return opened;
+				},
+				closeModelGateway: () => {
+					closeCalls += 1;
+					if (closeOutcome === "throw") throw new Error("injected gateway close failure");
+					return false;
+				},
+				modelGatewayEnvironment: () => {
+					throw new Error("injected gateway environment failure");
+				},
+			};
+			const value = await fixture({
+				credential: runtime,
+				modelAccess: "aos_gateway",
+				modelProjection: gatewayModelProjection,
+			});
+			persistAttempt(value);
+
+			const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+			expect(completed).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+			expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+				status: "reconcile_required",
+				reconcileReason: "credential_unavailable",
+			});
+			expect(opened).toBeDefined();
+			expect(closeCalls).toBe(1);
+			expect(credentials.target.revocations).toHaveLength(1);
+			const leaseId = value.store.operations.get(value.attempt.attemptId)?.credential?.projection.leaseId;
+			expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("settled");
+			await value.connector.dispose().catch(() => undefined);
+		});
+	}
+
+	it("returns side_effect_unknown when environment derivation fails and lease revocation is unknown", async () => {
+		const credentials = createCredentialHarness();
+		credentials.target.revokeUnknown = true;
+		let opened: ExternalModelGatewayCapability | undefined;
+		let closeCalls = 0;
+		const runtime: ExternalConnectorCredentialRuntime = {
+			...credentials.runtime,
+			openModelGateway: async (lease) => {
+				opened = Object.freeze({
+					schemaVersion: 1,
+					endpoint: "http://127.0.0.1:43124/v1",
+					authorization: "Bearer aos_gateway_fixture",
+					leaseId: lease.leaseId,
+					modelBindingDigest: gatewayModelProjection.bindingDigest.value,
+					expiresAt: lease.expiresAt,
+				});
+				return opened;
+			},
+			closeModelGateway: () => {
+				closeCalls += 1;
+				return true;
+			},
+			modelGatewayEnvironment: () => {
+				throw new Error("injected gateway environment failure");
+			},
+		};
+		const value = await fixture({
+			credential: runtime,
+			modelAccess: "aos_gateway",
+			modelProjection: gatewayModelProjection,
+		});
+		persistAttempt(value);
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
+		expect(opened).toBeDefined();
+		expect(closeCalls).toBe(1);
+		expect(credentials.target.revocations).toHaveLength(1);
+		const leaseId = value.store.operations.get(value.attempt.attemptId)?.credential?.projection.leaseId;
+		expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("revocation_unknown");
+		await value.connector.dispose().catch(() => undefined);
+	});
+
 	it("closes an unregistered model gateway exactly once when environment derivation throws", async () => {
 		const credentials = createCredentialHarness();
 		let opened: ExternalModelGatewayCapability | undefined;
