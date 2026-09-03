@@ -6,10 +6,13 @@
 
 - Added explicit settings composition for pinned Claude, Codex, and ACP External Connector drivers in `none` and `agent_owned` modes, including fail-closed identity, version, and capability validation.
 - Added Claude/Codex `aos_gateway` settings execution through exact ModelBroker projection, Host-owned loopback credential capabilities, durable projected/effective model evidence, confirmed terminal revocation, and crash cleanup; ACP and generic JSONL remain rejected.
+- Added CI-built Bun standalone binaries for six platforms with three-runner smoke validation, SHA256SUMS verification, and safe draft/published release asset handling.
 
 ### Fixed
 
 - Corrected External Connector documentation to distinguish generic JSONL, pinned vendor, and `aos_gateway` reachability and credential ownership.
+- Fixed `aos_gateway` lease lifecycle: renewed capabilities now stay usable across the original expiry with the credential projection renewed alongside, Anthropic/OpenAI reasoning replay preserves signatures and full reasoning items, startup orphan cleanup is scoped to exact provider and credential authority, and gateway setup failures classify fail-closed as `side_effect_unknown` when cleanup cannot be proven.
+- Fixed vendor composition to reject narrowing of protocol-mandatory capabilities and to keep optional vendor companions out of the default package-root module graph.
 
 ## [0.85.0] - 2026-09-02
 
