@@ -27,8 +27,56 @@ export interface VendorAdapterFixtureCaptures {
 	claudeQuery?: PrivateClaudeCompanionQueryRequest;
 	codexTransport?: PrivateCodexAppServerTransportRequest;
 	credentialEvents?: string[];
+	gatewayRequests?: Array<{
+		readonly path: "/messages" | "/responses";
+		readonly authorization: string;
+		readonly request: Readonly<Record<string, unknown>>;
+		readonly status: number;
+		readonly response: unknown;
+		readonly responseBytes: number;
+	}>;
+	modelRequests?: Array<{
+		readonly method: "stream" | "streamSimple";
+		readonly provider: string;
+		readonly model: string;
+		readonly apiKey?: string;
+		readonly context: string;
+		readonly maxTokens?: number;
+		readonly reasoning?: string;
+		readonly reasoningEffort?: string;
+		readonly serviceTier?: string | null;
+	}>;
 	modelGateway?: ExternalConnectorModelGateway;
 	supervision?: ReturnType<typeof createExternalConnectorTestSupervision>;
+}
+
+async function requestGateway(
+	captures: VendorAdapterFixtureCaptures | undefined,
+	endpoint: string,
+	authorization: string,
+	path: "/messages" | "/responses",
+	request: Readonly<Record<string, unknown>>,
+): Promise<unknown> {
+	captures?.credentialEvents?.push(`gateway-request-start:${path}`);
+	const response = await fetch(`${endpoint}${path}`, {
+		method: "POST",
+		headers: { authorization, "content-type": "application/json" },
+		body: JSON.stringify(request),
+	});
+	const responseText = await response.text();
+	const responseValue: unknown = responseText.length === 0 ? undefined : JSON.parse(responseText);
+	captures?.gatewayRequests?.push({
+		path,
+		authorization,
+		request,
+		status: response.status,
+		response: responseValue,
+		responseBytes: encoder.encode(responseText).byteLength,
+	});
+	captures?.credentialEvents?.push(`gateway-request-status:${response.status}`);
+	captures?.credentialEvents?.push(`gateway-request-settled:${path}`);
+	if (!response.ok) throw new Error(`Gateway fixture request failed with status ${response.status}`);
+	return responseValue;
 }
 
 function claudeCompanion(captures?: VendorAdapterFixtureCaptures): PrivateClaudeAgentSdkCompanion {
@@ -45,6 +93,18 @@ function claudeCompanion(captures?: VendorAdapterFixtureCaptures): PrivateClaude
 					mcp_servers: request.tools.map((tool) => ({ name: tool.serverName, status: "connected" })),
 					...(request.model === undefined ? {} : { model: request.model.model, effort: request.model.effort }),
 				};
+				if (request.modelGateway !== undefined && request.model !== undefined) {
+					const prompt = request.prompt.content
+						.flatMap((block) => block.type === "text" ? [block.text] : [])
+						.join("\n");
+					await requestGateway(captures, request.modelGateway.endpoint, request.modelGateway.authorization, "/messages", {
+						model: request.model.model,
+						max_tokens: 16,
+						messages: [{ role: "user", content: prompt }],
+						output_config: { effort: request.model.effort },
+						stream: false,
+					});
+				}
 				yield {
 					type: "result",
 					subtype: "success",
@@ -119,7 +179,7 @@ function codexTurn(status: "inProgress" | "completed"): FoundationJsonValue {
 	};
 }
 
-function codexTransport(cwd: string): PrivateCodexAppServerTransport {
+function codexTransport(cwd: string, captures?: VendorAdapterFixtureCaptures): PrivateCodexAppServerTransport {
 	const clientToServer = new TransformStream<Uint8Array, Uint8Array>();
 	const serverToClient = new TransformStream<Uint8Array, Uint8Array>();
 	const writer = serverToClient.writable.getWriter();
@@ -162,11 +222,31 @@ function codexTransport(cwd: string): PrivateCodexAppServerTransport {
 							multiAgentMode: "explicitRequestOnly",
 						} })}\n`));
 					} else if (message.method === "turn/start") {
+						const params = message.params as Record<string, unknown>;
 						await writer.write(encoder.encode(`${JSON.stringify({ id, result: { turn: codexTurn("inProgress") } })}\n`));
 						await writer.write(encoder.encode(`${JSON.stringify({
 							method: "turn/started",
 							params: { threadId: "codex-product-thread", turn: codexTurn("inProgress") },
 						})}\n`));
+						const environment = captures?.supervision?.processController.launchOptions.at(-1)?.environment;
+						const endpoint = environment?.AOS_MODEL_GATEWAY_ENDPOINT;
+						const authorization = environment?.AOS_MODEL_GATEWAY_AUTHORIZATION;
+						if (endpoint !== undefined && authorization !== undefined && typeof params.model === "string") {
+							const input = Array.isArray(params.input) ? params.input : [];
+							const prompt = input.flatMap((candidate) => {
+								if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return [];
+								const item = candidate as Record<string, unknown>;
+								return item.type === "text" && typeof item.text === "string" ? [item.text] : [];
+							}).join("\n");
+							await requestGateway(captures, endpoint, authorization, "/responses", {
+								model: params.model,
+								input: prompt,
+								...(typeof params.effort === "string" ? { reasoning: { effort: params.effort } } : {}),
+								...(typeof params.serviceTier === "string" ? { service_tier: params.serviceTier } : {}),
+								max_output_tokens: 16,
+								stream: false,
+							});
+						}
 						await writer.write(encoder.encode(`${JSON.stringify({
 							method: "turn/completed",
 							params: { threadId: "codex-product-thread", turn: codexTurn("completed") },
@@ -214,7 +294,12 @@ export function vendorAdapterFixture(
 	cwd: string,
 	captures?: VendorAdapterFixtureCaptures,
 ): PrivateExternalConnectorVendorAdapterOverrides {
-	const supervisionFixture = createExternalConnectorTestSupervision();
+	const supervisionFixture = createExternalConnectorTestSupervision(captures?.credentialEvents === undefined
+		? {}
+		: {
+			event: { hardMs: 10_000, idleMs: 10_000 },
+			receipt: { hardMs: 10_000, idleMs: 10_000 },
+		});
 	if (captures !== undefined) captures.supervision = supervisionFixture;
 	const supervision = supervisionFixture.options;
 	if (driver === "claude") return { supervision, claudeCompanion: claudeCompanion(captures) };
@@ -222,7 +307,7 @@ export function vendorAdapterFixture(
 		supervision,
 		codexTransportFactory: async (request) => {
 			if (captures !== undefined) captures.codexTransport = request;
-			return codexTransport(cwd);
+			return codexTransport(cwd, captures);
 		},
 	};
 	return { supervision, acpTransportFactory: acpTransport() };
