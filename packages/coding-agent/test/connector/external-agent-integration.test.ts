@@ -16,7 +16,10 @@ import { describe, expect, it } from "vitest";
 import { createExternalConnectorRegistry } from "../../src/index.ts";
 import { PROVIDER_CLASS } from "../../src/core/connector/provider-class.ts";
 import type { CanonicalExternalAgentInput } from "../../src/external-connector.ts";
-import { createDurableExternalAgentConnector } from "../../src/core/connector/durable-connector.ts";
+import {
+	createDurableExternalAgentConnector,
+	type ExternalConnectorCredentialRuntime,
+} from "../../src/core/connector/durable-connector.ts";
 import {
 	executeExternalConnectorProductRun as executeExternalConnectorProductRunWithPolicy,
 	type ExternalConnectorProductExecutionInput,
@@ -44,6 +47,7 @@ import type {
 } from "../../src/core/connector/model-projection.ts";
 import { DeterministicClock } from "../support/deterministic-clock.ts";
 import { createExternalConnectorTestSupervision } from "./external-connector-test-supervision.ts";
+import { calculateScopeDigest } from "../../src/core/policy/task-credential-lease.ts";
 
 const NOW = "2026-08-27T00:00:00.000Z";
 const PROVIDER_ID = "fixture.external-connector";
@@ -171,12 +175,22 @@ class FixtureDriver implements ExternalConnectorVendorDriver {
 	}
 
 	async read(handle: ExternalConnectorDriverHandle): Promise<ExternalConnectorTerminalEvidence> {
+		const projection = this.spawnedRequest?.modelProjection;
 		return {
 			externalSessionId: handle.externalSessionId,
 			externalTurnId: handle.externalTurnId,
 			operationNonce: handle.operationNonce,
 			status: this.terminalError === undefined ? "succeeded" : "failed",
 			artifacts: this.terminalArtifacts,
+			...(projection === undefined || this.terminalError !== undefined
+				? {}
+				: { effectiveModel: {
+					provider: projection.provider,
+					model: projection.model,
+					bindingDigest: projection.bindingDigest,
+					observedAt: NOW,
+					source: "codex_thread_start" as const,
+				} }),
 			...(this.terminalError === undefined ? {} : { error: this.terminalError }),
 			sideEffectState: "none",
 			producedAt: NOW,
@@ -202,6 +216,103 @@ class FixtureDriver implements ExternalConnectorVendorDriver {
 	async dispose(): Promise<void> {
 		this.disposeCalls += 1;
 	}
+}
+
+function gatewayCredentialRuntime(): ExternalConnectorCredentialRuntime {
+	return {
+		service: {
+			issueForTaskRun: (context) => {
+				const leaseId = `lease-${context.taskId}`;
+				const grantId = `grant-${context.taskId}`;
+				const bindingId = `credential-${context.taskId}`;
+				const expiresAt = "2026-08-27T01:00:00.000Z";
+				return {
+					ok: true,
+					leaseId,
+					bindingId,
+					idempotent: false,
+					grant: {
+						schemaVersion: 1,
+						grantId,
+						leaseId,
+						bindingId,
+						sessionId: "external-product-session",
+						taskId: context.taskId,
+						graphRevision: context.graphRevision,
+						nodeId: context.nodeId,
+						runId: context.runId,
+						scopeDigest: calculateScopeDigest(context.scopes),
+						scopeCount: context.scopes.length,
+						status: "active",
+						issuedAt: NOW,
+						expiresAt,
+						renewAfter: "2026-08-27T00:59:55.000Z",
+						heartbeatSequence: 0,
+						revision: 1,
+						targetId: context.targetId,
+					},
+					delivery: {
+						schemaVersion: 1,
+						leaseId,
+						grantId,
+						bindingId,
+						status: "succeeded",
+						recordedAt: NOW,
+						targetId: context.targetId,
+					},
+				};
+			},
+			lookupDeliveredLease: () => ({ ok: false, code: "task_credential_not_found" }),
+			releaseDeliveredLease: (input) => ({
+				ok: true,
+				idempotent: false,
+				grant: {
+					schemaVersion: 1,
+					grantId: input.reference.grantId,
+					leaseId: input.reference.leaseId,
+					bindingId: input.reference.bindingId,
+					sessionId: "external-product-session",
+					taskId: "task-release",
+					graphRevision: 1,
+					nodeId: "node-release",
+					runId: "run-release",
+					scopeDigest: `sha256:${"a".repeat(64)}`,
+					scopeCount: 1,
+					status: "settled",
+					issuedAt: NOW,
+					expiresAt: "2026-08-27T01:00:00.000Z",
+					renewAfter: "2026-08-27T00:59:55.000Z",
+					heartbeatSequence: 0,
+					revision: 3,
+					targetId: input.targetId,
+				},
+			}),
+		},
+		resolveIssueContext: (attempt, binding, correlation, projection) => projection === undefined ? undefined : ({
+			taskId: attempt.taskId,
+			graphRevision: 1,
+			nodeId: attempt.taskId,
+			runId: correlation?.runId ?? attempt.attemptId,
+			capabilityBindingId: binding.capabilityRevision.id,
+			policyBindingId: binding.policyRevision.id,
+			targetId: "gateway-target",
+			targetKind: "external_connector",
+			scopes: [{ credentialName: projection.provider, purpose: "model", operations: ["read"], targetKinds: ["external_connector"] }],
+			requestedTtlMs: 60_000,
+			clientRequestId: attempt.attemptId,
+			nodeAttached: true,
+		}),
+		openModelGateway: async (lease, projection) => ({
+			schemaVersion: 1,
+			endpoint: "http://127.0.0.1:43125/v1",
+			authorization: "Bearer aos_gateway_0123456789abcdef0123456789abcdef",
+			leaseId: lease.leaseId,
+			modelBindingDigest: projection.bindingDigest.value,
+			expiresAt: lease.expiresAt,
+		}),
+		closeModelGateway: () => true,
+		modelGatewayEnvironment: () => ({}),
+	};
 }
 
 async function fixture(options: {
@@ -243,6 +354,7 @@ async function fixture(options: {
 		},
 		now: () => NOW,
 		operationNonce: () => "operation-nonce",
+		...(options.modelAccess === "aos_gateway" ? { credential: gatewayCredentialRuntime() } : {}),
 	});
 	const registry = createExternalConnectorRegistry();
 	const descriptor = {
@@ -915,10 +1027,11 @@ describe("final acceptance: External Connector product integration", () => {
 			inputAdmission: { inspectArtifact: () => { throw new Error("no artifacts"); } },
 			workspace: "workspace-ref",
 			gatewayModelRoute: {
-				provider: "fallback-provider",
-				model: "fallback-model",
+				provider: "primary-provider",
+				model: "primary-model",
 				effort: "high",
 				serviceTier: "priority",
+				fallback: [{ provider: "fallback-provider", model: "fallback-model" }],
 				fallbackDecision: { kind: "fallback", reason: "provider_unavailable", candidateIndex: 1 },
 				bindingDigest,
 			},
@@ -926,8 +1039,8 @@ describe("final acceptance: External Connector product integration", () => {
 		});
 
 		expect(execution.binding.modelRoute).toMatchObject({
-			provider: "fallback-provider",
-			model: "fallback-model",
+			provider: "primary-provider",
+			model: "primary-model",
 			effort: "high",
 			serviceTier: "priority",
 		});

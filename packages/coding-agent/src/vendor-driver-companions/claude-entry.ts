@@ -5,14 +5,12 @@
  * It is intentionally absent from the package export map and default root.
  */
 
-import {
-	createSdkMcpServer,
-	query,
-	tool,
-	type HookCallback,
-	type McpServerConfig,
-	type Options,
-	type SDKUserMessage,
+import * as ClaudeAgentSdk from "@anthropic-ai/claude-agent-sdk";
+import type {
+	HookCallback,
+	McpServerConfig,
+	Options,
+	SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { canonicalFoundationJson, type FoundationJsonValue } from "@aos-agent/agent-core";
@@ -43,8 +41,12 @@ function observationHook(
 	};
 }
 
-function sdkTool(request: PrivateClaudeCompanionQueryRequest, selected: PrivateClaudeSelectedTool) {
-	return tool(
+function sdkTool(
+	request: PrivateClaudeCompanionQueryRequest,
+	selected: PrivateClaudeSelectedTool,
+	sdk: typeof ClaudeAgentSdk,
+) {
+	return sdk.tool(
 		selected.toolName,
 		"Execute the exact host-selected AOS Tool Gateway route.",
 		{ input: z.record(z.string(), z.unknown()) },
@@ -71,7 +73,10 @@ function sdkTool(request: PrivateClaudeCompanionQueryRequest, selected: PrivateC
 	);
 }
 
-function mcpServers(request: PrivateClaudeCompanionQueryRequest): Record<string, McpServerConfig> {
+function mcpServers(
+	request: PrivateClaudeCompanionQueryRequest,
+	sdk: typeof ClaudeAgentSdk,
+): Record<string, McpServerConfig> {
 	const grouped = new Map<string, PrivateClaudeSelectedTool[]>();
 	for (const selected of request.tools) {
 		const tools = grouped.get(selected.serverName) ?? [];
@@ -80,11 +85,11 @@ function mcpServers(request: PrivateClaudeCompanionQueryRequest): Record<string,
 	}
 	return Object.fromEntries([...grouped.entries()].map(([serverName, tools]) => [
 		serverName,
-		createSdkMcpServer({
+		sdk.createSdkMcpServer({
 			name: serverName,
 			version: "1",
 			alwaysLoad: true,
-			tools: tools.map((selected) => sdkTool(request, selected)),
+			tools: tools.map((selected) => sdkTool(request, selected, sdk)),
 		}),
 	]));
 }
@@ -112,22 +117,30 @@ function promptFor(request: PrivateClaudeCompanionQueryRequest): AsyncIterable<S
 
 function environmentFor(request: PrivateClaudeCompanionQueryRequest): Record<string, string> {
 	if (request.model === undefined) return { ...request.env };
+	if (request.modelGateway === undefined) throw new TypeError("Claude gateway model capability is missing");
+	const gatewayOrigin = new URL(request.modelGateway.endpoint).origin;
 	return {
 		...request.env,
 		CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: "1",
 		CLAUDE_CODE_USE_ANTHROPIC_AWS: "0",
 		CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD: "0",
-		CLAUDE_CODE_USE_BEDROCK: "1",
+		CLAUDE_CODE_USE_BEDROCK: "0",
 		CLAUDE_CODE_USE_FOUNDRY: "0",
-		CLAUDE_CODE_USE_GATEWAY: "0",
+		CLAUDE_CODE_USE_GATEWAY: "1",
 		CLAUDE_CODE_USE_MANTLE: "0",
 		CLAUDE_CODE_USE_VERTEX: "0",
-		ANTHROPIC_BEDROCK_SERVICE_TIER: request.model.serviceTier,
+		ANTHROPIC_BASE_URL: gatewayOrigin,
+		ANTHROPIC_AUTH_TOKEN: request.modelGateway.authorization.replace(/^Bearer /, ""),
 	};
 }
 
-function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
+function optionsFor(
+	request: PrivateClaudeCompanionQueryRequest,
+	executablePath: string | undefined,
+	sdk: typeof ClaudeAgentSdk,
+): Options {
 	const selectedNames = new Set(request.tools.map((selected) => selected.exposedToolName));
+	const spawnClaudeCodeProcess = request.spawnClaudeCodeProcess;
 	return {
 		abortController: request.abortController,
 		allowedTools: [],
@@ -143,13 +156,17 @@ function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
 			PostToolUse: [{ hooks: [observationHook(request, "PostToolUse")] }],
 			PostToolUseFailure: [{ hooks: [observationHook(request, "PostToolUseFailure")] }],
 		},
-		mcpServers: mcpServers(request),
+		mcpServers: mcpServers(request, sdk),
 		permissionMode: "default",
 		plugins: [],
+		...(executablePath === undefined ? {} : { pathToClaudeCodeExecutable: executablePath }),
 		settingSources: [],
 		skills: [],
 		strictMcpConfig: true,
 		tools: [],
+		...(spawnClaudeCodeProcess === undefined
+			? {}
+			: { spawnClaudeCodeProcess: (options) => spawnClaudeCodeProcess(options) }),
 		canUseTool: async (toolName, sourceInput, permission) => {
 			if (!selectedNames.has(toolName)) {
 				return { behavior: "deny", message: "Tool is not in the exact AOS MCP selection." };
@@ -174,12 +191,14 @@ function optionsFor(request: PrivateClaudeCompanionQueryRequest): Options {
 	};
 }
 
-export function createPrivateClaudeAgentSdkCompanion(): PrivateClaudeAgentSdkCompanion {
+export async function createPrivateClaudeAgentSdkCompanion(
+	options: { readonly executablePath?: string } = {},
+): Promise<PrivateClaudeAgentSdkCompanion> {
 	return Object.freeze({
 		sdkVersion: PRIVATE_CLAUDE_AGENT_SDK_VERSION,
-		query: (request: PrivateClaudeCompanionQueryRequest) => query({
+		query: (request: PrivateClaudeCompanionQueryRequest) => ClaudeAgentSdk.query({
 			prompt: promptFor(request),
-			options: optionsFor(request),
+			options: optionsFor(request, options.executablePath, ClaudeAgentSdk),
 		}),
 	});
 }

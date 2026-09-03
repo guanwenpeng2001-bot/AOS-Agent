@@ -39,8 +39,65 @@ const processModulePath = join(
 	"assets",
 	"fake-connector-process.mjs",
 );
+const claudeProcessBridgePath = join(
+	packageDirectory,
+	"src",
+	"core",
+	"connector",
+	"assets",
+	"claude-process-bridge.mjs",
+);
 const loaderPath = join(packageDirectory, "src", "core", "connector", "packaged-driver.ts");
 const headSha = "0123456789abcdef0123456789abcdef01234567";
+
+function hasRuntimeImportClause(clause) {
+	if (clause === undefined || clause.isTypeOnly || clause.name !== undefined) return clause?.isTypeOnly !== true;
+	if (clause.namedBindings === undefined || ts.isNamespaceImport(clause.namedBindings)) return true;
+	return clause.namedBindings.elements.some((element) => !element.isTypeOnly);
+}
+
+function runtimeRelativeImports(path) {
+	const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+	const specifiers = [];
+	for (const statement of source.statements) {
+		if (
+			ts.isImportDeclaration(statement) &&
+			ts.isStringLiteral(statement.moduleSpecifier) &&
+			statement.moduleSpecifier.text.startsWith(".") &&
+			hasRuntimeImportClause(statement.importClause)
+		) {
+			specifiers.push(statement.moduleSpecifier.text);
+		}
+		if (
+			ts.isExportDeclaration(statement) &&
+			!statement.isTypeOnly &&
+			statement.moduleSpecifier !== undefined &&
+			ts.isStringLiteral(statement.moduleSpecifier) &&
+			statement.moduleSpecifier.text.startsWith(".") &&
+			(statement.exportClause === undefined ||
+				!ts.isNamedExports(statement.exportClause) ||
+				statement.exportClause.elements.some((element) => !element.isTypeOnly))
+		) {
+			specifiers.push(statement.moduleSpecifier.text);
+		}
+	}
+	return specifiers;
+}
+
+function sourceRuntimeGraph(entry) {
+	const pending = [realpathSync(entry)];
+	const visited = new Set();
+	while (pending.length > 0) {
+		const path = pending.pop();
+		if (path === undefined || visited.has(path)) continue;
+		visited.add(path);
+		for (const specifier of runtimeRelativeImports(path)) {
+			const dependency = realpathSync(resolve(dirname(path), specifier));
+			if (!visited.has(dependency)) pending.push(dependency);
+		}
+	}
+	return [...visited];
+}
 
 function npmCommand() {
 	return process.platform === "win32" ? "npm.cmd" : "npm";
@@ -160,6 +217,7 @@ function createStagedPackage(root) {
 	);
 	copyFileSync(fixturePath, join(assets, "fake-connector.json"));
 	copyFileSync(processModulePath, join(assets, "fake-connector-process.mjs"));
+	copyFileSync(claudeProcessBridgePath, join(assets, "claude-process-bridge.mjs"));
 	writeFileSync(join(staged, "npm-shrinkwrap.json"), '{"name":"aos-agent","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"aos-agent","version":"1.0.0"}}}\n');
 	writeFileSync(
 		join(staged, "package.json"),
@@ -189,7 +247,7 @@ function createStagedPackage(root) {
 	return staged;
 }
 
-test("package metadata owns the CLI, SDK, External Connector exports, and both asset copies", () => {
+test("package metadata owns the CLI, SDK, External Connector exports, and production asset copies", () => {
 	const packageJson = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"));
 	assert.equal(packageJson.bin.aos, "dist/launcher.js");
 	assert.deepEqual(packageJson.exports["."], {
@@ -210,7 +268,28 @@ test("package metadata owns the CLI, SDK, External Connector exports, and both a
 	assert.match(packageJson.scripts["copy-assets"], /fake-connector-process\.mjs/u);
 	assert.match(packageJson.scripts["copy-binary-assets"], /fake-connector-process\.mjs/u);
 	assert.ok(existsSync(processModulePath));
+	assert.match(packageJson.scripts["copy-assets"], /claude-process-bridge\.mjs/u);
+	assert.match(packageJson.scripts["copy-binary-assets"], /claude-process-bridge\.mjs/u);
+	assert.ok(existsSync(claudeProcessBridgePath));
 });
+
+test("package-root runtime graph excludes the statically injected Claude SDK companion", () => {
+	const companionPath = realpathSync(join(packageDirectory, "src", "vendor-driver-companions", "claude-entry.ts"));
+	const rootGraph = sourceRuntimeGraph(join(packageDirectory, "src", "index.ts"));
+	const cliGraph = sourceRuntimeGraph(join(packageDirectory, "src", "cli.ts"));
+	expectGraph(rootGraph, companionPath, false);
+	expectGraph(cliGraph, companionPath, true);
+});
+
+function expectGraph(graph, companionPath, expected) {
+	assert.equal(
+		graph.includes(companionPath),
+		expected,
+		expected
+			? "CLI runtime graph must own the static Claude companion"
+			: "package-root runtime graph must not load the optional Claude companion",
+	);
+}
 
 test("package-content validation catches missing public exports and assets", () => {
 	const files = [
@@ -226,6 +305,7 @@ test("package-content validation catches missing public exports and assets", () 
 		"dist/core/connector/packaged-driver.d.ts",
 		"dist/core/connector/assets/fake-connector.json",
 		"dist/core/connector/assets/fake-connector-process.mjs",
+		"dist/core/connector/assets/claude-process-bridge.mjs",
 		"package.json",
 		"npm-shrinkwrap.json",
 	].map((path) => ({ path }));
@@ -237,6 +317,10 @@ test("package-content validation catches missing public exports and assets", () 
 	assert.throws(
 		() => assertPackageContents({ files: files.filter(({ path }) => !path.endsWith("fake-connector-process.mjs")) }),
 		/missing package\/dist\/core\/connector\/assets\/fake-connector-process\.mjs/u,
+	);
+	assert.throws(
+		() => assertPackageContents({ files: files.filter(({ path }) => !path.endsWith("claude-process-bridge.mjs")) }),
+		/missing package\/dist\/core\/connector\/assets\/claude-process-bridge\.mjs/u,
 	);
 });
 
@@ -361,6 +445,10 @@ test("external npm install boots the CLI and SDK before executing the test-suppo
 			copyFileSync(
 				join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "fake-connector-process.mjs"),
 				join(compiledDirectory, "external-connector-assets", "fake-connector-process.mjs"),
+			);
+			copyFileSync(
+				join(install, "node_modules", "aos-agent", "dist", "core", "connector", "assets", "claude-process-bridge.mjs"),
+				join(compiledDirectory, "external-connector-assets", "claude-process-bridge.mjs"),
 			);
 			assertExecutedTrace(JSON.parse(run(executable, [], compiledDirectory)).trace);
 		}

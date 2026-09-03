@@ -2,11 +2,25 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Model } from "@aos-agent/ai";
+import {
+	createAssistantMessageEventStream,
+	type Api,
+	type AssistantMessage,
+	type Context,
+	type Model,
+	type Provider,
+} from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAgentCanonicalSession } from "../../src/core/session/facade.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
+import { LocalCredentialVault } from "../../src/core/policy/credential-vault.ts";
+import { createTaskCredentialLocalVaultProvider } from "../../src/core/policy/task-credential-provider.ts";
+import { ExternalConnectorModelGateway } from "../../src/core/connector/model-gateway.ts";
 import { packagedExternalAgentDriverProcessModulePath } from "../../src/core/connector/packaged-driver.ts";
+import { createPackagedExternalConnectorRegistryFactory } from "../../src/core/connector/packaged-runtime.ts";
+import { preflightExternalConnectorProductRecovery } from "../../src/core/connector/product-run.ts";
+import type { PrivateExternalConnectorVendorAdapterOverrides } from "../../src/core/connector/vendor/composition.ts";
+import type { PrivateExternalConnectorVendorDriver } from "../../src/core/connector/vendor/identity.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentRuntimeCompositionFactory,
@@ -20,6 +34,11 @@ import type { ExternalConnectorTargetDefinition } from "../../src/external-conne
 import { createRpcHostController } from "../../src/modes/rpc/rpc-host.ts";
 import type { RpcHostOutputRecord } from "../../src/modes/rpc/rpc-host.ts";
 import { crossLayerTargetDefinition } from "./fixtures/cross-layer.ts";
+import {
+	vendorAdapterFixture,
+	type VendorAdapterFixtureCaptures,
+} from "./fixtures/vendor-composition.ts";
+import { externalCredentialPolicySettings } from "./fixtures/cross-layer.ts";
 
 const directories: string[] = [];
 const DEFAULT_MODEL: Model<"anthropic-messages"> = {
@@ -97,13 +116,16 @@ async function createServices(
 	cwd: string,
 	settingsManager: SettingsManager,
 	runtimeComposition?: ReturnType<typeof createAgentRuntimeCompositionFactory>,
+	taskCredentialProviderAvailability?: { readonly available: boolean; readonly declaresDelivery: boolean },
+	modelRuntime?: ModelRuntime,
 ) {
 	return createAgentSessionServices({
 		cwd,
 		agentDir: cwd,
 		settingsManager,
-		modelRuntime: await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null }),
+		modelRuntime: modelRuntime ?? await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null }),
 		...(runtimeComposition === undefined ? {} : { runtimeComposition }),
+		...(taskCredentialProviderAvailability === undefined ? {} : { taskCredentialProviderAvailability }),
 		resourceLoaderOptions: {
 			noExtensions: true,
 			noSkills: true,
@@ -114,8 +136,73 @@ async function createServices(
 	});
 }
 
-async function createRuntime(cwd: string, settingsManager: SettingsManager) {
-	const services = await createServices(cwd, settingsManager);
+async function createRuntime(
+	cwd: string,
+	settingsManager: SettingsManager,
+	vendorAdapters?: PrivateExternalConnectorVendorAdapterOverrides,
+	captures?: VendorAdapterFixtureCaptures,
+) {
+	let runtimeComposition: ReturnType<typeof createAgentRuntimeCompositionFactory> | undefined;
+	let taskCredentialProviderAvailability: { readonly available: boolean; readonly declaresDelivery: boolean } | undefined;
+	let modelRuntime: ModelRuntime | undefined;
+	if (vendorAdapters !== undefined) {
+		const targetConfig = settingsManager.getExternalConnectorTargetSettings();
+		const target = targetConfig?.selectedTarget;
+		if (targetConfig === undefined || target === undefined) throw new Error("Vendor target fixture is not selected");
+		const externalConnectorRegistry = await createPackagedExternalConnectorRegistryFactory({
+			target,
+			agentDir: cwd,
+			vendorAdapters,
+		});
+		const gateway = target.capabilityCeiling.modelAccess[0] === "aos_gateway";
+		const gatewayResources = gateway ? await gatewayRuntime(cwd, target.targetId, captures) : undefined;
+		runtimeComposition = createAgentRuntimeCompositionFactory({
+			toolGatewayCatalog: () => ({
+				gatewayId: `settings-vendor:${target.targetId}`,
+				builtinLocalProviders: [],
+				mcpProviders: [],
+				sandboxProviders: [],
+			}),
+			externalConnectorTargetConfig: targetConfig,
+			...(externalConnectorRegistry === undefined ? {} : { externalConnectorRegistry }),
+			...(gatewayResources === undefined
+				? {}
+				: {
+					externalConnectorCredentialIssueContext: () => (attempt, binding, correlation, modelProjection) => ({
+						taskId: attempt.taskId,
+						graphRevision: 1,
+						nodeId: attempt.taskId,
+						runId: correlation?.runId ?? attempt.attemptId,
+						capabilityBindingId: binding.capabilityRevision.id,
+						policyBindingId: binding.policyRevision.id,
+						scopes: [{
+							credentialName: modelProjection?.provider ?? binding.modelRoute.provider,
+							purpose: "model_inference",
+							operations: ["read"],
+							targetKinds: ["external_connector"],
+						}],
+						requestedTtlMs: 30_000,
+						clientRequestId: `gateway:${attempt.attemptId}`,
+						nodeAttached: true,
+					}),
+					externalConnectorModelGateway: () => gatewayResources.gateway,
+					taskCredentialProvider: () => gatewayResources.provider,
+					taskCredentialPolicyMaxTtlMs: 30_000,
+				}),
+		});
+		if (gateway) {
+			taskCredentialProviderAvailability = { available: true, declaresDelivery: true };
+			modelRuntime = gatewayResources!.runtime;
+		}
+	}
+	void captures;
+	const services = await createServices(
+		cwd,
+		settingsManager,
+		runtimeComposition,
+		taskCredentialProviderAvailability,
+		modelRuntime,
+	);
 	const factory: CreateAgentSessionRuntimeFactory = async (options) => {
 		const created = await createAgentSessionFromServices({
 			services,
@@ -133,7 +220,695 @@ async function createRuntime(cwd: string, settingsManager: SettingsManager) {
 	});
 }
 
+async function gatewayRuntime(cwd: string, targetId: string, captures?: VendorAdapterFixtureCaptures) {
+	const credentials = AuthStorage.create(join(cwd, "auth.json"));
+	await credentials.modify("amazon-bedrock", async () => ({ type: "api_key", key: "gateway-bedrock-canary" }));
+	await credentials.modify("openai", async () => ({ type: "api_key", key: "gateway-openai-canary" }));
+	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+	for (const providerId of ["amazon-bedrock", "openai"] as const) {
+		const gatewayModel: Model<Api> = {
+			...DEFAULT_MODEL,
+			id: "gateway-model",
+			provider: providerId,
+			api: providerId === "amazon-bedrock" ? "bedrock-converse-stream" : "openai-responses",
+			reasoning: true,
+		};
+		const recordRequest = (
+			method: "stream" | "streamSimple",
+			model: Model<Api>,
+			context: Context,
+			options: {
+				readonly apiKey?: string;
+				readonly maxTokens?: number;
+				readonly reasoning?: string;
+				readonly reasoningEffort?: string;
+				readonly serviceTier?: string | null;
+			} | undefined,
+		): void => {
+			captures?.modelRequests?.push({
+				method,
+				provider: model.provider,
+				model: model.id,
+				...(options?.apiKey === undefined ? {} : { apiKey: options.apiKey }),
+				context: JSON.stringify(context),
+				...(options?.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+				...(options?.reasoning === undefined ? {} : { reasoning: options.reasoning }),
+				...(options?.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
+				...(options?.serviceTier === undefined ? {} : { serviceTier: options.serviceTier }),
+			});
+		};
+		const completedStream = (model: Model<Api>) => {
+			const message: AssistantMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "gateway fixture response" }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					reasoning: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: Date.now(),
+			};
+			const stream = createAssistantMessageEventStream();
+			stream.push({ type: "start", partial: { ...message, content: [], stopReason: "pending" } });
+			stream.push({ type: "done", reason: "stop", message });
+			return stream;
+		};
+		const provider: Provider = {
+			id: providerId,
+			name: providerId,
+			auth: {
+				apiKey: {
+					name: "Gateway fixture key",
+					resolve: async () => ({ auth: { apiKey: "gateway-fixture-default" }, source: "fixture" }),
+				},
+			},
+			getModels: () => [gatewayModel],
+			stream: (model, context, options) => {
+				recordRequest("stream", model, context, options);
+				return completedStream(model);
+			},
+			streamSimple: (model, context, options) => {
+				recordRequest("streamSimple", model, context, options);
+				return completedStream(model);
+			},
+		};
+		runtime.registerNativeProvider(provider);
+	}
+	const vault = new LocalCredentialVault({ authPath: join(cwd, "auth.json") });
+	class RecordingExternalConnectorModelGateway extends ExternalConnectorModelGateway {
+		override close(capability: Parameters<ExternalConnectorModelGateway["close"]>[0]): boolean {
+			captures?.credentialEvents?.push("gateway-close");
+			const closed = super.close(capability);
+			captures?.credentialEvents?.push(`gateway-close:${closed ? "closed" : "active"}`);
+			return closed;
+		}
+	}
+	const gateway = new RecordingExternalConnectorModelGateway({ targetId, runtime, vault });
+	if (captures !== undefined) captures.modelGateway = gateway;
+	const provider = createTaskCredentialLocalVaultProvider({ vault, target: gateway });
+	const recordingProvider = {
+		issuer: {
+			issue: (request: Parameters<typeof provider.issuer.issue>[0]) => {
+				captures?.credentialEvents?.push("issue");
+				try {
+					return provider.issuer.issue(request);
+				} catch (error) {
+					captures?.credentialEvents?.push(`issue-error:${error instanceof Error ? error.message : String(error)}`);
+					throw error;
+				}
+			},
+			renew: provider.issuer.renew,
+			revoke: (request: Parameters<typeof provider.issuer.revoke>[0]) => {
+				captures?.credentialEvents?.push("issuer-revoke");
+				const receipt = provider.issuer.revoke(request);
+				captures?.credentialEvents?.push(`issuer-revoke:${receipt.status}`);
+				return receipt;
+			},
+		},
+		target: {
+			getCapabilities: (request: Parameters<typeof provider.target.getCapabilities>[0]) => {
+				captures?.credentialEvents?.push("capabilities");
+				return provider.target.getCapabilities(request);
+			},
+			project: (request: Parameters<typeof provider.target.project>[0]) => {
+				captures?.credentialEvents?.push("project");
+				return provider.target.project(request);
+			},
+			renew: provider.target.renew,
+			revoke: (request: Parameters<typeof provider.target.revoke>[0]) => {
+				captures?.credentialEvents?.push("target-revoke");
+				const receipt = provider.target.revoke(request);
+				captures?.credentialEvents?.push(`target-revoke:${receipt.status}`);
+				return receipt;
+			},
+		},
+	};
+	return {
+		runtime,
+		gateway,
+		provider: recordingProvider,
+	};
+}
+
+function vendorSettings(
+	cwd: string,
+	driver: PrivateExternalConnectorVendorDriver,
+	modelAccess: "agent_owned" | "none" | "aos_gateway",
+	overrides: Partial<ExternalConnectorTargetDefinition> = {},
+): SettingsManager {
+	const modulePath = packagedExternalAgentDriverProcessModulePath("fake-connector");
+	const version = driver === "claude" ? "0.3.246" : driver === "codex" ? "0.149.0" : "1.4.0";
+	const target = {
+		schemaVersion: 1 as const,
+		targetId: `${driver}-${modelAccess}`,
+		providerId: `fixture.${driver}.${modelAccess}`,
+		driver,
+		executablePath: process.execPath,
+		modulePath,
+		cwd,
+		version,
+		executableIdentity: identity(process.execPath),
+		moduleIdentity: identity(modulePath),
+		capabilityCeiling: {
+			modelAccess: [modelAccess],
+			resume: driver !== "claude",
+			toolGateway: true,
+			artifacts: false,
+			images: false,
+		},
+		...(modelAccess === "aos_gateway"
+			? { accountReference: { schemaVersion: 1 as const, namespace: "aos", accountId: "model-runtime" } }
+			: {}),
+		...overrides,
+	};
+	return SettingsManager.inMemory({
+		...(modelAccess === "aos_gateway"
+			? { executionPolicy: externalCredentialPolicySettings(["amazon-bedrock", "openai"]) }
+			: {}),
+		externalConnectors: {
+			schemaVersion: 1,
+			targetId: target.targetId,
+			targets: [target],
+		},
+	});
+}
+
 describe("External Connector product entry composition", () => {
+	it("awaits settings-vendor startup recovery before registry readiness", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-recovery-"));
+		directories.push(cwd);
+		const captures: VendorAdapterFixtureCaptures = {};
+		const adapters = vendorAdapterFixture("codex", cwd, captures);
+		const supervision = captures.supervision;
+		if (supervision === undefined) throw new Error("Vendor supervision fixture is missing");
+		const reference = {
+			schemaVersion: 1 as const,
+			supervisorRef: "settings-recovery-supervisor",
+			operationNonce: "settings-recovery-nonce",
+		};
+		const handle = await supervision.processController.launch({
+			...reference,
+			detached: false,
+			containment: supervision.options.containment,
+		});
+		await handle.activate();
+		await supervision.privateStateStore.write("settings-recovery-attempt", {
+			schemaVersion: 1,
+			reference,
+			detached: false,
+			containment: supervision.options.containment,
+			processIdentity: handle.identity,
+		});
+		supervision.processController.launchCalls = 0;
+
+		const runtime = await createRuntime(cwd, vendorSettings(cwd, "codex", "agent_owned"), adapters, captures);
+		const controller = createRpcHostController(runtime);
+		await controller.start();
+		try {
+			await runtime.session.whenCapabilitiesReady();
+			expect(supervision.processController.launchCalls).toBe(0);
+			expect(supervision.processController.forceCalls).toBe(1);
+			expect(await supervision.privateStateStore.read("settings-recovery-attempt")).toBeUndefined();
+			expect(runtime.runtimeComposition.externalConnectorRegistry?.readiness()).toMatchObject([
+				{ providerId: "fixture.codex.agent_owned", status: "ready" },
+			]);
+		} finally {
+			await controller.shutdown();
+		}
+	});
+
+	it("keeps settings-vendor readiness unavailable when startup recovery cannot enumerate state", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-recovery-failure-"));
+		directories.push(cwd);
+		const captures: VendorAdapterFixtureCaptures = {};
+		const adapters = vendorAdapterFixture("codex", cwd, captures);
+		const supervision = captures.supervision;
+		if (supervision === undefined) throw new Error("Vendor supervision fixture is missing");
+		supervision.privateStateStore.failLists = 1;
+
+		await expect(
+			createRuntime(cwd, vendorSettings(cwd, "codex", "agent_owned"), adapters, captures),
+		).rejects.toThrow("list failure");
+		expect(supervision.processController.forceCalls).toBe(0);
+	});
+
+	it.each(["claude", "codex", "acp"] as const)("constructs the stock %s adapter without launching it", async (driver) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-stock-${driver}-`));
+		directories.push(cwd);
+		const adapters = driver === "claude" ? vendorAdapterFixture(driver, cwd) : undefined;
+		const runtime = await createRuntime(cwd, vendorSettings(cwd, driver, "agent_owned"), adapters);
+		const controller = createRpcHostController(runtime);
+		await controller.start();
+		try {
+			const initialized = await controller.dispatch({
+				id: `stock-${driver}`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			expect(initialized).toMatchObject({
+				success: true,
+				data: { externalConnectors: [{ providerId: `fixture.${driver}.agent_owned` }] },
+			});
+		} finally {
+			await controller.shutdown();
+		}
+	});
+
+	it.each([
+		{ driver: "claude", resume: false, toolGateway: true },
+		{ driver: "codex", resume: true, toolGateway: true },
+		{ driver: "acp", resume: true, toolGateway: true },
+	] as const)("maps $driver settings into the exact registry capability contract", async ({ driver, resume, toolGateway }) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-capability-${driver}-`));
+		directories.push(cwd);
+		const runtime = await createRuntime(
+			cwd,
+			vendorSettings(cwd, driver, "agent_owned"),
+			vendorAdapterFixture(driver, cwd),
+		);
+		try {
+			const registry = runtime.runtimeComposition.externalConnectorRegistry;
+			const descriptor = registry?.list()[0];
+			if (registry === undefined || descriptor === undefined) throw new Error(`${driver} registry is unavailable`);
+			const selected = await registry.select({
+				providerId: descriptor.providerId,
+				revision: descriptor.revision,
+				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+			});
+			if (!selected.ok) throw selected.error;
+			expect(selected.value.capabilitySnapshot).toMatchObject({
+				providerId: `fixture.${driver}.agent_owned`,
+				modelAccess: "agent_owned",
+				resume,
+				toolGateway,
+				artifacts: false,
+				images: false,
+			});
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("reports an actionable missing Claude companion through the package-root service path", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-claude-companion-missing-"));
+		directories.push(cwd);
+		await expect(createServices(cwd, vendorSettings(cwd, "claude", "agent_owned"))).rejects.toThrow(
+			"Install @anthropic-ai/claude-agent-sdk@0.3.246 and use the packaged aos entry",
+		);
+	});
+
+	it.each([
+		["claude", "agent_owned"],
+		["claude", "none"],
+		["codex", "agent_owned"],
+		["codex", "none"],
+		["acp", "agent_owned"],
+		["acp", "none"],
+	] as const)("runs a settings-selected %s %s vendor through registration and durable receipt", async (driver, modelAccess) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-${driver}-`));
+		directories.push(cwd);
+		const settings = vendorSettings(cwd, driver, modelAccess);
+		const runtime = await createRuntime(cwd, settings, vendorAdapterFixture(driver, cwd));
+		const records: RpcHostOutputRecord[] = [];
+		const controller = createRpcHostController(runtime, { output: { publish: (record) => records.push(record) } });
+		await controller.start();
+		try {
+			const initialized = await controller.dispatch({
+				id: `${driver}-init`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			if (initialized === undefined || initialized.command !== "initialize" || !initialized.success) {
+				throw new Error(`${driver} settings entry did not initialize`);
+			}
+			const descriptor = initialized.data.externalConnectors?.[0];
+			if (descriptor === undefined) throw new Error(`${driver} descriptor is missing`);
+			await controller.handleCommand({
+				id: `${driver}-start`,
+				type: "run.start",
+				message: `execute the ${driver} settings connector`,
+				externalConnector: {
+					providerId: descriptor.providerId,
+					revision: descriptor.revision,
+					capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+				},
+			});
+			await vi.waitFor(() =>
+				expect(records.some((record) => record.type === "run.completed")).toBe(true),
+				{ timeout: 60_000 },
+			);
+			const session = getAgentCanonicalSession(runtime.session);
+			const receipts = await session.findFoundationRecords({ objectType: "attempt_receipt" });
+			expect(receipts).toHaveLength(1);
+			expect(receipts[0]).toMatchObject({
+				payload: {
+					providerId: `fixture.${driver}.${modelAccess}`,
+					status: "succeeded",
+					provenance: { producerKind: "external_connector" },
+				},
+			});
+		} finally {
+			await controller.shutdown();
+		}
+	}, 90_000);
+
+	it.each(["claude", "codex"] as const)("runs a settings-selected %s aos_gateway with a leased canonical model", async (driver) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-${driver}-gateway-`));
+		directories.push(cwd);
+		const settings = vendorSettings(cwd, driver, "aos_gateway");
+		const captures: VendorAdapterFixtureCaptures = { credentialEvents: [], gatewayRequests: [], modelRequests: [] };
+		const runtime = await createRuntime(cwd, settings, vendorAdapterFixture(driver, cwd, captures), captures);
+		const records: RpcHostOutputRecord[] = [];
+		const controller = createRpcHostController(runtime, { output: { publish: (record) => records.push(record) } });
+		await controller.start();
+		try {
+			const initialized = await controller.dispatch({ id: `${driver}-gateway-init`, type: "initialize", protocolVersion: 1 });
+			if (initialized === undefined || initialized.command !== "initialize" || !initialized.success) {
+				throw new Error(`${driver} gateway settings entry did not initialize`);
+			}
+			const descriptor = initialized.data.externalConnectors?.[0];
+			if (descriptor === undefined) throw new Error(`${driver} gateway descriptor is missing`);
+			await controller.handleCommand({
+				id: `${driver}-gateway-start`,
+				type: "run.start",
+				message: `execute the ${driver} gateway connector`,
+				externalConnector: {
+					providerId: descriptor.providerId,
+					revision: descriptor.revision,
+					capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+				},
+				modelRoute: [{
+					provider: driver === "claude" ? "amazon-bedrock" : "openai",
+					modelId: "gateway-model",
+					thinkingLevel: "high",
+					serviceTier: driver === "claude" ? "none" : "priority",
+				}],
+			});
+			await vi.waitFor(() => expect(records.some((record) =>
+				record.type === "response" && record.id === `${driver}-gateway-start`)).toBe(true));
+			const startResponse = records.find((record) =>
+				record.type === "response" && record.id === `${driver}-gateway-start`);
+			if (startResponse?.type !== "response" || !startResponse.success) {
+				throw new Error(`Gateway start failed: ${JSON.stringify(records)}`);
+			}
+			try {
+				await vi.waitFor(() => expect(records.some((record) =>
+					record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled")).toBe(true), { timeout: 5_000 });
+			} catch {
+				const session = getAgentCanonicalSession(runtime.session);
+				const operations = await session.findFoundationRecords({ objectType: "external_connector_operation" });
+				const credentials = runtime.session.sessionRead.getEntries().filter((entry) =>
+					entry.type === "custom" && entry.customType === "task.credential");
+				throw new Error(`Gateway run did not settle: ${JSON.stringify({
+					records,
+					operations,
+					credentials,
+					credentialEvents: captures.credentialEvents,
+					gatewayRequests: captures.gatewayRequests,
+					modelRequests: captures.modelRequests,
+				})}`);
+			}
+			const terminal = records.find((record) =>
+				record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled");
+			if (terminal?.type !== "run.completed") throw new Error(`Gateway run failed: ${JSON.stringify(records)}`);
+			const accepted = records.find((record) =>
+				record.type === "response" && record.id === `${driver}-gateway-start`);
+			if (accepted?.type !== "response" || accepted.command !== "run.start" || !accepted.success) {
+				throw new Error(`${driver} gateway run was not accepted`);
+			}
+			expect(accepted.data.projectedModel).toMatchObject({
+				provider: driver === "claude" ? "amazon-bedrock" : "openai",
+				model: "gateway-model",
+				modelBindingDigest: { algorithm: "sha256" },
+			});
+			const session = getAgentCanonicalSession(runtime.session);
+			const receipts = await session.findFoundationRecords({ objectType: "attempt_receipt" });
+			const bindings = await session.findFoundationRecords({ objectType: "agent_binding" });
+			expect(receipts).toHaveLength(1);
+			expect(bindings).toHaveLength(1);
+			const bindingRecord = bindings[0];
+			if (bindingRecord?.kind !== "fact") throw new Error("Gateway AgentBinding fact is missing");
+			expect(receipts[0]).toMatchObject({
+				payload: {
+					status: "succeeded",
+					effectiveModel: {
+						provider: driver === "claude" ? "amazon-bedrock" : "openai",
+						model: "gateway-model",
+						bindingDigest: accepted.data.projectedModel?.modelBindingDigest,
+					},
+				},
+			});
+			expect((bindingRecord.payload as { fingerprint: { value: string } }).fingerprint.value)
+				.not.toBe(accepted.data.projectedModel?.modelBindingDigest.value);
+			const credential = driver === "claude" ? captures.claudeQuery?.credential : captures.codexTransport?.credential;
+			expect(credential).toMatchObject({ schemaVersion: 1, scopeDigest: expect.stringMatching(/^sha256:/) });
+			expect(JSON.stringify(credential)).not.toContain("gateway-bedrock-canary");
+			expect(JSON.stringify(credential)).not.toContain("gateway-openai-canary");
+			expect(captures.gatewayRequests).toHaveLength(1);
+			const gatewayRequest = captures.gatewayRequests?.[0];
+			if (gatewayRequest === undefined) throw new Error(`${driver} gateway request was not captured`);
+			expect(gatewayRequest.status).toBe(200);
+			expect(gatewayRequest.responseBytes).toBeLessThan(4_096);
+			if (driver === "claude") {
+				expect(gatewayRequest).toMatchObject({
+					path: "/messages",
+					authorization: captures.claudeQuery?.modelGateway?.authorization,
+					request: {
+						model: "gateway-model",
+						max_tokens: 16,
+						messages: [{ role: "user", content: "execute the claude gateway connector" }],
+						output_config: { effort: "high" },
+						stream: false,
+					},
+					response: {
+						type: "message",
+						model: "gateway-model",
+						content: [{ type: "text", text: "gateway fixture response" }],
+						stop_reason: "end_turn",
+					},
+				});
+			} else {
+				const authorization = captures.supervision?.processController.launchOptions.at(-1)
+					?.environment?.AOS_MODEL_GATEWAY_AUTHORIZATION;
+				expect(gatewayRequest).toMatchObject({
+					path: "/responses",
+					authorization,
+					request: {
+						model: "gateway-model",
+						input: "execute the codex gateway connector",
+						reasoning: { effort: "high" },
+						service_tier: "priority",
+						max_output_tokens: 16,
+						stream: false,
+					},
+					response: {
+						object: "response",
+						status: "completed",
+						model: "gateway-model",
+						output_text: "gateway fixture response",
+						reasoning: { effort: "high" },
+						service_tier: "priority",
+					},
+				});
+			}
+			expect(captures.modelRequests).toHaveLength(1);
+			const modelRequest = captures.modelRequests?.[0];
+			if (modelRequest === undefined) throw new Error(`${driver} ModelRuntime request was not captured`);
+			expect(modelRequest).toMatchObject({
+				method: driver === "claude" ? "streamSimple" : "stream",
+				provider: driver === "claude" ? "amazon-bedrock" : "openai",
+				model: "gateway-model",
+				apiKey: driver === "claude" ? "gateway-bedrock-canary" : "gateway-openai-canary",
+				maxTokens: 16,
+				...(driver === "claude"
+					? { reasoning: "high" }
+					: { reasoningEffort: "high", serviceTier: "priority" }),
+			});
+			expect(modelRequest.context).toContain(`execute the ${driver} gateway connector`);
+			const settledEvent = captures.credentialEvents?.indexOf(`gateway-request-settled:${driver === "claude" ? "/messages" : "/responses"}`) ?? -1;
+			const gatewayCloseEvent = captures.credentialEvents?.indexOf("gateway-close:closed") ?? -1;
+			const targetRevokeEvent = captures.credentialEvents?.indexOf("target-revoke") ?? -1;
+			const issuerRevokeEvent = captures.credentialEvents?.indexOf("issuer-revoke") ?? -1;
+			expect(settledEvent).toBeGreaterThanOrEqual(0);
+			expect(gatewayCloseEvent).toBeGreaterThan(settledEvent);
+			expect(targetRevokeEvent).toBeGreaterThan(gatewayCloseEvent);
+			expect(issuerRevokeEvent).toBeGreaterThan(targetRevokeEvent);
+			const grants = runtime.session.getTaskCredentialService()?.getByRunId(accepted.data.runId) ?? [];
+			expect(grants).toHaveLength(1);
+			expect(grants[0]?.status).toBe("settled");
+			if (driver === "codex") {
+				const registry = runtime.runtimeComposition.externalConnectorRegistry;
+				const modelBindingDigest = accepted.data.projectedModel?.modelBindingDigest;
+				if (registry === undefined || modelBindingDigest === undefined) {
+					throw new Error("Codex recovery projection authority is missing");
+				}
+				const recovery = {
+					session,
+					registry,
+					runId: accepted.data.runId,
+					providerId: descriptor.providerId,
+					selection: {
+						providerId: descriptor.providerId,
+						revision: descriptor.revision,
+						capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+					},
+					expectedCanonicalInput: {
+						schemaVersion: 1 as const,
+						text: "execute the codex gateway connector",
+						artifacts: [],
+					},
+					expectedGatewayModelRoute: {
+						provider: "openai",
+						model: "gateway-model",
+						effort: "high",
+						serviceTier: "priority",
+						fallbackDecision: { kind: "primary" as const, reason: "fallback_not_used" as const },
+						bindingDigest: modelBindingDigest,
+					},
+				};
+				await expect(preflightExternalConnectorProductRecovery(recovery)).resolves.toBeUndefined();
+				await expect(preflightExternalConnectorProductRecovery({
+					...recovery,
+					expectedGatewayModelRoute: {
+						...recovery.expectedGatewayModelRoute,
+						bindingDigest: { algorithm: "sha256", value: "0".repeat(64) },
+					},
+				})).rejects.toMatchObject({ code: "external_binding_invalid" });
+			}
+		} finally {
+			await controller.shutdown();
+		}
+	}, 90_000);
+
+	it("disposes gateway listeners, capabilities, and references across repeated session cycles", async () => {
+		const endpoints: string[] = [];
+		for (let cycle = 0; cycle < 2; cycle += 1) {
+			const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-gateway-cycle-${cycle}-`));
+			directories.push(cwd);
+			const captures: VendorAdapterFixtureCaptures = { credentialEvents: [] };
+			const settings = vendorSettings(cwd, "codex", "aos_gateway");
+			const runtime = await createRuntime(cwd, settings, vendorAdapterFixture("codex", cwd, captures), captures);
+			const records: RpcHostOutputRecord[] = [];
+			const controller = createRpcHostController(runtime, { output: { publish: (record) => records.push(record) } });
+			await controller.start();
+			const initialized = await controller.dispatch({
+				id: `cycle-${cycle}-init`,
+				type: "initialize",
+				protocolVersion: 1,
+			});
+			if (initialized === undefined || initialized.command !== "initialize" || !initialized.success) {
+				throw new Error("Gateway cycle did not initialize");
+			}
+			const descriptor = initialized.data.externalConnectors?.[0];
+			if (descriptor === undefined) throw new Error("Gateway cycle descriptor is missing");
+			await controller.handleCommand({
+				id: `cycle-${cycle}-start`,
+				type: "run.start",
+				message: "execute gateway cycle",
+				externalConnector: {
+					providerId: descriptor.providerId,
+					revision: descriptor.revision,
+					capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+				},
+				modelRoute: [{
+					provider: "openai",
+					modelId: "gateway-model",
+					thinkingLevel: "high",
+					serviceTier: "priority",
+				}],
+			});
+			await vi.waitFor(() => expect(records.some((record) => record.type === "run.completed")).toBe(true), {
+				timeout: 60_000,
+			});
+			const credential = captures.codexTransport?.credential;
+			const gateway = captures.modelGateway;
+			const environment = captures.supervision?.processController.launchOptions.at(-1)?.environment;
+			if (credential === undefined || gateway === undefined || environment === undefined) {
+				throw new Error("Gateway cycle did not capture its capability");
+			}
+			const endpoint = environment.AOS_MODEL_GATEWAY_ENDPOINT;
+			const authorization = environment.AOS_MODEL_GATEWAY_AUTHORIZATION;
+			const modelBindingDigest = environment.AOS_MODEL_GATEWAY_BINDING_DIGEST;
+			if (endpoint === undefined || authorization === undefined || modelBindingDigest === undefined) {
+				throw new Error("Gateway cycle environment is incomplete");
+			}
+			const capability = {
+				schemaVersion: 1 as const,
+				endpoint,
+				authorization,
+				leaseId: credential.leaseId,
+				modelBindingDigest,
+				expiresAt: credential.expiresAt,
+			};
+			endpoints.push(capability.endpoint);
+			await controller.shutdown();
+			expect(gateway.close(capability)).toBe(false);
+			expect(() => gateway.revoke({
+				schemaVersion: 1,
+				leaseId: credential.leaseId,
+				grantId: credential.grantId,
+				bindingId: credential.bindingId,
+				targetId: "codex-aos_gateway",
+				requestedAt: new Date().toISOString(),
+			})).toThrow("revocation is unknown");
+			await expect(fetch(`${capability.endpoint}/responses`, {
+				method: "POST",
+				headers: { authorization: capability.authorization, "content-type": "application/json" },
+				body: JSON.stringify({ model: "gateway-model", input: "after shutdown" }),
+			})).rejects.toThrow();
+		}
+		expect(new Set(endpoints).size).toBe(2);
+	}, 180_000);
+
+	it("keeps pinned acp aos_gateway fail-closed before registration", async () => {
+		const driver = "acp" as const;
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-${driver}-gateway-`));
+		directories.push(cwd);
+		const base = vendorSettings(cwd, driver, "agent_owned").getExternalConnectorTargetSettings()?.selectedTarget;
+		if (base === undefined) throw new Error("Vendor gateway fixture target is missing");
+		expect(base.version).toBe("1.4.0");
+		const settings = vendorSettings(cwd, driver, "agent_owned", {
+			capabilityCeiling: { ...base.capabilityCeiling, modelAccess: ["aos_gateway"] },
+		});
+		await expect(createServices(cwd, settings)).rejects.toMatchObject({
+			reason: "capability_widened",
+			path: "$.global.targets[0].capabilityCeiling.modelAccess",
+		});
+	});
+
+	it.each([
+		{
+			name: "identity drift",
+			overrides: { moduleIdentity: `sha256:${"0".repeat(64)}` },
+			message: "trusted driver file identity does not match",
+		},
+		{
+			name: "version drift",
+			overrides: { version: "0.148.0" },
+			message: "requires version 0.149.0",
+		},
+		{
+			name: "missing executable",
+			overrides: {
+				executablePath: join(tmpdir(), "missing-codex-executable"),
+				executableIdentity: `sha256:${"1".repeat(64)}`,
+			},
+			message: "https://developers.openai.com/codex/cli",
+		},
+	])("rejects vendor $name before launch", async ({ overrides, message }) => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-vendor-invalid-"));
+		directories.push(cwd);
+		await expect(createServices(cwd, vendorSettings(cwd, "codex", "agent_owned", overrides))).rejects.toThrow(message);
+	});
+
 	it("uses a Host-explicit composition as a whole instead of merging settings", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-host-"));
 		directories.push(cwd);
@@ -323,6 +1098,18 @@ describe("External Connector product entry composition", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-provenance-"));
 		directories.push(cwd);
 		await expect(createServices(cwd, genericSettings(cwd, overrides))).rejects.toThrow(message);
+	});
+
+	it("rejects aos_gateway anywhere in a generic settings ceiling", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-generic-gateway-"));
+		directories.push(cwd);
+		const base = crossLayerTargetDefinition(cwd).capabilityCeiling;
+		await expect(createServices(cwd, genericSettings(cwd, {
+			capabilityCeiling: { ...base, modelAccess: ["none", "aos_gateway"] },
+		}))).rejects.toMatchObject({
+			reason: "capability_widened",
+			path: "$.global.targets[0].capabilityCeiling.modelAccess",
+		});
 	});
 
 	it("keeps the empty fallback and unavailable error when settings omit connectors", async () => {

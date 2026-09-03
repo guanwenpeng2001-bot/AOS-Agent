@@ -15,6 +15,14 @@ import type { MCPAuthProviderResolver, MCPTransportFactory } from "../runtime/mc
 import type { ModelBroker } from "../runtime/model-broker.ts";
 import { createModelBroker, ModelRuntime } from "../runtime/model-runtime.ts";
 import { createPackagedExternalConnectorRegistryFactory } from "../connector/packaged-runtime.ts";
+import type { PrivateExternalConnectorVendorCompanions } from "../connector/vendor/composition.ts";
+import { ExternalConnectorModelGateway } from "../connector/model-gateway.ts";
+import { waitForExternalConnectorRegistryInitialization } from "../connector/registry-initialization.ts";
+import { LocalCredentialVault } from "../policy/credential-vault.ts";
+import {
+	createTaskCredentialLocalVaultProvider,
+	type TaskCredentialProviderAvailability,
+} from "../policy/task-credential-provider.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -71,6 +79,8 @@ export interface CreateAgentSessionServicesOptions {
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	/** Registered sandbox providers available to execution policy. */
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
+	/** Safe provider reachability facts for an explicit Host credential composition. */
+	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
 }
 
 /**
@@ -128,6 +138,7 @@ export interface AgentSessionServices {
 	 */
 	mcpAuthManagerOptions?: MCPAuthManagerOptions;
 	sandboxProviders?: ReadonlyMap<string, SandboxProvider> | ReadonlyArray<SandboxProvider>;
+	taskCredentialProviderAvailability?: TaskCredentialProviderAvailability;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -186,6 +197,21 @@ function applyExtensionFlagValues(
  */
 export async function createAgentSessionServices(
 	options: CreateAgentSessionServicesOptions,
+): Promise<AgentSessionServices> {
+	return createAgentSessionServicesInternal(options);
+}
+
+/** @internal Product entry seam for static vendor companions; not a general services option. */
+export async function createAgentSessionServicesForProduct(
+	options: CreateAgentSessionServicesOptions,
+	vendorCompanions?: PrivateExternalConnectorVendorCompanions,
+): Promise<AgentSessionServices> {
+	return createAgentSessionServicesInternal(options, vendorCompanions);
+}
+
+async function createAgentSessionServicesInternal(
+	options: CreateAgentSessionServicesOptions,
+	vendorCompanions?: PrivateExternalConnectorVendorCompanions,
 ): Promise<AgentSessionServices> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
@@ -253,6 +279,7 @@ export async function createAgentSessionServices(
 
 	const mcpAuthManagerOptions = options.mcpAuthManagerOptions ?? createDefaultMCPAuthManagerOptions(agentDir);
 	let runtimeComposition = options.runtimeComposition;
+	let taskCredentialProviderAvailability = options.taskCredentialProviderAvailability;
 	if (runtimeComposition === undefined) {
 		const externalConnectorTargetConfig = settingsManager.getExternalConnectorTargetSettings();
 		const externalConnectorRegistry =
@@ -261,16 +288,83 @@ export async function createAgentSessionServices(
 				: await createPackagedExternalConnectorRegistryFactory({
 						target: externalConnectorTargetConfig.selectedTarget,
 						agentDir,
+						...(vendorCompanions === undefined
+							? {}
+							: { vendorCompanions }),
 					});
 		// The settings-derived composition is a complete fallback. An explicit Host
 		// composition above wins as a whole; authority fields are never merged.
+		const gatewayTarget = externalConnectorTargetConfig?.selectedTarget?.capabilityCeiling.modelAccess[0] === "aos_gateway"
+			? externalConnectorTargetConfig.selectedTarget
+			: undefined;
+		const gatewayResources = new WeakMap<object, {
+			readonly vault: LocalCredentialVault;
+			readonly gateway: ExternalConnectorModelGateway;
+		}>();
+		const gatewayFor = (context: object) => {
+			const existing = gatewayResources.get(context);
+			if (existing !== undefined) return existing;
+			if (gatewayTarget === undefined) throw new TypeError("External model gateway target is unavailable");
+			const vault = new LocalCredentialVault({ authPath: join(agentDir, "auth.json") });
+			const created = Object.freeze({
+				vault,
+				gateway: new ExternalConnectorModelGateway({ targetId: gatewayTarget.targetId, runtime: modelRuntime, vault }),
+			});
+			gatewayResources.set(context, created);
+			return created;
+		};
 		runtimeComposition =
 			externalConnectorTargetConfig === undefined
 				? createAgentRuntimeCompositionFactory()
 				: createAgentRuntimeCompositionFactory({
+						...(externalConnectorTargetConfig.selectedTarget?.driver === undefined
+							? {}
+							: {
+								toolGatewayCatalog: () => {
+									const target = externalConnectorTargetConfig.selectedTarget;
+									if (target === undefined) throw new TypeError("Settings vendor target is unavailable");
+									return {
+										gatewayId: `settings-vendor:${target.targetId}`,
+										builtinLocalProviders: [],
+										mcpProviders: [],
+										sandboxProviders: [],
+									};
+								},
+							}),
 						externalConnectorTargetConfig,
 						...(externalConnectorRegistry === undefined ? {} : { externalConnectorRegistry }),
+						...(gatewayTarget === undefined
+							? {}
+							: {
+								externalConnectorCredentialIssueContext: () =>
+									(attempt, binding, correlation, modelProjection) => ({
+										taskId: attempt.taskId,
+										graphRevision: 1,
+										nodeId: attempt.taskId,
+										runId: correlation?.runId ?? attempt.attemptId,
+										capabilityBindingId: binding.capabilityRevision.id,
+										policyBindingId: binding.policyRevision.id,
+										scopes: [{
+											credentialName: modelProjection?.provider ?? binding.modelRoute.provider,
+											purpose: "model_inference",
+											operations: ["read"],
+											targetKinds: ["external_connector"],
+										}],
+										requestedTtlMs: 30_000,
+										clientRequestId: `external-gateway:${attempt.attemptId}`,
+										nodeAttached: true,
+									}),
+								externalConnectorModelGateway: (context) => gatewayFor(context).gateway,
+								taskCredentialProvider: (context) => createTaskCredentialLocalVaultProvider({
+									vault: gatewayFor(context).vault,
+									target: gatewayFor(context).gateway,
+								}),
+								taskCredentialPolicyMaxTtlMs: 30_000,
+							}),
 					});
+		if (gatewayTarget !== undefined) {
+			taskCredentialProviderAvailability = Object.freeze({ available: true, declaresDelivery: true });
+		}
 	}
 
 	return {
@@ -288,6 +382,7 @@ export async function createAgentSessionServices(
 		mcpAuthProvider: options.mcpAuthProvider,
 		mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders,
+		taskCredentialProviderAvailability,
 		diagnostics,
 	};
 }
@@ -302,7 +397,7 @@ export async function createAgentSessionServices(
 export async function createAgentSessionFromServices(
 	options: CreateAgentSessionFromServicesOptions,
 ): Promise<CreateAgentSessionResult> {
-	return createAgentSession({
+	const created = await createAgentSession({
 		cwd: options.services.cwd,
 		agentDir: options.services.agentDir,
 		modelRuntime: options.services.modelRuntime,
@@ -316,6 +411,7 @@ export async function createAgentSessionFromServices(
 		mcpAuthProvider: options.services.mcpAuthProvider,
 		mcpAuthManagerOptions: options.services.mcpAuthManagerOptions,
 		sandboxProviders: options.sandboxProviders ?? options.services.sandboxProviders,
+		taskCredentialProviderAvailability: options.services.taskCredentialProviderAvailability,
 		sessionManager: options.sessionManager,
 		model: options.model,
 		modelRoute: options.modelRoute,
@@ -329,4 +425,11 @@ export async function createAgentSessionFromServices(
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
 	});
+	try {
+		await waitForExternalConnectorRegistryInitialization(created.runtimeComposition.externalConnectorRegistry);
+		return created;
+	} catch (error) {
+		await created.session.dispose().catch(() => undefined);
+		throw error;
+	}
 }

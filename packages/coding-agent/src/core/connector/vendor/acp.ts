@@ -1685,6 +1685,7 @@ export function createPrivateAcpExternalAgentConnector(
 		store: options.store,
 		driver,
 		supervision: options.supervision,
+		...(options.credential === undefined ? {} : { credential: options.credential }),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.operationNonce === undefined ? {} : { operationNonce: options.operationNonce }),
 	});

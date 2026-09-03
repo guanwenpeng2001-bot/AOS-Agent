@@ -347,4 +347,34 @@ describe("execution policy settings", () => {
 		// Unset optional approval keys stay absent in the frozen profile.
 		expect(result.selectedProfile.approvals).not.toHaveProperty("sandbox");
 	});
+
+	it("accepts canonical provider IDs as credential names without widening environment names", () => {
+		const credentialProfile = {
+			...hostProfile,
+			credentials: { action: "allow", allowNames: ["amazon-bedrock"] },
+		};
+		const result = buildExecutionPolicySettings({
+			global: {
+				executionPolicy: {
+					defaultProfile: hostProfile.id,
+					profiles: { [hostProfile.id]: credentialProfile },
+				},
+			},
+		});
+		expect(result.selectedProfile.credentials.allowNames).toEqual(["amazon-bedrock"]);
+
+		expectPolicyError(() => buildExecutionPolicySettings({
+			global: {
+				executionPolicy: {
+					defaultProfile: hostProfile.id,
+					profiles: {
+						[hostProfile.id]: {
+							...credentialProfile,
+							process: { ...credentialProfile.process, allowEnvironment: ["amazon-bedrock"] },
+						},
+					},
+				},
+			},
+		}), "policy_settings_invalid");
+	});
 });

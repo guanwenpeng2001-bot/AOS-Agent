@@ -2,7 +2,17 @@
 
 ## Status
 
-Settings-based External Connector entry composition is implemented. Line 13 promotion evidence includes Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release upgrade/restart, deterministic soak, pinned vendor handshake (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, ACP SDK 1.4.0), and Codex subscription print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully certified. Lines 14 and 15 remain later work.
+Settings-based composition supports generic JSONL targets and explicit private vendor drivers. Claude and Codex support `none`, `agent_owned`, and exclusive `aos_gateway`; generic JSONL and ACP continue to reject `aos_gateway`. Registration, capability negotiation, supervised activation, execution, and durable receipt settlement use the same connector path.
+
+Protocol pins, handshakes, and product reachability are engineering evidence,
+not task certification. No external connector mode is currently task-certified
+for real vendor authentication and task completion. A task-certification claim
+requires canonical terminal evidence from a real vendor-authenticated task and,
+for `aos_gateway`, verified effective-model observation; requested model
+projection and ModelBinding digests record intent only. Missing or drifted
+identity, version, capability, model translation/projection, credential gateway
+or lease, effective-model observation, or terminal evidence fails closed when
+that evidence is required.
 
 `ExternalAgentConnector` is the only public execution contract for an external
 agent. It implements the shared `TaskExecutorProvider` boundary and therefore
@@ -39,9 +49,10 @@ self-attest as trusted.
 Standard CLI, RPC, and SDK Session creation also accepts an `externalConnectors`
 settings catalog. This is a narrow fallback authority: when a trusted Host passes
 `runtimeComposition`, that composition wins as a whole and no settings field is
-merged into it. When the Host omits the composition, settings may populate only
-the External Connector target and registry slice. Settings never enable the
-Scheduler, Worker, Subagent, Tool Gateway, or credential authorities.
+merged into it. When the Host omits the composition, settings may populate the
+External Connector target/registry slice and, only for Claude/Codex
+`aos_gateway`, the bounded local credential/gateway authority. Settings never
+enable Scheduler, Worker, or Subagent authorities.
 
 ## Settings registration
 
@@ -83,8 +94,15 @@ trust decision is true. `accountReference`, when present, is an opaque account
 identity; credentials, environment values, headers, and tokens are never stored
 in this schema.
 
-The selected target may be the packaged fake or a generic JSONL process target.
-For a generic target, the Host starts `executablePath` with `modulePath` as its
+Gateway model selection remains in `modelBroker.routes`. Each candidate names
+`provider`, `modelId`, `thinkingLevel`, and `serviceTier`; fallback remains the
+ModelBroker policy. `run.start.modelRoute`/`modelRole` or the default route
+selects it. Connector targets do not duplicate model facts.
+
+The selected target may be the packaged fake, a generic JSONL process target,
+or an explicitly declared private vendor driver. The Host never infers a
+vendor from `providerId`. For a generic target, the Host
+starts `executablePath` with `modulePath` as its
 module argument (when the paths differ), then connects the resulting process to
 the private JSONL driver adapter. It does not dynamically import a settings
 module or let the target choose a private vendor driver. Every target is still
@@ -92,9 +110,24 @@ constructed through production provenance checks, process containment,
 supervision, and the durable connector runtime; a target that fails those checks
 remains fail-closed. A generic target whose selected capability ceiling resolves
 to `modelAccess: "aos_gateway"` is rejected with
-`external_connector_config_invalid`; generic settings targets may advertise only
-`none` or `agent_owned`, so no generic JSONL driver consumes a Host model
-projection or translation.
+`capability_widened`; ACP is rejected for the same mode. Claude/Codex gateway
+targets select only `aos_gateway`, include an opaque `accountReference`, and
+omit `endpoint`; the endpoint is always Host-created loopback state.
+
+Vendor targets add the exact `driver` field and must use these pins and protocol flags:
+
+| driver | target `version` | `resume` | `toolGateway` | `modelAccess` |
+| --- | --- | --- | --- | --- |
+| `claude` | `0.3.246` | `false` | `true` | `none`, `agent_owned`, or exclusive `aos_gateway` (`amazon-bedrock` only; translated to Claude selector `bedrock`) |
+| `codex` | `0.149.0` | `true` | `true` | `none`, `agent_owned`, or exclusive `aos_gateway` |
+| `acp` | `1.4.0` | `true` | `true` | `none` or `agent_owned` |
+
+Compute each identity from the exact configured file, for example
+`sha256sum /absolute/path/to/file` on POSIX or
+`(Get-FileHash -Algorithm SHA256 C:\absolute\path\to\file).Hash.ToLower()` on
+PowerShell, then prefix the 64 hexadecimal characters with `sha256:`. Missing
+files, identity drift, version drift, unsupported capabilities, and invalid or
+unsupported `aos_gateway` configurations all fail before vendor launch.
 
 The descriptor pins `providerId`, `providerClass: "external_connector"`,
 `revision`, and the capability snapshot digest. A selection must repeat those
@@ -266,10 +299,10 @@ identity match the durable Attempt and supervisor.
 The spawn payload carries canonical Host facts, not a second business schema.
 attempt, correlation, and input are validated Foundation values. bindingDigest
 is the selected binding fingerprint value and bindingRevision is its revision.
-Model projections, when present, are secret-free and must match the frozen
-capability. Settings-selected generic targets never receive an aos_gateway model
-projection or translation because that capability is rejected before driver
-registration. The driver must not mutate these values or infer a wider binding.
+Model projections are secret-free and match the frozen ModelBinding and exact
+translation. Spawn `bindingDigest` remains the distinct AgentBinding
+fingerprint. Generic/ACP targets never receive gateway projection. Drivers may
+not conflate the two digests or infer a wider binding.
 
 ### Event stream
 
@@ -348,8 +381,8 @@ new work; the Host still disposes the exact supervised process and fails closed
 if cleanup cannot be proven.
 
 Terminal evidence has required externalSessionId, operationNonce, status,
-sideEffectState, and producedAt; externalTurnId, artifacts, usage, and error
-are optional. status is succeeded, failed, cancelled, or suspended;
+sideEffectState, and producedAt; externalTurnId, artifacts, usage, error, and
+verified `effectiveModel` are optional. status is succeeded, failed, cancelled, or suspended;
 sideEffectState is none, unknown, or side_effect_unknown. A cancelled result
 must use sideEffectState: "none". Artifacts are content-addressed references:
 known fields in each nested artifact object are canonicalized and extra fields
@@ -372,14 +405,19 @@ authority, spawn.credential is the following material-free projection:
 | scopeDigest | Opaque scope fingerprint. |
 | expiresAt | Lease expiry timestamp. |
 
-The projection contains no secret, raw key, token, environment variable,
-header, provider receipt material, or scope names. The Host resolves and issues
-the lease only after durable start_intent and before spawn; it persists the
-delivery facts before starting the driver. Renew, revoke, and lease heartbeat
-remain Host-owned. A missing delivery authority, invalid projection, expired
-lease, or revoked lease fails closed with external_credential_unavailable;
-there is no Host-environment fallback. accountReference in settings is only an
-opaque target/account identity and never authorizes or supplies a credential.
+The projection contains no secret, raw provider key, environment value, header,
+provider receipt material, or scope names. The Host projects only opaque vault
+references into its loopback model gateway. The vendor receives a short-lived
+loopback endpoint and capability bound to lease, ModelBinding digest, and
+expiry. Each upstream request resolves the reference inside ModelRuntime. A
+remote configured endpoint or vendor-login fallback cannot satisfy
+`aos_gateway`. Non-`none` service tiers are admitted only for the stock
+`openai`/`openai-responses` and `openai-codex`/`openai-codex-responses` pairs;
+the typed provider option is applied to the final request payload. Other APIs,
+including Amazon Bedrock, reject a tier before vendor spawn. Revocation aborts
+the exact lease's active requests and must observe their settlement before
+reporting success; an unsettled request returns unknown revocation, quarantines
+the target, and settles as `side_effect_unknown`.
 
 ### Provenance and lifecycle
 
@@ -416,8 +454,9 @@ For a new Attempt, the durable order is:
 Task/Dispatch/Binding/Attempt persisted -> operation prepared -> start_intent
 persisted -> credential issue and delivery facts persisted -> supervised launch
 -> private identity persisted -> activate -> handshake -> spawn ->
-handle/mapping persisted -> running -> events/read -> canonical AttemptReceipt
--> lease release -> process dispose
+handle/mapping persisted -> running -> events/read -> effective-model evidence
+-> process dispose -> gateway capability removal -> confirmed lease revoke/settle
+-> canonical AttemptReceipt
 
 runAttempt is the only path that sends spawn. Within the same Host lifecycle, a
 resumed Attempt reattaches the persisted process identity and sends `connect`
@@ -433,6 +472,13 @@ pair.
 The Host owns canonical Task, Dispatch, Attempt, AttemptReceipt, TaskResult, and
 RunReceipt persistence and terminal settlement. Drivers supply bounded evidence
 only; they do not become a second receipt authority.
+
+Before spawn, `run.accepted.projectedModel` records provider, model, and
+ModelBinding digest as intent. After Claude init/final usage validation or the
+Codex `thread/start` echo, terminal evidence and
+`AttemptReceipt.effectiveModel` record observed provider, model, digest,
+timestamp, and source. Historical receipts without the optional field remain
+replayable and mean unknown, never inferred success.
 
 ## Execution and persistence
 
@@ -469,17 +515,17 @@ installed package. The packaged fake driver is deterministic and disabled by
 default; a missing allowlisted asset fails with
 `external_agent_driver_asset_missing`.
 
-## Local closure and promotion boundary
+## Verification and certification boundary
 
-The ordinary local regressions cover the packaged Node owner above, the standard
+Engineering verification covers the packaged Node public subpath, the standard
 product composition across run/switch/fork/import/reload/cancel/restart,
 immutable RuntimeLimits and no-widen validation, passive runtime-status
-projection, and a durable terminal retry decision for `side_effect_unknown`.
-They do not substitute a scheduler-shaped fixture or inspect private Host
-fields.
+projection, and the durable terminal retry boundary for
+`side_effect_unknown`. These checks validate package reachability and connector
+lifecycle invariants; they do not create a second receipt authority or establish
+real-vendor task certification.
 
-The following remain outside this Line 13 closure: Bun compiled artifacts,
-exact-head remote artifacts, and full vendor certification beyond pinned
-handshake. Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release
-upgrade/restart, deterministic soak, and pinned Claude/Codex/ACP handshake are
-recorded. Codex subscription print, SDK, and TUI returned real replies.
+Pinned Claude, Codex, and ACP handshakes establish protocol compatibility at the
+documented versions. Task certification remains a separate evidence boundary:
+no external connector mode is currently task-certified for real vendor
+authentication and task completion.

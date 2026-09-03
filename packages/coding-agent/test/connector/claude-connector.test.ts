@@ -458,10 +458,10 @@ describe("private Claude Agent SDK connector driver", () => {
 	it("consumes one exact Bedrock aos_gateway projection and its safe lease", async () => {
 		const projection: ExternalResolvedModelProjection = {
 			schemaVersion: 1,
-			provider: "bedrock",
+			provider: "amazon-bedrock",
 			model: "anthropic.claude-sonnet-fixture-v1:0",
 			effort: "high",
-			serviceTier: "priority",
+			serviceTier: "none",
 			fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
 			bindingDigest: { algorithm: "sha256", value: "d".repeat(64) },
 		};
@@ -476,9 +476,17 @@ describe("private Claude Agent SDK connector driver", () => {
 			expiresAt: "2026-08-28T01:00:00.000Z",
 			clientRequestId: "request-claude-model-1",
 		};
+		const modelGateway = {
+			schemaVersion: 1 as const,
+			endpoint: "http://127.0.0.1:43123/v1",
+			authorization: "Bearer aos_gateway_0123456789abcdef0123456789abcdef",
+			leaseId: credential.leaseId,
+			modelBindingDigest: projection.bindingDigest.value,
+			expiresAt: credential.expiresAt,
+		};
 		const companion = new FakeCompanion(async function* () {
 			yield { ...init(), model: projection.model, effort: projection.effort };
-			yield result();
+			yield result("success", { modelUsage: { fixture: { ...usage, canonicalModel: projection.model, provider: "bedrock" } } });
 		});
 		const connector = driver(companion);
 		const handle = await connector.spawn(spawnRequest({
@@ -486,18 +494,24 @@ describe("private Claude Agent SDK connector driver", () => {
 			modelProjection: projection,
 			modelTranslation: translated.translation,
 			credential,
+			modelGateway,
 		}));
-		await expect(connector.read(handle)).resolves.toMatchObject({ status: "succeeded" });
+		await expect(connector.read(handle)).resolves.toMatchObject({
+			status: "succeeded",
+			effectiveModel: { provider: "amazon-bedrock", model: projection.model },
+		});
 		expect(companion.requests[0]).toMatchObject({
 			model: {
 				provider: "bedrock",
+				canonicalProvider: "amazon-bedrock",
 				model: projection.model,
 				effort: "high",
-				serviceTier: "priority",
+				serviceTier: "none",
 				fallbackDecision: '{"kind":"primary","reason":"fallback_not_used"}',
 				bindingDigest: JSON.stringify(projection.bindingDigest),
 			},
 			credential,
+			modelGateway,
 		});
 
 		const drifted = {
@@ -512,9 +526,68 @@ describe("private Claude Agent SDK connector driver", () => {
 			modelProjection: projection,
 			modelTranslation: drifted,
 			credential,
+			modelGateway,
 		}))).rejects.toMatchObject({ code: "external_protocol_unsupported" });
 		expect(companion.requests).toHaveLength(1);
+		expect(translateExternalModelProjection(
+			{ ...projection, provider: "bedrock" },
+			PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX,
+		)).toMatchObject({ ok: false, error: { reasonCode: "model_field_unsupported", field: "provider" } });
+		expect(translateExternalModelProjection(
+			{ ...projection, serviceTier: "priority" },
+			PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX,
+		)).toMatchObject({ ok: false, error: { reasonCode: "model_field_unsupported", field: "serviceTier" } });
 		await connector.dispose();
+	});
+
+	it("rejects duplicate or mixed Claude model usage for a gateway result", async () => {
+		const projection: ExternalResolvedModelProjection = {
+			schemaVersion: 1,
+			provider: "amazon-bedrock",
+			model: "anthropic.claude-sonnet-fixture-v1:0",
+			effort: "high",
+			serviceTier: "none",
+			fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+			bindingDigest: { algorithm: "sha256", value: "d".repeat(64) },
+		};
+		const translated = translateExternalModelProjection(projection, PRIVATE_CLAUDE_MODEL_SUPPORT_MATRIX);
+		if (!translated.ok) throw new Error(translated.error.reasonCode);
+		const credential = {
+			schemaVersion: 1 as const,
+			leaseId: "lease-claude-model-ambiguous",
+			grantId: "grant-claude-model-ambiguous",
+			bindingId: attempt.bindingId,
+			scopeDigest: `sha256:${"e".repeat(64)}`,
+			expiresAt: "2026-08-28T01:00:00.000Z",
+			clientRequestId: "request-claude-model-ambiguous",
+		};
+		const modelGateway = {
+			schemaVersion: 1 as const,
+			endpoint: "http://127.0.0.1:43123/v1",
+			authorization: "Bearer aos_gateway_0123456789abcdef0123456789abcdef",
+			leaseId: credential.leaseId,
+			modelBindingDigest: projection.bindingDigest.value,
+			expiresAt: credential.expiresAt,
+		};
+		const matchingUsage = { ...usage, canonicalModel: projection.model, provider: "bedrock" };
+		for (const modelUsage of [
+			{ first: matchingUsage, second: matchingUsage },
+			{ first: matchingUsage, second: { ...matchingUsage, canonicalModel: "different-model" } },
+		]) {
+			const connector = driver(new FakeCompanion(async function* () {
+				yield { ...init(), model: projection.model, effort: projection.effort };
+				yield result("success", { modelUsage });
+			}));
+			const handle = await connector.spawn(spawnRequest({
+				capability: capabilityFor({ modelAccess: "aos_gateway" }),
+				modelProjection: projection,
+				modelTranslation: translated.translation,
+				credential,
+				modelGateway,
+			}));
+			await expect(connector.read(handle)).rejects.toMatchObject({ code: "external_protocol_unsupported" });
+			await connector.dispose();
+		}
 	});
 
 	it("rejects malformed or stale MCP selections and intersects exact Tool Gateway routes", async () => {
@@ -791,10 +864,14 @@ describe("private Claude Agent SDK connector driver", () => {
 		expect(manifest.optionalDependencies["@anthropic-ai/claude-agent-sdk"]).toBe("0.3.246");
 		expect(manifest.optionalDependencies.zod).toBe("4.4.3");
 		expect(companionSource).toContain('from "@anthropic-ai/claude-agent-sdk"');
+		expect(companionSource).toContain('import * as ClaudeAgentSdk from "@anthropic-ai/claude-agent-sdk"');
+		expect(companionSource).not.toContain('from "jiti"');
+		expect(companionSource).not.toContain(".import<typeof ClaudeAgentSdk>");
 		expect(companionSource).toContain("settingSources: []");
 		expect(companionSource).toContain("strictMcpConfig: true");
 		expect(companionSource).toContain("tools: []");
 		expect(companionSource).toContain("allowedTools: []");
+		expect(companionSource).not.toContain("ANTHROPIC_BEDROCK_SERVICE_TIER");
 		expect(coreSource).not.toContain("import(");
 		expect(coreSource).not.toContain("@anthropic-ai/claude-agent-sdk");
 		expect(Object.keys(packageEntry).filter((key) => key.toLowerCase().includes("claude"))).toEqual([]);

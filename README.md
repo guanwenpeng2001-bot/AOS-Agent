@@ -15,6 +15,8 @@ npm install --global aos-agent@0.84.3
 aos --help
 ```
 
+Standalone archives for macOS, Linux, and Windows are available on the [GitHub Releases page](https://github.com/guanwenpeng2001-bot/AOS-Agent/releases) and do not require Node.js.
+
 For source development, build and install the checkout instead:
 
 ```sh
@@ -44,7 +46,7 @@ The installable package is `aos-agent`, and it exposes the `aos` executable. The
 
 This repository contains the source for the published `0.84.3` package set. Hosted services and generated model catalogs remain outside the release boundary.
 
-Settings-based External Connector entry composition is implemented. Line 13 promotion evidence includes Windows packaged smoke, Linux/macOS pack-smoke CI, previous-release upgrade/restart, deterministic soak, pinned vendor handshake (Claude Agent SDK 0.3.246, Codex CLI 0.149.0, ACP SDK 1.4.0), and Codex subscription print/SDK/TUI. Vendors are pinned-and-handshake certified, not fully certified. Lines 14 and 15 remain later work.
+Settings-based External Connector composition supports generic JSONL targets and explicit pinned `claude`, `codex`, and `acp` drivers in `none` or `agent_owned` mode. Claude and Codex additionally support exclusive `aos_gateway` through ModelBroker projection and a Host-owned loopback credential gateway; ACP and generic targets reject it. Vendor selection is explicit, and identity, version, capability, translation, effective-model, and credential-revocation drift fail closed.
 
 The root `./test.sh` script runs non-e2e product tests.
 

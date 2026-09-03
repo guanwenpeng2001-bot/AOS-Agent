@@ -372,9 +372,17 @@ Safety:
 `externalConnectors` registers trusted local connector targets for standard CLI,
 RPC, and SDK Sessions. The global object contains `schemaVersion: 1`, `targets`,
 and an optional selected `targetId`. Each target pins `targetId`, `providerId`,
+an optional `driver` (`claude`, `codex`, or `acp`),
 absolute `executablePath`, absolute `modulePath`, absolute `cwd`, `version`,
 `executableIdentity`, `moduleIdentity`, and `capabilityCeiling`. An optional
 `accountReference` contains only `{schemaVersion, namespace, accountId}`.
+
+Omitting `driver` selects the generic JSONL adapter. An explicit vendor driver
+selects its pinned Host-private adapter; `providerId` is never used as a vendor
+switch. All targets support `none` or `agent_owned`; pinned Claude/Codex targets
+also support exclusive `aos_gateway`. Vendor version, identity, protocol,
+model-translation, and credential-gateway mismatches are rejected before launch.
+ACP and generic JSONL gateway declarations fail with `capability_widened`.
 
 Project settings cannot define targets. A trusted project may provide
 `{schemaVersion: 1, targetId?, capabilityCeiling?, role?}` to select a global
@@ -386,7 +394,8 @@ global ceiling.
 Settings are used only when the embedding Host omits `runtimeComposition`. A
 Host-explicit composition wins as one authority graph; settings fields are not
 merged into it. Settings may populate only the External Connector slice and
-never enable Scheduler, Worker, or Subagent composition. See
+the empty canonical Tool Gateway authority required by pinned vendor
+protocols; they never enable Scheduler, Worker, or Subagent composition. See
 [external-agent-connector.md](external-agent-connector.md#settings-registration)
 for the complete example and current packaged-driver boundary.
 

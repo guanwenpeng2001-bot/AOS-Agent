@@ -89,8 +89,14 @@ export interface ExternalResolvedModelProjection {
 }
 
 export interface ExternalModelBindingSource {
-	/** Resolve the already persisted canonical AgentBinding. */
-	resolve(): AgentBinding | Promise<AgentBinding>;
+	/** Resolve one frozen model binding; AgentBinding remains accepted for internal legacy callers. */
+	resolve(): AgentBinding | ExternalModelBindingSnapshot | Promise<AgentBinding | ExternalModelBindingSnapshot>;
+}
+
+export interface ExternalModelBindingSnapshot {
+	readonly modelRoute: AgentBinding["modelRoute"];
+	/** Fingerprint of the frozen ModelBinding, distinct from the execution AgentBinding. */
+	readonly fingerprint: Fingerprint;
 }
 
 export interface ExternalModelProjectionGateInput {
@@ -374,11 +380,41 @@ export function createExternalModelProjection(
 	fallbackDecisionValue: unknown,
 ): { readonly ok: true; readonly projection: ExternalResolvedModelProjection } | ExternalProjectionFailure {
 	const binding = validateImmutableAgentBinding(bindingValue);
-	if (!binding.ok) return failure("external_binding_invalid", "model_binding_invalid");
+	let route: AgentBinding["modelRoute"];
+	let bindingDigest: Fingerprint;
+	if (binding.ok) {
+		route = binding.value.modelRoute;
+		bindingDigest = binding.value.fingerprint;
+	} else if (
+		isRecord(bindingValue) &&
+		hasOnlyKeys(bindingValue, new Set(["modelRoute", "fingerprint"])) &&
+		isRecord(bindingValue.modelRoute) &&
+		hasOnlyKeys(bindingValue.modelRoute, new Set(["provider", "model", "effort", "serviceTier", "fallback"])) &&
+		isFingerprint(bindingValue.fingerprint)
+	) {
+		const candidateRoute = bindingValue.modelRoute;
+		if (
+			!isExplicitValue(candidateRoute.provider) ||
+			!isExplicitValue(candidateRoute.model) ||
+			(candidateRoute.effort !== undefined && !isExplicitValue(candidateRoute.effort)) ||
+			(candidateRoute.serviceTier !== undefined && !isExplicitValue(candidateRoute.serviceTier)) ||
+			(candidateRoute.fallback !== undefined &&
+				(!Array.isArray(candidateRoute.fallback) || candidateRoute.fallback.some((candidate) =>
+					!isRecord(candidate) ||
+					!hasOnlyKeys(candidate, new Set(["provider", "model"])) ||
+					!isExplicitValue(candidate.provider) ||
+					!isExplicitValue(candidate.model))))
+		) {
+			return failure("external_binding_invalid", "model_binding_invalid");
+		}
+		route = candidateRoute as unknown as AgentBinding["modelRoute"];
+		bindingDigest = bindingValue.fingerprint;
+	} else {
+		return failure("external_binding_invalid", "model_binding_invalid");
+	}
 	if (!isExternalModelFallbackDecision(fallbackDecisionValue)) {
 		return failure("external_binding_invalid", "model_fallback_invalid", "fallbackDecision");
 	}
-	const route = binding.value.modelRoute;
 	if (!isExplicitValue(route.provider)) return failure("external_binding_invalid", "model_field_missing", "provider");
 	if (!isExplicitValue(route.model)) return failure("external_binding_invalid", "model_field_missing", "model");
 	if (!isExplicitValue(route.effort)) return failure("external_binding_invalid", "model_field_missing", "effort");
@@ -406,7 +442,7 @@ export function createExternalModelProjection(
 			effort: route.effort,
 			serviceTier: route.serviceTier,
 			fallbackDecision: cloneFallbackDecision(fallbackDecisionValue),
-			bindingDigest: { algorithm: "sha256", value: binding.value.fingerprint.value },
+			bindingDigest: { algorithm: "sha256", value: bindingDigest.value },
 		}),
 	};
 }
@@ -428,7 +464,7 @@ export async function projectExternalModelForExecution(
 	if (input.bindingSource === undefined || input.fallbackDecision === undefined) {
 		return failure("external_binding_invalid", "model_binding_required");
 	}
-	let binding: AgentBinding;
+	let binding: AgentBinding | ExternalModelBindingSnapshot;
 	try {
 		binding = await input.bindingSource.resolve();
 	} catch {

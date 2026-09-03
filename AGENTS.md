@@ -171,9 +171,11 @@ Attribution:
 
    The release script bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check`, commits `Release vX.Y.Z`, tags `vX.Y.Z`, adds fresh `## [Unreleased]` changelog sections, commits `Add [Unreleased] section for next cycle`, then pushes `main` and the tag. Do not rerun the release script after a tag was pushed.
 
-4. **Publish npm packages with CI**: after the release tag exists, manually dispatch `.github/workflows/publish-npm.yml` with the exact package version and tag. The workflow checks out that tag, verifies the nine public workspace packages use the requested version, builds them, and publishes through npm trusted publishing with GitHub Actions OIDC. Do not run local `npm publish`, `npm whoami`, OTP, or WebAuthn flows. The repository does not currently have a workflow that publishes compiled Bun binaries; that is a known gap and is not built in this PR.
+4. **Build Bun binaries with CI**: tag pushes trigger `.github/workflows/build-binaries.yml`, which builds six platform archives, generates `SHA256SUMS`, and smoke-tests the binaries on Linux, macOS, and Windows. After smoke tests pass, CI attaches the assets to an existing draft release or creates a draft if none exists; it never publishes the draft, so release publication remains a manual maintainer action. To backfill a published release, manually dispatch the workflow with its exact tag and `attach_to_release: true`; this adds missing assets without changing the release notes.
 
-5. **If npm publishing fails**: inspect the failed job. The publish helper is idempotent and skips package versions already present on npm. Rerun the manual workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
+5. **Publish npm packages with CI**: after the release tag exists, manually dispatch `.github/workflows/publish-npm.yml` with the exact package version and tag. The workflow checks out that tag, verifies the nine public workspace packages use the requested version, builds them, and publishes through npm trusted publishing with GitHub Actions OIDC. Do not run local `npm publish`, `npm whoami`, OTP, or WebAuthn flows.
+
+6. **If npm publishing fails**: inspect the failed job. The publish helper is idempotent and skips package versions already present on npm. Rerun the manual workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
 
 ## User Override
 

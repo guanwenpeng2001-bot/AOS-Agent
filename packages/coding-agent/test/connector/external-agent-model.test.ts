@@ -180,6 +180,23 @@ describe("execution-class-aware external model gate", () => {
 		}
 	});
 
+	it("keeps the frozen ModelBinding digest distinct from the execution AgentBinding", async () => {
+		const modelBindingDigest = { algorithm: "sha256" as const, value: "b".repeat(64) };
+		const result = await projectExternalModelForExecution({
+			modelAccess: "aos_gateway",
+			bindingSource: {
+				resolve: () => ({ modelRoute: binding().modelRoute, fingerprint: modelBindingDigest }),
+			},
+			fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+		});
+		expect(result).toMatchObject({
+			ok: true,
+			status: "projected",
+			projection: { bindingDigest: modelBindingDigest },
+		});
+		expect(binding().fingerprint.value).not.toBe(modelBindingDigest.value);
+	});
+
 	it("fails closed when gateway binding facts are missing, invalid, or unresolved", async () => {
 		await expect(projectExternalModelForExecution({ modelAccess: "aos_gateway" })).resolves.toMatchObject({
 			ok: false,

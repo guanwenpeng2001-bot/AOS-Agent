@@ -165,6 +165,10 @@ export class TestExternalConnectorPrivateStateStore extends InMemoryExternalConn
 
 export class TestExternalConnectorProcessController implements ExternalConnectorProcessController {
 	readonly handles = new Map<number, TestProcessHandle>();
+	readonly launchOptions: Array<{
+		readonly signal?: AbortSignal;
+		readonly environment?: Readonly<Record<string, string>>;
+	}> = [];
 	launchCalls = 0;
 	activationCalls = 0;
 	forceCalls = 0;
@@ -174,8 +178,12 @@ export class TestExternalConnectorProcessController implements ExternalConnector
 	reattachResult: ExternalConnectorProcessReattachResult | undefined;
 	#nextPid = 20_000;
 
-	async launch(request: ExternalConnectorProcessLaunchRequest): Promise<ExternalConnectorProcessHandle> {
+	async launch(
+		request: ExternalConnectorProcessLaunchRequest,
+		options: { readonly signal?: AbortSignal; readonly environment?: Readonly<Record<string, string>> } = {},
+	): Promise<ExternalConnectorProcessHandle> {
 		this.launchCalls += 1;
+		this.launchOptions.push(options);
 		const pid = this.#nextPid++;
 		const handle = new TestProcessHandle(
 			request,

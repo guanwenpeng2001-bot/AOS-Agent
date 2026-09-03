@@ -83,7 +83,17 @@ are rejected.
 
 The supported package surface is `aos-agent/external-connector`. It exposes the
 connector registry, target configuration, input admission, model projection,
-and packaged driver loader contracts.
+and packaged driver loader contracts. The model projection contract is
+Host-side; it does not make `aos_gateway` reachable from generic settings
+targets.
+
+Settings-based product composition supports generic JSONL targets and explicit
+pinned `claude`, `codex`, and `acp` drivers with `none` or `agent_owned` model
+access. Vendor selection is declared by `driver`, never inferred from
+`providerId`; identity, version, and capability drift fail closed before
+launch. The packaged fake and injected vendor adapters cover registration ->
+run -> receipt. Real vendor authentication remains a later certification step,
+while Claude/Codex may use exclusive `aos_gateway`; ACP and generic targets reject it.
 
 `aos-agent/external-connector/testing` is test-support only. It exports
 `runPackagedExternalAgentDriverFixture` and `PackagedExternalAgentDriverTrace`
@@ -92,15 +102,13 @@ surface. The smoke test packs a staged package, installs it outside the
 repository, resolves the testing subpath, and checks the shipped asset and safe
 missing-asset error.
 
-Local regressions also exercise the standard product composition across
+Engineering verification exercises the standard product composition across
 run/switch/fork/import/reload/cancel/restart, immutable RuntimeLimits with
 no-widen rules, passive connector runtime-status projection, and terminal
-`side_effect_unknown` retry handling. They do not prove Bun compiled artifacts
-or exact-head remote artifacts. Packaged smoke (Windows local plus Linux/macOS
-CI), previous-release upgrade/restart, deterministic soak, and pinned vendor
-handshake are recorded for this Line 13 checkout. Codex subscription print,
-SDK, and TUI returned real replies. Vendors are pinned-and-handshake certified,
-not fully certified. Lines 14 and 15 remain later work.
+`side_effect_unknown` retry handling. Packaged smoke and pinned vendor
+handshakes establish package and protocol reachability only. They do not certify
+real vendor authentication or end-to-end task completion; no external connector
+mode is currently task-certified.
 
 ## Package contents
 

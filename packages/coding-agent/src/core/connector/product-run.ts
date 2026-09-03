@@ -46,6 +46,7 @@ import {
 } from "./input.ts";
 import {
 	isExternalResolvedModelProjection,
+	projectExternalModelForExecution,
 	type ExternalModelFallbackDecision,
 	type ExternalModelTranslationResult,
 	type ExternalResolvedModelProjection,
@@ -97,6 +98,7 @@ export interface ExternalConnectorProductExecutionInput {
 		readonly model: string;
 		readonly effort: string;
 		readonly serviceTier: string;
+		readonly fallback?: readonly { readonly provider: string; readonly model: string }[];
 		readonly fallbackDecision: ExternalModelFallbackDecision;
 		readonly bindingDigest: Fingerprint;
 	};
@@ -195,6 +197,7 @@ export interface ExternalConnectorProductAdmission {
 		readonly model: string;
 		readonly effort: string;
 		readonly serviceTier: string;
+		readonly fallback?: readonly { readonly provider: string; readonly model: string }[];
 		readonly fallbackDecision: ExternalModelFallbackDecision;
 	};
 	readonly modelProjection?: ExternalResolvedModelProjection;
@@ -316,7 +319,17 @@ async function persistImmutable(
 	});
 }
 
-function modelRouteFor(selection: ExternalConnectorResolvedSelection, input: ExternalConnectorProductExecutionInput) {
+function modelRouteFor(
+	selection: ExternalConnectorResolvedSelection,
+	input: ExternalConnectorProductExecutionInput,
+): {
+	readonly provider: string;
+	readonly model: string;
+	readonly effort: string;
+	readonly serviceTier: string;
+	readonly fallback?: readonly { readonly provider: string; readonly model: string }[];
+	readonly fallbackDecision: ExternalModelFallbackDecision;
+} {
 	if (selection.capabilitySnapshot.modelAccess === "aos_gateway") {
 		if (input.gatewayModelRoute === undefined) {
 			throw new FoundationError("binding_required_fact", "AOS gateway connector requires an exact model binding");
@@ -416,7 +429,29 @@ export async function prepareExternalConnectorProductRun(
 				"External gateway model binding is missing",
 			);
 		}
-		const exactProjection = exactModelProjection(gatewayRoute);
+		const projected = await projectExternalModelForExecution({
+			modelAccess: "aos_gateway",
+			bindingSource: {
+				resolve: () => ({
+					modelRoute: {
+						provider: gatewayRoute.provider,
+						model: gatewayRoute.model,
+						effort: gatewayRoute.effort,
+						serviceTier: gatewayRoute.serviceTier,
+						...(gatewayRoute.fallback === undefined ? {} : { fallback: gatewayRoute.fallback }),
+					},
+					fingerprint: gatewayRoute.bindingDigest,
+				}),
+			},
+			fallbackDecision: gatewayRoute.fallbackDecision,
+		});
+		if (!projected.ok || projected.status !== "projected") {
+			throw new ExternalConnectorProductError(
+				"external_binding_invalid",
+				"External gateway model binding is invalid",
+			);
+		}
+		const exactProjection = projected.projection;
 		const preflight = modelProjectionPreflight(selected.value.connector);
 		if (preflight === undefined) {
 			throw new ExternalConnectorProductError(
@@ -488,8 +523,8 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 	const timestamp = (input.now ?? (() => new Date().toISOString()))();
 	const identityToken = token(input.runId, selected.descriptor.providerId);
 	const identity = externalConnectorProductIdentity(input.runId, selected.descriptor.providerId);
-	const capabilityBindingId = `capability_binding_${identityToken}`;
 	const selectedCapabilityBinding = input.capabilityBinding;
+	const capabilityBindingId = selectedCapabilityBinding?.id ?? `capability_binding_${identityToken}`;
 	const toolAllowlist = selectedCapabilityBinding?.toolAllowlist ?? [];
 	const capabilityDescriptors = (selectedCapabilityBinding?.descriptors ?? []).flatMap((descriptor) =>
 		descriptor.kind === undefined || descriptor.name === undefined
@@ -531,6 +566,7 @@ export async function persistExternalConnectorProductRunAfterAcceptance(
 		model: route.model,
 		effort: route.effort,
 		serviceTier: route.serviceTier,
+		...(route.fallback === undefined ? {} : { fallback: route.fallback }),
 		budget: {},
 		revision: 1,
 		createdAt: DECLARED_AT,
@@ -1091,7 +1127,8 @@ export async function preflightExternalConnectorProductRecovery(
 			);
 		}
 		const store = new SessionExternalConnectorDurableStore(ledger);
-		validateExternalConnectorRecoveryExpectedInput(input, selected, await store.readExecutionInput(identity.taskId));
+		const durableExecutionInput = await store.readExecutionInput(identity.taskId);
+		validateExternalConnectorRecoveryExpectedInput(input, selected, durableExecutionInput);
 	} finally {
 		await ledger.release();
 	}

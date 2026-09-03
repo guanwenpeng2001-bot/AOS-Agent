@@ -54,6 +54,7 @@ const REQUIRED_PACKAGE_FILES = Object.freeze([
 	"package/dist/core/connector/packaged-driver.d.ts",
 	"package/dist/core/connector/assets/fake-connector.json",
 	"package/dist/core/connector/assets/fake-connector-process.mjs",
+	"package/dist/core/connector/assets/claude-process-bridge.mjs",
 	"package/package.json",
 ]);
 const RUNTIME_STATES = Object.freeze(["passed", "failed", "unavailable", "not_run"]);
@@ -529,6 +530,10 @@ function runInstalledRuntimes(options) {
 			join(packageDirectory, "dist", "core", "connector", "assets", "fake-connector-process.mjs"),
 			join(compiledDirectory, "external-connector-assets", "fake-connector-process.mjs"),
 		);
+		copyFileSync(
+			join(packageDirectory, "dist", "core", "connector", "assets", "claude-process-bridge.mjs"),
+			join(compiledDirectory, "external-connector-assets", "claude-process-bridge.mjs"),
+		);
 		compiledResult = runProbe("compiled", executablePath, [], {
 			...options,
 			cwd: compiledDirectory,
@@ -624,7 +629,20 @@ function validateDryRunInputs(repoRoot) {
 		if (!packageJson.scripts?.[scriptName]?.includes("fake-connector")) {
 			throw new Error(`${scriptName} does not package the fake Connector fixture`);
 		}
+		if (!packageJson.scripts[scriptName].includes("claude-process-bridge.mjs")) {
+			throw new Error(`${scriptName} does not package the Claude process bridge`);
+		}
 	}
+	if (!existsSync(join(
+		repoRoot,
+		"packages",
+		"coding-agent",
+		"src",
+		"core",
+		"connector",
+		"assets",
+		"claude-process-bridge.mjs",
+	))) throw new Error("Packaged Claude process bridge asset is missing");
 	const fixture = JSON.parse(readFileSync(
 		join(repoRoot, "packages", "coding-agent", "src", "core", "connector", "assets", "fake-connector.json"),
 		"utf8",

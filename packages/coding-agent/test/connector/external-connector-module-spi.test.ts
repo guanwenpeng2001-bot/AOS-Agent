@@ -43,13 +43,13 @@ function immutableReference(type: string, id: string): RevisionReference {
 	return { ...value, fingerprint: fingerprintFoundationValue(value) };
 }
 
-function target(
+function targetDefinition(
 	options: {
 		readonly toolGateway?: boolean;
 		readonly modelAccess?: ExternalConnectorTargetDefinition["capabilityCeiling"]["modelAccess"];
 	} = {},
-): ReturnType<typeof buildExternalConnectorTargetConfig>["selectedTarget"] {
-	const definition: ExternalConnectorTargetDefinition = {
+): ExternalConnectorTargetDefinition {
+	return {
 		schemaVersion: 1,
 		targetId: "fixture-external-jsonl-target",
 		providerId: PROVIDER_ID,
@@ -67,6 +67,15 @@ function target(
 			images: false,
 		},
 	};
+}
+
+function target(
+	options: {
+		readonly toolGateway?: boolean;
+		readonly modelAccess?: ExternalConnectorTargetDefinition["capabilityCeiling"]["modelAccess"];
+	} = {},
+): ReturnType<typeof buildExternalConnectorTargetConfig>["selectedTarget"] {
+	const definition = targetDefinition(options);
 	const config = buildExternalConnectorTargetConfig({
 		managed: { schemaVersion: 1, targets: [definition] },
 		explicitTargetId: definition.targetId,
@@ -136,23 +145,19 @@ function binding(currentTask: TaskEnvelope): AgentBinding {
 }
 
 describe("generic External Connector JSONL module SPI", () => {
-	it("rejects a generic settings target that selects aos_gateway model access", async () => {
-		const root = mkdtempSync(join(tmpdir(), "aos-jsonl-module-aos-gateway-"));
-		const selectedTarget = target({ modelAccess: ["aos_gateway"] });
-		if (selectedTarget === undefined) throw new Error("Target selection unexpectedly missing");
-		try {
-			await expect(
-				createPackagedExternalConnectorRegistryFactory({
-					target: selectedTarget,
-					agentDir: root,
-				}),
-			).rejects.toMatchObject({
-				code: "external_connector_config_invalid",
-				reason: "capability_widened",
-			});
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
+	it("rejects a generic catalog target that selects aos_gateway model access synchronously", () => {
+		const definition = targetDefinition({ modelAccess: ["aos_gateway"] });
+		expect(() =>
+			buildExternalConnectorTargetConfig({
+				managed: { schemaVersion: 1, targets: [definition] },
+				explicitTargetId: definition.targetId,
+			}),
+		).toThrow(expect.objectContaining({
+			code: "external_connector_config_invalid",
+			reason: "capability_widened",
+			path: "$.managed.targets[0].capabilityCeiling.modelAccess",
+			message: "Generic External Connector targets cannot use aos_gateway model access.",
+		}));
 	});
 
 	it("runs a non-packaged settings target through the supervised process and canonical receipt", async () => {

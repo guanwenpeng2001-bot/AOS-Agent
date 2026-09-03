@@ -7,8 +7,10 @@ import {
 	type ConnectorCapabilitySnapshot,
 	createConnectorCapabilitySnapshot,
 	type FoundationJsonValue,
+	FoundationError,
 	Result,
 	SessionLedger,
+	type ExternalAgentConnector,
 } from "@aos-agent/agent-core";
 import { PROVIDER_CLASS } from "./provider-class.ts";
 import type {
@@ -17,13 +19,18 @@ import type {
 } from "../runtime/composition-factory.ts";
 import {
 	type ExternalConnectorDurableStore,
+	type ExternalConnectorOperation,
 	SessionExternalConnectorDurableStore,
 } from "./operation.ts";
+import type { ExternalResolvedModelProjection } from "./model-projection.ts";
+import type { ExternalModelGatewayCapability } from "./model-gateway.ts";
+import type { SafeLeaseProjection } from "../worker/protocol.ts";
 import type {
 	ExternalConnectorCredentialRuntime,
 	ExternalConnectorCredentialService,
 } from "./durable-connector.ts";
 import { createExternalConnectorRegistry } from "./registry.ts";
+import { bindExternalConnectorRegistryInitialization } from "./registry-initialization.ts";
 import { createProductionExternalAgentConnector } from "./production.ts";
 import {
 	ExternalConnectorTargetConfigError,
@@ -35,6 +42,11 @@ import {
 } from "./packaged-driver.ts";
 import { JsonlProcessExternalConnectorDriver } from "./vendor/jsonl-process-driver.ts";
 import type { ExternalConnectorVendorDriver } from "./vendor/types.ts";
+import {
+	createPrivateVendorExternalAgentConnector,
+	type PrivateExternalConnectorVendorAdapterOverrides,
+	type PrivateExternalConnectorVendorCompanions,
+} from "./vendor/composition.ts";
 import {
 	bindExternalConnectorVendorBehaviorManifest,
 	EXTERNAL_CONNECTOR_TOOL_GATEWAY_REQUEST_EVENT,
@@ -82,6 +94,10 @@ class SessionBoundExternalConnectorStore implements ExternalConnectorDurableStor
 		...args: Parameters<ExternalConnectorDurableStore["readOperation"]>
 	): ReturnType<ExternalConnectorDurableStore["readOperation"]> {
 		return this.#delegate?.readOperation(...args) ?? Promise.resolve(undefined);
+	}
+
+	listOperations(): Promise<readonly ExternalConnectorOperation[]> {
+		return this.#delegate?.listOperations() ?? Promise.resolve([]);
 	}
 
 	writeOperation(
@@ -175,8 +191,32 @@ class SessionBoundExternalConnectorCredentialRuntime implements ExternalConnecto
 		this.#delegate = runtime;
 	}
 
-	resolveIssueContext(attempt: Attempt, binding: AgentBinding) {
-		return this.#delegate?.resolveIssueContext(attempt, binding);
+	openModelGateway(
+		lease: SafeLeaseProjection,
+		projection: ExternalResolvedModelProjection,
+	): Promise<ExternalModelGatewayCapability | undefined> | undefined {
+		return this.#delegate?.openModelGateway?.(lease, projection);
+	}
+
+	closeModelGateway(capability: ExternalModelGatewayCapability): boolean {
+		return this.#delegate?.closeModelGateway?.(capability) ?? false;
+	}
+
+	modelGatewayEnvironment(capability: ExternalModelGatewayCapability): Readonly<Record<string, string>> {
+		return this.#delegate?.modelGatewayEnvironment?.(capability) ?? Object.freeze({});
+	}
+
+	disposeModelGateway(): Promise<void> {
+		return this.#delegate?.disposeModelGateway?.() ?? Promise.resolve();
+	}
+
+	resolveIssueContext(
+		attempt: Attempt,
+		binding: AgentBinding,
+		correlation: Parameters<ExternalConnectorCredentialRuntime["resolveIssueContext"]>[2],
+		modelProjection: Parameters<ExternalConnectorCredentialRuntime["resolveIssueContext"]>[3],
+	) {
+		return this.#delegate?.resolveIssueContext(attempt, binding, correlation, modelProjection);
 	}
 }
 
@@ -288,7 +328,7 @@ function packagedCapability(): ConnectorCapabilitySnapshot {
 function genericTargetCapability(target: ExternalConnectorResolvedTarget): ConnectorCapabilitySnapshot {
 	const modelAccess = target.capabilityCeiling.modelAccess[0];
 	if (modelAccess === undefined) throw new TypeError("External Connector target capability ceiling is empty");
-	if (modelAccess === "aos_gateway") {
+	if (target.capabilityCeiling.modelAccess.includes("aos_gateway")) {
 		throw new ExternalConnectorTargetConfigError(
 			"capability_widened",
 			"$.selectedTarget.capabilityCeiling.modelAccess",
@@ -320,15 +360,32 @@ function targetPrivateStatePath(target: ExternalConnectorResolvedTarget, agentDi
 export async function createPackagedExternalConnectorRegistryFactory(options: {
 	readonly target: ExternalConnectorResolvedTarget;
 	readonly agentDir: string;
+	/** Host-private deterministic adapter seam. Stock settings omit this. */
+	readonly vendorAdapters?: PrivateExternalConnectorVendorAdapterOverrides;
+	/** Static optional companions injected by a product entry outside the package-root graph. */
+	readonly vendorCompanions?: PrivateExternalConnectorVendorCompanions;
 }): Promise<ExternalConnectorRegistryFactory | undefined> {
 	const packaged = matchesPackagedTarget(options.target);
 	if (packaged) loadPackagedExternalAgentDriver("fake-connector");
 	const store = new SessionBoundExternalConnectorStore();
 	const credentialRuntime = new SessionBoundExternalConnectorCredentialRuntime();
-	const capability = packaged ? packagedCapability() : genericTargetCapability(options.target);
+	const privateStatePath = targetPrivateStatePath(options.target, options.agentDir);
+	const vendor = options.target.driver === undefined
+		? undefined
+		: await createPrivateVendorExternalAgentConnector({
+				target: options.target,
+				store,
+				privateStatePath,
+				credential: credentialRuntime,
+				...(options.vendorAdapters === undefined ? {} : { adapters: options.vendorAdapters }),
+				...(options.vendorCompanions === undefined ? {} : { companions: options.vendorCompanions }),
+			});
+	const capability = vendor?.capability ?? (packaged ? packagedCapability() : genericTargetCapability(options.target));
 	let jsonlDriver: JsonlProcessExternalConnectorDriver | undefined;
-	let driver: ExternalConnectorVendorDriver;
-	if (packaged) {
+	let driver: ExternalConnectorVendorDriver | undefined;
+	if (vendor !== undefined) {
+		driver = undefined;
+	} else if (packaged) {
 		driver = new PackagedExternalConnectorVendorDriver(store);
 	} else {
 		jsonlDriver = new JsonlProcessExternalConnectorDriver({
@@ -338,16 +395,21 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 		});
 		driver = jsonlDriver;
 	}
-	const connector = await createProductionExternalAgentConnector({
-		providerId: options.target.providerId,
-		capability,
-		capabilityProbe: async () => Result.ok(capability),
-		store,
-		driver,
-		privateStatePath: targetPrivateStatePath(options.target, options.agentDir),
-		target: options.target,
-		credential: credentialRuntime,
-	});
+	let connector: ExternalAgentConnector | undefined = vendor?.connector;
+	if (connector === undefined) {
+		if (driver === undefined) throw new TypeError("Packaged External Connector driver is unavailable");
+		connector = await createProductionExternalAgentConnector({
+			providerId: options.target.providerId,
+			capability,
+			capabilityProbe: async () => Result.ok(capability),
+			store,
+			driver,
+			privateStatePath,
+			target: options.target,
+			credential: credentialRuntime,
+		});
+	}
+	const preparedConnector = connector;
 	return (context, toolGateway, target, authority, credential) => {
 		if (target !== options.target) {
 			throw new TypeError("Packaged External Connector factory target does not match its trusted target");
@@ -371,22 +433,43 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 					: [],
 			}));
 		}
-		const registered = registry.registerPrepared(
-			{
+		const registration = {
 				descriptor: {
-					schemaVersion: 1,
+					schemaVersion: 1 as const,
 					providerId: options.target.providerId,
 					providerClass: PROVIDER_CLASS.externalConnector,
 					revision: capability.revision,
 					capabilitySnapshotDigest: capability.digest,
 				},
-				connector,
-			},
-			capability,
-		);
-		if (!registered.ok) {
-			void connector.dispose();
-			throw registered.error;
+				connector: preparedConnector,
+			};
+		const registerPrepared = (): void => {
+			const registered = registry.registerPrepared(registration, capability);
+			if (!registered.ok) throw registered.error;
+		};
+		if (vendor === undefined) {
+			try {
+				registerPrepared();
+			} catch (error) {
+				void preparedConnector.dispose();
+				throw error;
+			}
+		} else {
+			bindExternalConnectorRegistryInitialization(registry, async () => {
+				try {
+					const recovery = await vendor.connector.recoverPrivateSupervisorState();
+					if (recovery.some((result) => result.status === "quarantined")) {
+						throw new FoundationError(
+							"external_connector_not_ready",
+							"Settings External Connector startup recovery requires reconciliation",
+						);
+					}
+					registerPrepared();
+				} catch (error) {
+					await preparedConnector.dispose().catch(() => undefined);
+					throw error;
+				}
+			});
 		}
 		return registry;
 	};

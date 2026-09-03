@@ -4,12 +4,14 @@ import type { Models } from "@aos-agent/ai";
 import type { CapabilityRegistry } from "../policy/capability-registry.ts";
 import { type ConnectorRetryPolicy, DEFAULT_CONNECTOR_RETRY_POLICY } from "../connector/retry-circuit.ts";
 import type { ExternalConnectorRegistry } from "../connector/registry.ts";
+import { waitForExternalConnectorRegistryInitialization } from "../connector/registry-initialization.ts";
 import {
 	bindExternalConnectorCredentialRegistry,
 	createExternalConnectorCredentialBinding,
 	type ExternalConnectorCredentialIssueContextResolver,
 } from "../connector/credential-binding.ts";
 import type { ExternalConnectorCredentialRuntime } from "../connector/durable-connector.ts";
+import type { ExternalConnectorModelGateway } from "../connector/model-gateway.ts";
 import { PROVIDER_CLASS } from "../connector/provider-class.ts";
 import {
 	assertExternalConnectorCapabilityWithinTarget,
@@ -145,6 +147,10 @@ export type ExternalConnectorCredentialIssueContextFactory = (
 	context: AgentRuntimeCompositionContext,
 	target: ExternalConnectorResolvedTarget,
 ) => ExternalConnectorCredentialIssueContextResolver | undefined;
+export type ExternalConnectorModelGatewayFactory = (
+	context: AgentRuntimeCompositionContext,
+	target: ExternalConnectorResolvedTarget,
+) => ExternalConnectorModelGateway | undefined;
 
 /** Trusted optional providers accepted by the public composition root. */
 export interface AgentRuntimeCompositionOptions {
@@ -159,6 +165,7 @@ export interface AgentRuntimeCompositionOptions {
 	readonly externalConnectorRegistry?: ExternalConnectorRegistryFactory;
 	/** Trusted canonical scope/context resolver; accountReference alone never creates scopes. */
 	readonly externalConnectorCredentialIssueContext?: ExternalConnectorCredentialIssueContextFactory;
+	readonly externalConnectorModelGateway?: ExternalConnectorModelGatewayFactory;
 	/** Centralized reloadable limits; omission uses the finite product defaults. */
 	readonly runtimeLimits?: RuntimeLimitsSource;
 	readonly taskCredentialProvider?: TaskCredentialProviderFactory;
@@ -534,12 +541,18 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 				externalConnectorTarget === undefined
 					? undefined
 					: snapshot.externalConnectorCredentialIssueContext?.(publicContext, externalConnectorTarget);
+			const externalConnectorModelGateway = externalConnectorTarget === undefined
+				? undefined
+				: snapshot.externalConnectorModelGateway?.(publicContext, externalConnectorTarget);
 			const externalConnectorCredentialBinding =
 				externalConnectorTarget === undefined || credentialIssueContext === undefined
 					? undefined
 					: createExternalConnectorCredentialBinding({
 							target: externalConnectorTarget,
 							resolveIssueContext: credentialIssueContext,
+							...(externalConnectorModelGateway === undefined
+								? {}
+								: { modelGateway: externalConnectorModelGateway }),
 						});
 			if (scheduler !== undefined && externalConnectorTarget !== undefined) {
 				scheduler = Object.freeze({
@@ -579,6 +592,7 @@ function createFactory(options: InternalAgentRuntimeCompositionOptions): AgentRu
 					...schedulerForInitialization,
 					initializeBeforeStart: async () => {
 						await schedulerForInitialization.initializeBeforeStart?.();
+						await waitForExternalConnectorRegistryInitialization(externalConnectorRegistry);
 						await registerSelectedExternalConnector({
 							registry: externalConnectorRegistry,
 							scheduler: schedulerForInitialization,
@@ -631,6 +645,7 @@ export function createAgentRuntimeCompositionFactory(
 		options.externalConnectorTargetConfig === undefined &&
 		options.externalConnectorRegistry === undefined &&
 		options.externalConnectorCredentialIssueContext === undefined &&
+		options.externalConnectorModelGateway === undefined &&
 		options.runtimeLimits === undefined &&
 		options.taskCredentialProvider === undefined &&
 		options.taskCredentialPolicyMaxTtlMs === undefined

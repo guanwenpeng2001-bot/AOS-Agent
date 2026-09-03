@@ -29,6 +29,16 @@ import {
 	type ExternalConnectorCredentialRuntime,
 	type ExternalConnectorToolGatewayConsumer,
 } from "../../src/core/connector/durable-connector.ts";
+import type { ExternalModelGatewayCapability } from "../../src/core/connector/model-gateway.ts";
+import {
+	translateExternalModelProjection,
+	type ExternalModelAccess,
+	type ExternalModelFieldSupport,
+	type ExternalModelProjectionField,
+	type ExternalModelSupportMatrix,
+	type ExternalResolvedModelProjection,
+	type ExternalTranslatedModelProjection,
+} from "../../src/core/connector/model-projection.ts";
 import type {
 	ExternalConnectorDurableStore,
 	ExternalConnectorOperation,
@@ -151,19 +161,54 @@ function binding(): AgentBinding {
 	return resolved.value;
 }
 
-function capability(resume = true, revision = 1, toolGateway = false): ConnectorCapabilitySnapshot {
+function capability(
+	resume = true,
+	revision = 1,
+	toolGateway = false,
+	modelAccess: ExternalModelAccess = "agent_owned",
+): ConnectorCapabilitySnapshot {
 	return createConnectorCapabilitySnapshot({
 		schemaVersion: 1,
 		providerId,
 		revision,
 		protocol: { name: "third-party-protocol", version: "1" },
-		modelAccess: "agent_owned",
+		modelAccess,
 		resume,
 		toolGateway,
 		artifacts: true,
 		images: false,
 	});
 }
+
+function exactSupport(targetField: string): ExternalModelFieldSupport {
+	return {
+		supported: true,
+		targetField,
+		accepts: () => true,
+		translate: (value) => ({ kind: "exact", value }),
+	};
+}
+
+function exactMatrix(): ExternalModelSupportMatrix {
+	return Object.freeze({
+		provider: exactSupport("provider_name"),
+		model: exactSupport("model_name"),
+		effort: exactSupport("reasoning_effort"),
+		serviceTier: exactSupport("service_tier"),
+		fallbackDecision: exactSupport("fallback_decision"),
+		bindingDigest: exactSupport("binding_digest"),
+	} satisfies Record<ExternalModelProjectionField, ExternalModelFieldSupport>);
+}
+
+const gatewayModelProjection: ExternalResolvedModelProjection = {
+	schemaVersion: 1,
+	provider: "openai",
+	model: "gpt-codex-fixture",
+	effort: "high",
+	serviceTier: "priority",
+	fallbackDecision: { kind: "primary", reason: "fallback_not_used" },
+	bindingDigest: { algorithm: "sha256", value: "a".repeat(64) },
+};
 
 const dispatch: Dispatch = {
 	schemaVersion: 1,
@@ -205,6 +250,8 @@ class FakeStore implements ExternalConnectorDurableStore {
 	readonly receipts = new Map<string, AttemptReceipt>();
 	readonly toolGatewayExecutions = new Map<string, ExternalConnectorToolGatewayExecution>();
 	readonly operationHistory: ExternalConnectorOperationStatus[] = [];
+	modelProjection: ExternalResolvedModelProjection | undefined;
+	modelTranslation: ExternalTranslatedModelProjection | undefined;
 	reads = 0;
 	mappingWrites = 0;
 	receiptWrites = 0;
@@ -228,12 +275,18 @@ class FakeStore implements ExternalConnectorDurableStore {
 			taskId,
 			requestFingerprint: `sha256:${"1".repeat(64)}` as const,
 			input: { schemaVersion: 1 as const, text: "fixture", artifacts: [] },
+			...(this.modelProjection === undefined ? {} : { modelProjection: this.modelProjection }),
+			...(this.modelTranslation === undefined ? {} : { modelTranslation: this.modelTranslation }),
 		};
 	}
 
 	async readOperation(attemptId: string): Promise<ExternalConnectorOperation | undefined> {
 		this.reads++;
 		return this.operations.get(attemptId);
+	}
+
+	async listOperations(): Promise<readonly ExternalConnectorOperation[]> {
+		return [...this.operations.values()];
 	}
 
 	async writeOperation(operation: ExternalConnectorOperation): Promise<ExternalConnectorOperation> {
@@ -322,6 +375,7 @@ class OperationLedger {
 }
 
 class FakeDriver implements ExternalConnectorVendorDriver {
+	modelSupportMatrix: ExternalModelSupportMatrix | undefined;
 	readonly calls = {
 		spawn: 0,
 		events: 0,
@@ -636,16 +690,30 @@ async function fixture(
 		resume?: boolean;
 		capabilityRevision?: number;
 		toolGateway?: boolean;
+		modelAccess?: ExternalModelAccess;
+		modelProjection?: ExternalResolvedModelProjection;
 		runtimeLimits?: RuntimeLimitsSource;
 		credential?: ExternalConnectorCredentialRuntime;
 		supervisionDeadlines?: ExternalConnectorSupervisorDeadlineOverrides;
 	} = {},
 ): Promise<Fixture> {
 	const resolvedBinding = binding();
-	const snapshot = capability(options.resume ?? true, options.capabilityRevision ?? 1, options.toolGateway ?? false);
+	const snapshot = capability(
+		options.resume ?? true,
+		options.capabilityRevision ?? 1,
+		options.toolGateway ?? false,
+		options.modelAccess ?? "agent_owned",
+	);
 	const store = new FakeStore();
 	store.bindings.set(resolvedBinding.bindingId, resolvedBinding);
 	const driver = new FakeDriver();
+	if (options.modelAccess === "aos_gateway") driver.modelSupportMatrix = exactMatrix();
+	if (options.modelProjection !== undefined) {
+		const translated = translateExternalModelProjection(options.modelProjection, driver.modelSupportMatrix);
+		if (!translated.ok) throw new Error("fixture model projection did not translate");
+		store.modelProjection = options.modelProjection;
+		store.modelTranslation = translated.translation;
+	}
 	driver.store = store;
 	const supervision = createExternalConnectorTestSupervision(options.supervisionDeadlines);
 	const connector = new DurableExternalAgentConnector({
@@ -1020,15 +1088,267 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 
 		const completed = await value.connector.runAttempt(value.attempt, { correlation });
 
-		expect(completed).toMatchObject({ ok: true, value: { status: "succeeded" } });
+		expect(completed).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
 		const lease = value.store.operations.get(value.attempt.attemptId)?.credential;
 		if (lease === undefined) throw new Error("missing durable credential lease");
 		expect(credentials.target.revocations).toHaveLength(1);
 		expect(credentials.service.get(lease.projection.leaseId)?.status).toBe("revocation_unknown");
 		expect(credentials.service.isTargetQuarantined(lease.targetId)).toBe(true);
 
-		expect(await value.connector.runAttempt(value.attempt, { correlation })).toEqual(completed);
+		expect(await value.connector.runAttempt(value.attempt, { correlation })).toMatchObject({ ok: false });
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
 		expect(credentials.target.revocations).toHaveLength(1);
+	});
+
+	it("keeps cancellation-before-launch non-terminal when credential revocation is unknown", async () => {
+		const credentials = createCredentialHarness();
+		credentials.target.revokeUnknown = true;
+		const value = await fixture({ credential: credentials.runtime });
+		persistAttempt(value);
+		const controller = new AbortController();
+		credentials.target.onProject = () => controller.abort();
+
+		const cancelled = await value.connector.runAttempt(value.attempt, {
+			correlation,
+			signal: controller.signal,
+		});
+
+		expect(cancelled).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
+		const lease = value.store.operations.get(value.attempt.attemptId)?.credential;
+		if (lease === undefined) throw new Error("missing durable credential lease");
+		expect(credentials.service.get(lease.projection.leaseId)?.status).toBe("revocation_unknown");
+		expect(credentials.service.isTargetQuarantined(lease.targetId)).toBe(true);
+		expect(value.supervision.processController.launchCalls).toBe(0);
+		expect(value.driver.calls.spawn).toBe(0);
+	});
+
+	it("reconciles and revokes without launching when model gateway open throws", async () => {
+		const credentials = createCredentialHarness();
+		let closeCalls = 0;
+		const runtime: ExternalConnectorCredentialRuntime = {
+			...credentials.runtime,
+			openModelGateway: async () => {
+				throw new Error("injected gateway open failure");
+			},
+			closeModelGateway: () => {
+				closeCalls += 1;
+				return true;
+			},
+			modelGatewayEnvironment: () => ({}),
+		};
+		const value = await fixture({
+			credential: runtime,
+			modelAccess: "aos_gateway",
+			modelProjection: gatewayModelProjection,
+		});
+		persistAttempt(value);
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed).toMatchObject({ ok: false, error: { code: "external_credential_unavailable" } });
+		expect(value.driver.calls.spawn).toBe(0);
+		expect(value.supervision.processController.launchCalls).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
+		expect(closeCalls).toBe(0);
+		expect(credentials.target.revocations).toHaveLength(1);
+		const leaseId = value.store.operations.get(value.attempt.attemptId)?.credential?.projection.leaseId;
+		expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("settled");
+	});
+
+	it("returns side_effect_unknown when gateway open throws and lease revocation is unknown", async () => {
+		const credentials = createCredentialHarness();
+		credentials.target.revokeUnknown = true;
+		let closeCalls = 0;
+		const runtime: ExternalConnectorCredentialRuntime = {
+			...credentials.runtime,
+			openModelGateway: async () => {
+				throw new Error("injected gateway open failure");
+			},
+			closeModelGateway: () => {
+				closeCalls += 1;
+				return false;
+			},
+			modelGatewayEnvironment: () => ({}),
+		};
+		const value = await fixture({
+			credential: runtime,
+			modelAccess: "aos_gateway",
+			modelProjection: gatewayModelProjection,
+		});
+		persistAttempt(value);
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
+		expect(closeCalls).toBe(0);
+		expect(credentials.target.revocations).toHaveLength(1);
+		const leaseId = value.store.operations.get(value.attempt.attemptId)?.credential?.projection.leaseId;
+		expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("revocation_unknown");
+		await value.connector.dispose().catch(() => undefined);
+	});
+
+	for (const closeOutcome of ["false", "throw"] as const) {
+		it(`returns side_effect_unknown when environment derivation fails and gateway close ${closeOutcome}`, async () => {
+			const credentials = createCredentialHarness();
+			let opened: ExternalModelGatewayCapability | undefined;
+			let closeCalls = 0;
+			const runtime: ExternalConnectorCredentialRuntime = {
+				...credentials.runtime,
+				openModelGateway: async (lease) => {
+					opened = Object.freeze({
+						schemaVersion: 1,
+						endpoint: "http://127.0.0.1:43124/v1",
+						authorization: "Bearer aos_gateway_fixture",
+						leaseId: lease.leaseId,
+						modelBindingDigest: gatewayModelProjection.bindingDigest.value,
+						expiresAt: lease.expiresAt,
+					});
+					return opened;
+				},
+				closeModelGateway: () => {
+					closeCalls += 1;
+					if (closeOutcome === "throw") throw new Error("injected gateway close failure");
+					return false;
+				},
+				modelGatewayEnvironment: () => {
+					throw new Error("injected gateway environment failure");
+				},
+			};
+			const value = await fixture({
+				credential: runtime,
+				modelAccess: "aos_gateway",
+				modelProjection: gatewayModelProjection,
+			});
+			persistAttempt(value);
+
+			const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+			expect(completed).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+			expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+				status: "reconcile_required",
+				reconcileReason: "credential_unavailable",
+			});
+			expect(opened).toBeDefined();
+			expect(closeCalls).toBe(1);
+			expect(credentials.target.revocations).toHaveLength(1);
+			const leaseId = value.store.operations.get(value.attempt.attemptId)?.credential?.projection.leaseId;
+			expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("settled");
+			await value.connector.dispose().catch(() => undefined);
+		});
+	}
+
+	it("returns side_effect_unknown when environment derivation fails and lease revocation is unknown", async () => {
+		const credentials = createCredentialHarness();
+		credentials.target.revokeUnknown = true;
+		let opened: ExternalModelGatewayCapability | undefined;
+		let closeCalls = 0;
+		const runtime: ExternalConnectorCredentialRuntime = {
+			...credentials.runtime,
+			openModelGateway: async (lease) => {
+				opened = Object.freeze({
+					schemaVersion: 1,
+					endpoint: "http://127.0.0.1:43124/v1",
+					authorization: "Bearer aos_gateway_fixture",
+					leaseId: lease.leaseId,
+					modelBindingDigest: gatewayModelProjection.bindingDigest.value,
+					expiresAt: lease.expiresAt,
+				});
+				return opened;
+			},
+			closeModelGateway: () => {
+				closeCalls += 1;
+				return true;
+			},
+			modelGatewayEnvironment: () => {
+				throw new Error("injected gateway environment failure");
+			},
+		};
+		const value = await fixture({
+			credential: runtime,
+			modelAccess: "aos_gateway",
+			modelProjection: gatewayModelProjection,
+		});
+		persistAttempt(value);
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed).toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
+		expect(opened).toBeDefined();
+		expect(closeCalls).toBe(1);
+		expect(credentials.target.revocations).toHaveLength(1);
+		const leaseId = value.store.operations.get(value.attempt.attemptId)?.credential?.projection.leaseId;
+		expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("revocation_unknown");
+		await value.connector.dispose().catch(() => undefined);
+	});
+
+	it("closes an unregistered model gateway exactly once when environment derivation throws", async () => {
+		const credentials = createCredentialHarness();
+		let opened: ExternalModelGatewayCapability | undefined;
+		const closed: ExternalModelGatewayCapability[] = [];
+		const runtime: ExternalConnectorCredentialRuntime = {
+			...credentials.runtime,
+			openModelGateway: async (lease) => {
+				opened = Object.freeze({
+					schemaVersion: 1,
+					endpoint: "http://127.0.0.1:43124/v1",
+					authorization: "Bearer aos_gateway_fixture",
+					leaseId: lease.leaseId,
+					modelBindingDigest: gatewayModelProjection.bindingDigest.value,
+					expiresAt: lease.expiresAt,
+				});
+				return opened;
+			},
+			closeModelGateway: (capability) => {
+				closed.push(capability);
+				return true;
+			},
+			modelGatewayEnvironment: () => {
+				throw new Error("injected gateway environment failure");
+			},
+		};
+		const value = await fixture({
+			credential: runtime,
+			modelAccess: "aos_gateway",
+			modelProjection: gatewayModelProjection,
+		});
+		persistAttempt(value);
+
+		const completed = await value.connector.runAttempt(value.attempt, { correlation });
+
+		expect(completed).toMatchObject({ ok: false, error: { code: "external_credential_unavailable" } });
+		expect(value.driver.calls.spawn).toBe(0);
+		expect(value.supervision.processController.launchCalls).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "credential_unavailable",
+		});
+		expect(opened).toBeDefined();
+		expect(closed).toEqual([opened]);
+		expect(credentials.target.revocations).toHaveLength(1);
+		const leaseId = value.store.operations.get(value.attempt.attemptId)?.credential?.projection.leaseId;
+		expect(leaseId === undefined ? undefined : credentials.service.get(leaseId)?.status).toBe("settled");
+
+		await value.connector.dispose();
+		expect(closed).toEqual([opened]);
 	});
 
 	for (const terminalPath of ["launch_failure", "runner_throw", "cancel", "deadline", "dispose"] as const) {
@@ -1878,6 +2198,36 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		}
 	});
 
+	it("keeps failed-without-mapping non-terminal when credential revocation is unknown", async () => {
+		vi.useFakeTimers();
+		try {
+			const credentials = createCredentialHarness();
+			credentials.target.revokeUnknown = true;
+			const value = await fixture({ credential: credentials.runtime });
+			persistAttempt(value);
+			let markSpawnStarted: (() => void) | undefined;
+			const spawnStarted = new Promise<void>((resolve) => { markSpawnStarted = resolve; });
+			value.driver.onSpawn = () => markSpawnStarted?.();
+			value.driver.spawnGate = new Promise<never>(() => undefined);
+			const running = value.connector.runAttempt(value.attempt, { correlation });
+			await spawnStarted;
+
+			const cancellation = value.connector.cancelAttempt(value.attempt.attemptId);
+			for (let index = 0; index < 8; index += 1) await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(1_000);
+
+			await expect(cancellation).resolves.toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+			await expect(running).resolves.toMatchObject({ ok: false, error: { code: "side_effect_unknown" } });
+			expect(value.store.receiptWrites).toBe(0);
+			expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+				status: "reconcile_required",
+				reconcileReason: "credential_unavailable",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("cancels idempotently after persisting cancelling", async () => {
 		const value = await fixture();
 		persistAttempt(value);
@@ -2162,6 +2512,73 @@ describe("durable ExternalAgentConnector lifecycle", () => {
 		expect(await value.supervision.privateStateStore.read(value.attempt.attemptId)).toBeUndefined();
 		await restarted.connector.dispose();
 	});
+
+	it("startup quarantines a reaped credential-bearing operation when revoke is unknown", async () => {
+		const credentials = createCredentialHarness();
+		const value = await fixture({ credential: credentials.runtime });
+		persistAttempt(value);
+		value.driver.readHangs = true;
+		value.driver.eventNextHangs = true;
+		const running = value.connector.runAttempt(value.attempt, { correlation });
+		void running.catch(() => undefined);
+		await expect.poll(() => value.driver.calls.read).toBe(1);
+		credentials.target.revokeUnknown = true;
+		const restarted = restartedConnector(value, undefined, credentials.runtime);
+
+		const recovered = await restarted.connector.recoverPrivateSupervisorState();
+
+		expect(recovered).toEqual([{ attemptId: value.attempt.attemptId, status: "quarantined" }]);
+		expect(value.store.receiptWrites).toBe(0);
+		expect(value.store.operations.get(value.attempt.attemptId)).toMatchObject({
+			status: "reconcile_required",
+			reconcileReason: "driver_failure",
+		});
+		const lease = value.store.operations.get(value.attempt.attemptId)?.credential;
+		if (lease === undefined) throw new Error("missing durable credential lease");
+		expect(credentials.service.get(lease.projection.leaseId)?.status).toBe("revocation_unknown");
+		expect(credentials.service.isTargetQuarantined(lease.targetId)).toBe(true);
+		await value.connector.dispose().catch(() => undefined);
+		await running;
+	});
+
+	for (const foreignAuthority of ["provider", "target"] as const) {
+		it(`startup ignores credential orphans outside exact ${foreignAuthority} authority`, async () => {
+			const credentials = createCredentialHarness();
+			const value = await fixture({ credential: credentials.runtime });
+			persistAttempt(value);
+			value.driver.readHangs = true;
+			value.driver.eventNextHangs = true;
+			const running = value.connector.runAttempt(value.attempt, { correlation });
+			void running.catch(() => undefined);
+			await expect.poll(() => value.driver.calls.read).toBe(1);
+			const durable = value.store.operations.get(value.attempt.attemptId);
+			if (durable?.credential === undefined || durable.credentialRequirement === undefined) {
+				throw new Error("missing durable credential-bearing operation");
+			}
+
+			await value.connector.dispose().catch(() => undefined);
+			await running;
+			await value.supervision.privateStateStore.delete(value.attempt.attemptId);
+			const foreignOperation: ExternalConnectorOperation = foreignAuthority === "provider"
+				? { ...durable, providerId: "foreign-provider" }
+				: {
+					...durable,
+					credentialRequirement: { ...durable.credentialRequirement, targetId: "foreign-target" },
+					credential: { ...durable.credential, targetId: "foreign-target" },
+				};
+			value.store.operations.set(value.attempt.attemptId, foreignOperation);
+			const operationWritesBefore = value.store.operationHistory.length;
+			const releaseSpy = vi.spyOn(credentials.service, "releaseDeliveredLease");
+			const restarted = restartedConnector(value, undefined, credentials.runtime);
+
+			const recovered = await restarted.connector.recoverPrivateSupervisorState();
+
+			expect(recovered).toEqual([]);
+			expect(releaseSpy).not.toHaveBeenCalled();
+			expect(value.store.operationHistory).toHaveLength(operationWritesBefore);
+			expect(value.store.operations.get(value.attempt.attemptId)).toEqual(foreignOperation);
+		});
+	}
 
 	it("startup quarantines not-found, PID-reused, and ambiguous identities without killing", async () => {
 		for (const status of ["not_found", "identity_mismatch", "ambiguous"] as const) {
