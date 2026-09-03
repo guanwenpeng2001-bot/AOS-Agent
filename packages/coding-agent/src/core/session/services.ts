@@ -15,6 +15,7 @@ import type { MCPAuthProviderResolver, MCPTransportFactory } from "../runtime/mc
 import type { ModelBroker } from "../runtime/model-broker.ts";
 import { createModelBroker, ModelRuntime } from "../runtime/model-runtime.ts";
 import { createPackagedExternalConnectorRegistryFactory } from "../connector/packaged-runtime.ts";
+import type { PrivateExternalConnectorVendorCompanions } from "../connector/vendor/composition.ts";
 import { ExternalConnectorModelGateway } from "../connector/model-gateway.ts";
 import { waitForExternalConnectorRegistryInitialization } from "../connector/registry-initialization.ts";
 import { LocalCredentialVault } from "../policy/credential-vault.ts";
@@ -197,6 +198,21 @@ function applyExtensionFlagValues(
 export async function createAgentSessionServices(
 	options: CreateAgentSessionServicesOptions,
 ): Promise<AgentSessionServices> {
+	return createAgentSessionServicesInternal(options);
+}
+
+/** @internal Product entry seam for static vendor companions; not a general services option. */
+export async function createAgentSessionServicesForProduct(
+	options: CreateAgentSessionServicesOptions,
+	vendorCompanions?: PrivateExternalConnectorVendorCompanions,
+): Promise<AgentSessionServices> {
+	return createAgentSessionServicesInternal(options, vendorCompanions);
+}
+
+async function createAgentSessionServicesInternal(
+	options: CreateAgentSessionServicesOptions,
+	vendorCompanions?: PrivateExternalConnectorVendorCompanions,
+): Promise<AgentSessionServices> {
 	const cwd = resolvePath(options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
 	const modelRuntime =
@@ -272,6 +288,9 @@ export async function createAgentSessionServices(
 				: await createPackagedExternalConnectorRegistryFactory({
 						target: externalConnectorTargetConfig.selectedTarget,
 						agentDir,
+						...(vendorCompanions === undefined
+							? {}
+							: { vendorCompanions }),
 					});
 		// The settings-derived composition is a complete fallback. An explicit Host
 		// composition above wins as a whole; authority fields are never merged.

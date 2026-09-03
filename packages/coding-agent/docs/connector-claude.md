@@ -8,12 +8,18 @@ This page records the settings registration and private driver contract. The thr
    that pinned Claude Agent SDK protocol.
 2. Product reachability: a trusted global target with `driver: "claude"`
    composes the pinned private connector. `none` and `agent_owned` can register,
-   run, and produce durable receipts; real authentication remains a separate
-   certification step.
+   run, and produce durable receipts.
 3. Model-access boundary: settings-selected Claude targets may use
    `aos_gateway` with an exact ModelBroker route whose canonical provider is
    `amazon-bedrock`. The private driver translates only Claude's provider
    selector to `bedrock`. Generic JSONL and ACP targets remain rejected.
+
+None of these modes is currently task-certified for real vendor authentication
+and task completion. Pin/handshake and product-reachability evidence do not
+establish task certification. `aos_gateway` additionally requires the exact
+ModelBroker translation, a matching `amazon-bedrock` credential path, the
+Host-owned loopback gateway capability, verified effective-model observation,
+and canonical terminal evidence; missing or drifted evidence fails closed.
 
 The capability matrix below is enforced when the settings target is composed.
 

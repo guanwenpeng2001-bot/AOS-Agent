@@ -864,6 +864,9 @@ describe("private Claude Agent SDK connector driver", () => {
 		expect(manifest.optionalDependencies["@anthropic-ai/claude-agent-sdk"]).toBe("0.3.246");
 		expect(manifest.optionalDependencies.zod).toBe("4.4.3");
 		expect(companionSource).toContain('from "@anthropic-ai/claude-agent-sdk"');
+		expect(companionSource).toContain('import * as ClaudeAgentSdk from "@anthropic-ai/claude-agent-sdk"');
+		expect(companionSource).not.toContain('from "jiti"');
+		expect(companionSource).not.toContain(".import<typeof ClaudeAgentSdk>");
 		expect(companionSource).toContain("settingSources: []");
 		expect(companionSource).toContain("strictMcpConfig: true");
 		expect(companionSource).toContain("tools: []");

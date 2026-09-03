@@ -457,6 +457,7 @@ function narrowCapabilities(
 	base: ExternalConnectorCapabilityCeiling,
 	narrowing: ExternalConnectorCapabilityNarrowing | undefined,
 	path: string,
+	driver: PrivateExternalConnectorVendorDriver | undefined,
 ): ExternalConnectorCapabilityCeiling {
 	if (narrowing === undefined) return base;
 	if (narrowing.modelAccess?.some((entry) => !base.modelAccess.includes(entry))) {
@@ -465,6 +466,23 @@ function narrowCapabilities(
 	for (const key of ["resume", "toolGateway", "artifacts", "images"] as const) {
 		if (narrowing[key] === true && base[key] === false) {
 			fail("capability_widened", `${path}.${key}`, "External Connector selection cannot widen a capability ceiling.");
+		}
+	}
+	if (driver !== undefined) {
+		const requiredResume = driver !== "claude";
+		if (narrowing.resume !== undefined && narrowing.resume !== requiredResume) {
+			fail(
+				"capability_widened",
+				`${path}.resume`,
+				`External Connector ${driver} selections must preserve the protocol-required resume capability (${requiredResume}).`,
+			);
+		}
+		if (narrowing.toolGateway !== undefined && narrowing.toolGateway !== true) {
+			fail(
+				"capability_widened",
+				`${path}.toolGateway`,
+				`External Connector ${driver} selections must preserve the protocol-required Tool Gateway capability (true).`,
+			);
 		}
 	}
 	return Object.freeze({
@@ -521,8 +539,18 @@ export function buildExternalConnectorTargetConfig(
 		if (target === undefined) {
 			fail("target_not_found", "$.selection", "External Connector selection must name a trusted target.");
 		}
-		let capabilityCeiling = narrowCapabilities(target.capabilityCeiling, project?.capabilityCeiling, "$.project.capabilityCeiling");
-		capabilityCeiling = narrowCapabilities(capabilityCeiling, role?.capabilityCeiling, "$.role.capabilityCeiling");
+		let capabilityCeiling = narrowCapabilities(
+			target.capabilityCeiling,
+			project?.capabilityCeiling,
+			"$.project.capabilityCeiling",
+			target.driver,
+		);
+		capabilityCeiling = narrowCapabilities(
+			capabilityCeiling,
+			role?.capabilityCeiling,
+			"$.role.capabilityCeiling",
+			target.driver,
+		);
 		const selectionSources = Object.freeze([
 			...(explicitTargetId === undefined ? [] : ["explicit" as const]),
 			...(project === undefined ? [] : ["project" as const]),

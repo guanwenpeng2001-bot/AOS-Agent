@@ -119,6 +119,12 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
+      - name: Check out release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
       - name: Download binary archives
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -135,6 +141,7 @@ jobs:
           mkdir -p "${extract_dir}"
           tar -xzf "release-assets/aos-${{ matrix.platform }}.tar.gz" -C "${extract_dir}"
           binary="${extract_dir}/aos/aos"
+          node packages/coding-agent/scripts/standalone-archive-assets.mjs verify --executable "${binary}"
           "${binary}" --help
           actual_version="$("${binary}" --version)"
           expected_version="${RELEASE_TAG#v}"
@@ -152,6 +159,10 @@ jobs:
           New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
           Expand-Archive -LiteralPath "release-assets/aos-${{ matrix.platform }}.zip" -DestinationPath $extractDir -Force
           $binary = Join-Path $extractDir "aos.exe"
+          node packages/coding-agent/scripts/standalone-archive-assets.mjs verify --executable $binary
+          if ($LASTEXITCODE -ne 0) {
+            throw "Standalone asset verification failed with exit code $LASTEXITCODE"
+          }
           & $binary --help
           if ($LASTEXITCODE -ne 0) {
             throw "aos.exe --help failed with exit code $LASTEXITCODE"

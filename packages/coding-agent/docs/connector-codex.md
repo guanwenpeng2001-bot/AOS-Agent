@@ -19,6 +19,13 @@ Capability matrix and pinned version for the private Codex app-server connector.
 3. Model-access boundary: settings-selected Codex targets may use
    `aos_gateway`; generic JSONL and ACP targets remain rejected.
 
+No Codex connector mode is currently task-certified for real vendor
+authentication and task completion. Pin/handshake and product-reachability
+evidence do not establish task certification. For `aos_gateway`, a requested
+projection and ModelBinding digest record intent only; verified
+`AttemptReceipt.effectiveModel` and canonical terminal evidence are required to
+establish observed execution, and missing or drifted evidence fails closed.
+
 ## Settings registration
 
 ```json

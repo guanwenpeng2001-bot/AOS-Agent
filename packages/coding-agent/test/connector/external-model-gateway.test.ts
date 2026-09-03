@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { connect as netConnect, type AddressInfo } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -222,6 +222,44 @@ function gatewayFetch(
 	});
 }
 
+async function stalledGatewayRequest(fixture: GatewayFixture): Promise<{ readonly settled: Promise<void> }> {
+	const endpoint = new URL(`${fixture.capability.endpoint}/responses`);
+	const socket = netConnect({ host: endpoint.hostname, port: Number(endpoint.port) });
+	await new Promise<void>((resolve, reject) => {
+		const onConnect = (): void => {
+			socket.off("error", onError);
+			resolve();
+		};
+		const onError = (error: Error): void => {
+			socket.off("connect", onConnect);
+			reject(error);
+		};
+		socket.once("connect", onConnect);
+		socket.once("error", onError);
+	});
+	let settle: () => void = () => undefined;
+	const settled = new Promise<void>((resolve) => { settle = resolve; });
+	const settleAndClose = (): void => {
+		settle();
+		if (!socket.destroyed) socket.destroy();
+	};
+	socket.once("data", settleAndClose);
+	socket.once("end", settle);
+	socket.once("close", settle);
+	socket.once("error", settle);
+	socket.write([
+		`POST ${endpoint.pathname} HTTP/1.1`,
+		`Host: ${endpoint.host}`,
+		`Authorization: ${fixture.capability.authorization}`,
+		"Content-Type: application/json",
+		"Content-Length: 4096",
+		"",
+		`{"model":"${MODEL.id}","input":"partial`,
+	].join("\r\n"));
+	await new Promise<void>((resolve) => setTimeout(resolve, 30));
+	return { settled };
+}
+
 function activeProviderFixture(): {
 	readonly provider: Provider<"bedrock-converse-stream">;
 	readonly started: Promise<void>;
@@ -289,6 +327,69 @@ describe("External Connector model gateway", () => {
 			{ ...fixture.lease, expiresAt: new Date(Date.now() - 1).toISOString() },
 			PROJECTION,
 		)).toBeUndefined();
+	});
+
+	it("renews an active capability past its original expiry and expires at the renewed deadline", async () => {
+		const clock = { now: Date.now() };
+		const fixture = await gatewayFixture({ now: () => clock.now, leaseTtlMs: 100 });
+		const originalExpiry = Date.parse(fixture.capability.expiresAt);
+		const requestedAt = originalExpiry - 50;
+		const renewedExpiry = requestedAt + 1_000;
+		expect(fixture.gateway.renew({
+			schemaVersion: 1,
+			leaseId: fixture.lease.leaseId,
+			grantId: fixture.lease.grantId,
+			bindingId: fixture.lease.bindingId,
+			targetId: "codex-gateway",
+			requestedTtlMs: 1_000,
+			requestedAt: new Date(requestedAt).toISOString(),
+		})).toMatchObject({ status: "renewed" });
+
+		clock.now = originalExpiry + 1;
+		expect((await gatewayFetch(fixture, "responses", JSON.stringify({
+			model: MODEL.id,
+			input: "still live",
+		}))).status).toBe(200);
+
+		clock.now = renewedExpiry + 1;
+		expect((await gatewayFetch(fixture, "responses", JSON.stringify({
+			model: MODEL.id,
+			input: "expired",
+		}))).status).toBe(401);
+		expect(() => fixture.gateway.renew({
+			schemaVersion: 1,
+			leaseId: fixture.lease.leaseId,
+			grantId: fixture.lease.grantId,
+			bindingId: fixture.lease.bindingId,
+			targetId: "codex-gateway",
+			requestedTtlMs: 1_000,
+			requestedAt: new Date(renewedExpiry + 1).toISOString(),
+		})).toThrow("renewal is expired");
+	});
+
+	it("keeps the original expiry timer from aborting a renewed active request", async () => {
+		const active = activeProviderFixture();
+		const fixture = await gatewayFixture({ provider: active.provider, leaseTtlMs: 150 });
+		const requestedAt = Date.now();
+		expect(fixture.gateway.renew({
+			schemaVersion: 1,
+			leaseId: fixture.lease.leaseId,
+			grantId: fixture.lease.grantId,
+			bindingId: fixture.lease.bindingId,
+			targetId: "codex-gateway",
+			requestedTtlMs: 700,
+			requestedAt: new Date(requestedAt).toISOString(),
+		})).toMatchObject({ status: "renewed" });
+		const request = gatewayFetch(fixture, "responses", JSON.stringify({ model: MODEL.id, input: "wait" }));
+		await active.started;
+		await new Promise<void>((resolve) => setTimeout(resolve, 250));
+		let aborted = false;
+		void active.aborted.then(() => { aborted = true; });
+		await Promise.resolve();
+		expect(aborted).toBe(false);
+		expect(fixture.gateway.close(fixture.capability)).toBe(true);
+		await active.aborted;
+		expect((await request).status).toBe(502);
 	});
 
 	it("adapts OpenAI Responses streaming with roles, tools, tool results, and effort", async () => {
@@ -360,6 +461,122 @@ describe("External Connector model gateway", () => {
 		});
 		expect(captured?.options).toMatchObject({ reasoning: "high", maxTokens: 512 });
 		expect(captured?.options).not.toHaveProperty("serviceTier");
+	});
+
+	it("round-trips signed and redacted Anthropic thinking blocks without exposing their payloads", async () => {
+		const fixture = await gatewayFixture({ result: assistant({
+			content: [
+				{ type: "thinking", thinking: "private chain", thinkingSignature: "signed-output" },
+				{ type: "thinking", thinking: "", thinkingSignature: "redacted-output", redacted: true },
+				{ type: "text", text: "answer" },
+			],
+			stopReason: "stop",
+		}) });
+		const response = await gatewayFetch(fixture, "messages", JSON.stringify({
+			model: MODEL.id,
+			max_tokens: 128,
+			messages: [
+				{ role: "assistant", content: [
+					{ type: "thinking", thinking: "prior chain", signature: "signed-input" },
+					{ type: "redacted_thinking", data: "redacted-input" },
+				] },
+				{ role: "user", content: "continue" },
+			],
+		}));
+		expect(response.status).toBe(200);
+		expect(fixture.requests[0]?.context.messages[0]).toMatchObject({
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "prior chain", thinkingSignature: "signed-input" },
+				{ type: "thinking", thinking: "", thinkingSignature: "redacted-input", redacted: true },
+			],
+		});
+		expect(await response.json()).toMatchObject({
+			content: [
+				{ type: "thinking", thinking: "private chain", signature: "signed-output" },
+				{ type: "redacted_thinking", data: "redacted-output" },
+				{ type: "text", text: "answer" },
+			],
+		});
+
+		expect((await gatewayFetch(fixture, "messages", JSON.stringify({
+			model: MODEL.id,
+			max_tokens: 128,
+			messages: [{ role: "assistant", content: [{ type: "thinking", thinking: "unsigned" }] }],
+		}))).status).toBe(400);
+	});
+
+	it("round-trips the full OpenAI reasoning replay item and rejects malformed replay signatures", async () => {
+		const inputReasoning = {
+			type: "reasoning",
+			id: "rs_input",
+			status: "completed",
+			summary: [{ type: "summary_text", text: "input summary" }],
+			content: [{ type: "reasoning_text", text: "input details" }],
+			encrypted_content: "encrypted-input",
+		};
+		const outputReasoning = {
+			type: "reasoning",
+			id: "rs_output",
+			status: "completed",
+			summary: [{ type: "summary_text", text: "output summary" }],
+			content: [{ type: "reasoning_text", text: "output details" }],
+			encrypted_content: "encrypted-output",
+		};
+		const fixture = await gatewayFixture({ result: assistant({
+			content: [{
+				type: "thinking",
+				thinking: "output summary",
+				thinkingSignature: JSON.stringify(outputReasoning),
+			}],
+			stopReason: "stop",
+		}) });
+		const response = await gatewayFetch(fixture, "responses", JSON.stringify({
+			model: MODEL.id,
+			input: [inputReasoning, { type: "message", role: "user", content: "continue" }],
+		}));
+		expect(response.status).toBe(200);
+		expect(fixture.requests[0]?.context.messages[0]).toMatchObject({
+			role: "assistant",
+			content: [{
+				type: "thinking",
+				thinking: "input summary",
+				thinkingSignature: JSON.stringify(inputReasoning),
+			}],
+		});
+		expect(await response.json()).toMatchObject({ output: [outputReasoning] });
+
+		const malformedInput = await gatewayFixture();
+		const summarylessReasoning = {
+			type: "reasoning",
+			id: "rs_summaryless",
+			status: "completed",
+			content: [{ type: "reasoning_text", text: "content-only reasoning" }],
+			encrypted_content: "encrypted-summaryless",
+		};
+		expect((await gatewayFetch(malformedInput, "responses", JSON.stringify({
+			model: MODEL.id,
+			input: [summarylessReasoning, { type: "message", role: "user", content: "continue" }],
+		}))).status).toBe(200);
+		expect(malformedInput.requests[0]?.context.messages[0]).toMatchObject({
+			content: [{
+				type: "thinking",
+				thinking: "content-only reasoning",
+				thinkingSignature: JSON.stringify(summarylessReasoning),
+			}],
+		});
+		expect((await gatewayFetch(malformedInput, "responses", JSON.stringify({
+			model: MODEL.id,
+			input: [{ type: "reasoning", id: "rs_bad", summary: [], encrypted_content: { bad: true } }],
+		}))).status).toBe(400);
+		const malformedOutput = await gatewayFixture({ result: assistant({
+			content: [{ type: "thinking", thinking: "bad", thinkingSignature: "not-json" }],
+			stopReason: "stop",
+		}) });
+		expect((await gatewayFetch(malformedOutput, "responses", JSON.stringify({
+			model: MODEL.id,
+			input: "hello",
+		}))).status).toBe(502);
 	});
 
 	it("applies an admitted service tier in the final stock OpenAI Responses payload", async () => {
@@ -534,5 +751,35 @@ describe("External Connector model gateway", () => {
 		await active.settled;
 		await disposed;
 		expect((await request).status).toBe(502);
+	});
+
+	it("cancels stalled partial request bodies during close, revoke, and dispose", async () => {
+		const closedFixture = await gatewayFixture();
+		const closedRequest = await stalledGatewayRequest(closedFixture);
+		expect(closedFixture.gateway.close(closedFixture.capability)).toBe(true);
+		await expect(Promise.race([
+			closedRequest.settled,
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("close did not settle stalled body")), 1_000)),
+		])).resolves.toBeUndefined();
+
+		const revokedFixture = await gatewayFixture();
+		const revokedRequest = await stalledGatewayRequest(revokedFixture);
+		expect(revokedFixture.gateway.revoke(revokedFixture.revoke).status).toBe("revocation_unknown");
+		await expect(Promise.race([
+			revokedRequest.settled,
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("revoke did not settle stalled body")), 1_000)),
+		])).resolves.toBeUndefined();
+		expect(revokedFixture.gateway.revoke(revokedFixture.revoke).status).toBe("revoked");
+
+		const disposedFixture = await gatewayFixture();
+		const disposedRequest = await stalledGatewayRequest(disposedFixture);
+		await expect(Promise.race([
+			disposedFixture.gateway.dispose(),
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("dispose did not settle stalled body")), 1_000)),
+		])).resolves.toBeUndefined();
+		await expect(Promise.race([
+			disposedRequest.settled,
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("disposed request transport did not settle")), 1_000)),
+		])).resolves.toBeUndefined();
 	});
 });

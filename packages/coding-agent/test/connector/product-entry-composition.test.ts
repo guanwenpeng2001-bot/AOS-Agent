@@ -2,7 +2,14 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model, Provider } from "@aos-agent/ai";
+import {
+	createAssistantMessageEventStream,
+	type Api,
+	type AssistantMessage,
+	type Context,
+	type Model,
+	type Provider,
+} from "@aos-agent/ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAgentCanonicalSession } from "../../src/core/session/facade.ts";
 import { AuthStorage } from "../../src/core/policy/auth-storage.ts";
@@ -224,19 +231,87 @@ async function gatewayRuntime(cwd: string, targetId: string, captures?: VendorAd
 			id: "gateway-model",
 			provider: providerId,
 			api: providerId === "amazon-bedrock" ? "bedrock-converse-stream" : "openai-responses",
+			reasoning: true,
+		};
+		const recordRequest = (
+			method: "stream" | "streamSimple",
+			model: Model<Api>,
+			context: Context,
+			options: {
+				readonly apiKey?: string;
+				readonly maxTokens?: number;
+				readonly reasoning?: string;
+				readonly reasoningEffort?: string;
+				readonly serviceTier?: string | null;
+			} | undefined,
+		): void => {
+			captures?.modelRequests?.push({
+				method,
+				provider: model.provider,
+				model: model.id,
+				...(options?.apiKey === undefined ? {} : { apiKey: options.apiKey }),
+				context: JSON.stringify(context),
+				...(options?.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+				...(options?.reasoning === undefined ? {} : { reasoning: options.reasoning }),
+				...(options?.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }),
+				...(options?.serviceTier === undefined ? {} : { serviceTier: options.serviceTier }),
+			});
+		};
+		const completedStream = (model: Model<Api>) => {
+			const message: AssistantMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "gateway fixture response" }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					reasoning: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: Date.now(),
+			};
+			const stream = createAssistantMessageEventStream();
+			stream.push({ type: "start", partial: { ...message, content: [], stopReason: "pending" } });
+			stream.push({ type: "done", reason: "stop", message });
+			return stream;
 		};
 		const provider: Provider = {
 			id: providerId,
 			name: providerId,
-			auth: {},
+			auth: {
+				apiKey: {
+					name: "Gateway fixture key",
+					resolve: async () => ({ auth: { apiKey: "gateway-fixture-default" }, source: "fixture" }),
+				},
+			},
 			getModels: () => [gatewayModel],
-			stream: () => { throw new Error("gateway fixture does not stream locally"); },
-			streamSimple: () => { throw new Error("gateway fixture does not stream locally"); },
+			stream: (model, context, options) => {
+				recordRequest("stream", model, context, options);
+				return completedStream(model);
+			},
+			streamSimple: (model, context, options) => {
+				recordRequest("streamSimple", model, context, options);
+				return completedStream(model);
+			},
 		};
 		runtime.registerNativeProvider(provider);
 	}
 	const vault = new LocalCredentialVault({ authPath: join(cwd, "auth.json") });
-	const gateway = new ExternalConnectorModelGateway({ targetId, runtime, vault });
+	class RecordingExternalConnectorModelGateway extends ExternalConnectorModelGateway {
+		override close(capability: Parameters<ExternalConnectorModelGateway["close"]>[0]): boolean {
+			captures?.credentialEvents?.push("gateway-close");
+			const closed = super.close(capability);
+			captures?.credentialEvents?.push(`gateway-close:${closed ? "closed" : "active"}`);
+			return closed;
+		}
+	}
+	const gateway = new RecordingExternalConnectorModelGateway({ targetId, runtime, vault });
 	if (captures !== undefined) captures.modelGateway = gateway;
 	const provider = createTaskCredentialLocalVaultProvider({ vault, target: gateway });
 	const recordingProvider = {
@@ -251,7 +326,12 @@ async function gatewayRuntime(cwd: string, targetId: string, captures?: VendorAd
 				}
 			},
 			renew: provider.issuer.renew,
-			revoke: provider.issuer.revoke,
+			revoke: (request: Parameters<typeof provider.issuer.revoke>[0]) => {
+				captures?.credentialEvents?.push("issuer-revoke");
+				const receipt = provider.issuer.revoke(request);
+				captures?.credentialEvents?.push(`issuer-revoke:${receipt.status}`);
+				return receipt;
+			},
 		},
 		target: {
 			getCapabilities: (request: Parameters<typeof provider.target.getCapabilities>[0]) => {
@@ -263,7 +343,12 @@ async function gatewayRuntime(cwd: string, targetId: string, captures?: VendorAd
 				return provider.target.project(request);
 			},
 			renew: provider.target.renew,
-			revoke: provider.target.revoke,
+			revoke: (request: Parameters<typeof provider.target.revoke>[0]) => {
+				captures?.credentialEvents?.push("target-revoke");
+				const receipt = provider.target.revoke(request);
+				captures?.credentialEvents?.push(`target-revoke:${receipt.status}`);
+				return receipt;
+			},
 		},
 	};
 	return {
@@ -378,7 +463,8 @@ describe("External Connector product entry composition", () => {
 	it.each(["claude", "codex", "acp"] as const)("constructs the stock %s adapter without launching it", async (driver) => {
 		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-stock-${driver}-`));
 		directories.push(cwd);
-		const runtime = await createRuntime(cwd, vendorSettings(cwd, driver, "agent_owned"));
+		const adapters = driver === "claude" ? vendorAdapterFixture(driver, cwd) : undefined;
+		const runtime = await createRuntime(cwd, vendorSettings(cwd, driver, "agent_owned"), adapters);
 		const controller = createRpcHostController(runtime);
 		await controller.start();
 		try {
@@ -394,6 +480,49 @@ describe("External Connector product entry composition", () => {
 		} finally {
 			await controller.shutdown();
 		}
+	});
+
+	it.each([
+		{ driver: "claude", resume: false, toolGateway: true },
+		{ driver: "codex", resume: true, toolGateway: true },
+		{ driver: "acp", resume: true, toolGateway: true },
+	] as const)("maps $driver settings into the exact registry capability contract", async ({ driver, resume, toolGateway }) => {
+		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-capability-${driver}-`));
+		directories.push(cwd);
+		const runtime = await createRuntime(
+			cwd,
+			vendorSettings(cwd, driver, "agent_owned"),
+			vendorAdapterFixture(driver, cwd),
+		);
+		try {
+			const registry = runtime.runtimeComposition.externalConnectorRegistry;
+			const descriptor = registry?.list()[0];
+			if (registry === undefined || descriptor === undefined) throw new Error(`${driver} registry is unavailable`);
+			const selected = await registry.select({
+				providerId: descriptor.providerId,
+				revision: descriptor.revision,
+				capabilitySnapshotDigest: descriptor.capabilitySnapshotDigest,
+			});
+			if (!selected.ok) throw selected.error;
+			expect(selected.value.capabilitySnapshot).toMatchObject({
+				providerId: `fixture.${driver}.agent_owned`,
+				modelAccess: "agent_owned",
+				resume,
+				toolGateway,
+				artifacts: false,
+				images: false,
+			});
+		} finally {
+			await runtime.dispose();
+		}
+	});
+
+	it("reports an actionable missing Claude companion through the package-root service path", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-product-entry-claude-companion-missing-"));
+		directories.push(cwd);
+		await expect(createServices(cwd, vendorSettings(cwd, "claude", "agent_owned"))).rejects.toThrow(
+			"Install @anthropic-ai/claude-agent-sdk@0.3.246 and use the packaged aos entry",
+		);
 	});
 
 	it.each([
@@ -455,8 +584,7 @@ describe("External Connector product entry composition", () => {
 		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-${driver}-gateway-`));
 		directories.push(cwd);
 		const settings = vendorSettings(cwd, driver, "aos_gateway");
-		const captures: VendorAdapterFixtureCaptures = {};
-		captures.credentialEvents = [];
+		const captures: VendorAdapterFixtureCaptures = { credentialEvents: [], gatewayRequests: [], modelRequests: [] };
 		const runtime = await createRuntime(cwd, settings, vendorAdapterFixture(driver, cwd, captures), captures);
 		const records: RpcHostOutputRecord[] = [];
 		const controller = createRpcHostController(runtime, { output: { publish: (record) => records.push(record) } });
@@ -493,13 +621,20 @@ describe("External Connector product entry composition", () => {
 			}
 			try {
 				await vi.waitFor(() => expect(records.some((record) =>
-					record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled")).toBe(true), { timeout: 60_000 });
+					record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled")).toBe(true), { timeout: 5_000 });
 			} catch {
 				const session = getAgentCanonicalSession(runtime.session);
 				const operations = await session.findFoundationRecords({ objectType: "external_connector_operation" });
 				const credentials = runtime.session.sessionRead.getEntries().filter((entry) =>
 					entry.type === "custom" && entry.customType === "task.credential");
-				throw new Error(`Gateway run did not settle: ${JSON.stringify({ records, operations, credentials, credentialEvents: captures.credentialEvents })}`);
+				throw new Error(`Gateway run did not settle: ${JSON.stringify({
+					records,
+					operations,
+					credentials,
+					credentialEvents: captures.credentialEvents,
+					gatewayRequests: captures.gatewayRequests,
+					modelRequests: captures.modelRequests,
+				})}`);
 			}
 			const terminal = records.find((record) =>
 				record.type === "run.completed" || record.type === "run.failed" || record.type === "run.cancelled");
@@ -537,6 +672,75 @@ describe("External Connector product entry composition", () => {
 			expect(credential).toMatchObject({ schemaVersion: 1, scopeDigest: expect.stringMatching(/^sha256:/) });
 			expect(JSON.stringify(credential)).not.toContain("gateway-bedrock-canary");
 			expect(JSON.stringify(credential)).not.toContain("gateway-openai-canary");
+			expect(captures.gatewayRequests).toHaveLength(1);
+			const gatewayRequest = captures.gatewayRequests?.[0];
+			if (gatewayRequest === undefined) throw new Error(`${driver} gateway request was not captured`);
+			expect(gatewayRequest.status).toBe(200);
+			expect(gatewayRequest.responseBytes).toBeLessThan(4_096);
+			if (driver === "claude") {
+				expect(gatewayRequest).toMatchObject({
+					path: "/messages",
+					authorization: captures.claudeQuery?.modelGateway?.authorization,
+					request: {
+						model: "gateway-model",
+						max_tokens: 16,
+						messages: [{ role: "user", content: "execute the claude gateway connector" }],
+						output_config: { effort: "high" },
+						stream: false,
+					},
+					response: {
+						type: "message",
+						model: "gateway-model",
+						content: [{ type: "text", text: "gateway fixture response" }],
+						stop_reason: "end_turn",
+					},
+				});
+			} else {
+				const authorization = captures.supervision?.processController.launchOptions.at(-1)
+					?.environment?.AOS_MODEL_GATEWAY_AUTHORIZATION;
+				expect(gatewayRequest).toMatchObject({
+					path: "/responses",
+					authorization,
+					request: {
+						model: "gateway-model",
+						input: "execute the codex gateway connector",
+						reasoning: { effort: "high" },
+						service_tier: "priority",
+						max_output_tokens: 16,
+						stream: false,
+					},
+					response: {
+						object: "response",
+						status: "completed",
+						model: "gateway-model",
+						output_text: "gateway fixture response",
+						reasoning: { effort: "high" },
+						service_tier: "priority",
+					},
+				});
+			}
+			expect(captures.modelRequests).toHaveLength(1);
+			const modelRequest = captures.modelRequests?.[0];
+			if (modelRequest === undefined) throw new Error(`${driver} ModelRuntime request was not captured`);
+			expect(modelRequest).toMatchObject({
+				method: driver === "claude" ? "streamSimple" : "stream",
+				provider: driver === "claude" ? "amazon-bedrock" : "openai",
+				model: "gateway-model",
+				apiKey: driver === "claude" ? "gateway-bedrock-canary" : "gateway-openai-canary",
+				maxTokens: 16,
+				...(driver === "claude"
+					? { reasoning: "high" }
+					: { reasoningEffort: "high", serviceTier: "priority" }),
+			});
+			expect(modelRequest.context).toContain(`execute the ${driver} gateway connector`);
+			const settledEvent = captures.credentialEvents?.indexOf(`gateway-request-settled:${driver === "claude" ? "/messages" : "/responses"}`) ?? -1;
+			const gatewayCloseEvent = captures.credentialEvents?.indexOf("gateway-close:closed") ?? -1;
+			const targetRevokeEvent = captures.credentialEvents?.indexOf("target-revoke") ?? -1;
+			const issuerRevokeEvent = captures.credentialEvents?.indexOf("issuer-revoke") ?? -1;
+			expect(settledEvent).toBeGreaterThanOrEqual(0);
+			expect(gatewayCloseEvent).toBeGreaterThan(settledEvent);
+			expect(targetRevokeEvent).toBeGreaterThan(gatewayCloseEvent);
+			expect(issuerRevokeEvent).toBeGreaterThan(targetRevokeEvent);
 			const grants = runtime.session.getTaskCredentialService()?.getByRunId(accepted.data.runId) ?? [];
 			expect(grants).toHaveLength(1);
 			expect(grants[0]?.status).toBe("settled");
@@ -664,12 +868,13 @@ describe("External Connector product entry composition", () => {
 		expect(new Set(endpoints).size).toBe(2);
 	}, 180_000);
 
-	it("rejects acp aos_gateway settings before registration", async () => {
+	it("keeps pinned acp aos_gateway fail-closed before registration", async () => {
 		const driver = "acp" as const;
 		const cwd = mkdtempSync(join(tmpdir(), `aos-product-entry-${driver}-gateway-`));
 		directories.push(cwd);
 		const base = vendorSettings(cwd, driver, "agent_owned").getExternalConnectorTargetSettings()?.selectedTarget;
 		if (base === undefined) throw new Error("Vendor gateway fixture target is missing");
+		expect(base.version).toBe("1.4.0");
 		const settings = vendorSettings(cwd, driver, "agent_owned", {
 			capabilityCeiling: { ...base.capabilityCeiling, modelAccess: ["aos_gateway"] },
 		});

@@ -21,9 +21,13 @@ Capability matrix and pinned version for the private ACP stable-v1 connector. Th
 2. Product reachability: a trusted global target with `driver: "acp"`
    composes the pinned stable-v1 client. `none` and `agent_owned` can register,
    run, and produce durable receipts with an injected compatible backend.
-3. Real-backend spike: Claude ACP, Codex ACP, and Gemini candidates did not
-   satisfy the product's exact `capability` / `authMethods` contract. ACP
-   therefore remains handshake-level evidence, not real-backend certification.
+3. Supported modes: `none` and `agent_owned` are supported. `aos_gateway` is
+   unsupported because stable-v1 cannot represent the exact canonical provider,
+   model, effort, and service-tier projection required by that mode.
+4. Task certification: pin/handshake and product-reachability evidence are not
+   task certification. No ACP backend or mode is currently task-certified for
+   real vendor authentication and task completion; incompatible capability or
+   authentication contracts fail before session creation.
 
 ## Settings registration
 

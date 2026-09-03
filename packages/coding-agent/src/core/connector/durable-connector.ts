@@ -838,15 +838,28 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		const runtime = this.#credentialRuntime;
 		if (runtime === undefined) return false;
 		const gatewayCapability = this.#modelGatewayCapabilities.get(attemptId);
-		const gatewayClosed = gatewayCapability === undefined || runtime.closeModelGateway?.(gatewayCapability) === true;
+		let gatewayClosed = gatewayCapability === undefined;
+		if (gatewayCapability !== undefined) {
+			try {
+				gatewayClosed = runtime.closeModelGateway?.(gatewayCapability) === true;
+			} catch {
+				gatewayClosed = false;
+			}
+		}
 		if (gatewayClosed) this.#modelGatewayCapabilities.delete(attemptId);
-		const result = runtime.service.releaseDeliveredLease({
-			reference: externalConnectorCredentialReference(lease),
-			targetId: lease.targetId,
-			reasonCode,
-		});
-		if (result.ok) this.#credentialLeases.delete(attemptId);
-		return gatewayClosed && result.ok;
+		let leaseReleased = false;
+		try {
+			const result = runtime.service.releaseDeliveredLease({
+				reference: externalConnectorCredentialReference(lease),
+				targetId: lease.targetId,
+				reasonCode,
+			});
+			leaseReleased = result.ok;
+			if (gatewayClosed && result.ok) this.#credentialLeases.delete(attemptId);
+		} catch {
+			leaseReleased = false;
+		}
+		return gatewayClosed && leaseReleased;
 	}
 
 	#releaseCredential(
@@ -855,6 +868,71 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 	): boolean {
 		if (operation?.credential === undefined) return true;
 		return this.#releaseCredentialLease(operation.attemptId, operation.credential, reasonCode);
+	}
+
+	async #failGatewaySetup(
+		operation: ExternalConnectorOperation,
+		message: string,
+	): Promise<ResultValue<AttemptReceipt, FoundationError>> {
+		const cleanupConfirmed = await this.#markReconcile(operation, "credential_unavailable");
+		return Result.err(
+			externalFailure(
+				cleanupConfirmed ? "external_credential_unavailable" : "side_effect_unknown",
+				cleanupConfirmed ? message : "External model gateway cleanup could not be confirmed",
+				operation.attemptId,
+			),
+		);
+	}
+
+	async #hasStartupCredentialAuthority(operation: ExternalConnectorOperation): Promise<boolean> {
+		if (
+			operation.providerId !== this.providerId ||
+			operation.credentialRequirement === undefined ||
+			operation.credential === undefined
+		) return false;
+		const attempt = await this.#store.readAttempt(operation.attemptId);
+		if (
+			attempt === undefined ||
+			attempt.providerId !== this.providerId ||
+			attempt.attemptId !== operation.attemptId ||
+			attempt.bindingId !== operation.bindingId ||
+			attempt.bindingEpochIds[0] !== operation.bindingEpochId
+		) return false;
+		const binding = await this.#store.readBinding(operation.bindingId);
+		if (binding === undefined || binding.taskId !== attempt.taskId || binding.bindingId !== attempt.bindingId) return false;
+		const checkedBinding = validateImmutableAgentBinding(binding);
+		if (
+			!checkedBinding.ok ||
+			operation.bindingRevision !== checkedBinding.value.contextRevision.revision ||
+			!sameFingerprint(operation.bindingDigest, checkedBinding.value.fingerprint)
+		) return false;
+		const checkedCorrelation = validateExecutionCorrelation(operation.correlation);
+		if (
+			!checkedCorrelation.ok ||
+			checkedCorrelation.value.taskId !== attempt.taskId ||
+			checkedCorrelation.value.dispatchId !== attempt.dispatchId ||
+			checkedCorrelation.value.attemptId !== attempt.attemptId ||
+			checkedCorrelation.value.bindingId !== attempt.bindingId ||
+			checkedCorrelation.value.bindingEpochId !== operation.bindingEpochId ||
+			checkedCorrelation.value.providerId !== this.providerId ||
+			checkedCorrelation.value.agentInstanceId !== undefined
+		) return false;
+		const executionInput = await this.#store.readExecutionInput(attempt.taskId);
+		if (executionInput === undefined || executionInput.taskId !== attempt.taskId) return false;
+		const plan = this.#resolveCredentialPlan(
+			attempt,
+			checkedBinding.value,
+			checkedCorrelation.value,
+			executionInput.modelProjection,
+		);
+		if (!plan.ok || plan.value === undefined) return false;
+		const requirement = plan.value.requirement;
+		const credential = operation.credential;
+		return canonicalFoundationJson(operation.credentialRequirement) === canonicalFoundationJson(requirement) &&
+			credential.targetId === requirement.targetId &&
+			credential.targetKind === requirement.targetKind &&
+			credential.scopeCount === requirement.scopeCount &&
+			credential.projection.scopeDigest === requirement.scopeDigest;
 	}
 
 	#requireExactMcpToolGatewayRoutes(
@@ -932,6 +1010,7 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 		const operations = await this.#store.listOperations?.() ?? [];
 		for (const operation of operations) {
 			if (operation.credential === undefined || privateAttempts.has(operation.attemptId)) continue;
+			if (!await this.#hasStartupCredentialAuthority(operation)) continue;
 			const released = operation.status === "terminal"
 				? this.#releaseCredential(operation, "run_interrupted")
 				: await this.#markReconcile(operation, "driver_failure");
@@ -1758,29 +1837,39 @@ export class DurableExternalAgentConnector implements ExternalAgentConnector {
 				runtime.openModelGateway === undefined ||
 				runtime.modelGatewayEnvironment === undefined
 			) {
-				await this.#markReconcile(operation, "credential_unavailable");
-				return Result.err(externalFailure(
-					"external_credential_unavailable",
+				return this.#failGatewaySetup(
+					operation,
 					"External model gateway credential authority is unavailable",
-					attempt.attemptId,
-				));
+				);
 			}
-			modelGateway = await runtime.openModelGateway(lease, executionInput.modelProjection);
-			if (modelGateway === undefined) {
-				await this.#markReconcile(operation, "credential_unavailable");
-				return Result.err(externalFailure(
-					"external_credential_unavailable",
+			try {
+				modelGateway = await runtime.openModelGateway(lease, executionInput.modelProjection);
+			} catch {
+				return this.#failGatewaySetup(
+					operation,
 					"External model gateway capability could not be opened",
-					attempt.attemptId,
-				));
+				);
+			}
+			if (modelGateway === undefined) {
+				return this.#failGatewaySetup(
+					operation,
+					"External model gateway capability could not be opened",
+				);
 			}
 			this.#modelGatewayCapabilities.set(attempt.attemptId, modelGateway);
-			gatewayEnvironment = Object.freeze({
-				AOS_MODEL_GATEWAY_ENDPOINT: modelGateway.endpoint,
-				AOS_MODEL_GATEWAY_AUTHORIZATION: modelGateway.authorization,
-				AOS_MODEL_GATEWAY_BINDING_DIGEST: modelGateway.modelBindingDigest,
-				...runtime.modelGatewayEnvironment(modelGateway),
-			});
+			try {
+				gatewayEnvironment = Object.freeze({
+					AOS_MODEL_GATEWAY_ENDPOINT: modelGateway.endpoint,
+					AOS_MODEL_GATEWAY_AUTHORIZATION: modelGateway.authorization,
+					AOS_MODEL_GATEWAY_BINDING_DIGEST: modelGateway.modelBindingDigest,
+					...runtime.modelGatewayEnvironment(modelGateway),
+				});
+			} catch {
+				return this.#failGatewaySetup(
+					operation,
+					"External model gateway environment could not be derived",
+				);
+			}
 		}
 		let supervisor: ExternalConnectorBoundedSupervisor;
 		try {

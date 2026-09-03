@@ -45,6 +45,7 @@ import type { ExternalConnectorVendorDriver } from "./vendor/types.ts";
 import {
 	createPrivateVendorExternalAgentConnector,
 	type PrivateExternalConnectorVendorAdapterOverrides,
+	type PrivateExternalConnectorVendorCompanions,
 } from "./vendor/composition.ts";
 import {
 	bindExternalConnectorVendorBehaviorManifest,
@@ -361,6 +362,8 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 	readonly agentDir: string;
 	/** Host-private deterministic adapter seam. Stock settings omit this. */
 	readonly vendorAdapters?: PrivateExternalConnectorVendorAdapterOverrides;
+	/** Static optional companions injected by a product entry outside the package-root graph. */
+	readonly vendorCompanions?: PrivateExternalConnectorVendorCompanions;
 }): Promise<ExternalConnectorRegistryFactory | undefined> {
 	const packaged = matchesPackagedTarget(options.target);
 	if (packaged) loadPackagedExternalAgentDriver("fake-connector");
@@ -375,6 +378,7 @@ export async function createPackagedExternalConnectorRegistryFactory(options: {
 				privateStatePath,
 				credential: credentialRuntime,
 				...(options.vendorAdapters === undefined ? {} : { adapters: options.vendorAdapters }),
+				...(options.vendorCompanions === undefined ? {} : { companions: options.vendorCompanions }),
 			});
 	const capability = vendor?.capability ?? (packaged ? packagedCapability() : genericTargetCapability(options.target));
 	let jsonlDriver: JsonlProcessExternalConnectorDriver | undefined;

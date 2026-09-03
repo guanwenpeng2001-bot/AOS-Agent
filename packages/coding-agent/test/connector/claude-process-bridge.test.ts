@@ -20,13 +20,15 @@ afterEach(() => {
 	}
 });
 
-class FakeChannel implements ExternalConnectorProcessChannel {
+type RawRead = string | undefined | Promise<string | undefined>;
+
+class RawFakeChannel implements ExternalConnectorProcessChannel {
 	readonly writes: string[] = [];
 	readCount = 0;
-	readonly #reads: string[];
+	readonly #reads: RawRead[];
 
-	constructor(reads: readonly unknown[]) {
-		this.#reads = reads.map((value) => JSON.stringify(value));
+	constructor(reads: readonly RawRead[]) {
+		this.#reads = [...reads];
 	}
 
 	writeLine(line: string): void {
@@ -37,6 +39,25 @@ class FakeChannel implements ExternalConnectorProcessChannel {
 		this.readCount += 1;
 		return Promise.resolve(this.#reads.shift());
 	}
+}
+
+class FakeChannel extends RawFakeChannel {
+	constructor(reads: readonly unknown[]) {
+		super(reads.map((value) => JSON.stringify(value)));
+	}
+}
+
+function createDeferredRead(): {
+	readonly promise: Promise<string | undefined>;
+	readonly resolve: (value: string | undefined) => void;
+} {
+	let resolve = (_value: string | undefined): void => {
+		throw new Error("deferred read resolved before initialization");
+	};
+	const promise = new Promise<string | undefined>((settle) => {
+		resolve = settle;
+	});
+	return { promise, resolve };
 }
 
 function nextTurn(): Promise<void> {
@@ -194,6 +215,92 @@ describe("Claude supervised process bridge", () => {
 		expect(error).toEqual(new Error("Claude Code supervised process bridge stdout limit exceeded"));
 		expect(channel.writes.map((line) => JSON.parse(line))).toContainEqual({ type: "kill", signal: "SIGKILL" });
 		expect(spawned.killed).toBe(true);
+	});
+
+	it("rejects EOF, malformed frames, non-canonical base64, and oversized single chunks", async () => {
+		const invalidReads: readonly RawRead[] = [
+			undefined,
+			"{not-json",
+			JSON.stringify({ type: "stdout", data: 7 }),
+			JSON.stringify({ type: "stdout", data: "YQ" }),
+			JSON.stringify({ type: "stdout", data: Buffer.alloc(64 * 1024 + 1, 1).toString("base64") }),
+		];
+
+		for (const read of invalidReads) {
+			const cwd = mkdtempSync(join(tmpdir(), "aos-claude-bridge-invalid-frame-"));
+			directories.push(cwd);
+			const channel = new RawFakeChannel([read]);
+			const spawned = bridge(cwd, channel).spawn(
+				{ supervisorRef: "supervisor", operationNonce: "nonce" },
+				{ command: process.execPath, args: [], cwd, env: {}, signal: new AbortController().signal },
+			);
+			const error = await waitForError(spawned);
+
+			expect(error).toEqual(new Error("Claude Code supervised process bridge failed"));
+			expect(channel.writes.map((line) => JSON.parse(line))).toContainEqual({ type: "kill", signal: "SIGKILL" });
+			expect(spawned.killed).toBe(true);
+			expect(spawned.kill("SIGTERM")).toBe(false);
+		}
+	});
+
+	it("settles a delayed read through timeout abort without exposing late stdout", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-claude-bridge-delayed-abort-"));
+		directories.push(cwd);
+		const delayed = createDeferredRead();
+		const channel = new RawFakeChannel([
+			delayed.promise,
+			JSON.stringify({ type: "exit", code: null, signal: "SIGTERM" }),
+		]);
+		const abortController = new AbortController();
+		const spawned = bridge(cwd, channel).spawn(
+			{ supervisorRef: "supervisor", operationNonce: "nonce" },
+			{ command: process.execPath, args: [], cwd, env: {}, signal: abortController.signal },
+		);
+		let output = "";
+		spawned.stdout.on("data", (chunk) => { output += String(chunk); });
+		const exit = waitForExit(spawned);
+		await nextTurn();
+
+		abortController.abort();
+		await nextTurn();
+		expect(channel.writes.map((line) => JSON.parse(line))).toEqual([
+			expect.objectContaining({ type: "launch" }),
+			{ type: "kill", signal: "SIGTERM" },
+		]);
+
+		delayed.resolve(JSON.stringify({ type: "stdout", data: Buffer.from("late").toString("base64") }));
+		expect(await exit).toEqual([null, "SIGTERM"]);
+		expect(output).toBe("");
+		expect(channel.writes.map((line) => JSON.parse(line).type)).toEqual(["launch", "kill", "stdout_ack"]);
+		expect(spawned.kill("SIGTERM")).toBe(false);
+	});
+
+	it("cleans up a failed spawn so a later spawn can recover on the same bridge", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "aos-claude-bridge-recovery-"));
+		directories.push(cwd);
+		const channel = new RawFakeChannel([
+			"{not-json",
+			JSON.stringify({ type: "exit", code: 0, signal: null }),
+		]);
+		const processBridge = bridge(cwd, channel);
+		const firstAbort = new AbortController();
+		const failed = processBridge.spawn(
+			{ supervisorRef: "supervisor", operationNonce: "first" },
+			{ command: process.execPath, args: [], cwd, env: {}, signal: firstAbort.signal },
+		);
+		expect(await waitForError(failed)).toEqual(new Error("Claude Code supervised process bridge failed"));
+		const writesAfterFailure = channel.writes.length;
+
+		firstAbort.abort();
+		await nextTurn();
+		expect(channel.writes).toHaveLength(writesAfterFailure);
+
+		const recovered = processBridge.spawn(
+			{ supervisorRef: "supervisor", operationNonce: "second" },
+			{ command: process.execPath, args: [], cwd, env: {}, signal: new AbortController().signal },
+		);
+		expect(await waitForExit(recovered)).toEqual([0, null]);
+		expect(channel.writes.map((line) => JSON.parse(line).type)).toEqual(["launch", "kill", "launch"]);
 	});
 
 	it("bounds raw stdout from a high-speed child inside the packaged bridge", async () => {

@@ -44,8 +44,9 @@ import {
 import {
 	type AgentSessionRuntimeDiagnostic,
 	createAgentSessionFromServices,
-	createAgentSessionServices,
+	createAgentSessionServicesForProduct,
 } from "./core/session/services.ts";
+import type { PrivateExternalConnectorVendorCompanions } from "./core/connector/vendor/composition.ts";
 import { formatNoModelsAvailableMessage } from "./core/runtime/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/policy/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
@@ -642,6 +643,8 @@ export interface MainOptions {
 	 * resolved. CLI arguments and RPC payloads cannot populate this graph.
 	 */
 	runtimeComposition?: AgentRuntimeCompositionFactory;
+	/** Static optional vendor companions owned by this executable entry. */
+	externalConnectorVendorCompanions?: PrivateExternalConnectorVendorCompanions;
 }
 
 function parseTopLevelArgs(args: string[]): Args {
@@ -873,7 +876,7 @@ export async function main(args: string[], options?: MainOptions) {
 				parsed.projectTrustOverride ??
 				(!hasTrustRequiringResources || trustStore.get(cwd) === true));
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
-		const services = await createAgentSessionServices({
+		const services = await createAgentSessionServicesForProduct({
 			cwd,
 			agentDir,
 			// An explicit Host factory wins as one indivisible authority graph.
@@ -920,7 +923,7 @@ export async function main(args: string[], options?: MainOptions) {
 				appendSystemPrompt: parsed.appendSystemPrompt,
 				extensionFactories,
 			},
-		});
+		}, options?.externalConnectorVendorCompanions);
 		const { settingsManager, modelRuntime, resourceLoader } = services;
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 			...projectTrustDiagnostics,

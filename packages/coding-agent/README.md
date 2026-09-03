@@ -102,16 +102,13 @@ surface. The smoke test packs a staged package, installs it outside the
 repository, resolves the testing subpath, and checks the shipped asset and safe
 missing-asset error.
 
-Local regressions also exercise the standard product composition across
+Engineering verification exercises the standard product composition across
 run/switch/fork/import/reload/cancel/restart, immutable RuntimeLimits with
 no-widen rules, passive connector runtime-status projection, and terminal
-`side_effect_unknown` retry handling. They do not prove Bun compiled artifacts
-or exact-head remote artifacts. Packaged smoke (Windows local plus Linux/macOS
-CI), previous-release upgrade/restart, deterministic soak, and pinned vendor
-handshakes are recorded for this Line 13 checkout. Codex subscription print,
-SDK, and TUI returned real replies. These records do not certify real vendor
-authentication through the settings composition. Lines 14 and 15 remain later
-work.
+`side_effect_unknown` retry handling. Packaged smoke and pinned vendor
+handshakes establish package and protocol reachability only. They do not certify
+real vendor authentication or end-to-end task completion; no external connector
+mode is currently task-certified.
 
 ## Package contents
 

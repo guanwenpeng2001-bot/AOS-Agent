@@ -8,6 +8,7 @@
 import { APP_NAME } from "./config.ts";
 import { configureHttpDispatcher } from "./core/runtime/http-dispatcher.ts";
 import { main } from "./main.ts";
+import { createPrivateClaudeAgentSdkCompanion } from "./vendor-driver-companions/claude-entry.ts";
 
 process.title = APP_NAME;
 process.env.AOS_AGENT = "true";
@@ -18,4 +19,6 @@ process.emitWarning = (() => {}) as typeof process.emitWarning;
 // Runtime settings are applied once SettingsManager has loaded global/project settings.
 configureHttpDispatcher();
 
-main(process.argv.slice(2));
+main(process.argv.slice(2), {
+	externalConnectorVendorCompanions: { claude: createPrivateClaudeAgentSdkCompanion },
+});

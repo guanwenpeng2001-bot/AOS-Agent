@@ -65,4 +65,39 @@ describe("AttemptReceipt effective model", () => {
 			provenance: { ...receipt().provenance, producerKind: "scheduler" },
 		})).toMatchObject({ ok: false });
 	});
+
+	it("enforces effective model field bounds and exact nested shape", () => {
+		const base = receipt();
+		if (base.effectiveModel === undefined) throw new Error("effective model fixture is missing");
+		const effectiveModel = base.effectiveModel;
+
+		expect(validateAttemptReceipt({
+			...base,
+			effectiveModel: {
+				...effectiveModel,
+				provider: "p".repeat(512),
+				model: "m".repeat(512),
+			},
+		})).toMatchObject({ ok: true });
+
+		const invalidEffectiveModels: readonly unknown[] = [
+			{ ...effectiveModel, provider: "" },
+			{ ...effectiveModel, provider: "p".repeat(513) },
+			{ ...effectiveModel, model: "" },
+			{ ...effectiveModel, model: "m".repeat(513) },
+			{ ...effectiveModel, bindingDigest: { algorithm: "sha1", value: "a".repeat(64) } },
+			{ ...effectiveModel, bindingDigest: { algorithm: "sha256", value: "a".repeat(63) } },
+			{ ...effectiveModel, bindingDigest: { algorithm: "sha256", value: "A".repeat(64) } },
+			{ ...effectiveModel, observedAt: "" },
+			{ ...effectiveModel, source: "unknown" },
+			{
+				...effectiveModel,
+				bindingDigest: { ...effectiveModel.bindingDigest, extra: true },
+			},
+			{ ...effectiveModel, extra: true },
+		];
+		for (const candidate of invalidEffectiveModels) {
+			expect(validateAttemptReceipt({ ...base, effectiveModel: candidate })).toMatchObject({ ok: false });
+		}
+	});
 });
